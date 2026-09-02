@@ -5,8 +5,8 @@
 - **PR для ревью:** https://github.com/sledovatel61/HR-Manager/pull/4
 - **Коммиты ветки:**
   - реализация: `dbbaf76839551ba9bcc09fd82e9ed71ea228d374`;
-  - отчёт: `a5fc7a72d25ad81aa2a5e846cf148fc4208a5cef`
-    (финальный HEAD ветки на момент публикации).
+  - отчёт: `a5fc7a72d25ad81aa2a5e846cf148fc4208a5cef`;
+  - финализация отчёта: `d81dd7224b136f35a867e5e77691e734e0d2dea2` (docs-only, финальный HEAD ветки).
 - **База ветки:** фактический `origin/main` = `62838a92441a50da28c0088f6f930b1b8cb5a4a6`
   («docs: add candidates database phase prompt and update README»).
   ⚠️ В промпте ожидался base `0fc51161b0e6fba64c9e807ded19af35f8db63f3` —
