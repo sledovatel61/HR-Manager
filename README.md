@@ -13,6 +13,9 @@
 Vite, Docker Compose, health-check, тесты, CI) сохранён. Функции кандидатов
 появятся на следующих этапах [`ROADMAP.md`](ROADMAP.md).
 
+**Дизайн-трек «Живая воронка» принят** (документация `design/` и изолированный
+прототип `design-prototype/`); production-код приложения не затронут.
+
 ## Аутентификация и безопасность (этап 2)
 
 - **Пользователи и роли.** Три роли: `hr`, `manager` (руководитель),
@@ -157,6 +160,8 @@ npm audit --audit-level=high   # аудит уязвимостей
 ```
 backend/   FastAPI + SQLAlchemy 2 + Alembic, тесты, Dockerfile
 frontend/  React + TypeScript + Vite, тесты, Dockerfile + nginx
+design/    UX/UI-концепция «Живая воронка»: дизайн-система, гайд переноса
+design-prototype/  изолированный интерактивный прототип (не production-код)
 infra/     docker-compose.yml, production overlay, preflight-скрипт
 docs/      ARCHITECTURE.md — решения и ограничения этапа
 prompts/   промпты этапов разработки
@@ -231,4 +236,9 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
 - [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) — актуальное ТЗ;
 - [`ROADMAP.md`](ROADMAP.md) — этапы разработки;
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — решения этапа 1;
-- [`prompts/PHASE_1_PROMPT.md`](prompts/PHASE_1_PROMPT.md) — промпт этапа 1.
+- [`prompts/PHASE_1_PROMPT.md`](prompts/PHASE_1_PROMPT.md) — промпт этапа 1;
+- [`prompts/PHASE_2_PROMPT.md`](prompts/PHASE_2_PROMPT.md) — промпт этапа 2;
+- [`prompts/PHASE_3_PROMPT.md`](prompts/PHASE_3_PROMPT.md) — промпт следующего
+  этапа (единая база кандидатов);
+- [`design/IMPLEMENTATION_GUIDE.md`](design/IMPLEMENTATION_GUIDE.md) — план
+  переноса дизайна «Живая воронка» в production.
