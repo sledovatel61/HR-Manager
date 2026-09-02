@@ -1,0 +1,36 @@
+.source-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-size-sm);
+}
+
+.source-table th {
+  text-align: left;
+  font-size: var(--text-size-2xs);
+  color: var(--text-tertiary);
+  padding-bottom: var(--space-2);
+  font-weight: var(--font-weight-medium);
+}
+
+.source-table td {
+  padding: 6px 0;
+  vertical-align: middle;
+}
+
+.source-count {
+  font-variant-numeric: tabular-nums;
+  width: 40px;
+}
+
+.source-bar-track {
+  height: 8px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-full);
+  min-width: 100px;
+}
+
+.source-bar-fill {
+  height: 100%;
+  background: var(--status-teal-fg);
+  border-radius: var(--radius-full);
+}
