@@ -1,0 +1,36 @@
+# --- Секреты и окружение ---
+.env
+.env.*
+!.env.example
+
+# --- Базы данных, дампы, backup (реальные данные не коммитим) ---
+*.db
+*.sqlite3
+*.dump
+*.bak
+*.sql.gz
+backups/
+dumps/
+
+# --- Логи ---
+*.log
+logs/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Node / frontend build ---
+node_modules/
+dist/
+build/
+coverage/
+
+# --- Среда разработки ---
+.idea/
+.vscode/
+.DS_Store

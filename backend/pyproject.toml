@@ -1,0 +1,46 @@
+# Конфигурация backend-инструментов.
+# Зависимости намеренно держим в requirements.txt / requirements-dev.txt
+# (точные пины), а не здесь: так Docker-сборка кеширует слой установки
+# зависимостей отдельно от кода, а pyproject остаётся конфигом инструментов.
+
+[project]
+name = "hr-manager-backend"
+version = "0.1.0"
+description = "HR Manager: сетевая система подбора персонала — backend"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+# pytest запускается из каталога backend/: `cd backend && python -m pytest`.
+# Тесты лежат в общем каталоге верхнего уровня tests/backend/.
+pythonpath = ["."]
+testpaths = ["../tests/backend"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "SIM", "UP", "W"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI использует вызовы в дефолтах аргументов как идиому внедрения зависимостей.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Security",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "."
+packages = ["app"]
+ignore_missing_imports = true
+warn_unused_configs = true
+disallow_untyped_defs = true

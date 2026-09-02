@@ -1,0 +1,62 @@
+# Локальный запуск всего стека HR Manager: PostgreSQL + backend + frontend.
+#
+#   cp .env.example .env   # один раз, затем при желании поменять значения
+#   docker compose up --build
+#
+# Frontend: http://localhost:8080, backend API: http://localhost:8000/docs.
+# Порты по умолчанию публикуются только на loopback; для доступа из LAN
+# задайте BIND-переменные (см. .env.example).
+
+name: hr-manager
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?задайте в .env, см. .env.example}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте в .env, см. .env.example}
+      POSTGRES_DB: ${POSTGRES_DB:?задайте в .env, см. .env.example}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Нужен для локальной разработки backend вне контейнера и psql.
+      - "${DB_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:?задайте в .env, см. .env.example}
+      SECRET_KEY: ${SECRET_KEY:?задайте в .env, см. .env.example}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    ports:
+      - "${BACKEND_BIND:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
+    networks: [internal]
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
+    networks: [internal]
+
+volumes:
+  # Данные PostgreSQL переживают `docker compose down`; полный сброс —
+  # `docker compose down -v` (удаляет volume, см. README).
+  pgdata:
+
+networks:
+  internal:

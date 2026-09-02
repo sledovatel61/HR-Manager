@@ -1,0 +1,9 @@
+# Инструменты разработки и тестирования — источник для requirements-dev.txt.
+# Обновление аналогично requirements.src.txt.
+-r requirements.src.txt
+pytest>=8.3,<9.0
+# httpx2 — клиент для starlette TestClient (starlette>=1.5 объявил
+# использование httpx в TestClient устаревшим).
+httpx2>=2.0,<3.0
+ruff>=0.6,<1.0
+mypy>=1.11,<2.0

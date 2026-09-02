@@ -1,0 +1,11 @@
+# Непривязанные диапазоны верхнего уровня — источник для генерации
+# requirements.txt (точные пины всех транзитивных зависимостей).
+# Обновление: `uv pip compile backend/requirements.src.txt --python-version 3.12
+#   -o backend/requirements.txt` (или pip-compile из pip-tools).
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+sqlalchemy>=2.0,<3.0
+alembic>=1.13,<2.0
+psycopg[binary]>=3.2,<4.0
+pydantic>=2.9,<3.0
+pydantic-settings>=2.5,<3.0
