@@ -10,6 +10,7 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 from app.config import get_settings
+from app.models import Base
 
 config = context.config
 
@@ -20,8 +21,10 @@ settings = get_settings()
 # set_main_option performs %-interpolation, so escape literal percent signs.
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
-# Business models arrive in later phases; migrations are hand-written until then.
-target_metadata = None
+# Migrations remain hand-written (explicit, reviewable DDL); metadata is
+# attached so autogenerate is available when needed and so Alembic knows the
+# full target schema.
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:

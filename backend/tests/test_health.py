@@ -75,11 +75,19 @@ def test_health_against_real_postgresql() -> None:
 @pytest.mark.skipif(not RUN_INTEGRATION, reason="TEST_DATABASE_URL is not set")
 def test_health_degrades_against_stopped_postgresql() -> None:
     """Health must report 503 (not 500/crash) when PostgreSQL is unreachable."""
+    # Point at a port where nothing listens (replace any host:port/ segment,
+    # e.g. localhost:5432 or 127.0.0.1:55432, with a closed port).
+    import re
+
     from app.config import Settings
     from app.main import create_app
 
-    # Point at a port where nothing listens.
-    stopped_url = os.environ["TEST_DATABASE_URL"].replace(":5432/", ":5599/")
+    stopped_url = re.sub(
+        r"(@[^/:]+:)\d+(/|$)",
+        r"\g<1>5599\g<2>",
+        os.environ["TEST_DATABASE_URL"],
+        count=1,
+    )
     settings = Settings.model_validate(
         {
             "APP_ENV": "test",
