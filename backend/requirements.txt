@@ -1,0 +1,10 @@
+# Pinned runtime dependencies (generated 2026-09-02 from backend/pyproject.toml).
+# Update procedure: adjust pyproject.toml, reinstall in a clean venv, then
+# refresh the pins below and re-run the full check suite.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+sqlalchemy==2.0.52
+psycopg[binary]==3.3.5
+alembic==1.19.1
+pydantic==2.13.5
+pydantic-settings==2.15.0

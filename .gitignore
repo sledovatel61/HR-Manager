@@ -1,0 +1,41 @@
+# ---- Secrets and environment ----
+.env
+.env.*
+!.env.example
+
+# ---- Python / backend ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# ---- Node / frontend ----
+node_modules/
+dist/
+build/
+*.local
+
+# ---- Databases, backups and dumps ----
+*.sqlite3
+*.sqlite
+*.db
+*.dump
+*.sql.gz
+backups/
+dumps/
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- Editor and OS noise ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
