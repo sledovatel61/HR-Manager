@@ -1,0 +1,105 @@
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-4);
+}
+
+.home-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.home-card-wide { grid-column: span 2; }
+
+.home-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.home-card-head h3 { font-size: var(--text-size-md); }
+
+.home-link {
+  background: none;
+  border: none;
+  color: var(--text-link);
+  font-size: var(--text-size-xs);
+  cursor: pointer;
+}
+
+.home-metric {
+  font-size: var(--text-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--accent-default);
+}
+
+.home-empty {
+  font-size: var(--text-size-sm);
+  color: var(--text-tertiary);
+}
+
+.home-attention-list, .home-events-list, .home-team-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.home-attention-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+}
+.home-attention-list li:hover { background: var(--surface-hover); }
+
+.home-attention-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  font-size: var(--text-size-sm);
+}
+
+.home-attention-meta {
+  font-size: var(--text-size-2xs);
+  color: var(--text-tertiary);
+}
+
+.home-events-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+
+.home-event-title { display: block; font-size: var(--text-size-sm); color: var(--text-primary); }
+.home-event-time { display: block; font-size: var(--text-size-2xs); color: var(--text-tertiary); }
+
+.home-team-list {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.home-team-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+
+.home-team-name { font-size: var(--text-size-sm); }
+.home-team-count { font-size: var(--text-size-2xs); color: var(--text-tertiary); }
+
+@media (max-width: 1279px) {
+  .home-grid { grid-template-columns: 1fr; }
+  .home-card-wide { grid-column: span 1; }
+}
