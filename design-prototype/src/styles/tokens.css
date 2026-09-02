@@ -1,0 +1,169 @@
+:root {
+  /* Primitives */
+  --gray-0: #ffffff;
+  --gray-25: #f8f9fb;
+  --gray-50: #f4f5f7;
+  --gray-100: #e5e7eb;
+  --gray-200: #d1d5db;
+  --gray-300: #9ca3af;
+  --gray-400: #9ca3af;
+  --gray-500: #6b7280;
+  --gray-600: #4b5563;
+  --gray-700: #374151;
+  --gray-900: #111827;
+
+  --indigo-50: #eef2ff;
+  --indigo-100: #e0e7ff;
+  --indigo-500: #6366f1;
+  --indigo-600: #4f46e5;
+  --indigo-700: #4338ca;
+
+  --teal-50: #f0fdfa;
+  --teal-600: #0f766e;
+  --teal-800: #115e59;
+
+  --blue-50: #eff6ff;
+  --blue-600: #2563eb;
+  --blue-800: #1e40af;
+
+  --sky-50: #f0f9ff;
+  --sky-600: #0284c7;
+  --sky-800: #075985;
+
+  --violet-50: #f5f3ff;
+  --violet-600: #7c3aed;
+  --violet-800: #5b21b6;
+
+  --purple-50: #faf5ff;
+  --purple-600: #9333ea;
+  --purple-800: #6b21a8;
+
+  --amber-50: #fffbeb;
+  --amber-600: #d97706;
+  --amber-900: #78350f;
+
+  --rose-50: #fff1f2;
+  --rose-600: #e11d48;
+  --rose-800: #9f1239;
+
+  --green-50: #ecfdf5;
+  --green-600: #059669;
+
+  --slate-50: #f8fafc;
+  --slate-500: #64748b;
+  --slate-700: #334155;
+
+  /* Semantic */
+  --bg-app: var(--gray-50);
+  --bg-surface: var(--gray-0);
+  --bg-sunken: var(--gray-25);
+  --bg-elevated: var(--gray-0);
+  --bg-brand-subtle: var(--indigo-50);
+  --bg-overlay: rgba(17, 24, 39, 0.45);
+  --bg-row-hover: #f3f4f8;
+  --bg-row-selected: var(--indigo-50);
+
+  --text-primary: var(--gray-900);
+  --text-secondary: var(--gray-500);
+  --text-muted: var(--gray-400);
+  --text-inverse: #ffffff;
+  --text-brand: var(--indigo-700);
+  --text-danger: var(--rose-600);
+  --text-success: var(--green-600);
+  --text-warning: var(--amber-600);
+
+  --border-subtle: var(--gray-100);
+  --border-default: var(--gray-200);
+  --border-strong: #9ca3af;
+  --border-focus: var(--indigo-600);
+
+  --action-primary: var(--indigo-600);
+  --action-primary-hover: var(--indigo-700);
+  --action-danger: var(--rose-600);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  --shadow-xs: 0 1px 2px rgba(17, 24, 39, 0.06);
+  --shadow-sm: 0 1px 3px rgba(17, 24, 39, 0.08), 0 1px 2px rgba(17, 24, 39, 0.04);
+  --shadow-md: 0 4px 12px rgba(17, 24, 39, 0.1);
+  --shadow-lg: 0 12px 32px rgba(17, 24, 39, 0.16);
+
+  --font-sans: Inter, "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --text-display: 600 28px/36px var(--font-sans);
+  --text-title: 600 20px/28px var(--font-sans);
+  --text-subtitle: 600 16px/24px var(--font-sans);
+  --text-body: 400 14px/20px var(--font-sans);
+  --text-body-sm: 400 13px/18px var(--font-sans);
+  --text-caption: 400 12px/16px var(--font-sans);
+  --text-overline: 600 11px/14px var(--font-sans);
+
+  --duration-fast: 120ms;
+  --duration-normal: 180ms;
+  --duration-slow: 280ms;
+  --easing: cubic-bezier(0.2, 0, 0, 1);
+
+  --z-rail: 30;
+  --z-header: 40;
+  --z-dropdown: 50;
+  --z-drawer: 60;
+  --z-modal: 70;
+  --z-palette: 80;
+  --z-toast: 90;
+  --z-blocking: 100;
+
+  --rail-width: 240px;
+  --rail-collapsed: 64px;
+  --header-height: 56px;
+  --row-height: 48px;
+  --control-height: 32px;
+}
+
+[data-density="compact"] {
+  --row-height: 40px;
+  --control-height: 28px;
+  --text-body: 400 13px/18px var(--font-sans);
+}
+
+[data-theme="dark"] {
+  --bg-app: #0b0f19;
+  --bg-surface: #111827;
+  --bg-sunken: #0b0f19;
+  --bg-elevated: #1f2937;
+  --bg-brand-subtle: #1e1b4b;
+  --bg-row-hover: #1f2937;
+  --bg-row-selected: #1e1b4b;
+  --text-primary: #f9fafb;
+  --text-secondary: #d1d5db;
+  --text-muted: #9ca3af;
+  --text-brand: #a5b4fc;
+  --border-subtle: #1f2937;
+  --border-default: #374151;
+  --border-strong: #6b7280;
+  --action-primary: #818cf8;
+  --action-primary-hover: #a5b4fc;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0.01ms;
+    --duration-normal: 0.01ms;
+    --duration-slow: 0.01ms;
+  }
+}
