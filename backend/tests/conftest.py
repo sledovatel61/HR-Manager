@@ -20,8 +20,16 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import Settings
 from app.main import create_app
-from app.models import Base, User, UserRole
+from app.models import (
+    Base,
+    Candidate,
+    CandidateSource,
+    CandidateStage,
+    User,
+    UserRole,
+)
 from app.security import hash_password
+from app.utils import normalize_email, normalize_full_name, normalize_phone, utc_now
 
 TEST_SQLITE_URL = "sqlite+pysqlite://"
 
@@ -97,6 +105,41 @@ def make_user(
     return user
 
 
+def make_candidate(
+    db: Session,
+    *,
+    owner: User,
+    full_name: str = "Иванов Иван Иванович",
+    phone: str | None = None,
+    email: str | None = None,
+    source: CandidateSource = CandidateSource.SITE,
+    position: str = "",
+    stage: CandidateStage = CandidateStage.NEW,
+    deleted: bool = False,
+) -> Candidate:
+    """Create and persist a candidate owned by ``owner``."""
+    from app.models import CANDIDATE_STAGE_POSITION
+
+    candidate = Candidate(
+        full_name=full_name,
+        full_name_normalized=normalize_full_name(full_name),
+        phone=phone,
+        phone_normalized=normalize_phone(phone),
+        email=email,
+        email_normalized=normalize_email(email),
+        source=source,
+        position=position,
+        owner_user_id=owner.id,
+        stage=stage,
+        stage_position=CANDIDATE_STAGE_POSITION[stage],
+        deleted_at=utc_now() if deleted else None,
+    )
+    db.add(candidate)
+    db.commit()
+    db.refresh(candidate)
+    return candidate
+
+
 def _require_integration_url() -> str:
     """Return TEST_DATABASE_URL when it points at PostgreSQL, else skip."""
     url = os.environ.get("TEST_DATABASE_URL")
@@ -141,7 +184,10 @@ def pg_client(pg_settings: Settings, pg_engine: Engine) -> Iterator[TestClient]:
     """TestClient against PostgreSQL. Tables are truncated for a clean state."""
     with pg_engine.begin() as connection:
         connection.execute(
-            text("TRUNCATE TABLE audit_log, user_sessions, users RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE TABLE audit_log, candidate_interactions, candidates, "
+                "user_sessions, users RESTART IDENTITY CASCADE"
+            )
         )
     app = create_app(pg_settings, engine=pg_engine)
     with TestClient(app) as test_client:

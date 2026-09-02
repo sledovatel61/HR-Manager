@@ -64,6 +64,87 @@ class AuditAction(StrEnum):
     USER_REACTIVATED = "user_reactivated"
     USER_UNLOCKED = "user_unlocked"
     ROLE_CHANGED = "role_changed"
+    # Candidate lifecycle (roadmap phase: candidates database).
+    CANDIDATE_CREATED = "candidate_created"
+    CANDIDATE_UPDATED = "candidate_updated"
+    CANDIDATE_STAGE_CHANGED = "candidate_stage_changed"
+    CANDIDATE_DELETED = "candidate_deleted"
+    CANDIDATE_RESTORED = "candidate_restored"
+    CANDIDATE_INTERACTION_ADDED = "candidate_interaction_added"
+    DUPLICATE_CANDIDATE_CREATED = "duplicate_candidate_created"
+
+
+class CandidateStage(StrEnum):
+    """Recruitment funnel stages — the single source of truth (PRODUCT_SPEC §5).
+
+    The same vocabulary is mirrored in ``frontend/src/types.ts``
+    (``CandidateStage`` / ``STAGE_LABELS``). Do not rename or add members
+    without updating the frontend contract and the funnel order below.
+    """
+
+    NEW = "new"
+    CONTACTED = "contacted"
+    REACHED = "reached"
+    INTERVIEW_SCHEDULED = "interview_scheduled"
+    INTERVIEW_DONE = "interview_done"
+    OFFER = "offer"
+    HIRED = "hired"
+    STARTED = "started"  # «вышел» (вышел на работу)
+    PROBATION = "probation"
+    FIRED = "fired"
+    REJECTED = "rejected"
+
+
+# Funnel order used for `stage_position` (sorting by stage) — single source of
+# truth. Terminal outcomes (fired/rejected) come last and are not part of the
+# conversion funnel.
+CANDIDATE_STAGE_ORDER: tuple[CandidateStage, ...] = (
+    CandidateStage.NEW,
+    CandidateStage.CONTACTED,
+    CandidateStage.REACHED,
+    CandidateStage.INTERVIEW_SCHEDULED,
+    CandidateStage.INTERVIEW_DONE,
+    CandidateStage.OFFER,
+    CandidateStage.HIRED,
+    CandidateStage.STARTED,
+    CandidateStage.PROBATION,
+    CandidateStage.FIRED,
+    CandidateStage.REJECTED,
+)
+
+CANDIDATE_STAGE_POSITION: dict[CandidateStage, int] = {
+    stage: index for index, stage in enumerate(CANDIDATE_STAGE_ORDER)
+}
+
+
+class CandidateSource(StrEnum):
+    """Candidate acquisition sources (same vocabulary as the design prototype).
+
+    Admin-managed source catalogs arrive with the catalog/dictionaries phase;
+    until then this closed vocabulary keeps backend and frontend aligned.
+    """
+
+    SITE = "site"
+    REFERRAL = "referral"
+    HH_MANUAL = "hh_manual"
+    UNIVERSITY = "university"
+    EVENT = "event"
+    AGENCY = "agency"
+    INBOUND_CALL = "inbound_call"
+
+
+class CandidateInteractionType(StrEnum):
+    """Kinds of recorded interactions with a candidate.
+
+    ``transfer`` is intentionally absent: ownership transfer is a separate
+    operation with its own audit trail (next phase).
+    """
+
+    CALL = "call"
+    EMAIL = "email"
+    MEETING = "meeting"
+    NOTE = "note"
+    STATUS_CHANGE = "status_change"
 
 
 def _new_uuid() -> uuid.UUID:
@@ -170,7 +251,9 @@ class AuditEvent(Base):
     """Append-only audit trail entry.
 
     Personal data is never written here: only usernames, event names, client
-    metadata and free-form contextual details.
+    metadata and free-form contextual details. Candidate-scoped events store
+    the candidate id in ``candidate_id``; candidate personal data is never
+    copied into the audit row.
     """
 
     __tablename__ = "audit_log"
@@ -179,6 +262,7 @@ class AuditEvent(Base):
         Index("ix_audit_log_action", "action"),
         Index("ix_audit_log_user_id", "user_id"),
         Index("ix_audit_log_actor_user_id", "actor_user_id"),
+        Index("ix_audit_log_candidate_id", "candidate_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
@@ -201,6 +285,10 @@ class AuditEvent(Base):
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Candidate the event refers to (candidate lifecycle events only).
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(400), nullable=True)
@@ -211,3 +299,148 @@ class AuditEvent(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<AuditEvent id={self.id} action={self.action}>"
+
+
+class Candidate(Base):
+    """A recruitment candidate — the core business entity of the system.
+
+    Personal data (phone/email) is stored both raw (display) and normalized
+    (duplicate detection). Deletion is always soft: ``deleted_at`` is set and
+    deleted candidates disappear from regular lists; physical deletion does
+    not exist.
+    """
+
+    __tablename__ = "candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "stage IN ('new', 'contacted', 'reached', 'interview_scheduled', "
+            "'interview_done', 'offer', 'hired', 'started', 'probation', "
+            "'fired', 'rejected')",
+            name="ck_candidates_stage_valid",
+        ),
+        CheckConstraint(
+            "source IN ('site', 'referral', 'hh_manual', 'university', 'event', "
+            "'agency', 'inbound_call')",
+            name="ck_candidates_source_valid",
+        ),
+        Index("ix_candidates_owner_user_id", "owner_user_id"),
+        Index("ix_candidates_stage", "stage"),
+        Index("ix_candidates_full_name_normalized", "full_name_normalized"),
+        Index("ix_candidates_phone_normalized", "phone_normalized"),
+        Index("ix_candidates_email_normalized", "email_normalized"),
+        Index("ix_candidates_deleted_at", "deleted_at"),
+        Index("ix_candidates_updated_at", "updated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    full_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Unicode-aware casefold (Python, not DB lower()): SQLite's lower() does
+    # not fold Cyrillic, so search normalizes in Python on both databases.
+    full_name_normalized: Mapped[str] = mapped_column(String(200), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    phone_normalized: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    email_normalized: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    source: Mapped[CandidateSource] = mapped_column(
+        Enum(
+            CandidateSource,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    position: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    stage: Mapped[CandidateStage] = mapped_column(
+        Enum(
+            CandidateStage,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=CandidateStage.NEW,
+    )
+    # Funnel position of the stage: enables correct server-side sorting by
+    # stage without a client-side dictionary.
+    stage_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    owner: Mapped[User] = relationship(foreign_keys=[owner_user_id])
+    interactions: Mapped[list["CandidateInteraction"]] = relationship(
+        back_populates="candidate", cascade="all, delete-orphan"
+    )
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
+
+    @property
+    def owner_username(self) -> str:
+        """Username of the responsible user (lazy relationship access)."""
+        return self.owner.username if self.owner is not None else ""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<Candidate id={self.id} stage={self.stage} owner_id={self.owner_user_id}>"
+
+
+class CandidateInteraction(Base):
+    """One recorded interaction with a candidate (call, email, meeting, note).
+
+    Appended by the owning HR (or a manager/admin); entries are immutable.
+    """
+
+    __tablename__ = "candidate_interactions"
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('call', 'email', 'meeting', 'note', 'status_change')",
+            name="ck_candidate_interactions_type_valid",
+        ),
+        Index("ix_candidate_interactions_candidate_id", "candidate_id"),
+        Index("ix_candidate_interactions_author_user_id", "author_user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    author_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    type: Mapped[CandidateInteractionType] = mapped_column(
+        Enum(
+            CandidateInteractionType,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    candidate: Mapped[Candidate] = relationship(back_populates="interactions")
+    author: Mapped[User] = relationship(foreign_keys=[author_user_id])
+
+    @property
+    def author_username(self) -> str:
+        """Username of the interaction author (lazy relationship access)."""
+        return self.author.username if self.author is not None else ""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<CandidateInteraction id={self.id} candidate_id={self.candidate_id}>"

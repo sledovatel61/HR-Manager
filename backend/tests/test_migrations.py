@@ -17,8 +17,8 @@ from sqlalchemy import create_engine, text
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
-HEAD_REVISION = "0002"
-EXPECTED_TABLES = {"users", "user_sessions", "audit_log"}
+HEAD_REVISION = "0003"
+EXPECTED_TABLES = {"users", "user_sessions", "audit_log", "candidates", "candidate_interactions"}
 
 
 def _run_alembic(*args: str, url: str) -> None:
@@ -60,6 +60,18 @@ def test_alembic_upgrade_downgrade_upgrade_cycle() -> None:
                 )
             }
             assert tables >= EXPECTED_TABLES
+
+            # The candidates migration must link audit events to candidates.
+            audit_columns = {
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'audit_log'"
+                    )
+                )
+            }
+            assert "candidate_id" in audit_columns
 
             # gen_random_uuid() must work (via pgcrypto or the PG13+ built-in).
             generated = connection.execute(text("SELECT gen_random_uuid()")).scalar_one()

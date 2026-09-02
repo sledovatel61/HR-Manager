@@ -19,7 +19,7 @@ from app import __version__
 from app.bootstrap import bootstrap_admin
 from app.config import Settings, get_settings
 from app.db import bind_session_factory, build_engine
-from app.routers import audit, auth, health, users
+from app.routers import audit, auth, candidates, health, users
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(audit.router)
+    app.include_router(candidates.router)
     return app
 
 
