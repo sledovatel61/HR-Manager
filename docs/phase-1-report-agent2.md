@@ -129,3 +129,69 @@ npm run build        # ok (vite build → dist: 145.64 kB JS, 1.97 kB CSS)
   самой библиотеки (starlette 1.6) и на результат не влияет.
 - Этап 1 не содержит бизнес-функций, авторизации и rate limiting — по
   определению этапа (см. ROADMAP).
+
+---
+
+## Remediation (2026-09-02, вторая итерация)
+
+По результатам ревью исправлено и добавлено:
+
+1. **Compose-пути.** `infra/docker-compose.yml`: `build.context` теперь
+   `../backend` и `../frontend` (относительно расположения compose-файла,
+   который всегда запускается как `docker compose -f infra/docker-compose.yml …`);
+   frontend переведён на `nginxinc/nginx-unprivileged` (non-root, порт 8080
+   внутри контейнера), healthcheck и проброс порта приведены в соответствие
+   (`127.0.0.1:8080:8080`).
+2. **Dev hardening без изменения поведения запуска:** все dev-порты
+   привязаны к `127.0.0.1` (`127.0.0.1:5432:5432`, `127.0.0.1:8000:8000`,
+   `127.0.0.1:8080:8080`); dev-credentials явно помечены как development-only
+   в compose и `.env.example`.
+3. **Production overlay:** `ports: !override []` заменён на `ports: !reset []`
+   (требуется Docker Compose v2.24+; отражено в README). Overlay использует
+   только `${VAR:?}`-интерполяцию окружения. Новая статическая проверка в
+   backend-тестах (`tests/test_production_overlay.py`) фиксирует: отсутствие
+   dev-паролей в overlay, `APP_ENV=production`, `APP_DEBUG=false`,
+   отсутствие публикуемых портов, loopback-привязку dev-портов и корректные
+   build.context.
+4. **CI (`.github/workflows/ci.yml`)** переработан: добавлены `ruff format
+   --check`, `mypy app tests`, проверки production preflight в backend-job
+   (отклонение dev SECRET_KEY/пароля, принятие полной конфигурации),
+   `npm audit --audit-level=high`, интеграционные тесты с конвейером
+   миграций, а в stack-job — валидация dev- и prod-конфигураций
+   (`docker compose … config`), проверка отсутствия dev-паролей и
+   опубликованных портов в prod-конфигурации, `up --build --wait`,
+   `/health` → 200, frontend `/` и `/api/health`, `stop db` → `/health` 503,
+   очистка `down -v` через `if: always()`.
+5. **Backend lifecycle:** добавлен unit-тест `tests/test_lifecycle.py` —
+   после завершения TestClient engine.dispose() закрывает пул (PoolStatus
+   closed); lifespan не менялся.
+6. **Миграции:** добавлены интеграционные тесты `tests/test_migrations.py`
+   — `upgrade head` → `downgrade base` → `upgrade head` (alembic_version=0001,
+   pgcrypto на месте) и идемпотентность повторного upgrade. На SQLite-only
+   unit-тесты миграции не влияют (маркер `integration`).
+7. **nginx security headers:** `X-Content-Type-Options`, `X-Frame-Options`,
+   `Referrer-Policy`, `Permissions-Policy`, `Content-Security-Policy`
+   добавлены в `frontend/nginx.conf`.
+8. **Workflow-файл** лежит в реальном пути `.github/workflows/ci.yml`
+   (источник правды) и синхронизирован побайтово в
+   `review-artifacts/ci.agent-2.yml`; из-за отсутствия у GitHub App
+   разрешения `workflows` в ветку `arena/phase-1-agent-2` он не попадает —
+   процедура переноса описана в `review-artifacts/README.md`.
+9. **README/Makefile/документация** обновлены: команды проверки, порты,
+   требование Compose v2.24+, описание CI.
+
+### Результаты проверок после remediation
+
+- Backend: `ruff check .` — ok; `ruff format --check .` — ok; `mypy app tests` —
+  ok; `pytest -m "not integration"` — 17 passed (из 21, 4 интеграционных
+  deselected), включая lifecycle и статические проверки overlay; полный
+  прогон `pytest` с реальным PostgreSQL — 21 passed.
+- Интеграционные тесты (реальный PostgreSQL 18.4): `pytest -m integration` —
+  4 passed, включая конвейер миграций upgrade→downgrade→upgrade и
+  идемпотентность; то же проверено вживую через CLI alembic.
+- Frontend: `npm ci`, `typecheck`, `lint`, `test` (4 passed), `build` — ok;
+  `npm audit --audit-level=high` — 0 уязвимостей.
+- Compose-проверки (config/up/503-деградация) выполняются job `stack` в CI —
+  в песочнице Docker недоступен, поэтому локально не выполнялись и не
+  имитировались; статические проверки обоих Compose-файлов выполняются
+  pytest-ом локально.

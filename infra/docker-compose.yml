@@ -1,5 +1,15 @@
 # Local development environment: PostgreSQL + backend + frontend.
-# Production overlay: compose.prod.yml (enforces secret configuration).
+#
+# PATH CONVENTION: `build.context` is resolved relative to THIS FILE
+# (infra/docker-compose.yml), hence `../backend` and `../frontend`.
+# The file is always invoked as:
+#     docker compose -f infra/docker-compose.yml ...
+#
+# SECURITY: all dev ports are bound to 127.0.0.1, so the stack is reachable
+# only from the local machine. The credentials below are DEVELOPMENT ONLY —
+# the backend refuses to start in production with them, and the production
+# overlay (infra/compose.prod.yml) requires real secrets from the environment
+# and publishes no ports at all.
 name: hr-manager
 
 services:
@@ -8,11 +18,12 @@ services:
     environment:
       POSTGRES_DB: hr_manager
       POSTGRES_USER: hr_manager
+      # DEVELOPMENT ONLY — never reuse in production.
       POSTGRES_PASSWORD: hr_manager_dev_password
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hr_manager -d hr_manager"]
       interval: 5s
@@ -23,17 +34,19 @@ services:
 
   backend:
     build:
-      context: ./backend
+      # Relative to this compose file: repo-root/backend
+      context: ../backend
     environment:
       APP_ENV: development
       APP_DEBUG: "true"
+      # DEVELOPMENT ONLY — the production guard in app/config.py rejects it.
       SECRET_KEY: dev-only-secret-key-not-for-production
       DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_dev_password@db:5432/hr_manager
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test:
         [
@@ -48,14 +61,16 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      # Relative to this compose file: repo-root/frontend
+      context: ../frontend
     depends_on:
       backend:
         condition: service_healthy
     ports:
-      - "8080:80"
+      # nginx-unprivileged listens on 8080 inside the container.
+      - "127.0.0.1:8080:8080"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

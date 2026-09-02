@@ -23,6 +23,7 @@ Compose, health-check, тесты, CI). Бизнес-функционально�
 git clone https://github.com/sledovatel61/HR-Manager.git
 cd HR-Manager
 
+docker compose -f infra/docker-compose.yml config   # проверка конфигурации
 docker compose -f infra/docker-compose.yml up --build -d
 ```
 
@@ -33,6 +34,10 @@ docker compose -f infra/docker-compose.yml up --build -d
 | Frontend (статусная страница) | http://localhost:8080 |
 | Backend API (Swagger UI) | http://localhost:8000/docs |
 | Health check | http://localhost:8000/health |
+
+Порты dev-стека привязаны к `127.0.0.1` (localhost) и не публикуются в
+локальную сеть. Все учётные данные в dev-файле помечены как development-only;
+production использует только переменные окружения (см. ниже).
 
 `GET /health` возвращает `200` только когда PostgreSQL доступен; при
 недоступной БД — `503` с телом `{"status": "degraded", ...}`.
@@ -77,6 +82,7 @@ npm run dev      # http://localhost:5173, проксирует /api на localho
 ```bash
 cd backend
 ruff check .            # линтер
+ruff format --check .   # форматирование
 mypy app                # типы
 pytest -v               # unit-тесты (in-memory SQLite, только для тестов)
 ```
@@ -98,6 +104,7 @@ npm run lint          # ESLint
 npm run typecheck     # TypeScript
 npm run test          # Vitest
 npm run build         # production build
+npm audit --audit-level=high   # аудит уязвимостей
 ```
 
 Или всё сразу из корня: `make check`.
@@ -132,21 +139,31 @@ cp .env.example .env    # .env игнорируется git'ом
 
 ## Production
 
+Требуется Docker Compose **v2.24+** (тег `!reset` в overlay).
+
 1. Задайте секреты в окружении: `APP_ENV=production`, сильный `SECRET_KEY`
    (≥ 32 символов, `openssl rand -hex 32`), свой `POSTGRES_PASSWORD`.
 2. Проверьте конфигурацию: `infra/scripts/check_env.sh`.
-3. Запуск: `docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml up -d`.
+3. Проверьте итоговую конфигурацию:
+   `docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config`.
+4. Запуск: `docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml up -d`.
 
 Backend **откажется стартовать** в production с дефолтным ключом, dev-учёткой
-БД, отсутствующим паролем или включённым debug. Внешние порты production
-overlay не публикует — перед приложением ставится reverse proxy с HTTPS
-(этап 7 роадмапа).
+БД, отсутствующим паролем или включённым debug. Preflight-скрипт отклоняет
+dev-`SECRET_KEY` и dev-пароль PostgreSQL. Внешние порты production overlay не
+публикует (`ports: !reset []`) — перед приложением ставится reverse proxy с
+HTTPS (этап 7 роадмапа).
 
 ## CI
 
-GitHub Actions (`push` в `main`, pull requests): ruff + mypy + pytest для
-backend, ESLint + typecheck + Vitest + production build для frontend,
-интеграционные тесты против PostgreSQL 16 в service container.
+GitHub Actions (`push` в `main`, pull requests): ruff (check + format) + mypy
++ pytest для backend (включая проверки production preflight), ESLint +
+typecheck + Vitest + production build + `npm audit` для frontend,
+интеграционные тесты против PostgreSQL 16 (включая конвейер миграций
+upgrade/downgrade), а также compose smoke-тест полного стека: валидация
+dev- и production-конфигураций, `up --build --wait`, `/health` → 200,
+frontend и `/api/health`, остановка БД → `/health` 503, гарантированная
+очистка через `if: always()`.
 
 ## Важные ограничения
 

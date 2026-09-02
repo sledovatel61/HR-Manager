@@ -38,5 +38,11 @@ frontend-build: ## Produce a production frontend build
 
 check: backend-lint backend-typecheck backend-test frontend-lint frontend-typecheck frontend-test frontend-build ## Run every check
 
+compose-config: ## Validate the dev Compose configuration
+	docker compose -f infra/docker-compose.yml config -q
+
+compose-prod-config: ## Validate the production overlay configuration
+	docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config -q
+
 prod-preflight: ## Verify that production secrets are configured
 	infra/scripts/check_env.sh

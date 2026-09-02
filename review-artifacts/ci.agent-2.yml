@@ -28,10 +28,39 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Ruff lint
         run: ruff check .
+      - name: Ruff format check
+        run: ruff format --check .
       - name: Mypy typecheck
-        run: mypy app
+        run: mypy app tests
       - name: Unit tests
         run: pytest -m "not integration" -v
+      - name: Production preflight script checks
+        working-directory: .
+        run: |
+          # The preflight must REJECT missing/insecure configuration...
+          if bash infra/scripts/check_env.sh; then
+            echo "expected failure without configuration" >&2; exit 1
+          fi
+          if env -i PATH=/usr/bin:/bin APP_ENV=production bash infra/scripts/check_env.sh; then
+            echo "expected failure without secrets" >&2; exit 1
+          fi
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY=dev-only-secret-key-not-for-production \
+              POSTGRES_PASSWORD=strong-ci-pass-123 \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure for dev SECRET_KEY" >&2; exit 1
+          fi
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+              POSTGRES_PASSWORD=hr_manager_dev_password \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure for dev DB password" >&2; exit 1
+          fi
+          # ...and ACCEPT a fully configured production environment.
+          env -i PATH=/usr/bin:/bin APP_ENV=production \
+            SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+            POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+            bash infra/scripts/check_env.sh
 
   frontend:
     name: Frontend checks
@@ -56,6 +85,8 @@ jobs:
         run: npm run test
       - name: Production build
         run: npm run build
+      - name: Dependency audit (high and above)
+        run: npm audit --audit-level=high
 
   integration:
     name: Backend integration tests (PostgreSQL)
@@ -87,39 +118,58 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt -r requirements-dev.txt
-      - name: Integration tests
+      - name: Integration tests (real PostgreSQL + migration pipeline)
         env:
           TEST_DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/hr_manager_test
         run: pytest -m integration -v
 
   stack:
-    name: Compose stack smoke test
+    name: Compose stack smoke test (dev + prod overlay)
     runs-on: ubuntu-latest
     needs: [backend, frontend]
     steps:
       - uses: actions/checkout@v4
-      - name: Build and start the stack
-        run: docker compose -f infra/docker-compose.yml up --build -d
-      - name: Wait for backend health
+
+      - name: Validate dev Compose configuration
+        run: docker compose -f infra/docker-compose.yml config
+
+      - name: Validate production overlay configuration
         run: |
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health || true)
-            [ "$code" = "200" ] && exit 0
-            sleep 2
-          done
-          echo "backend health did not become ready" >&2
-          docker compose -f infra/docker-compose.yml ps
-          docker compose -f infra/docker-compose.yml logs
-          exit 1
+          export APP_ENV=production
+          export SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          export POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+          docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config -q
+          rendered="$(docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config)"
+          if echo "$rendered" | grep -q 'hr_manager_dev_password'; then
+            echo "production configuration leaks development credentials" >&2
+            exit 1
+          fi
+          if echo "$rendered" | grep -qE 'published:\s*"'; then
+            echo "production configuration publishes external ports" >&2
+            exit 1
+          fi
+          echo "production overlay is clean (no dev credentials, no published ports)"
+
+      - name: Build and start the full stack (wait for healthy)
+        run: docker compose -f infra/docker-compose.yml up --build --wait --wait-timeout 300
+
+      - name: Verify backend /health returns HTTP 200
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/health)"
+          [ "$code" = "200" ] || { echo "expected 200, got $code" >&2; exit 1; }
+          curl -fsS http://localhost:8000/health | grep -q '"status":"ok"'
+
       - name: Verify frontend serves the app and proxies the API
         run: |
-          curl -fsS http://localhost:8080/ | grep -q "HR Manager"
+          curl -fsS http://localhost:8080/ | grep -q 'HR Manager'
           curl -fsS http://localhost:8080/api/health | grep -q '"status":"ok"'
-      - name: Verify 503 degradation when the database stops
+
+      - name: Stop PostgreSQL and verify degraded health (HTTP 503)
         run: |
           docker compose -f infra/docker-compose.yml stop db
-          code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health || true)
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/health)"
           [ "$code" = "503" ] || { echo "expected 503, got $code" >&2; exit 1; }
-      - name: Stop the stack
+
+      - name: Clean up the stack
         if: always()
         run: docker compose -f infra/docker-compose.yml down -v --remove-orphans

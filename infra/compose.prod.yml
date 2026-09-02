@@ -1,9 +1,20 @@
-# Production overlay: uses only explicit environment variables.
-# Never run production without first configuring all of:
-#   POSTGRES_PASSWORD, SECRET_KEY, APP_ENV=production
-# Run from the repository root:
+# Production overlay for infra/docker-compose.yml.
+#
+# REQUIRES Docker Compose v2.24+ (the !reset YAML tag).
+#
+# Secrets come ONLY from environment variables; the ${VAR:?} syntax makes
+# `docker compose` fail fast when a required variable is missing. All
+# externally published ports are REMOVED with `ports: !reset []` — in
+# production the stack sits behind a reverse proxy with HTTPS (roadmap
+# phase 7), nothing is exposed directly.
+#
+# Usage from the repository root:
+#   export APP_ENV=production
+#   export SECRET_KEY=$(openssl rand -hex 32)
+#   export POSTGRES_PASSWORD=$(openssl rand -hex 16)
+#   infra/scripts/check_env.sh
+#   docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config
 #   docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml up -d
-# The backend refuses to start unless the production safety rules pass.
 name: hr-manager
 
 services:
@@ -12,7 +23,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-hr_manager}
       POSTGRES_USER: ${POSTGRES_USER:-hr_manager}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD for production}
-    ports: !override []
+    ports: !reset []
 
   backend:
     environment:
@@ -20,10 +31,10 @@ services:
       APP_DEBUG: "false"
       SECRET_KEY: ${SECRET_KEY:?set a strong SECRET_KEY (>=32 chars) for production}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hr_manager}
-    ports: !override []
+    ports: !reset []
 
   frontend:
-    ports: !override []
+    ports: !reset []
 
 volumes:
   pgdata:
