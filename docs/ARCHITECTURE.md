@@ -109,6 +109,63 @@ HR-Manager/
   кандидатов маскирование будет обязательным.
 - Минимальные права БД и шифрованные backup — этапы 2 и 7 роадмапа.
 
+## База кандидатов (этап 3)
+
+### Модель данных
+
+Миграция `0003_candidates` создаёт таблицы `candidates` и
+`candidate_interactions` и добавляет `audit_log.candidate_id` (FK `SET NULL`)
+для связи аудита с кандидатом:
+
+- **candidates**: `full_name` (+ `full_name_normalized` — Python-casefold
+  для корректного поиска по кириллице на обеих БД), `phone`/
+  `phone_normalized`, `email`/`email_normalized`, `source`, `position`,
+  `owner_user_id` (FK на `users`, `RESTRICT` — владельца нельзя удалить,
+  пока у него есть кандидаты), `stage` + `stage_position` (порядок воронки
+  для серверной сортировки), `created_at`/`updated_at`,
+  `deleted_at`/`deleted_by_user_id` (мягкое удаление), CHECK-ограничения на
+  стадию и источник, индексы на владельца, стадию, нормализованные ФИО/
+  телефон/email, `deleted_at`, `updated_at`.
+- **candidate_interactions**: `type` (call/email/meeting/note/status_change),
+  `comment`, `author_user_id` (FK `RESTRICT`), `candidate_id`
+  (FK `CASCADE` — удаляется вместе с кандидатом), CHECK на тип.
+
+Нормализация в Python (`app/utils.py`), а не в SQL: `normalize_phone`
+оставляет только цифры и приводит 11-значные номера с `8` к `7`
+(«8-900-…» ≡ «+7-900-…»); `normalize_email` — trim + lower;
+`normalize_full_name` — trim + casefold. Значения хранятся в колонках,
+потому что SQLite `lower()` не сворачивает кириллицу, а поведение должно
+совпадать на обеих БД. Нормализованные телефон/email никогда не попадают
+в логи и не возвращаются API.
+
+### Права доступа
+
+- **HR** видит и изменяет только своих кандидатов; чужие (включая мягко
+  удалённые) возвращают 404, чтобы не раскрывать существование.
+  `owner_id` в запросах HR игнорируется; создание на другого владельца — 403.
+- **manager/admin** видят все кандидаты и могут фильтровать по владельцу;
+  могут создавать кандидатов на любого активного пользователя. Мягко
+  удалённые кандидаты видны только через restore.
+- Права проверяются на сервере в каждой операции (общий `_get_candidate`
+  со scope-фильтром); CSRF double-submit — на всех мутирующих методах, как
+  и в этапе 2.
+
+### Дубликаты
+
+При создании и при смене телефона/email проверяются нормализованные
+значения среди не-удалённых кандидатов, видимых текущему пользователю.
+При совпадении API отвечает **409** с телом
+`{message, duplicates: [CandidateOut, …]}`; повторный запрос с
+`confirm_duplicate: true` создаёт точную копию (аудит-действие
+`duplicate_candidate_created`).
+
+### Аудит
+
+События `candidate_created`, `candidate_updated`, `candidate_stage_changed`,
+`candidate_deleted`, `candidate_restored`, `duplicate_candidate_created`
+пишутся в существующую `audit_log` с `candidate_id`; в `details` — только
+идентификаторы, стадии и источники, **без** персональных данных.
+
 ## Стратегия тестирования
 
 | Уровень | Что проверяет | Где исполняется |

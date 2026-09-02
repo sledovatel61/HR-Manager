@@ -50,6 +50,7 @@ export interface AuditEvent {
   action: string;
   user_id: string | null;
   actor_user_id: string | null;
+  candidate_id: string | null;
   username: string | null;
   ip_address: string | null;
   user_agent: string | null;
@@ -62,4 +63,149 @@ export interface Paginated<T> {
   total: number;
   limit: number;
   offset: number;
+}
+
+// --- Candidates database (PHASE 3) ------------------------------------------
+
+/**
+ * Funnel stages — single vocabulary from PRODUCT_SPEC §5, mirrored by the
+ * backend `CandidateStage` enum. `started` («вышел») sits between `hired`
+ * and `probation` (the design prototype does not include it yet).
+ */
+export type CandidateStage =
+  | "new"
+  | "contacted"
+  | "reached"
+  | "interview_scheduled"
+  | "interview_done"
+  | "offer"
+  | "hired"
+  | "started"
+  | "probation"
+  | "fired"
+  | "rejected";
+
+export const CANDIDATE_STAGE_ORDER: readonly CandidateStage[] = [
+  "new",
+  "contacted",
+  "reached",
+  "interview_scheduled",
+  "interview_done",
+  "offer",
+  "hired",
+  "started",
+  "probation",
+  "fired",
+  "rejected",
+];
+
+export const STAGE_LABELS: Record<CandidateStage, string> = {
+  new: "Новый",
+  contacted: "Контакт",
+  reached: "Дозвон",
+  interview_scheduled: "Собеседование назначено",
+  interview_done: "Собеседование проведено",
+  offer: "Оффер",
+  hired: "Оформлен",
+  started: "Вышел",
+  probation: "Испытательный срок",
+  fired: "Уволен",
+  rejected: "Отказ",
+};
+
+/** Candidate acquisition sources (closed set shared with the backend). */
+export type CandidateSource =
+  | "site"
+  | "referral"
+  | "hh_manual"
+  | "university"
+  | "event"
+  | "agency"
+  | "inbound_call";
+
+export const SOURCE_LABELS: Record<CandidateSource, string> = {
+  site: "Сайт компании",
+  referral: "Рекомендация сотрудника",
+  hh_manual: "Внешний портал (ручной ввод)",
+  university: "Вуз / стажировка",
+  event: "Карьерное мероприятие",
+  agency: "Кадровое агентство",
+  inbound_call: "Входящий звонок",
+};
+
+/** Interaction history entry types (transfer arrives in a later phase). */
+export type CandidateInteractionType =
+  | "call"
+  | "email"
+  | "meeting"
+  | "note"
+  | "status_change";
+
+/** Candidate as returned by GET /candidates… (see backend CandidateOut). */
+export interface Candidate {
+  id: string;
+  full_name: string;
+  phone: string | null;
+  email: string | null;
+  source: CandidateSource;
+  position: string;
+  owner_user_id: string;
+  owner_username: string;
+  stage: CandidateStage;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  deleted_by_user_id: string | null;
+  is_deleted: boolean;
+}
+
+/** One interaction history entry (see backend InteractionOut). */
+export interface CandidateInteraction {
+  id: string;
+  candidate_id: string;
+  author_user_id: string;
+  author_username: string;
+  type: CandidateInteractionType;
+  comment: string;
+  created_at: string;
+}
+
+/** GET /candidates query parameters (server-side search/filter/sort/page). */
+export interface CandidateListQuery {
+  query?: string;
+  stage?: CandidateStage;
+  source?: CandidateSource;
+  owner_id?: string;
+  sort?: "created_at" | "updated_at" | "full_name" | "stage";
+  direction?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}
+
+/** POST /candidates payload (confirm_duplicate allows an exact copy on 409). */
+export interface CandidateCreateInput {
+  full_name: string;
+  phone?: string | null;
+  email?: string | null;
+  source?: CandidateSource;
+  position?: string;
+  owner_user_id?: string;
+  confirm_duplicate?: boolean;
+}
+
+/** PATCH /candidates/{id} payload — all fields optional. */
+export type CandidateUpdateInput = Partial<
+  Omit<CandidateCreateInput, "full_name"> & { full_name?: string }
+>;
+
+/** POST /candidates/{id}/interactions payload. */
+export interface CandidateInteractionCreateInput {
+  type: CandidateInteractionType;
+  comment: string;
+}
+
+/** 409 duplicate response body (backend DuplicateCandidateDetail). */
+export interface DuplicateCandidateDetail {
+  message: string;
+  duplicates: Candidate[];
 }

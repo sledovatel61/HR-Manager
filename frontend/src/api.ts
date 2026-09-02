@@ -1,5 +1,12 @@
 import type {
+  Candidate,
+  CandidateCreateInput,
+  CandidateInteraction,
+  CandidateInteractionCreateInput,
+  CandidateListQuery,
+  CandidateUpdateInput,
   CurrentUser,
+  DuplicateCandidateDetail,
   HealthResponse,
   Paginated,
   AuditEvent,
@@ -11,11 +18,29 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 /** Error raised for non-2xx responses, carrying the backend's detail message. */
 export class ApiError extends Error {
   readonly status: number;
+  /** The backend's structured `detail` payload, when it was JSON. */
+  readonly rawDetail: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, rawDetail: unknown = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.rawDetail = rawDetail;
+  }
+}
+
+/**
+ * Raised by candidate create/update when the backend answers 409 because a
+ * normalized phone/email already exists. Carries the matching candidates so
+ * the UI can offer the "create anyway" confirmation flow.
+ */
+export class DuplicateCandidateError extends ApiError {
+  readonly duplicates: Candidate[];
+
+  constructor(detail: DuplicateCandidateDetail) {
+    super(409, detail.message, detail);
+    this.name = "DuplicateCandidateError";
+    this.duplicates = detail.duplicates;
   }
 }
 
@@ -69,11 +94,17 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   if (!response.ok) {
-    const detail =
+    const rawDetail =
       data && typeof data === "object" && "detail" in data
-        ? String((data as { detail: unknown }).detail)
-        : `Ошибка запроса (${response.status}).`;
-    throw new ApiError(response.status, detail);
+        ? (data as { detail: unknown }).detail
+        : null;
+    const detail =
+      typeof rawDetail === "string"
+        ? rawDetail
+        : rawDetail && typeof rawDetail === "object" && "message" in rawDetail
+          ? String((rawDetail as { message: unknown }).message)
+          : `Ошибка запроса (${response.status}).`;
+    throw new ApiError(response.status, detail, rawDetail);
   }
 
   return data as T;
@@ -130,4 +161,93 @@ export async function createUser(input: {
 
 export async function listAuditEvents(limit = 50): Promise<Paginated<AuditEvent>> {
   return request<Paginated<AuditEvent>>(`/admin/audit?limit=${limit}`);
+}
+
+// --- Candidates database ----------------------------------------------------
+
+function candidateQuery(params: CandidateListQuery): string {
+  const search = new URLSearchParams();
+  if (params.query) search.set("query", params.query);
+  if (params.stage) search.set("stage", params.stage);
+  if (params.source) search.set("source", params.source);
+  if (params.owner_id) search.set("owner_id", params.owner_id);
+  if (params.sort) search.set("sort", params.sort);
+  if (params.direction) search.set("direction", params.direction);
+  if (params.limit !== undefined) search.set("limit", String(params.limit));
+  if (params.offset !== undefined) search.set("offset", String(params.offset));
+  const suffix = search.toString();
+  return suffix ? `?${suffix}` : "";
+}
+
+export async function listCandidates(
+  query: CandidateListQuery = {}
+): Promise<Paginated<Candidate>> {
+  return request<Paginated<Candidate>>(`/candidates${candidateQuery(query)}`);
+}
+
+export async function getCandidate(id: string): Promise<Candidate> {
+  return request<Candidate>(`/candidates/${id}`);
+}
+
+/**
+ * Create a candidate. When a normalized phone/email already exists the
+ * backend answers 409 with the matching candidates; this is re-thrown as a
+ * typed `DuplicateCandidateError` (call again with `confirm_duplicate: true`
+ * to create the exact copy anyway).
+ */
+export async function createCandidate(input: CandidateCreateInput): Promise<Candidate> {
+  try {
+    return await request<Candidate>("/candidates", { method: "POST", body: input });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      throw new DuplicateCandidateError(error.rawDetail as DuplicateCandidateDetail);
+    }
+    throw error;
+  }
+}
+
+/** Update candidate fields (stage changes are audited server-side). */
+export async function updateCandidate(
+  id: string,
+  input: CandidateUpdateInput
+): Promise<Candidate> {
+  try {
+    return await request<Candidate>(`/candidates/${id}`, {
+      method: "PATCH",
+      body: input,
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      throw new DuplicateCandidateError(error.rawDetail as DuplicateCandidateDetail);
+    }
+    throw error;
+  }
+}
+
+/** Soft-delete a candidate (recoverable via restoreCandidate). */
+export async function deleteCandidate(id: string): Promise<Candidate> {
+  return request<Candidate>(`/candidates/${id}`, { method: "DELETE" });
+}
+
+/** Restore a soft-deleted candidate. */
+export async function restoreCandidate(id: string): Promise<Candidate> {
+  return request<Candidate>(`/candidates/${id}/restore`, { method: "POST" });
+}
+
+/** Interaction history for a candidate (newest first). */
+export async function listCandidateInteractions(
+  id: string
+): Promise<Paginated<CandidateInteraction>> {
+  return request<Paginated<CandidateInteraction>>(`/candidates/${id}/interactions`);
+}
+
+/** Append an interaction history entry. */
+export async function createCandidateInteraction(
+  id: string,
+  input: CandidateInteractionCreateInput
+): Promise<CandidateInteraction> {
+  return request<CandidateInteraction>(`/candidates/${id}/interactions`, {
+    method: "POST",
+    body: input,
+  });
 }
