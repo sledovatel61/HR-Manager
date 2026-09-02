@@ -27,19 +27,51 @@ GitHub App (`arena-ai-coding-agent[bot]`), через который публи�
 
 | Файл | Назначение |
 |---|---|
-| `ci.agent-4.yml` | полная CI-конфигурация для этапа 2: то же, что `.github/workflows/ci.yml` в локальном коммите агента (preflight backend-job теперь требует `BOOTSTRAP_ADMIN_PASSWORD`; stack-валидация prod-оверлея экспортирует эту переменную) |
-| `ci.agent-4.patch` | патч-диф относительно состояния этапа 1 (`git apply review-artifacts/ci.agent-4.patch`) |
+| `ci.agent-4.yml` | полная CI-конфигурация для этапа 2 — то же, что `.github/workflows/ci.yml` должен содержать после переноса |
+| `ci.agent-4.patch` | патч-диф относительно состояния `main` (коммит `7f8c18c`); применяется `git apply` |
 
-Перенос владельцем (однократно, на ветке агента):
+Что меняет workflow для этапа 2:
+
+- **Integration job: отдельный шаг `Apply Alembic migrations` (`alembic upgrade head`)
+  перед integration-тестами.** Без него на чистом GitHub-раннере PostgreSQL пуст,
+  и integration-тесты падают на отсутствующих таблицах. Шаг запускается с
+  `DATABASE_URL`, указывающим на тот же сервисный PostgreSQL, что и тесты
+  (`...@localhost:5432/hr_manager_test`).
+- backend preflight теперь требует `BOOTSTRAP_ADMIN_PASSWORD` (проверки
+  «отсутствие/дефолтный пароль отклоняются» и «полная конфигурация принимается»).
+- stack-валидация production-оверлея экспортирует `BOOTSTRAP_ADMIN_PASSWORD`.
+
+Перенос владельцем (однократно; делает учётка с правом записи workflows):
 
 ```bash
+git fetch origin
 git checkout -b arena/phase-2-agent-4-workflow origin/arena/01a061ab-hr-manager
-git apply review-artifacts/ci.agent-4.patch   # либо:
+
+# Проверка, что патч применяется чисто (без внесения изменений):
+git apply --check review-artifacts/ci.agent-4.patch
+
+# Вариант A — применить патч:
+git apply review-artifacts/ci.agent-4.patch
+# Вариант B (эквивалентно) — просто скопировать готовый файл:
 # cp review-artifacts/ci.agent-4.yml .github/workflows/ci.yml
+
+# Обязательная проверка эквивалентности:
+cmp review-artifacts/ci.agent-4.yml .github/workflows/ci.yml && echo "workflow matches artifact"
+
 git add .github/workflows/ci.yml
 git commit -m "ci: publish agent-4 workflow (identity phase)"
 git push -u origin arena/phase-2-agent-4-workflow
 ```
 
-После этого открыть Pull Request, чтобы GitHub Actions запустился. Проверка
-идентичности: `cmp review-artifacts/ci.agent-4.yml .github/workflows/ci.yml`.
+После этого открыть/обновить Pull Request, чтобы GitHub Actions запустился,
+и дождаться зелёного выполнения **всех** jobs:
+
+- **Backend checks** (ruff, format, mypy, unit-тесты, production preflight);
+- **Frontend checks** (ESLint, typecheck, Vitest, build, npm audit);
+- **Backend integration tests (PostgreSQL)** — миграции (`alembic upgrade head`),
+  затем pytest против PostgreSQL 16;
+- **Compose stack smoke test** (dev + production overlay).
+
+Проверка чистоты патча уже выполнена: `git apply --check review-artifacts/ci.agent-4.patch`
+на базовом `.github/workflows/ci.yml` (коммит `7f8c18c`) проходит без ошибок,
+а применение даёт байт-идентичный `ci.agent-4.yml`.
