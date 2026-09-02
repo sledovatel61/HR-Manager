@@ -27,7 +27,7 @@ index a505799..3e4c7a8 100644
              POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
 +            BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
              bash infra/scripts/check_env.sh
-
+ 
    frontend:
 @@ -119,8 +135,17 @@ jobs:
        - name: Install dependencies
@@ -46,7 +46,7 @@ index a505799..3e4c7a8 100644
 +          APP_ENV: test
            TEST_DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/hr_manager_test
          run: pytest -m integration -v
-
+ 
 @@ -139,6 +164,7 @@ jobs:
            export APP_ENV=production
            export SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
