@@ -3,8 +3,10 @@
 - **Промпт:** `prompts/PHASE_3_PROMPT.md` (роадмап: этап 2 «Единая база кандидатов»).
 - **Ветка:** `arena/phase-3-candidates` (опубликована, **без merge**).
 - **PR для ревью:** https://github.com/sledovatel61/HR-Manager/pull/4
-- **Коммит:** `dbbaf76839551ba9bcc09fd82e9ed71ea228d374`
-  (полный хеш из `git rev-parse HEAD` на момент публикации ветки).
+- **Коммиты ветки:**
+  - реализация: `dbbaf76839551ba9bcc09fd82e9ed71ea228d374`;
+  - отчёт: `a5fc7a72d25ad81aa2a5e846cf148fc4208a5cef`
+    (финальный HEAD ветки на момент публикации).
 - **База ветки:** фактический `origin/main` = `62838a92441a50da28c0088f6f930b1b8cb5a4a6`
   («docs: add candidates database phase prompt and update README»).
   ⚠️ В промпте ожидался base `0fc51161b0e6fba64c9e807ded19af35f8db63f3` —
@@ -141,8 +143,15 @@ HR2: чужие списки пусты, чужой кандидат → 404; ad
 
 ### GitHub Actions (реальное выполнение)
 
-PR #4 запустил CI: run https://github.com/sledovatel61/HR-Manager/actions/runs/33655486574 —
-**все 4 джобы прошли**:
+PR #4 запустил CI дважды — на коммите реализации и на финальном HEAD ветки
+(с отчётом); **все 4 джобы прошли в обоих прогонах**:
+
+| Прогон | Ссылка | Результат |
+|---|---|---|
+| #1 (коммит реализации) | https://github.com/sledovatel61/HR-Manager/actions/runs/33655486574 | ✅ 4/4 |
+| #2 (финальный HEAD) | https://github.com/sledovatel61/HR-Manager/actions/runs/33655903159 | ✅ 4/4 |
+
+Состав джоб (прогон #2):
 
 | Джоба | Время | Результат |
 |---|---|---|
