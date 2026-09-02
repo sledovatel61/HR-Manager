@@ -1,0 +1,40 @@
+.analytics-filters {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-5);
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.analytics-scope select {
+  min-width: 220px;
+}
+
+.analytics-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: var(--space-4);
+  margin-top: var(--space-5);
+}
+
+.analytics-panel {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+}
+
+.analytics-panel h3 {
+  font-size: var(--text-size-md);
+}
+
+.analytics-panel-sub {
+  font-size: var(--text-size-xs);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-4);
+}
+
+@media (max-width: 1279px) {
+  .analytics-grid { grid-template-columns: 1fr; }
+}
