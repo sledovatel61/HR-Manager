@@ -1,10 +1,10 @@
 """Migration pipeline tests (integration, real PostgreSQL).
 
-The migration chain must be repeatable and reversible: `alembic upgrade head`
-followed by `alembic downgrade base` and a final `upgrade head` must leave the
-database in the expected state (alembic_version at the baseline revision,
-pgcrypto extension present). These tests never touch the SQLite-only unit
-environment.
+The migration chain must be repeatable and reversible: ``alembic upgrade head``
+followed by ``alembic downgrade base`` and a final ``upgrade head`` must leave
+the database in the expected state (alembic_version at the head revision and
+the identity/security tables present). These tests never touch the
+SQLite-only unit environment.
 """
 
 import os
@@ -17,6 +17,8 @@ from sqlalchemy import create_engine, text
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
+HEAD_REVISION = "0002"
+EXPECTED_TABLES = {"users", "user_sessions", "audit_log"}
 
 
 def _run_alembic(*args: str, url: str) -> None:
@@ -46,21 +48,45 @@ def test_alembic_upgrade_downgrade_upgrade_cycle() -> None:
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0001"
+            assert version == HEAD_REVISION
 
-            has_pgcrypto = connection.execute(
-                text("SELECT count(*) FROM pg_extension WHERE extname = 'pgcrypto'")
-            ).scalar_one()
-            assert has_pgcrypto == 1
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = 'public'"
+                    )
+                )
+            }
+            assert tables >= EXPECTED_TABLES
+
+            # gen_random_uuid() must work (via pgcrypto or the PG13+ built-in).
+            generated = connection.execute(text("SELECT gen_random_uuid()")).scalar_one()
+            assert generated is not None
     finally:
         engine.dispose()
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not RUN_INTEGRATION, reason="TEST_DATABASE_URL is not set")
-def test_baseline_migration_is_idempotent() -> None:
-    """Applying the baseline twice in a row must succeed (IF NOT EXISTS)."""
+def test_migrations_are_idempotent() -> None:
+    """Applying the migrations twice in a row must succeed (IF NOT EXISTS)."""
     url = os.environ["TEST_DATABASE_URL"]
 
     _run_alembic("upgrade", "head", url=url)
     _run_alembic("upgrade", "head", url=url)
+
+    # Downgrading step by step and re-upgrading must also succeed.
+    _run_alembic("downgrade", "-1", url=url)
+    _run_alembic("upgrade", "head", url=url)
+
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+            assert version == HEAD_REVISION
+    finally:
+        engine.dispose()
