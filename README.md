@@ -3,10 +3,53 @@
 Сетевая система для командного подбора персонала: несколько HR-менеджеров
 ведут кандидатов в единой PostgreSQL-базе, руководитель получает аналитику.
 
-**Статус: этап 1 завершён — запускаемый технический каркас** (FastAPI +
-SQLAlchemy 2 + Alembic + PostgreSQL, React + TypeScript + Vite, Docker
-Compose, health-check, тесты, CI). Бизнес-функциональность появится на
-следующих этапах по [`ROADMAP.md`](ROADMAP.md).
+**Статус: этап 2 (идентификация и безопасность) завершён.** Реализованы
+пользователи с обязательным паролем, хеширование Argon2id, вход/выход,
+короткоживущие серверные сессии (HttpOnly cookie + CSRF double-submit),
+роли HR / руководитель / администратор, серверная проверка прав на каждом
+запросе, rate limiting входа и блокировка аккаунта после серии неудачных
+попыток, аудит безопасности и админ-управление пользователями. Фундамент
+этапа 1 (FastAPI + SQLAlchemy 2 + Alembic + PostgreSQL, React + TypeScript +
+Vite, Docker Compose, health-check, тесты, CI) сохранён. Функции кандидатов
+появятся на следующих этапах [`ROADMAP.md`](ROADMAP.md).
+
+## Аутентификация и безопасность (этап 2)
+
+- **Пользователи и роли.** Три роли: `hr`, `manager` (руководитель),
+  `admin` (администратор). Пароль обязателен при создании пользователя и
+  хранится только как хеш **Argon2id** (`argon2-cffi`, память 64 МиБ,
+  3 итерации, 4 потока); пароль задаётся по политике (минимум 12 символов,
+  буквы и цифры, не совпадает с логином).
+- **Сессии.** Серверные короткоживущие сессии (по умолчанию TTL 30 минут,
+  скользящее продление). В браузере — `HttpOnly`, `SameSite=Lax` cookie
+  `hrm_session` (значение — UUID сессии) и JS-читаемый cookie `hrm_csrf`.
+  Выход и истечение отзывают сессию на сервере немедленно.
+- **CSRF.** Double-submit токен: мутирующие запросы требуют заголовок
+  `X-CSRF-Token`, совпадающий с cookie и токеном сессии.
+- **Защита от перебора.** Два уровня: per-IP sliding-window rate limit на
+  `/auth/login` (429) и блокировка аккаунта после `LOGIN_MAX_FAILURES`
+  неудачных входов (423, по умолчанию 5 попыток / 15 минут).
+- **Права на сервере.** Все `/admin/*` endpoint'ы проверяют роль `admin`
+  на сервере (`Depends`); скрытие кнопок во frontend защитой не является.
+- **Аудит.** В таблицу `audit_log` пишутся входы/выходы, неудачные входы,
+  блокировки, создание/изменение/деактивация пользователей, смена ролей,
+  разблокировки — с IP и User-Agent, без паролей и секретов.
+- **Начальный администратор.** При пустой таблице пользователей на старте
+  создаётся администратор: в dev — `admin` / `AdminAdmin123` (выводится в
+  лог, помечен development-only); в production пароль обязателен через
+  `BOOTSTRAP_ADMIN_PASSWORD` (иначе приложение не стартует; администратора
+  также можно создать командой `python -m app.cli create-admin`).
+
+API-доступы:
+
+| Endpoint | Метод | Доступ |
+|---|---|---|
+| `/auth/login`, `/auth/logout`, `/auth/me` | POST/POST/GET | все (me — по сессии) |
+| `/admin/users`, `/admin/users/{id}`, `/admin/users/{id}/unlock` | GET/POST/PATCH | только `admin` |
+| `/admin/audit` | GET | только `admin` |
+
+После входа `POST /auth/login` возвращает пользователя и `csrf_token`;
+далее все POST/PATCH/DELETE шлют заголовок `X-CSRF-Token: <csrf_token>`.
 
 ## Стек
 
@@ -136,6 +179,11 @@ cp .env.example .env    # .env игнорируется git'ом
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | учётные данные БД | docker compose |
 | `VITE_API_BASE_URL` | базовый URL API для браузера (по умолч. `/api`) | frontend build |
 | `TEST_DATABASE_URL` | PostgreSQL для интеграционных тестов | pytest |
+| `SESSION_TTL_MINUTES` | время жизни неактивной сессии (по умолч. 30) | backend |
+| `SESSION_COOKIE_SECURE` | флаг Secure cookie (авто-`true` в production) | backend |
+| `LOGIN_RATE_LIMIT` / `LOGIN_RATE_WINDOW_SECONDS` | лимит попыток входа на IP / окно | backend |
+| `LOGIN_MAX_FAILURES` / `LOGIN_LOCK_MINUTES` | порог и срок блокировки аккаунта | backend |
+| `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD` / `BOOTSTRAP_ADMIN_FULL_NAME` | начальный администратор (в production пароль обязателен) | backend |
 
 ## Production
 
@@ -172,8 +220,10 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - В репозитории нет секретов и персональных данных; `.env`, дампы и backup
   игнорируются git'ом.
-- Функции кандидатов, пользователей и ролей на этом этапе нет — они появятся
-  по [`ROADMAP.md`](ROADMAP.md).
+- Пользователи, роли, сессии, аудит и управление доступами реализованы на
+  этапе 2 (см. раздел «Аутентификация и безопасность» выше). Функции
+  кандидатов (единая база, статусы, очередь) появятся на следующем этапе по
+  [`ROADMAP.md`](ROADMAP.md).
 
 ## Документация
 
