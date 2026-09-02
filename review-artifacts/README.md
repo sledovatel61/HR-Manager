@@ -75,3 +75,19 @@ git push -u origin arena/phase-2-agent-4-workflow
 Проверка чистоты патча уже выполнена: `git apply --check review-artifacts/ci.agent-4.patch`
 на базовом `.github/workflows/ci.yml` (коммит `7f8c18c`) проходит без ошибок,
 а применение даёт байт-идентичный `ci.agent-4.yml`.
+
+Примечание про `git diff --check`: его не следует запускать против самого
+текстового файла `.patch` — в валидном unified diff пустая контекстная строка
+обязана начинаться с лидирующего пробела (это структурный маркер формата).
+Проверять пробелы нужно на **применённом** изменении, например:
+
+```bash
+git apply review-artifacts/ci.agent-4.patch
+git diff --check                                   # worktree после применения — clean
+grep -nP ' +$' .github/workflows/ci.yml            # вывод пуст: trailing whitespace нет
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"  # YAML валиден
+```
+
+Патч генерируется как `git diff` между `.github/workflows/ci.yml` из
+`origin/main` и `review-artifacts/ci.agent-4.yml`, поэтому его blank-context
+строки содержат штатный лидирующий пробел, и `git apply` его принимает.
