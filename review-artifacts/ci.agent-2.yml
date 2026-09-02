@@ -7,7 +7,8 @@ on:
 
 env:
   PYTHON_VERSION: "3.12"
-  NODE_VERSION: "20"
+  # Keep in sync with frontend/Dockerfile and frontend/package.json engines.
+  NODE_VERSION: "22.22.3"
 
 jobs:
   backend:

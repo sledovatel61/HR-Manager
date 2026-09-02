@@ -1,5 +1,7 @@
 # HR Manager frontend: build with Node, serve with nginx (SPA + API proxy).
-FROM node:20-alpine AS build
+# Node version must stay in sync with .github/workflows/ci.yml (NODE_VERSION)
+# and frontend/package.json ("engines.node").
+FROM node:22.22.3-alpine AS build
 
 WORKDIR /app
 COPY package.json package-lock.json ./

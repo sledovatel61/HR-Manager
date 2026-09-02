@@ -195,3 +195,31 @@ npm run build        # ok (vite build → dist: 145.64 kB JS, 1.97 kB CSS)
   в песочнице Docker недоступен, поэтому локально не выполнялись и не
   имитировались; статические проверки обоих Compose-файлов выполняются
   pytest-ом локально.
+
+---
+
+## Финальная доработка перед merge (2026-09-02, третья итерация)
+
+По замечаниям независимой проверки публикуемого commit
+`b6010cfd850e90033db030b07e793963031f2122`:
+
+1. **Node/jsdom-несовместимость устранена.** `jsdom@30.0.1` требует Node
+   ^22.22.2. Синхронизированы: `frontend/package.json` (engines
+   `"node": ">=22.22.2"`), `frontend/Dockerfile` (`node:22.22.3-alpine`),
+   `.github/workflows/ci.yml` (`NODE_VERSION: "22.22.3"`). Чистый `npm ci`
+   проходит без `EBADENGINE`.
+2. **Workflow в реальном пути `.github/workflows/ci.yml`** подготовлен и
+   синхронизирован побайтово в `review-artifacts/ci.agent-2.yml`; добавлен
+   git-патч `review-artifacts/ci.agent-2.patch` (проверен: `git am --3way`
+   на b6010cf применяется чисто, содержимое байтово идентично). Опубликовать
+   workflow автоматически невозможно: GitHub App без разрешения `workflows`
+   отклоняет push; GitHub Actions по ветке не исполняется, пока владелец не
+   применит патч. Инструкция — в `review-artifacts/README.md`.
+3. Повторно прогнаны: backend (ruff/format/mypy — ok, 17 unit + 4
+   integration passed), alembic upgrade→downgrade→upgrade на реальном
+   PostgreSQL (alembic_version=0001, pgcrypto присутствует), frontend
+   (typecheck/lint/test 4/build/audit 0 vulnerabilities, Node 22.22.3).
+4. Compose-сценарии (config, prod overlay, up --build --wait, /health 200,
+   stop db → 503, down -v) в песочнице недоступны (нет Docker) и не
+   имитировались; их выполнит job `stack` после публикации workflow
+   владельцем.

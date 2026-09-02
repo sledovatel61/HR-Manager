@@ -141,5 +141,10 @@ HR-Manager/
   `stack` в CI на GitHub-раннерах; в песочницах без Docker они недоступны.
 - Файл `.github/workflows/ci.yml` присутствует в репозитории, однако
   публикующая GitHub App не имеет разрешения `workflows`, поэтому в ветке
-  `arena/phase-1-agent-2` workflow не может быть запушен; копия лежит в
-  `review-artifacts/ci.agent-2.yml` (см. `review-artifacts/README.md`).
+  `arena/phase-1-agent-2` workflow не может быть запушен и GitHub Actions
+  по ней не исполняется; копия и git-патч для владельца лежат в
+  `review-artifacts/` (см. `review-artifacts/README.md`).
+- Node-версии синхронизированы: `frontend/package.json` (engines
+  `>=22.22.2`), `frontend/Dockerfile` (`node:22.22.3-alpine`) и
+  `.github/workflows/ci.yml` (`NODE_VERSION: 22.22.3`) — `npm ci` без
+  EBADENGINE-предупреждений.
