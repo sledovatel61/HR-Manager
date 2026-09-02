@@ -18,6 +18,7 @@ fail() {
 APP_ENV="${APP_ENV:-}"
 SECRET_KEY="${SECRET_KEY:-}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+BOOTSTRAP_ADMIN_PASSWORD="${BOOTSTRAP_ADMIN_PASSWORD:-}"
 
 if [ "$APP_ENV" != "production" ]; then
   fail 'APP_ENV must be exactly "production" for a production run (got: "'"$APP_ENV"'")'
@@ -30,6 +31,12 @@ if [ "${#SECRET_KEY}" -lt 32 ]; then
 fi
 if [ -z "$POSTGRES_PASSWORD" ] || [ "$POSTGRES_PASSWORD" = "hr_manager_dev_password" ]; then
   fail "POSTGRES_PASSWORD is missing or still set to the development value"
+fi
+if [ -z "$BOOTSTRAP_ADMIN_PASSWORD" ] || [ "$BOOTSTRAP_ADMIN_PASSWORD" = "AdminAdmin123" ]; then
+  fail "BOOTSTRAP_ADMIN_PASSWORD is missing or still set to the development value (AdminAdmin123)"
+fi
+if [ "${#BOOTSTRAP_ADMIN_PASSWORD}" -lt 12 ]; then
+  fail "BOOTSTRAP_ADMIN_PASSWORD must be at least 12 characters long"
 fi
 
 echo "ok: production configuration preflight passed"

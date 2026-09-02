@@ -177,3 +177,150 @@ body {
   color: #8a94a8;
   font-size: 0.85rem;
 }
+
+/* --- Auth phase (login form, dashboard) --- */
+
+.auth-panel {
+  max-width: 420px;
+}
+
+.panel-title {
+  margin: 0 0 4px;
+  font-size: 1.25rem;
+}
+
+.panel-subtitle {
+  margin: 0 0 18px;
+  color: #5a6478;
+  font-size: 0.92rem;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.form-field {
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #39414f;
+}
+
+.form-field input {
+  padding: 10px 12px;
+  border: 1px solid #c9d2e0;
+  border-radius: 8px;
+  font-size: 0.98rem;
+  font-weight: 400;
+  color: #1f2430;
+  background: #ffffff;
+}
+
+.form-field input:focus {
+  outline: 2px solid #3a6ea5;
+  outline-offset: 1px;
+  border-color: #3a6ea5;
+}
+
+.form-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fdeeee;
+  border: 1px solid #f2c3c3;
+  color: #b33232;
+  font-size: 0.9rem;
+}
+
+.primary-button {
+  padding: 11px 20px;
+  border: none;
+  border-radius: 8px;
+  background: #2f6db3;
+  color: #ffffff;
+  font-size: 0.98rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: #275d99;
+}
+
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.secondary-button {
+  padding: 9px 18px;
+  border: 1px solid #c9d2e0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2430;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.secondary-button:hover:not(:disabled) {
+  background: #f0f3f9;
+}
+
+.secondary-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.dashboard-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.admin-section {
+  margin-top: 28px;
+}
+
+.section-title {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  color: #39414f;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e6eaf2;
+}
+
+.data-table th {
+  color: #5a6478;
+  font-weight: 700;
+}
+
+.muted {
+  color: #8a94a8;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  border: 0;
+}

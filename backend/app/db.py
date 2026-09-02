@@ -1,19 +1,24 @@
 """Database access primitives.
 
-Phase 1 keeps this deliberately small: a SQLAlchemy engine plus a connectivity
-probe used by the health endpoint. ORM models, sessions and business migrations
-arrive in later phases together with their tests.
+Provides the SQLAlchemy engine, a connectivity probe used by the health
+endpoint, and the ORM session factory / request dependency used by the
+business routers.
 """
 
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
+
+# Session factory is bound to the application engine in ``create_app``.
+SessionLocal: sessionmaker[Session] = sessionmaker(autoflush=False, autocommit=False, future=True)
 
 
 def build_engine(settings: Settings) -> Engine:
@@ -22,6 +27,11 @@ def build_engine(settings: Settings) -> Engine:
     if settings.database_url.startswith("postgresql"):
         connect_args["connect_timeout"] = int(settings.db_connect_timeout_seconds)
     return create_engine(settings.database_url, pool_pre_ping=True, connect_args=connect_args)
+
+
+def bind_session_factory(engine: Engine) -> None:
+    """Bind the module-level session factory to ``engine``."""
+    SessionLocal.configure(bind=engine)
 
 
 @dataclass(frozen=True)
@@ -46,3 +56,12 @@ def probe_database(engine: Engine) -> DatabaseProbe:
         return DatabaseProbe(ok=False)
     latency_ms = round((time.perf_counter() - started) * 1000)
     return DatabaseProbe(ok=True, latency_ms=latency_ms)
+
+
+def get_db() -> Iterator[Session]:
+    """FastAPI dependency: yield one ORM session per request."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
