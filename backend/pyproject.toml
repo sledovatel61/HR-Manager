@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hr-manager-backend"
+version = "0.1.0"
+description = "HR Manager — backend (Этап 1: технический каркас)"
+readme = { text = "Backend package of HR Manager. See repository README.", content-type = "text/plain" }
+requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.13,<2",
+    "fastapi>=0.115,<1",
+    "psycopg[binary]>=3.2,<4",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "sqlalchemy>=2.0,<2.1",
+    "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.27,<1",
+    "mypy>=1.10,<2",
+    "pytest>=8.2,<9",
+    "ruff>=0.5,<2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hr_manager = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+# Тесты, которым нужен настоящий PostgreSQL (интеграционные), помечаются
+# @pytest.mark.database и запускаются отдельной командой при живом PG.
+markers = [
+    "database: требует работающего PostgreSQL (интеграционные проверки схемы)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# E/W — pycodestyle, F — pyflakes, I — isort, UP — pyupgrade.
+select = ["E", "F", "W", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests"]
+warn_unused_ignores = true
+pretty = true
