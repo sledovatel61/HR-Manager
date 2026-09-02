@@ -43,9 +43,7 @@ def upgrade() -> None:
         sa.Column("role", sa.String(length=16), nullable=False),
         sa.Column("password_hash", sa.String(length=255), nullable=False),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
-        sa.Column(
-            "failed_login_count", sa.Integer(), nullable=False, server_default=sa.text("0")
-        ),
+        sa.Column("failed_login_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("locked_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
