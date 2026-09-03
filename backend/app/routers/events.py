@@ -118,8 +118,9 @@ def _get_visible_candidate_for_event(db: Session, candidate_id: UUID, user: User
 
 
 def _resolve_assignee(db: Session, user: User, requested_assignee_id: UUID | None) -> User:
-    """Assignee rules (mirror candidate ownership): an HR schedules events
-    only for themselves; managers/admins may assign any active HR."""
+    """Assignee rules: an HR schedules events only for themselves;
+    managers/admins must explicitly pick an active HR — there is no valid
+    «self» default for a non-HR role."""
     if user.role == UserRole.HR:
         if requested_assignee_id not in (None, user.id):
             raise HTTPException(
@@ -128,7 +129,13 @@ def _resolve_assignee(db: Session, user: User, requested_assignee_id: UUID | Non
             )
         return user
     if requested_assignee_id is None:
-        return user
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Руководитель и администратор должны явно указать исполнителя — "
+                "активного пользователя с ролью HR."
+            ),
+        )
     assignee = db.get(User, requested_assignee_id)
     if assignee is None or not assignee.is_active or assignee.role != UserRole.HR:
         raise HTTPException(
@@ -403,6 +410,7 @@ def update_event(
         )
 
     changed_fields: list[str] = []
+    fields_set = payload.model_fields_set
 
     new_status = payload.status if payload.status is not None else locked.status
     if (
@@ -418,24 +426,36 @@ def update_event(
     if payload.status is not None and payload.status != locked.status:
         changed_fields.append("status")
 
-    if payload.starts_at is not None and payload.starts_at != locked.starts_at:
-        changed_fields.append("starts_at")
-    if payload.ends_at is not None and payload.ends_at != locked.ends_at:
-        changed_fields.append("ends_at")
-    if payload.remind_at is not None and payload.remind_at != locked.remind_at:
-        changed_fields.append("remind_at")
     if payload.title is not None and payload.title != locked.title:
         changed_fields.append("title")
-    if payload.note is not None and payload.note != locked.note:
-        changed_fields.append("note")
 
-    new_starts = payload.starts_at if payload.starts_at is not None else locked.starts_at
-    new_ends = payload.ends_at if payload.ends_at is not None else locked.ends_at
-    new_remind = locked.remind_at
+    # Nullable fields: an explicit null CLEARS the field (model_fields_set
+    # distinguishes it from «not provided»); omission keeps the current
+    # value. starts_at is not nullable — an explicit null is invalid.
+    if "starts_at" in fields_set and payload.starts_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Дата начала события обязательна.",
+        )
+    if "note" in fields_set and payload.note != locked.note:
+        changed_fields.append("note")
+    if "starts_at" in fields_set and payload.starts_at != locked.starts_at:
+        changed_fields.append("starts_at")
+    if "ends_at" in fields_set and payload.ends_at != locked.ends_at:
+        changed_fields.append("ends_at")
+    if "remind_at" in fields_set and payload.remind_at != locked.remind_at:
+        changed_fields.append("remind_at")
+
+    new_starts = payload.starts_at if "starts_at" in fields_set else locked.starts_at
+    assert new_starts is not None  # explicit null was rejected above
+    new_ends = payload.ends_at if "ends_at" in fields_set else locked.ends_at
+    new_remind = payload.remind_at if "remind_at" in fields_set else locked.remind_at
     if new_status == EventStatus.COMPLETED:
-        new_remind = None  # done events no longer remind
-    elif payload.remind_at is not None:
-        new_remind = payload.remind_at
+        # Done events no longer remind; an implicit clear is recorded too.
+        if locked.remind_at is not None and "remind_at" not in changed_fields:
+            changed_fields.append("remind_at")
+        new_remind = None
+    new_note = payload.note if "note" in fields_set else locked.note
 
     # Assignee change (validated against the role model).
     new_assignee = locked.assignee
@@ -502,7 +522,7 @@ def update_event(
     locked.ends_at = new_ends
     locked.remind_at = new_remind
     locked.title = payload.title if payload.title is not None else locked.title
-    locked.note = payload.note if payload.note is not None else locked.note
+    locked.note = new_note
     locked.assignee_user_id = new_assignee.id
     locked.completed_at = utc_now() if new_status == EventStatus.COMPLETED else None
     locked.version = locked.version + 1

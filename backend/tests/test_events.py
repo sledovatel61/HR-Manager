@@ -761,3 +761,173 @@ def test_event_not_overdue_when_scheduled_in_future(
     upcoming_ids = {item["id"] for item in upcoming.json()["items"]}
     assert str(future_event.id) in upcoming_ids
     assert str(past_event.id) not in upcoming_ids
+
+
+# --- Regression tests (orchestrator review of PR #7) ------------------------
+
+
+def test_manager_admin_assignee_is_required(client: TestClient, db_session: Session) -> None:
+    """manager/admin must pick an active HR assignee explicitly.
+
+    Regression: _resolve_assignee used to fall back to the current user, so
+    a manager could create an event assigned to themselves (a non-HR role),
+    violating the «исполнитель — только активный HR» contract.
+    """
+    hr1 = make_user(db_session, username="hr1", role=UserRole.HR)
+    make_user(db_session, username="mgr", role=UserRole.MANAGER)
+    make_user(db_session, username="adm", role=UserRole.ADMIN)
+    candidate = make_candidate(db_session, owner=hr1)
+
+    mgr_csrf = _csrf(_login(client, "mgr"))
+    missing = client.post(
+        "/events", json=_payload(str(candidate.id)), headers={"X-CSRF-Token": mgr_csrf}
+    )
+    assert missing.status_code == 422
+
+    adm_csrf = _csrf(_login(client, "adm"))
+    missing_admin = client.post(
+        "/events", json=_payload(str(candidate.id)), headers={"X-CSRF-Token": adm_csrf}
+    )
+    assert missing_admin.status_code == 422
+
+    # With an explicit active HR the creation works (re-login: the admin
+    # session replaced the manager's cookie).
+    mgr_csrf = _csrf(_login(client, "mgr"))
+    ok = client.post(
+        "/events",
+        json=_payload(str(candidate.id), assignee_user_id=str(hr1.id)),
+        headers={"X-CSRF-Token": mgr_csrf},
+    )
+    assert ok.status_code == 201
+    assert ok.json()["assignee_username"] == "hr1"
+    assert ok.json()["assignee_user_id"] == str(hr1.id)
+
+
+def test_patch_clears_nullable_fields(client: TestClient, db_session: Session) -> None:
+    """Explicit null clears note/ends_at/remind_at (model_fields_set).
+
+    Regression: None previously meant «not provided», so a PATCH that only
+    cleared fields was rejected with 422 «Нет изменений для применения».
+    """
+    hr1 = make_user(db_session, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(db_session, owner=hr1)
+    csrf = _csrf(_login(client, "hr1"))
+
+    # Field-by-field clearing.
+    for field in ("note", "ends_at", "remind_at"):
+        event = make_event(
+            db_session,
+            candidate=candidate,
+            author=hr1,
+            assignee=hr1,
+            note="Старая заметка",
+            starts_at=utc_now() + timedelta(hours=2),
+            ends_at=utc_now() + timedelta(hours=3),
+            remind_at=utc_now() + timedelta(hours=1),
+        )
+        response = client.patch(
+            f"/events/{event.id}",
+            json={"expected_version": 1, field: None},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body[field] is None
+        assert body["version"] == 2
+        db_session.expire_all()
+        stored = db_session.get(Event, event.id)
+        assert getattr(stored, field) is None
+
+    # Several fields in one PATCH.
+    event = make_event(
+        db_session,
+        candidate=candidate,
+        author=hr1,
+        assignee=hr1,
+        note="Заметка",
+        starts_at=utc_now() + timedelta(hours=2),
+        ends_at=utc_now() + timedelta(hours=3),
+        remind_at=utc_now() + timedelta(hours=1),
+    )
+    response = client.patch(
+        f"/events/{event.id}",
+        json={"expected_version": 1, "note": None, "ends_at": None, "remind_at": None},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["note"] is None and body["ends_at"] is None and body["remind_at"] is None
+
+    # Clearing an already-empty field is a no-op and stays rejected.
+    noop = client.patch(
+        f"/events/{event.id}",
+        json={"expected_version": 2, "note": None},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert noop.status_code == 422
+
+    # starts_at is not nullable: explicit null is rejected.
+    event2 = make_event(db_session, candidate=candidate, author=hr1, assignee=hr1)
+    bad_start = client.patch(
+        f"/events/{event2.id}",
+        json={"expected_version": 1, "starts_at": None},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert bad_start.status_code == 422
+
+
+def test_patch_clear_records_history_and_audit_without_pii(
+    client: TestClient, db_session: Session
+) -> None:
+    """Clearing fields writes business history with correct old/new values
+    and audit details that contain only safe field names."""
+    hr1 = make_user(db_session, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(db_session, owner=hr1)
+    csrf = _csrf(_login(client, "hr1"))
+
+    created = client.post(
+        "/events",
+        json=_payload(
+            str(candidate.id),
+            note="Секретная заметка",
+            ends_at=_in(90),
+            remind_at=_in(30),
+        ),
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201
+    event_id = created.json()["id"]
+
+    cleared = client.patch(
+        f"/events/{event_id}",
+        json={"expected_version": 1, "note": None, "ends_at": None, "remind_at": None},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert cleared.status_code == 200
+
+    entries = db_session.scalars(
+        select(EventHistory)
+        .where(EventHistory.event_id == UUID(event_id))
+        .order_by(EventHistory.created_at)
+    ).all()
+    assert [entry.kind for entry in entries] == [
+        EventHistoryKind.CREATED,
+        EventHistoryKind.RESCHEDULED,
+    ]
+    change = entries[1]
+    assert change.note_changed is True
+    assert change.ends_at_old is not None and change.ends_at_new is None
+    assert change.remind_at_old is not None and change.remind_at_new is None
+
+    audit_entries = db_session.scalars(
+        select(AuditEvent).where(AuditEvent.candidate_id == candidate.id)
+    ).all()
+    clear_audit = [e for e in audit_entries if e.action == AuditAction.EVENT_RESCHEDULED]
+    assert len(clear_audit) == 1
+    details = clear_audit[0].details or ""
+    assert "fields=" in details
+    for name in ("ends_at", "remind_at", "note"):
+        assert name in details
+    # No values, no PII, no note content.
+    assert "Секретная" not in details
+    assert candidate.phone is None or candidate.phone not in details

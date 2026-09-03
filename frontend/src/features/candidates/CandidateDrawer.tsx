@@ -722,6 +722,11 @@ function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
 
+  const refresh = () => {
+    setOffset(0);
+    setReloadTick((tick) => tick + 1);
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -733,7 +738,8 @@ function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
         limit: 20,
         offset,
       });
-      setItems(page.items);
+      // Accumulate pages so «Показать ещё» appends; a reload starts over.
+      setItems((current) => (offset === 0 ? page.items : [...current, ...page.items]));
       setTotal(page.total);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Не удалось загрузить события.");
@@ -752,7 +758,7 @@ function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
     try {
       await updateEvent(event.id, { expected_version: event.version, status: "completed" });
       pushToast("success", "Событие выполнено.");
-      setReloadTick((tick) => tick + 1);
+      refresh();
     } catch (caught) {
       pushToast(
         "danger",
@@ -823,7 +829,7 @@ function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
         onClose={() => setCreateOpen(false)}
         onSaved={() => {
           setCreateOpen(false);
-          setReloadTick((tick) => tick + 1);
+          refresh();
         }}
       />
 
@@ -836,7 +842,7 @@ function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
           onSaved={(updated) => {
             setEditEvent(null);
             if (updated.candidate_id !== candidate.id) onChanged();
-            setReloadTick((tick) => tick + 1);
+            refresh();
           }}
         />
       )}
