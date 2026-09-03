@@ -10,6 +10,7 @@ workspace UI. Integration mirrors run on PostgreSQL in
 """
 
 from collections.abc import Iterator
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     AuditAction,
     AuditEvent,
+    Candidate,
     CandidateTransfer,
     UserRole,
 )
@@ -346,3 +348,54 @@ def test_hr_directory_is_safe(client: TestClient, db_session: Session) -> None:
         "is_active",
     }
     assert hr1.id is not None
+
+
+# --- Transactional atomicity -------------------------------------------------
+
+
+def test_transfer_is_atomic_when_audit_write_fails(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed audit write must roll back the whole transfer.
+
+    The ownership change, the immutable history row and the audit event are
+    staged in ONE transaction and committed with a single ``db.commit()``.
+    When the audit part fails (here: after the event row has been flushed),
+    the rollback must leave the original owner in place and produce neither
+    a transfer history row nor an audit event.
+    """
+    from app.audit import record_event as real_record_event
+    from app.routers import candidates as candidates_router
+
+    hr1 = make_user(db_session, username="hr1", role=UserRole.HR)
+    hr2 = make_user(db_session, username="hr2", role=UserRole.HR)
+    candidate = make_candidate(db_session, owner=hr1)
+    csrf = _csrf(_login(client, "hr1"))  # login happens before the patch
+
+    def failing_record_event(db: Session, *args: Any, **kwargs: Any) -> None:
+        real_record_event(db, *args, **kwargs)  # the audit row is staged...
+        db.flush()  # ...and flushed into the open transaction
+        raise RuntimeError("simulated audit write failure")
+
+    monkeypatch.setattr(candidates_router, "record_event", failing_record_event)
+
+    with pytest.raises(RuntimeError, match="simulated audit write failure"):
+        client.post(
+            f"/candidates/{candidate.id}/transfer",
+            json={"new_owner_user_id": str(hr2.id), "reason": "Не должно сохраниться"},
+            headers={"X-CSRF-Token": csrf},
+        )
+
+    db_session.expire_all()
+    stored = db_session.get(Candidate, candidate.id)
+    assert stored is not None
+    assert stored.owner_user_id == hr1.id  # owner unchanged
+    assert db_session.scalar(select(func.count()).select_from(CandidateTransfer)) == 0
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.action == AuditAction.CANDIDATE_TRANSFERRED)
+        )
+        == 0
+    )
