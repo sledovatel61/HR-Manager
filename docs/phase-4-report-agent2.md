@@ -4,8 +4,10 @@
   «Рабочий интерфейс HR»).
 - **Ветка:** `arena/phase-4-hr-workspace` (опубликована, **без merge**).
 - **PR для ревью:** https://github.com/sledovatel61/HR-Manager/pull/6
-- **Коммит:** `49ac0f01b9266230d7411d77cec618d300f185d8` (полный хеш
-  `git rev-parse HEAD` на момент публикации).
+- **Коммиты ветки:**
+  - реализация: `49ac0f01b9266230d7411d77cec618d300f185d8`;
+  - отчёт: `468ce54ebbdcc628f5c0153955cc2fe740be6ed3` (docs-only,
+    актуальный tip ветки).
 - **База ветки:** актуальный `origin/main` =
   `86ef5eda18759fe1aa984361ed86ee1eb43037b0`, включающий принятый
   merge-коммит этапа 3 `19caa3df211a431455052df7a825b5099921984a`.
@@ -141,12 +143,20 @@ drawer, диалоги, хуки, css), `App.tsx`, `main.tsx`, `api.ts`, `types.
 
 ### GitHub Actions (реальное выполнение)
 
-PR #6, run https://github.com/sledovatel61/HR-Manager/actions/runs/33728922600 —
-**все 4 джобы прошли**: Backend checks, Backend integration tests
+CI запускался дважды — на коммите реализации и на финальном tip ветки;
+**все 4 джобы прошли в обоих прогонах**:
+
+| Прогон | Ссылка | Результат |
+|---|---|---|
+| #1 (реализация) | https://github.com/sledovatel61/HR-Manager/actions/runs/33728922600 | ✅ 4/4 |
+| #2 (tip с отчётом) | https://github.com/sledovatel61/HR-Manager/actions/runs/33729354794 | ✅ 4/4 |
+
+Джобы: Backend checks (ruff/mypy/pytest), Backend integration tests
 (PostgreSQL 16, `alembic upgrade head` + `pytest -m integration`),
-Frontend checks, Compose stack smoke test (dev + prod overlay, Docker на
-раннере). В песочнице Docker недоступен — полный запуск стека выполнен
-только джобой CI (локально Compose валидирован статически).
+Frontend checks (eslint/tsc/vitest/build), Compose stack smoke test
+(dev + prod overlay, Docker на раннере). В песочнице Docker недоступен —
+полный запуск стека выполнен только джобой CI (локально Compose
+валидирован статически).
 
 ## Ключевые решения (задокументированы)
 
