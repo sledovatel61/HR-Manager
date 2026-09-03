@@ -4,9 +4,11 @@
   календарь»).
 - **Ветка:** `arena/phase-5-calendar` (опубликована, **без merge**).
 - **PR для ревью:** https://github.com/sledovatel61/HR-Manager/pull/7
-- **Коммит реализации:** `3ca3feb7371453c881bae611b8268d3a1f008c3e`
-  (актуальный tip ветки проверяется `git ls-remote origin
-  arena/phase-5-calendar`).
+- **Коммиты ветки:**
+  - реализация: `3ca3feb7371453c881bae611b8268d3a1f008c3e`;
+  - отчёт: `790336de6fa424c5e2d051f21cd33fe48640773b` и последующие
+    docs-only правки отчёта. Актуальный tip ветки проверяется командой
+    `git ls-remote origin arena/phase-5-calendar`.
 - **База ветки:** актуальный `origin/main` =
   `bbe7ca10900a0a3525e9223a32c4dcdb3d7048a1`, включающий принятый
   merge-коммит этапа 4 `649f6a606d6a89ba256ef4d899d821b84993b886`.
@@ -157,12 +159,19 @@ completed]`; аудит — 4 события `event_*` с деталями то�
 
 ### GitHub Actions (реальное выполнение)
 
-PR #7, run https://github.com/sledovatel61/HR-Manager/actions/runs/33754180009 —
-**все 4 джобы прошли**: Backend checks, Backend integration tests
-(PostgreSQL 16, `alembic upgrade head` + `pytest -m integration`),
-Frontend checks (включая `npm audit --audit-level=high`), Compose stack
-smoke test. В песочнице Docker недоступен — полный запуск стека выполнен
-джобой CI; локально Compose валидирован статически.
+CI запускался дважды — на коммите реализации и на финальном tip ветки;
+**все 4 джобы прошли в обоих прогонах**:
+
+| Прогон | Ссылка | Результат |
+|---|---|---|
+| #1 (реализация) | https://github.com/sledovatel61/HR-Manager/actions/runs/33754180009 | ✅ 4/4 |
+| #2 (tip с отчётом) | https://github.com/sledovatel61/HR-Manager/actions/runs/33754685000 | ✅ 4/4 |
+
+Джобы: Backend checks, Backend integration tests (PostgreSQL 16,
+`alembic upgrade head` + `pytest -m integration`), Frontend checks
+(включая `npm audit --audit-level=high`), Compose stack smoke test. В
+песочнице Docker недоступен — полный запуск стека выполнен джобой CI;
+локально Compose валидирован статически.
 
 ## Ключевые решения
 
