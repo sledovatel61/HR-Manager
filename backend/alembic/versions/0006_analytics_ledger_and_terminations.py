@@ -215,7 +215,7 @@ def upgrade() -> None:
             """
             INSERT INTO analytics_facts
                 (candidate_id, fact_type, fact_at, source, owner_user_id)
-            SELECT c.id, 'candidate_created', c.created_at, c.source, 
+            SELECT c.id, 'candidate_created', c.created_at, c.source,
 COALESCE(
     (
         SELECT t.to_user_id
@@ -245,7 +245,7 @@ COALESCE(
                 (candidate_id, fact_type, fact_subtype, fact_at, source,
                  owner_user_id, interaction_id)
             SELECT i.candidate_id, 'interaction_added', i.type, i.created_at,
-                   c.source, 
+                   c.source,
 COALESCE(
     (
         SELECT t.to_user_id
@@ -294,7 +294,7 @@ COALESCE(
                 (candidate_id, fact_type, fact_subtype, fact_at, source,
                  owner_user_id, event_id)
             SELECT e.candidate_id, 'event_created', e.type, e.created_at,
-                   c.source, 
+                   c.source,
 COALESCE(
     (
         SELECT t.to_user_id
@@ -322,7 +322,7 @@ COALESCE(
                 (candidate_id, fact_type, fact_subtype, fact_at, source,
                  owner_user_id, event_id)
             SELECT e.candidate_id, 'event_completed', e.type,
-                   e.completed_at, c.source, 
+                   e.completed_at, c.source,
 COALESCE(
     (
         SELECT t.to_user_id
@@ -359,7 +359,7 @@ COALESCE(
                    split_part(a.details, ' -> ', 1),
                    split_part(a.details, ' -> ', 2),
                    c.source,
-                   
+
 COALESCE(
     (
         SELECT t.to_user_id
