@@ -27,6 +27,7 @@ def record_event(
     *,
     actor: User | UUID | None = None,
     subject: User | UUID | None = None,
+    candidate_id: UUID | None = None,
     username: str | None = None,
     ip_address: str | None = None,
     user_agent: str | None = None,
@@ -37,7 +38,8 @@ def record_event(
 
     ``actor`` / ``subject`` accept either a ``User`` or a UUID. The caller
     normally already holds the user object; login-failure for an unknown
-    username passes only ``username``.
+    username passes only ``username``. ``candidate_id`` links candidate
+    lifecycle events to their candidate (never personal data).
     """
 
     def as_uuid(value: User | UUID | None) -> UUID | None:
@@ -49,6 +51,7 @@ def record_event(
         action=action,
         actor_user_id=as_uuid(actor),
         user_id=as_uuid(subject),
+        candidate_id=candidate_id,
         username=username[:64] if username else None,
         ip_address=ip_address[:64] if ip_address else None,
         user_agent=user_agent[:_USER_AGENT_MAX_LENGTH] if user_agent else None,

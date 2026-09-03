@@ -3,15 +3,22 @@
 Сетевая система для командного подбора персонала: несколько HR-менеджеров
 ведут кандидатов в единой PostgreSQL-базе, руководитель получает аналитику.
 
-**Статус: этап 2 (идентификация и безопасность) завершён.** Реализованы
-пользователи с обязательным паролем, хеширование Argon2id, вход/выход,
-короткоживущие серверные сессии (HttpOnly cookie + CSRF double-submit),
-роли HR / руководитель / администратор, серверная проверка прав на каждом
-запросе, rate limiting входа и блокировка аккаунта после серии неудачных
-попыток, аудит безопасности и админ-управление пользователями. Фундамент
-этапа 1 (FastAPI + SQLAlchemy 2 + Alembic + PostgreSQL, React + TypeScript +
-Vite, Docker Compose, health-check, тесты, CI) сохранён. Функции кандидатов
-появятся на следующих этапах [`ROADMAP.md`](ROADMAP.md).
+**Статус: этап 3 (единая база кандидатов) завершён.** Реализованы карточки
+кандидатов (ФИО, телефон, email, источник, позиция, владелец, стадия
+воронки, комментарий), история взаимодействий, серверный поиск (ФИО,
+нормализованные телефон/email), фильтры (стадия, источник, владелец),
+сортировка и пагинация, мягкое удаление с восстановлением (физическое
+удаление запрещено), защита от дубликатов по нормализованным телефону/email
+(409 с найденными совпадениями; создание точной копии — только с явным
+`confirm_duplicate=true`), права HR (только свои кандидаты, чужие скрыты
+как 404), руководителя и администратора (все кандидаты + фильтр по
+владельцу) и аудит всех событий жизненного цикла кандидата в `audit_log`
+(без персональных данных в деталях). Во frontend добавлены только типы и
+функции API-клиента (`src/types.ts`, `src/api.ts`) с тестами — экраны
+(таблица/карточка/канбан/корзина/очередь) относятся к следующему этапу.
+Фундамент этапов 1–2 (FastAPI + SQLAlchemy 2 + Alembic + PostgreSQL,
+React + TypeScript + Vite, сессии/CSRF, роли, аудит, health-check, Docker
+Compose, тесты, CI) сохранён.
 
 **Дизайн-трек «Живая воронка» принят** (документация `design/` и изолированный
 прототип `design-prototype/`); production-код приложения не затронут.
@@ -47,9 +54,23 @@ API-доступы:
 
 | Endpoint | Метод | Доступ |
 |---|---|---|
+| `/health` | GET | без аутентификации |
 | `/auth/login`, `/auth/logout`, `/auth/me` | POST/POST/GET | все (me — по сессии) |
 | `/admin/users`, `/admin/users/{id}`, `/admin/users/{id}/unlock` | GET/POST/PATCH | только `admin` |
 | `/admin/audit` | GET | только `admin` |
+| `/candidates` | GET/POST | HR — только свои; manager/admin — все |
+| `/candidates/{id}` | GET/PATCH/DELETE | HR — только свои (чужие 404); manager/admin — все |
+| `/candidates/{id}/restore` | POST | HR — только свои; manager/admin — все |
+| `/candidates/{id}/interactions` | GET/POST | HR — только свои; manager/admin — все |
+
+`GET /candidates` поддерживает `query` (ФИО/телефон/email), `stage`,
+`source`, `owner_id`, `sort` (`created_at`/`updated_at`/`full_name`/`stage`),
+`direction` (`asc`/`desc`), `limit` (≤100), `offset`; ответ — пагинированный
+`{items, total, limit, offset}`. Стадия — закрытый словарь из 11 значений
+(`new`, `contacted`, `reached`, `interview_scheduled`, `interview_done`,
+`offer`, `hired`, `started`, `probation`, `fired`, `rejected`).
+При дубликате телефона/email API отвечает 409 с найденными кандидатами;
+повторный запрос с `confirm_duplicate: true` создаёт точную копию.
 
 После входа `POST /auth/login` возвращает пользователя и `csrf_token`;
 далее все POST/PATCH/DELETE шлют заголовок `X-CSRF-Token: <csrf_token>`.
