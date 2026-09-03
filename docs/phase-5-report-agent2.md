@@ -7,8 +7,10 @@
 - **Коммиты ветки:**
   - реализация: `3ca3feb7371453c881bae611b8268d3a1f008c3e`;
   - отчёт: `790336de6fa424c5e2d051f21cd33fe48640773b` и последующие
-    docs-only правки отчёта. Актуальный tip ветки проверяется командой
-    `git ls-remote origin arena/phase-5-calendar`.
+    docs-only правки отчёта;
+  - исправления по ревью: `62ad925433397e6ff6af268781dcb3fd1f99c3f8`
+    (+ возможные docs-only коммиты после него). Актуальный tip ветки
+    проверяется командой `git ls-remote origin arena/phase-5-calendar`.
 - **База ветки:** актуальный `origin/main` =
   `bbe7ca10900a0a3525e9223a32c4dcdb3d7048a1`, включающий принятый
   merge-коммит этапа 4 `649f6a606d6a89ba256ef4d899d821b84993b886`.
@@ -127,6 +129,63 @@ EventFormModal, time.ts, calendar.css + 2 тест-файла), `api.ts`,
 `features/candidates/drawer.css`. Документация: `README.md`,
 `docs/ARCHITECTURE.md`. `.github/` не изменялся.
 
+
+## Исправления по ревью оркестратора PR #7
+
+Оба блокирующих замечания воспроизведены regression-тестами на старом
+коде (red), затем исправлены (green); неблокирующее UX-замечание тоже
+устранено.
+
+### 1. Исполнитель — только активный HR (блокирующее)
+
+`_resolve_assignee()` при отсутствии `assignee_user_id` возвращал
+текущего пользователя, поэтому manager/admin мог создать событие с
+исполнителем не-HR-роли (POST → 201; должно быть 422). Теперь
+manager/admin **обязаны явно указать** активного HR: отсутствие
+исполнителя → 422 с понятным сообщением (для HR поведение не
+изменилось — только себя). Frontend больше не предлагает вариант
+«Я (username)» не-HR-ролям: селект имеет явный placeholder «Выберите
+исполнителя», выбор валидируется и на клиенте.
+
+Regression-тесты: `test_manager_admin_assignee_is_required` (unit
+SQLite), `test_manager_assignee_required_on_postgres` (integration),
+`EventFormModal` vitest «manager/admin must pick an active HR — no «Я»
+option».
+
+### 2. Явный null очищает nullable-поля PATCH (блокирующее)
+
+`None` означал одновременно «поле не передано» и «очистить», поэтому
+`note`/`ends_at`/`remind_at` нельзя было очистить (clear-only PATCH →
+422 «Нет изменений»). Теперь omission и явный `null` различаются через
+`payload.model_fields_set`: очищаются `note`, `ends_at`, `remind_at`;
+`starts_at` не nullable (явный null → 422); `assignee_user_id` очистить
+нельзя (исполнитель обязателен). Бизнес-история пишет корректные
+old/new (включая `note_changed`), audit — только безопасные имена
+полей.
+
+Regression-тесты: `test_patch_clears_nullable_fields` (по отдельности +
+несколько полей одним PATCH + no-op guard + явный null для starts_at),
+`test_patch_clear_records_history_and_audit_without_pii` (unit),
+`test_patch_clears_nullable_fields_on_postgres` (integration).
+
+### 3. «Показать ещё» в карточке кандидата (неблокирующее)
+
+Кнопка «Показать ещё» на вкладке «События» заменяла список следующей
+страницей, а счётчик не учитывал offset. Теперь страницы **накапливаются**
+(append), счётчик корректен, перезагрузка сбрасывает к первой странице.
+Покрыто `CandidateDrawer` vitest-тестом.
+
+### Проверки после исправлений
+
+- Backend: ruff/format/mypy чисто; **176 pytest** (+5 regression);
+  alembic downgrade/upgrade — чисто.
+- Frontend: eslint/tsc чисто; **69 vitest/RTL** (+3); production build.
+- Live smoke исправлений: manager без исполнителя → 422; manager с
+  активным HR → 201 (`assignee_username` = HR); PATCH с явными null
+  очищает все три поля, история `[created, rescheduled]` с корректными
+  old/new — **FIX SMOKE OK**.
+- CI на коммите исправлений: см. таблицу прогонов ниже.
+
 ## Фактические проверки
 
 ### Локально (песочница)
@@ -166,6 +225,7 @@ CI запускался дважды — на коммите реализаци�
 |---|---|---|
 | #1 (реализация) | https://github.com/sledovatel61/HR-Manager/actions/runs/33754180009 | ✅ 4/4 |
 | #2 (tip с отчётом) | https://github.com/sledovatel61/HR-Manager/actions/runs/33754685000 | ✅ 4/4 |
+| #3 (коммит исправлений по ревью) | https://github.com/sledovatel61/HR-Manager/actions/runs/33759184350 | ✅ 4/4 |
 
 Джобы: Backend checks, Backend integration tests (PostgreSQL 16,
 `alembic upgrade head` + `pytest -m integration`), Frontend checks
