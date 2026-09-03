@@ -6,7 +6,9 @@
 - **Коммиты ветки:**
   - реализация: `dbbaf76839551ba9bcc09fd82e9ed71ea228d374`;
   - отчёт: `a5fc7a72d25ad81aa2a5e846cf148fc4208a5cef`;
-  - финализация отчёта: `d81dd7224b136f35a867e5e77691e734e0d2dea2` (docs-only, финальный HEAD ветки).
+  - финализация отчёта: `d81dd7224b136f35a867e5e77691e734e0d2dea2`;
+  - запись финального HEAD: `128592845d4bdb5d174c2627d3ecd0c6ebe3c661`
+    (docs-only, актуальный tip ветки).
 - **База ветки:** фактический `origin/main` = `62838a92441a50da28c0088f6f930b1b8cb5a4a6`
   («docs: add candidates database phase prompt and update README»).
   ⚠️ В промпте ожидался base `0fc51161b0e6fba64c9e807ded19af35f8db63f3` —
@@ -184,3 +186,30 @@ actions/checkout и actions/setup-* (не ошибки).
 6. В песочнице не было Docker: полный Compose-запуск выполнен только
    статически локально и фактически — джобой `stack` в GitHub Actions
    (см. выше).
+
+## Проверка публикации (контрольные команды)
+
+Состояние на GitHub подтверждено после публикации (2026-09-03):
+
+```bash
+git ls-remote origin | grep phase-3
+# → 128592845d4bdb5d174c2627d3ecd0c6ebe3c661	refs/heads/arena/phase-3-candidates
+
+git fetch origin refs/heads/arena/phase-3-candidates:refs/remotes/origin/arena/phase-3-candidates
+git diff --stat origin/main...origin/arena/phase-3-candidates
+# → 19 файлов: backend (models, routers/candidates.py, migration 0003, schemas,
+#   utils, audit, main, 3 тест-файла), frontend (types.ts, api.ts, api.test.ts),
+#   README.md, docs/ARCHITECTURE.md, docs/phase-3-report-agent2.md
+
+git ls-tree -r --name-only origin/arena/phase-3-candidates | grep -E "candidates|phase-3-report"
+```
+
+- PR: https://github.com/sledovatel61/HR-Manager/pull/4 — OPEN, MERGEABLE,
+  head = `arena/phase-3-candidates` @ `1285928…`; на последнем коммите все
+  4 чека зелёные (последний прогон:
+  https://github.com/sledovatel61/HR-Manager/actions/runs/33656310768).
+- Репозиторий **приватный**: неаутентифицированные запросы к GitHub API
+  возвращают 404 — проверять PR нужно по ссылке или аутентифицированным
+  CLI (`gh pr view 4`), а не web-fetch без токена.
+- Если локальный clone показывает иной diff — обновите refs командой fetch
+  выше (shallow/частичные клоны могут отдавать неполное дерево).
