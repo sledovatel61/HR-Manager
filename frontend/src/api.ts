@@ -4,6 +4,9 @@ import type {
   CandidateInteraction,
   CandidateInteractionCreateInput,
   CandidateListQuery,
+  CandidateTransfer,
+  CandidateTransferInput,
+  CandidateTransferResult,
   CandidateUpdateInput,
   CurrentUser,
   DuplicateCandidateDetail,
@@ -11,6 +14,7 @@ import type {
   Paginated,
   AuditEvent,
   User,
+  UserListItems,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
@@ -50,6 +54,27 @@ export function readCsrfCookie(): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+// --- Session-expiry notifications -------------------------------------------
+
+type UnauthorizedListener = () => void;
+
+const unauthorizedListeners = new Set<UnauthorizedListener>();
+
+/** Subscribe to 401 responses (other than login) — the shell returns to the
+ * login screen when the session expires mid-flight. */
+export function onUnauthorized(listener: UnauthorizedListener): () => void {
+  unauthorizedListeners.add(listener);
+  return () => {
+    unauthorizedListeners.delete(listener);
+  };
+}
+
+function emitUnauthorized(): void {
+  for (const listener of unauthorizedListeners) {
+    listener();
+  }
+}
+
 interface RequestOptions {
   method?: string;
   body?: unknown;
@@ -80,6 +105,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     });
   } catch {
     throw new ApiError(0, "Сеть недоступна: не удалось связаться с сервером.");
+  }
+
+  // Session expiry mid-flight: notify the shell so it returns to the login
+  // screen with a clear message (login itself is exempt).
+  if (response.status === 401 && path !== "/auth/login") {
+    emitUnauthorized();
   }
 
   if (response.status === 204 || response.headers.get("content-length") === "0") {
@@ -171,6 +202,7 @@ function candidateQuery(params: CandidateListQuery): string {
   if (params.stage) search.set("stage", params.stage);
   if (params.source) search.set("source", params.source);
   if (params.owner_id) search.set("owner_id", params.owner_id);
+  if (params.include_deleted) search.set("include_deleted", "true");
   if (params.sort) search.set("sort", params.sort);
   if (params.direction) search.set("direction", params.direction);
   if (params.limit !== undefined) search.set("limit", String(params.limit));
@@ -234,11 +266,15 @@ export async function restoreCandidate(id: string): Promise<Candidate> {
   return request<Candidate>(`/candidates/${id}/restore`, { method: "POST" });
 }
 
-/** Interaction history for a candidate (newest first). */
+/** Interaction history for a candidate (newest first, paginated). */
 export async function listCandidateInteractions(
-  id: string
+  id: string,
+  limit = 50,
+  offset = 0
 ): Promise<Paginated<CandidateInteraction>> {
-  return request<Paginated<CandidateInteraction>>(`/candidates/${id}/interactions`);
+  return request<Paginated<CandidateInteraction>>(
+    `/candidates/${id}/interactions?limit=${limit}&offset=${offset}`
+  );
 }
 
 /** Append an interaction history entry. */
@@ -250,4 +286,36 @@ export async function createCandidateInteraction(
     method: "POST",
     body: input,
   });
+}
+
+// --- Phase 4: HR directory & ownership transfers ----------------------------
+
+/** Active HR users for owner/transfer pickers (minimal safe fields). */
+export async function listHrUsers(): Promise<UserListItems> {
+  return request<UserListItems>("/admin/users/hr");
+}
+
+/**
+ * Transfer candidate responsibility to another HR. The backend performs the
+ * ownership change and the immutable history record atomically.
+ */
+export async function transferCandidate(
+  id: string,
+  input: CandidateTransferInput
+): Promise<CandidateTransferResult> {
+  return request<CandidateTransferResult>(`/candidates/${id}/transfer`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** Ownership-transfer history (paginated, oldest first). */
+export async function listCandidateTransfers(
+  id: string,
+  limit = 50,
+  offset = 0
+): Promise<Paginated<CandidateTransfer>> {
+  return request<Paginated<CandidateTransfer>>(
+    `/candidates/${id}/transfers?limit=${limit}&offset=${offset}`
+  );
 }

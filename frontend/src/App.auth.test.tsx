@@ -29,7 +29,7 @@ describe("App authentication flow", () => {
     expect(screen.getByLabelText(/Пароль/)).toBeInTheDocument();
   });
 
-  it("logs in with credentials and shows the current user", async () => {
+  it("logs in with credentials and shows the current user in the shell", async () => {
     const currentUserFetcher = vi
       .fn()
       .mockRejectedValueOnce(new Error("401"))
@@ -44,9 +44,10 @@ describe("App authentication flow", () => {
     await user.click(screen.getByRole("button", { name: "Войти" }));
 
     expect(loginFetcher).toHaveBeenCalledWith("admin1", "Str0ng-Pass-2026");
-    expect(await screen.findByText("Вы вошли")).toBeInTheDocument();
-    expect(screen.getByText("admin1")).toBeInTheDocument();
+    // The shell shows the current user, their role and a working logout.
+    expect(await screen.findByText("Админ Админов")).toBeInTheDocument();
     expect(screen.getByText("Администратор")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Выйти" })).toBeInTheDocument();
   });
 
   it("shows an error message when login fails", async () => {
@@ -71,12 +72,15 @@ describe("App authentication flow", () => {
     ).toBeInTheDocument();
   });
 
-  it("restores an existing session and shows the user", async () => {
+  it("restores an existing session and shows the workspace shell", async () => {
     render(<App currentUserFetcher={vi.fn().mockResolvedValue(ADMIN)} />);
 
-    expect(await screen.findByText("Вы вошли")).toBeInTheDocument();
-    expect(screen.getByText("admin1")).toBeInTheDocument();
+    expect(await screen.findByText("Админ Админов")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Выйти" })).toBeInTheDocument();
+    // Admin sees the shared candidates section, not the personal queue.
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Кандидаты" })
+    ).toBeInTheDocument();
   });
 
   it("shows a loading state while checking the session", () => {

@@ -14,9 +14,16 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_event
 from app.db import get_db
-from app.deps import require_roles
+from app.deps import get_current_user, require_roles
 from app.models import AuditAction, User, UserRole
-from app.schemas import UserCreate, UserList, UserOut, UserUpdate
+from app.schemas import (
+    UserCreate,
+    UserList,
+    UserListItem,
+    UserListItems,
+    UserOut,
+    UserUpdate,
+)
 from app.security import WeakPasswordError, hash_password, validate_password_policy
 from app.utils import client_ip, user_agent, utc_now
 
@@ -125,6 +132,31 @@ def create_user(
         details=f"role={user.role.value}",
     )
     return UserOut.model_validate(user)
+
+
+@router.get(
+    "/hr",
+    response_model=UserListItems,
+    summary="List active HR users (directory for owner pickers)",
+)
+def list_hr_users(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> UserListItems:
+    """Minimal, safe directory of active HR users for owner/transfer pickers.
+
+    Any authenticated user may read it; it intentionally exposes no
+    administrative fields (no lock state, no login timestamps).
+    """
+    users = db.scalars(
+        select(User)
+        .where(User.role == UserRole.HR, User.is_active.is_(True))
+        .order_by(User.username)
+    ).all()
+    return UserListItems(
+        items=[UserListItem.model_validate(user) for user in users],
+        total=len(users),
+    )
 
 
 @router.get("/{user_id}", response_model=UserOut, summary="Get a user (admin only)")
