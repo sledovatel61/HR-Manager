@@ -80,6 +80,9 @@ class AuditAction(StrEnum):
     EVENT_COMPLETED = "event_completed"
     EVENT_POSTPONED = "event_postponed"
     EVENT_ASSIGNEE_CHANGED = "event_assignee_changed"
+    # Analytics (roadmap phase: analytics and reports).
+    CANDIDATE_TERMINATED = "candidate_terminated"
+    ANALYTICS_EXPORTED = "analytics_exported"
 
 
 class CandidateStage(StrEnum):
@@ -735,3 +738,175 @@ class EventHistory(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<EventHistory id={self.id} event_id={self.event_id} kind={self.kind}>"
+
+
+class AnalyticsFactType(StrEnum):
+    """Kinds of immutable analytics facts recorded in the append-only ledger.
+
+    The ledger is the single source of truth for Phase 6 metrics. One row is
+    written in the SAME transaction as the business operation it describes;
+    partial unique indexes make the write idempotent per business row.
+    """
+
+    CANDIDATE_CREATED = "candidate_created"
+    INTERACTION_ADDED = "interaction_added"
+    STAGE_CHANGED = "stage_changed"
+    TRANSFER = "transfer"
+    EVENT_CREATED = "event_created"
+    EVENT_COMPLETED = "event_completed"
+    TERMINATED = "terminated"
+
+
+class AnalyticsFact(Base):
+    """Append-only ledger of analytics facts (Phase 6 single source of truth).
+
+    ``fact_at`` is the UTC instant the fact happened (``from <= fact_at < to``
+    period semantics). ``owner_user_id`` snapshots the responsible HR AT the
+    fact moment (transfers do not rewrite history); ``source`` snapshots the
+    candidate source at the fact moment (never the edited-later value).
+    Rows are never updated or deleted by application code.
+    """
+
+    __tablename__ = "analytics_facts"
+    __table_args__ = (
+        CheckConstraint(
+            "fact_type IN ('candidate_created', 'interaction_added', "
+            "'stage_changed', 'transfer', 'event_created', 'event_completed', "
+            "'terminated')",
+            name="ck_analytics_facts_type_valid",
+        ),
+        Index("ix_analytics_facts_fact_at", "fact_at"),
+        Index("ix_analytics_facts_fact_at_owner", "fact_at", "owner_user_id"),
+        Index("ix_analytics_facts_fact_at_source", "fact_at", "source"),
+        Index("ix_analytics_facts_candidate_id", "candidate_id"),
+        Index("ix_analytics_facts_type", "fact_type"),
+        # Idempotency: one fact per business row (partial unique indexes).
+        Index(
+            "uq_analytics_facts_created_candidate",
+            "candidate_id",
+            unique=True,
+            postgresql_where=text("fact_type = 'candidate_created'"),
+            sqlite_where=text("fact_type = 'candidate_created'"),
+        ),
+        Index(
+            "uq_analytics_facts_interaction",
+            "interaction_id",
+            unique=True,
+            postgresql_where=text("interaction_id IS NOT NULL"),
+            sqlite_where=text("interaction_id IS NOT NULL"),
+        ),
+        # (event_id, fact_type, fact_at): a legitimate second completion is
+        # a new fact; only exact duplicates are blocked.
+        Index(
+            "uq_analytics_facts_event",
+            "event_id",
+            "fact_type",
+            "fact_at",
+            unique=True,
+            postgresql_where=text("event_id IS NOT NULL"),
+            sqlite_where=text("event_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_analytics_facts_transfer",
+            "transfer_id",
+            unique=True,
+            postgresql_where=text("transfer_id IS NOT NULL"),
+            sqlite_where=text("transfer_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_analytics_facts_termination",
+            "termination_id",
+            unique=True,
+            postgresql_where=text("termination_id IS NOT NULL"),
+            sqlite_where=text("termination_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    fact_type: Mapped[AnalyticsFactType] = mapped_column(
+        Enum(
+            AnalyticsFactType,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    fact_subtype: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )  # interaction type / event type
+    fact_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stage_from: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    stage_to: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    interaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("candidate_interactions.id", ondelete="CASCADE"), nullable=True
+    )
+    event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE"), nullable=True
+    )
+    transfer_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("candidate_transfers.id", ondelete="CASCADE"), nullable=True
+    )
+    termination_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("candidate_terminations.id", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    candidate: Mapped[Candidate] = relationship(foreign_keys=[candidate_id])
+    owner: Mapped[User] = relationship(foreign_keys=[owner_user_id])
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<AnalyticsFact id={self.id} type={self.fact_type}>"
+
+
+class CandidateTermination(Base):
+    """A business termination event (dismissal from the company) with a date
+    and a non-empty safe reason.
+
+    Deliberately separate from the ``fired`` stage: a current stage alone
+    cannot prove when (or why) the termination happened. This entity is the
+    analytics source of truth for the ``terminated`` metric.
+    """
+
+    __tablename__ = "candidate_terminations"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_candidate_terminations_reason_not_blank",
+        ),
+        Index("ix_candidate_terminations_candidate_id", "candidate_id"),
+        Index("ix_candidate_terminations_terminated_at", "terminated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    terminated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    candidate: Mapped[Candidate] = relationship(foreign_keys=[candidate_id])
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+
+    @property
+    def created_by_username(self) -> str:
+        """Username of the user who recorded the termination."""
+        return self.created_by.username if self.created_by is not None else ""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<CandidateTermination id={self.id} candidate_id={self.candidate_id}>"
