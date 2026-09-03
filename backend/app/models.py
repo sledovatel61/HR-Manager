@@ -72,6 +72,7 @@ class AuditAction(StrEnum):
     CANDIDATE_RESTORED = "candidate_restored"
     CANDIDATE_INTERACTION_ADDED = "candidate_interaction_added"
     DUPLICATE_CANDIDATE_CREATED = "duplicate_candidate_created"
+    CANDIDATE_TRANSFERRED = "candidate_transferred"
 
 
 class CandidateStage(StrEnum):
@@ -383,6 +384,11 @@ class Candidate(Base):
     interactions: Mapped[list["CandidateInteraction"]] = relationship(
         back_populates="candidate", cascade="all, delete-orphan"
     )
+    transfers: Mapped[list["CandidateTransfer"]] = relationship(
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+        order_by="CandidateTransfer.created_at",
+    )
 
     @property
     def is_deleted(self) -> bool:
@@ -444,3 +450,64 @@ class CandidateInteraction(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<CandidateInteraction id={self.id} candidate_id={self.candidate_id}>"
+
+
+class CandidateTransfer(Base):
+    """Immutable ownership-transfer record for a candidate.
+
+    The reason is a business field of the transfer history (shown to HRs,
+    managers and admins with visibility on the candidate) — it is never
+    written to audit details or application logs.
+    """
+
+    __tablename__ = "candidate_transfers"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_candidate_transfers_reason_not_blank",
+        ),
+        Index("ix_candidate_transfers_candidate_id", "candidate_id"),
+        Index("ix_candidate_transfers_initiator_user_id", "initiator_user_id"),
+        Index("ix_candidate_transfers_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    initiator_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    from_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    to_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    candidate: Mapped[Candidate] = relationship(back_populates="transfers")
+    initiator: Mapped[User] = relationship(foreign_keys=[initiator_user_id])
+    from_user: Mapped[User] = relationship(foreign_keys=[from_user_id])
+    to_user: Mapped[User] = relationship(foreign_keys=[to_user_id])
+
+    @property
+    def initiator_username(self) -> str:
+        """Username of the transfer initiator (lazy relationship access)."""
+        return self.initiator.username if self.initiator is not None else ""
+
+    @property
+    def from_username(self) -> str:
+        """Username of the previous owner (lazy relationship access)."""
+        return self.from_user.username if self.from_user is not None else ""
+
+    @property
+    def to_username(self) -> str:
+        """Username of the new owner (lazy relationship access)."""
+        return self.to_user.username if self.to_user is not None else ""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<CandidateTransfer id={self.id} candidate_id={self.candidate_id}>"

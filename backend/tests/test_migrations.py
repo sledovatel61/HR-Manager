@@ -17,8 +17,15 @@ from sqlalchemy import create_engine, text
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
-HEAD_REVISION = "0003"
-EXPECTED_TABLES = {"users", "user_sessions", "audit_log", "candidates", "candidate_interactions"}
+HEAD_REVISION = "0004"
+EXPECTED_TABLES = {
+    "users",
+    "user_sessions",
+    "audit_log",
+    "candidates",
+    "candidate_interactions",
+    "candidate_transfers",
+}
 
 
 def _run_alembic(*args: str, url: str) -> None:

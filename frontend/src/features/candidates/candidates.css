@@ -1,0 +1,233 @@
+.candidates-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* ---------- Toolbar ---------- */
+
+.list-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  background: var(--surface-app);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+.list-toolbar-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.list-filters {
+  align-items: flex-end;
+}
+
+.list-filters .field {
+  flex: 1;
+  min-width: 150px;
+  max-width: 220px;
+}
+
+.search-box {
+  flex: 1;
+  min-width: 240px;
+  max-width: 420px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-3);
+  height: var(--control-height-md);
+  background: var(--surface-app);
+  color: var(--text-tertiary);
+}
+
+.search-box:focus-within {
+  border-color: var(--border-focus);
+  box-shadow: var(--focus-ring);
+}
+
+.search-box .text-input {
+  border: none;
+  padding: 0;
+  height: auto;
+  box-shadow: none;
+  background: transparent;
+}
+
+.search-box .text-input:focus-visible {
+  box-shadow: none;
+}
+
+.sort-controls {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* ---------- Table ---------- */
+
+.table-wrap {
+  background: var(--surface-app);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow-x: auto;
+}
+
+.candidates-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: var(--text-size-sm);
+}
+
+.candidates-table th {
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
+  font-weight: var(--font-weight-medium);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.candidates-table td {
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+
+.candidates-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.candidates-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.row-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: none;
+  border: none;
+  padding: var(--space-1) 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.row-name:hover .row-fullname {
+  color: var(--text-link);
+}
+
+.row-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-full);
+  background: var(--accent-subtle);
+  color: var(--accent-default);
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  flex-shrink: 0;
+}
+
+.row-fullname {
+  display: block;
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.row-contact {
+  display: block;
+  font-size: var(--text-size-xs);
+  color: var(--text-tertiary);
+}
+
+.row-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* ---------- Pagination ---------- */
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  flex-wrap: wrap;
+}
+
+.pagination-info {
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
+}
+
+.pagination-buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pagination-page {
+  color: var(--text-secondary);
+  font-size: var(--text-size-sm);
+  min-width: 72px;
+  text-align: center;
+}
+
+/* ---------- Forms & dialogs ---------- */
+
+.candidate-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.duplicate-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.duplicate-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  flex-wrap: wrap;
+}
+
+.duplicate-name {
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 160px;
+}
+
+.duplicate-owner {
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
+}
+
+/* ---------- Misc ---------- */
+
+.muted-text {
+  color: var(--text-tertiary);
+  font-size: var(--text-size-sm);
+}
