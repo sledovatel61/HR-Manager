@@ -668,11 +668,11 @@ def transfer_candidate(
     locked.owner_user_id = new_owner.id
     locked.updated_at = utc_now()
     db.add(transfer)
-    db.commit()
-    db.refresh(transfer)
-    db.refresh(locked)
 
-    # Audit: ids only — never PII, never the transfer reason.
+    # The audit event joins the SAME transaction (commit=False): ownership
+    # change, immutable history record and audit event commit together with
+    # a single db.commit() — if the audit write fails, the whole operation
+    # rolls back and nothing is transferred.
     _audit_candidate(
         db,
         request,
@@ -680,7 +680,12 @@ def transfer_candidate(
         actor=user,
         candidate=locked,
         details=f"to={new_owner.id} from={transfer.from_user_id}",
+        commit=False,
     )
+    db.commit()
+    db.refresh(transfer)
+    db.refresh(locked)
+
     return CandidateTransferOut(
         transfer=TransferOut.model_validate(transfer),
         candidate=CandidateOut.model_validate(locked),

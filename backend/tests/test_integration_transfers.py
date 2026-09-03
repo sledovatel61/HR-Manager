@@ -14,6 +14,7 @@ consistent business-history record.
 
 import threading
 from collections.abc import Iterator
+from typing import Any
 
 import httpx
 import pytest
@@ -206,3 +207,49 @@ def test_concurrent_transfer_leaves_one_consistent_record(
     # Exactly one immutable history record, matching the final owner.
     assert len(records) == 1
     assert records[0].to_user_id == final_owner
+
+
+def test_transfer_is_atomic_when_audit_write_fails_on_postgres(
+    pg_client: TestClient, pg_db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same atomicity contract as the SQLite unit test, on PostgreSQL.
+
+    If the audit write fails inside the transaction, the rollback must keep
+    the original owner and leave no transfer-history and no audit rows —
+    the ownership change must never persist without its audit event.
+    """
+    from app.audit import record_event as real_record_event
+    from app.routers import candidates as candidates_router
+
+    hr1 = make_user(pg_db, username="hr1", role=UserRole.HR)
+    hr2 = make_user(pg_db, username="hr2", role=UserRole.HR)
+    candidate = make_candidate(pg_db, owner=hr1)
+    csrf = _csrf(_login(pg_client, "hr1"))
+
+    def failing_record_event(db: Session, *args: Any, **kwargs: Any) -> None:
+        real_record_event(db, *args, **kwargs)
+        db.flush()
+        raise RuntimeError("simulated audit write failure")
+
+    monkeypatch.setattr(candidates_router, "record_event", failing_record_event)
+
+    with pytest.raises(RuntimeError, match="simulated audit write failure"):
+        pg_client.post(
+            f"/candidates/{candidate.id}/transfer",
+            json={"new_owner_user_id": str(hr2.id), "reason": "Не должно сохраниться"},
+            headers={"X-CSRF-Token": csrf},
+        )
+
+    pg_db.expire_all()
+    stored = pg_db.get(Candidate, candidate.id)
+    assert stored is not None
+    assert stored.owner_user_id == hr1.id
+    assert pg_db.scalar(select(func.count()).select_from(CandidateTransfer)) == 0
+    assert (
+        pg_db.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.action == AuditAction.CANDIDATE_TRANSFERRED)
+        )
+        == 0
+    )
