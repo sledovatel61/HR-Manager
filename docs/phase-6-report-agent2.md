@@ -4,10 +4,9 @@
 («docs: define phase 6 analytics contract», содержит `prompts/PHASE_6_PROMPT.md`).
 Контракт этапа — `prompts/PHASE_6_PROMPT.md`; все решения ниже сверены с ним.
 
-> Статус на момент финальной правки отчёта: код, тесты, документы и smoke готовы
-> и закоммичены локально; публикация ветки и PR отложены до восстановления
-> GitHub-авторизации в песочнице (токен `GH_TOKEN` недействителен). SHA
-> коммитов зафиксированы ниже; после push они не изменятся.
+> Статус: ветка опубликована на GitHub (`origin/arena/phase-6-analytics`),
+> открыт PR #8 в `main` (без merge), CI GitHub Actions завершился зелёным
+> (4/4 job). Ссылки и run ID — в разделе «CI/PR» ниже.
 
 ## Объём и план (зафиксированы до реализации)
 
@@ -34,6 +33,7 @@
 | `6b79d34` | feat(backend): analytics API with facts ledger, terminations and CSV export |
 | `fa2c766` | feat(frontend): analytics section with presets, filters, KPI/funnel/breakdowns and CSV export |
 | `686f2f8` | docs: analytics section in README and ARCHITECTURE; HTTP 422 constant |
+| `9f68758` | docs: phase 6 report (agent-2) |
 
 ## Изменённые/новые файлы
 
@@ -195,7 +195,11 @@ reached/offer = 1), фильтры `hr_id`/`source` (неизвестный hr_i
 
 ## CI/PR
 
-Ожидание после публикации ветки: 4 job (Backend checks, Frontend checks,
-Backend integration PostgreSQL, Compose stack smoke). PR откроется из
-`arena/phase-6-analytics` в `main` без merge — номера/ссылки будут вписаны
-после восстановления GitHub-доступа.
+- **PR**: https://github.com/sledovatel61/HR-Manager/pull/8
+  («Phase 6: Analytics and reports», `arena/phase-6-analytics` → `main`,
+  состояние OPEN, mergeable; merge в main не выполняется).
+- **CI**: run https://github.com/sledovatel61/HR-Manager/actions/runs/33774446217
+  (событие `pull_request`, head `9f68758`) — conclusion `success`, 4/4 job:
+  `Backend checks`, `Frontend checks`, `Backend integration tests (PostgreSQL)`,
+  `Compose stack smoke test (dev + prod overlay)` — все `success`.
+  Реальные исполнения GitHub Actions на раннере репозитория.
