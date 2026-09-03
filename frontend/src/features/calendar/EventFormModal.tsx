@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ApiError,
   createEvent,
@@ -177,11 +177,6 @@ export function EventFormModal({
     };
   }, [open, editing, candidate, candidateQuery]);
 
-  const selectableAssignees = useMemo(
-    () => directory.filter((item) => item.id !== event?.assignee_user_id),
-    [directory, event]
-  );
-
   const submitCreate = async () => {
     const validation = validate(draft);
     if (validation) {
@@ -190,6 +185,10 @@ export function EventFormModal({
     }
     if (!fixedCandidate) {
       setError("Выберите кандидата.");
+      return;
+    }
+    if (canAssign && !assigneeId) {
+      setError("Выберите исполнителя — активного пользователя с ролью HR.");
       return;
     }
     setSending(true);
@@ -253,6 +252,10 @@ export function EventFormModal({
       return;
     }
     if (!event) return;
+    if (canAssign && !assigneeId) {
+      setError("Выберите исполнителя — активного пользователя с ролью HR.");
+      return;
+    }
     void submitUpdate({
       title: draft.title.trim(),
       note: draft.note.trim() || null,
@@ -459,15 +462,15 @@ export function EventFormModal({
         </Field>
 
         {canAssign && (
-          <Field label="Исполнитель" hint="Активный HR">
+          <Field label="Исполнитель" required hint="Активный HR">
             {(id) => (
               <SelectInput
                 id={id}
                 value={assigneeId}
                 onChange={(event) => setAssigneeId(event.target.value)}
               >
-                <option value="">Я ({user.username})</option>
-                {selectableAssignees.map((item) => (
+                <option value="">Выберите исполнителя</option>
+                {directory.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.full_name || item.username}
                   </option>

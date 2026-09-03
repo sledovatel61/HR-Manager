@@ -298,3 +298,101 @@ def test_history_is_paginated_and_visible_to_manager_on_postgres(
     page2 = pg_client.get(f"/events/{event_id}/history?limit=1&offset=1")
     assert page2.json()["items"][0]["kind"] == "completed"
     assert page2.json()["items"][0]["status_new"] == "completed"
+
+
+# --- Regression tests (orchestrator review of PR #7) ------------------------
+
+
+def test_manager_assignee_required_on_postgres(pg_client: TestClient, pg_db: Session) -> None:
+    """manager/admin must explicitly pick an active HR assignee.
+
+    Regression: _resolve_assignee fell back to the current user, so a
+    non-HR assignee could be created on PostgreSQL too.
+    """
+    hr1 = make_user(pg_db, username="hr1", role=UserRole.HR)
+    make_user(pg_db, username="mgr", role=UserRole.MANAGER)
+    make_user(pg_db, username="adm", role=UserRole.ADMIN)
+    candidate = make_candidate(pg_db, owner=hr1)
+
+    mgr_csrf = _csrf(_login(pg_client, "mgr"))
+    missing = pg_client.post(
+        "/events", json=_payload(str(candidate.id)), headers={"X-CSRF-Token": mgr_csrf}
+    )
+    assert missing.status_code == 422
+
+    _login(pg_client, "adm")
+    adm_csrf = _csrf(_login(pg_client, "adm"))
+    missing_admin = pg_client.post(
+        "/events", json=_payload(str(candidate.id)), headers={"X-CSRF-Token": adm_csrf}
+    )
+    assert missing_admin.status_code == 422
+
+    mgr_csrf = _csrf(_login(pg_client, "mgr"))
+    ok = pg_client.post(
+        "/events",
+        json=_payload(str(candidate.id), assignee_user_id=str(hr1.id)),
+        headers={"X-CSRF-Token": mgr_csrf},
+    )
+    assert ok.status_code == 201
+    assert ok.json()["assignee_user_id"] == str(hr1.id)
+    # The stored row really points at the HR, not at the manager.
+    stored = pg_db.get(Event, ok.json()["id"])
+    assert stored is not None and stored.assignee_user_id == hr1.id
+
+
+def test_patch_clears_nullable_fields_on_postgres(pg_client: TestClient, pg_db: Session) -> None:
+    """Explicit null clears note/ends_at/remind_at with correct history and
+    PII-free audit details (PostgreSQL)."""
+    hr1 = make_user(pg_db, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(pg_db, owner=hr1)
+    csrf = _csrf(_login(pg_client, "hr1"))
+
+    created = pg_client.post(
+        "/events",
+        json=_payload(
+            str(candidate.id),
+            note="Заметка для очистки",
+            ends_at=_in(90),
+            remind_at=_in(30),
+        ),
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201
+    event_id = created.json()["id"]
+
+    cleared = pg_client.patch(
+        f"/events/{event_id}",
+        json={"expected_version": 1, "note": None, "ends_at": None, "remind_at": None},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert cleared.status_code == 200, cleared.text
+    body = cleared.json()
+    assert body["note"] is None and body["ends_at"] is None and body["remind_at"] is None
+    assert body["version"] == 2
+
+    pg_db.expire_all()
+    stored = pg_db.get(Event, event_id)
+    assert stored is not None
+    assert stored.note is None and stored.ends_at is None and stored.remind_at is None
+
+    entries = pg_db.scalars(
+        select(EventHistory)
+        .where(EventHistory.event_id == event_id)
+        .order_by(EventHistory.created_at)
+    ).all()
+    assert [entry.kind for entry in entries] == ["created", "rescheduled"]
+    change = entries[1]
+    assert change.note_changed is True
+    assert change.ends_at_old is not None and change.ends_at_new is None
+    assert change.remind_at_old is not None and change.remind_at_new is None
+
+    audit_entry = pg_db.scalars(
+        select(AuditEvent).where(
+            AuditEvent.candidate_id == candidate.id,
+            AuditEvent.action == AuditAction.EVENT_RESCHEDULED,
+        )
+    ).one()
+    details = audit_entry.details or ""
+    for name in ("ends_at", "remind_at", "note"):
+        assert name in details
+    assert "Заметка для очистки" not in details

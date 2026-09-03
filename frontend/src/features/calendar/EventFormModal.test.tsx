@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../../design-system/components/Toast";
@@ -238,5 +238,98 @@ describe("EventFormModal (edit)", () => {
     renderEdit({ ...EVENT, status: "completed" });
     expect(screen.getByRole("button", { name: "Сохранить" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Выполнено" })).not.toBeInTheDocument();
+  });
+});
+
+describe("EventFormModal (orchestrator review regressions)", () => {
+  const MANAGER: User = { ...HR, id: "33333333-3333-3333-3333-333333333333", username: "mgr", role: "manager" };
+  const HR_ITEM = {
+    id: HR.id,
+    username: "hr1",
+    full_name: "HR Один",
+    role: "hr" as const,
+    is_active: true,
+  };
+
+  it("manager/admin must pick an active HR — no «Я» option", async () => {
+    vi.mocked(api.listHrUsers).mockResolvedValue({ items: [HR_ITEM], total: 1 });
+    const onSaved = vi.fn();
+    render(
+      <ToastProvider>
+        <EventFormModal
+          open
+          user={MANAGER}
+          candidate={CANDIDATE}
+          onClose={vi.fn()}
+          onSaved={onSaved}
+        />
+      </ToastProvider>
+    );
+
+    const assigneeSelect = await screen.findByLabelText(/Исполнитель/);
+    const options = within(assigneeSelect).getAllByRole("option");
+    expect(options.map((o) => o.textContent)).not.toContain(`Я (${MANAGER.username})`);
+    expect(options.map((o) => o.textContent)).toContain("Выберите исполнителя");
+    expect(options.map((o) => o.textContent)).toContain("HR Один");
+
+    // Submit without an assignee → validation error, no API call.
+    await userEvent.type(screen.getByLabelText(/Название/), "Созвон");
+    await userEvent.type(screen.getByLabelText(/Начало/), "2026-09-07T09:00");
+    await userEvent.click(screen.getByRole("button", { name: "Создать" }));
+    expect(
+      await screen.findByText("Выберите исполнителя — активного пользователя с ролью HR.")
+    ).toBeInTheDocument();
+    expect(api.createEvent).not.toHaveBeenCalled();
+
+    // Picking an HR sends the explicit assignee.
+    vi.mocked(api.createEvent).mockResolvedValue({ ...EVENT });
+    await userEvent.selectOptions(assigneeSelect, HR.id);
+    await userEvent.click(screen.getByRole("button", { name: "Создать" }));
+    await waitFor(() =>
+      expect(api.createEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ assignee_user_id: HR.id })
+      )
+    );
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+
+  it("clearing nullable fields sends explicit nulls (contract regression)", async () => {
+    const onSaved = vi.fn();
+    const withFields: CalendarEvent = {
+      ...EVENT,
+      note: "Заметка",
+      ends_at: "2026-09-07T10:00:00Z",
+      remind_at: "2026-09-07T08:00:00Z",
+    };
+    vi.mocked(api.updateEvent).mockResolvedValue({ ...withFields, note: null, ends_at: null, remind_at: null });
+    render(
+      <ToastProvider>
+        <EventFormModal
+          open
+          user={HR}
+          event={withFields}
+          onClose={vi.fn()}
+          onSaved={onSaved}
+        />
+      </ToastProvider>
+    );
+
+    await userEvent.clear(screen.getByLabelText(/Окончание/));
+    await userEvent.clear(screen.getByLabelText(/Напоминание/));
+    await userEvent.clear(screen.getByLabelText(/Заметка/));
+    await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    await waitFor(() =>
+      expect(api.updateEvent).toHaveBeenCalledWith(
+        EVENT.id,
+        expect.objectContaining({
+          expected_version: 3,
+          note: null,
+          ends_at: null,
+          remind_at: null,
+        })
+      )
+    );
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
   });
 });
