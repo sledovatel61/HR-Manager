@@ -1,9 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { logout, onUnauthorized } from "../api";
 import { Icon, type IconName } from "../design-system/icons/Icon";
 import { ROLE_LABELS, type CurrentUser, type UserRole } from "../types";
 import CandidatesListPage from "../features/candidates/CandidatesListPage";
 import KanbanPage from "../features/candidates/KanbanPage";
+import CalendarPage from "../features/calendar/CalendarPage";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
 import "./workspace.css";
 
@@ -15,12 +16,15 @@ interface WorkspaceProps {
 const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> = {
   queue: { label: "Моя очередь", icon: "inbox" },
   candidates: { label: "Кандидаты", icon: "table" },
+  calendar: { label: "Календарь", icon: "calendar" },
   kanban: { label: "Kanban", icon: "kanban" },
   deleted: { label: "Удалённые", icon: "trash" },
 };
 
 function sectionsForRole(role: UserRole): WorkspaceSection[] {
-  return role === "hr" ? ["queue", "kanban", "deleted"] : ["candidates", "kanban", "deleted"];
+  return role === "hr"
+    ? ["queue", "calendar", "kanban", "deleted"]
+    : ["candidates", "calendar", "kanban", "deleted"];
 }
 
 function initialsOf(fullName: string, username: string): string {
@@ -36,6 +40,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
   const { user } = current;
   const sections = sectionsForRole(user.role);
   const [section, navigate] = useWorkspaceSection(sections[0]);
+  const [pendingCandidateId, setPendingCandidateId] = useState<string | null>(null);
 
   // A 401 from any API call means the session is gone: return to login.
   useEffect(() => onUnauthorized(onLoggedOut), [onLoggedOut]);
@@ -46,6 +51,13 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
     } finally {
       onLoggedOut();
     }
+  };
+
+  /** Cross-section navigation: jump from a calendar event to its candidate
+   * card (queue for HR, shared list for managers/admins). */
+  const openCandidate = (id: string) => {
+    setPendingCandidateId(id);
+    navigate(user.role === "hr" ? "queue" : "candidates");
   };
 
   return (
@@ -95,13 +107,17 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
         </header>
 
         <main id="main-content" className="workspace-content" tabIndex={-1}>
-          {section === "kanban" ? (
-            <KanbanPage user={user} />
-          ) : (
+          {section === "calendar" && (
+            <CalendarPage user={user} onOpenCandidate={openCandidate} />
+          )}
+          {section === "kanban" && <KanbanPage user={user} />}
+          {section !== "calendar" && section !== "kanban" && (
             <CandidatesListPage
               key={section}
               user={user}
               mode={section === "deleted" ? "deleted" : section === "queue" ? "queue" : "all"}
+              openCandidateId={pendingCandidateId}
+              onCandidateOpened={() => setPendingCandidateId(null)}
             />
           )}
         </main>

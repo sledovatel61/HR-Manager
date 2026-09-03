@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, text
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
-HEAD_REVISION = "0004"
+HEAD_REVISION = "0005"
 EXPECTED_TABLES = {
     "users",
     "user_sessions",
@@ -25,6 +25,8 @@ EXPECTED_TABLES = {
     "candidates",
     "candidate_interactions",
     "candidate_transfers",
+    "events",
+    "event_history",
 }
 
 

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 
-export type WorkspaceSection = "queue" | "candidates" | "kanban" | "deleted";
+export type WorkspaceSection = "queue" | "candidates" | "calendar" | "kanban" | "deleted";
 
 const SECTION_HASHES: Record<WorkspaceSection, string> = {
   queue: "#/queue",
   candidates: "#/candidates",
+  calendar: "#/calendar",
   kanban: "#/kanban",
   deleted: "#/deleted",
 };

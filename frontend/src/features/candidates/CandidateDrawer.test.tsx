@@ -14,6 +14,10 @@ vi.mock("../../api", async (importOriginal) => {
     listCandidateInteractions: vi.fn(),
     createCandidateInteraction: vi.fn(),
     listCandidateTransfers: vi.fn(),
+    listEvents: vi.fn(),
+    updateEvent: vi.fn(),
+    listHrUsers: vi.fn(),
+    listEventHistory: vi.fn(),
   };
 });
 
@@ -66,6 +70,8 @@ beforeEach(() => {
   vi.mocked(api.getCandidate).mockResolvedValue(CANDIDATE);
   vi.mocked(api.listCandidateInteractions).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
   vi.mocked(api.listCandidateTransfers).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+  vi.mocked(api.listEvents).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+  vi.mocked(api.listEventHistory).mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
 });
 
 describe("CandidateDrawer", () => {
@@ -183,5 +189,108 @@ describe("CandidateDrawer", () => {
     await userEvent.click(await screen.findByRole("tab", { name: "Передачи" }));
     expect(await screen.findByText("hr_old → hr1")).toBeInTheDocument();
     expect(screen.getByText("Перераспределение")).toBeInTheDocument();
+  });
+});
+
+describe("CandidateDrawer events tab", () => {
+  it("lists candidate events and completes one with its version", async () => {
+    vi.mocked(api.listEvents).mockResolvedValue({
+      items: [
+        {
+          id: "55555555-5555-5555-5555-555555555555",
+          candidate_id: CANDIDATE.id,
+          candidate_full_name: CANDIDATE.full_name,
+          type: "interview",
+          title: "Собеседование",
+          note: null,
+          status: "scheduled",
+          starts_at: "2026-09-07T09:00:00Z",
+          ends_at: null,
+          remind_at: null,
+          completed_at: null,
+          author_user_id: HR.id,
+          author_username: "hr1",
+          assignee_user_id: HR.id,
+          assignee_username: "hr1",
+          version: 2,
+          created_at: "2026-09-06T09:00:00Z",
+          updated_at: "2026-09-06T09:00:00Z",
+        },
+      ],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+    vi.mocked(api.updateEvent).mockResolvedValue({} as never);
+    renderDrawer();
+
+    await userEvent.click(await screen.findByRole("tab", { name: "События" }));
+    expect(await screen.findByText("Собеседование: Собеседование")).toBeInTheDocument();
+    expect(api.listEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ candidate_id: CANDIDATE.id })
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Выполнено" }));
+    await waitFor(() =>
+      expect(api.updateEvent).toHaveBeenCalledWith("55555555-5555-5555-5555-555555555555", {
+        expected_version: 2,
+        status: "completed",
+      })
+    );
+  });
+});
+
+describe("CandidateDrawer events tab — «Показать ещё» accumulates", () => {
+  const makeEvent = (id: string, title: string) => ({
+    id,
+    candidate_id: CANDIDATE.id,
+    candidate_full_name: CANDIDATE.full_name,
+    type: "call" as const,
+    title,
+    note: null,
+    status: "scheduled" as const,
+    starts_at: "2026-09-07T09:00:00Z",
+    ends_at: null,
+    remind_at: null,
+    completed_at: null,
+    author_user_id: HR.id,
+    author_username: "hr1",
+    assignee_user_id: HR.id,
+    assignee_username: "hr1",
+    version: 1,
+    created_at: "2026-09-06T09:00:00Z",
+    updated_at: "2026-09-06T09:00:00Z",
+  });
+
+  it("appends the next page instead of replacing the list", async () => {
+    vi.mocked(api.listEvents)
+      .mockResolvedValueOnce({
+        items: [makeEvent("ev-1", "Первое событие")],
+        total: 2,
+        limit: 20,
+        offset: 0,
+      })
+      .mockResolvedValueOnce({
+        items: [makeEvent("ev-2", "Второе событие")],
+        total: 2,
+        limit: 20,
+        offset: 20,
+      });
+    renderDrawer();
+
+    await userEvent.click(await screen.findByRole("tab", { name: "События" }));
+    expect(await screen.findByText(/Первое событие/)).toBeInTheDocument();
+    expect(screen.queryByText(/Второе событие/)).not.toBeInTheDocument();
+
+    // The counter reflects the remaining items (2 - 1 = 1).
+    await userEvent.click(screen.getByRole("button", { name: "Показать ещё (1)" }));
+
+    expect(await screen.findByText(/Первое событие/)).toBeInTheDocument();
+    expect(await screen.findByText(/Второе событие/)).toBeInTheDocument();
+    expect(api.listEvents).toHaveBeenLastCalledWith(
+      expect.objectContaining({ candidate_id: CANDIDATE.id, offset: 20 })
+    );
+    // Nothing left to load.
+    expect(screen.queryByRole("button", { name: /Показать ещё/ })).not.toBeInTheDocument();
   });
 });
