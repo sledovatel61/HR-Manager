@@ -568,3 +568,145 @@ class EventHistoryList(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# --- Terminations (analytics phase) -----------------------------------------
+
+
+class CandidateTerminationCreate(BaseModel):
+    """Payload for ``POST /candidates/{id}/termination``.
+
+    ``terminated_at`` follows the same ISO 8601 contract as the rest of the
+    API: an offset/Z value, or a naive value interpreted as UTC. The reason
+    is required and stripped non-empty; it must not contain personal data of
+    other people.
+    """
+
+    terminated_at: datetime
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _strip_reason(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Причина увольнения обязательна.")
+        return value
+
+    @field_validator("terminated_at")
+    @classmethod
+    def _terminated_at_utc(cls, value: datetime) -> datetime:
+        return _as_utc(value)
+
+
+class CandidateTerminationOut(BaseModel):
+    """Public termination record (safe: no free-form personal data)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    candidate_id: UUID
+    terminated_at: datetime
+    reason: str
+    created_by_user_id: UUID
+    created_by_username: str
+
+
+class CandidateTerminationList(BaseModel):
+    """All termination records of one candidate, newest first."""
+
+    items: list[CandidateTerminationOut]
+    total: int
+
+
+# --- Analytics (analytics phase) ---------------------------------------------
+
+
+class AnalyticsPeriodOut(BaseModel):
+    """Normalized period echoed back by every analytics endpoint."""
+
+    from_: datetime = Field(serialization_alias="from", validation_alias="from")
+    to: datetime
+    timezone: str
+
+
+class AnalyticsFiltersOut(BaseModel):
+    """Echo of the applied filters (None = not filtered)."""
+
+    hr_id: UUID | None = None
+    source: str | None = None
+
+
+class AnalyticsKpisOut(BaseModel):
+    """The ten KPI numbers for the period."""
+
+    created_candidates: int
+    processed_candidates: int
+    calls: int
+    reached: int
+    interviews_scheduled: int
+    interviews_done: int
+    offers: int
+    hired: int
+    dismissed: int
+    terminated: int
+
+
+class AnalyticsConversionOut(BaseModel):
+    """Cohort conversion between two consecutive funnel stages."""
+
+    from_stage: str
+    to_stage: str
+    numerator: int
+    denominator: int
+    rate: float | None = None
+
+
+class AnalyticsSourceRowOut(BaseModel):
+    """Per-source breakdown row (fact-time source snapshot)."""
+
+    source: str
+    created: int
+    hired: int
+    dismissed: int
+    terminated: int
+
+
+class AnalyticsHrRowOut(BaseModel):
+    """Per-HR breakdown row (fact-time responsible HR)."""
+
+    hr_id: UUID
+    username: str
+    created: int
+    processed: int
+    hired: int
+    dismissed: int
+    terminated: int
+
+
+class AnalyticsKpiResponse(BaseModel):
+    """Body of ``GET /analytics/kpi``."""
+
+    period: AnalyticsPeriodOut
+    filters: AnalyticsFiltersOut
+    scope: Literal["team"]
+    kpis: AnalyticsKpisOut
+    conversions: list[AnalyticsConversionOut]
+    by_source: list[AnalyticsSourceRowOut]
+    by_hr: list[AnalyticsHrRowOut]
+
+
+class AnalyticsFunnelStageOut(BaseModel):
+    """One funnel stage and how many unique candidates reached it."""
+
+    stage: str
+    reached: int
+
+
+class AnalyticsFunnelResponse(BaseModel):
+    """Body of ``GET /analytics/funnel``."""
+
+    period: AnalyticsPeriodOut
+    filters: AnalyticsFiltersOut
+    stages: list[AnalyticsFunnelStageOut]
+    conversions: list[AnalyticsConversionOut]

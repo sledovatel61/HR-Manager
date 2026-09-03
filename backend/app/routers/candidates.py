@@ -25,16 +25,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.analytics_ledger import record_fact
 from app.audit import record_event
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import (
     CANDIDATE_STAGE_POSITION,
+    AnalyticsFactType,
     AuditAction,
     Candidate,
     CandidateInteraction,
     CandidateSource,
     CandidateStage,
+    CandidateTermination,
     CandidateTransfer,
     User,
     UserRole,
@@ -43,6 +46,9 @@ from app.schemas import (
     CandidateCreate,
     CandidateList,
     CandidateOut,
+    CandidateTerminationCreate,
+    CandidateTerminationList,
+    CandidateTerminationOut,
     CandidateTransferCreate,
     CandidateTransferOut,
     CandidateUpdate,
@@ -345,9 +351,18 @@ def create_candidate(
         stage_position=CANDIDATE_STAGE_POSITION[CandidateStage.NEW],
     )
     db.add(candidate)
-    db.commit()
-    db.refresh(candidate)
+    db.flush()  # candidate.id / created_at for the ledger fact below
 
+    # Analytics fact, candidate row and audit event commit in ONE transaction:
+    # an audit/ledger failure rolls the whole creation back.
+    record_fact(
+        db,
+        fact_type=AnalyticsFactType.CANDIDATE_CREATED,
+        candidate_id=candidate.id,
+        owner_user_id=owner.id,
+        fact_at=candidate.created_at,
+        source=payload.source.value,
+    )
     is_duplicate = conflict is not None
     _audit_candidate(
         db,
@@ -359,7 +374,10 @@ def create_candidate(
             f"source={candidate.source.value} owner={candidate.owner_user_id}"
             + (" confirmed_duplicate=true" if is_duplicate else "")
         ),
+        commit=False,
     )
+    db.commit()
+    db.refresh(candidate)
     return CandidateOut.model_validate(candidate)
 
 
@@ -431,9 +449,20 @@ def update_candidate(
         return CandidateOut.model_validate(candidate)
 
     candidate.updated_at = utc_now()
-    db.commit()
-    db.refresh(candidate)
 
+    # Stage transitions are analytics facts: recorded in the SAME transaction
+    # as the update and the audit events (single commit, all-or-nothing).
+    if stage_changed:
+        record_fact(
+            db,
+            fact_type=AnalyticsFactType.STAGE_CHANGED,
+            candidate_id=candidate.id,
+            owner_user_id=candidate.owner_user_id,
+            fact_at=candidate.updated_at,
+            stage_from=old_stage.value,
+            stage_to=candidate.stage.value,
+            source=candidate.source.value,
+        )
     if stage_changed:
         _audit_candidate(
             db,
@@ -442,6 +471,7 @@ def update_candidate(
             actor=user,
             candidate=candidate,
             details=f"{old_stage.value} -> {candidate.stage.value}",
+            commit=False,
         )
     if changes:
         _audit_candidate(
@@ -451,7 +481,10 @@ def update_candidate(
             actor=user,
             candidate=candidate,
             details="; ".join(changes),
+            commit=False,
         )
+    db.commit()
+    db.refresh(candidate)
     return CandidateOut.model_validate(candidate)
 
 
@@ -566,11 +599,24 @@ def add_interaction(
         comment=payload.comment,
     )
     db.add(interaction)
-    db.commit()
-    db.refresh(interaction)
+    db.flush()  # interaction.id / created_at for the ledger fact below
+
+    # The responsible HR at fact time is the candidate owner (not the author,
+    # who may be a manager acting on behalf of the HR).
+    record_fact(
+        db,
+        fact_type=AnalyticsFactType.INTERACTION_ADDED,
+        candidate_id=candidate.id,
+        owner_user_id=candidate.owner_user_id,
+        fact_at=interaction.created_at,
+        fact_subtype=interaction.type.value,
+        source=candidate.source.value,
+        interaction_id=interaction.id,
+    )
 
     # Interaction comments may contain personal data — they are never logged
     # or written into audit details; only type + candidate id are recorded.
+    # The fact, the interaction and the audit event commit in ONE transaction.
     _audit_candidate(
         db,
         request,
@@ -578,7 +624,10 @@ def add_interaction(
         actor=user,
         candidate=candidate,
         details=f"type={interaction.type.value}",
+        commit=False,
     )
+    db.commit()
+    db.refresh(interaction)
     return InteractionOut.model_validate(interaction)
 
 
@@ -669,10 +718,22 @@ def transfer_candidate(
     locked.updated_at = utc_now()
     db.add(transfer)
 
+    # The transfer is an analytics fact; the new owner is the responsible HR
+    # at fact time (later transfers never rewrite earlier facts).
+    record_fact(
+        db,
+        fact_type=AnalyticsFactType.TRANSFER,
+        candidate_id=locked.id,
+        owner_user_id=new_owner.id,
+        fact_at=locked.updated_at,
+        source=locked.source.value,
+        transfer_id=transfer.id,
+    )
+
     # The audit event joins the SAME transaction (commit=False): ownership
-    # change, immutable history record and audit event commit together with
-    # a single db.commit() — if the audit write fails, the whole operation
-    # rolls back and nothing is transferred.
+    # change, immutable history record, analytics fact and audit event commit
+    # together with a single db.commit() — if the audit write fails, the
+    # whole operation rolls back and nothing is transferred.
     _audit_candidate(
         db,
         request,
@@ -732,4 +793,100 @@ def list_transfers(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.post(
+    "/{candidate_id}/termination",
+    response_model=CandidateTerminationOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record a candidate termination (dismissal from the company)",
+)
+def create_termination(
+    candidate_id: str,
+    payload: CandidateTerminationCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CandidateTerminationOut:
+    """Register a business termination event with a date and a reason.
+
+    Deliberately separate from the ``fired`` candidate stage: a current
+    stage alone cannot prove when or why a dismissal happened, so the
+    analytics ``terminated`` metric is derived from these records only.
+    The termination record, its analytics fact and the audit event commit
+    in ONE transaction — an audit/ledger failure rolls everything back.
+    """
+    candidate = _get_visible_candidate(db, candidate_id, user)
+    if user.role == UserRole.HR and candidate.owner_user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="HR может регистрировать увольнение только своих кандидатов.",
+        )
+
+    termination = CandidateTermination(
+        candidate_id=candidate.id,
+        terminated_at=payload.terminated_at,
+        reason=payload.reason,
+        created_by_user_id=user.id,
+    )
+    db.add(termination)
+    db.flush()  # termination.id for the ledger fact below
+
+    record_fact(
+        db,
+        fact_type=AnalyticsFactType.TERMINATED,
+        candidate_id=candidate.id,
+        owner_user_id=candidate.owner_user_id,
+        fact_at=termination.terminated_at,
+        source=candidate.source.value,
+        termination_id=termination.id,
+    )
+
+    _audit_candidate(
+        db,
+        request,
+        AuditAction.CANDIDATE_TERMINATED,
+        actor=user,
+        candidate=candidate,
+        # Reason may contain free text — it is never written into audit
+        # details (only the technical id of the termination record).
+        details=f"termination={termination.id}",
+        commit=False,
+    )
+    db.commit()
+    db.refresh(termination)
+    return CandidateTerminationOut.model_validate(termination)
+
+
+@router.get(
+    "/{candidate_id}/terminations",
+    response_model=CandidateTerminationList,
+    summary="List the candidate termination records",
+)
+def list_terminations(
+    candidate_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CandidateTerminationList:
+    """All termination records of a candidate, newest first, with the same
+    visibility rules as the candidate card."""
+    candidate = _get_visible_candidate(db, candidate_id, user)
+
+    total = (
+        db.scalar(
+            select(func.count())
+            .select_from(CandidateTermination)
+            .where(CandidateTermination.candidate_id == candidate.id)
+        )
+        or 0
+    )
+    terminations = db.scalars(
+        select(CandidateTermination)
+        .where(CandidateTermination.candidate_id == candidate.id)
+        .order_by(CandidateTermination.terminated_at.desc(), CandidateTermination.id)
+    ).all()
+    return CandidateTerminationList(
+        items=[CandidateTerminationOut.model_validate(t) for t in terminations],
+        total=total,
     )
