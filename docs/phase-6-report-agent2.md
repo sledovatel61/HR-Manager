@@ -35,6 +35,10 @@
 | `686f2f8` | docs: analytics section in README and ARCHITECTURE; HTTP 422 constant |
 | `9f68758` | docs: phase 6 analytics report |
 | `b5ef66c` | docs: phase 6 report with PR #8 and CI links |
+| `9fdc1ac` | docs: exact commit titles in phase 6 report |
+
+Полный список коммитов ветки — `git log --oneline origin/main..arena/phase-6-analytics`;
+финальные docs-правки отчёта также видны там.
 
 ## Изменённые/новые файлы
 
@@ -199,8 +203,12 @@ reached/offer = 1), фильтры `hr_id`/`source` (неизвестный hr_i
 - **PR**: https://github.com/sledovatel61/HR-Manager/pull/8
   («Phase 6: Analytics and reports», `arena/phase-6-analytics` → `main`,
   состояние OPEN, mergeable; merge в main не выполняется).
-- **CI**: run https://github.com/sledovatel61/HR-Manager/actions/runs/33774446217
-  (событие `pull_request`, head `9f68758`) — conclusion `success`, 4/4 job:
-  `Backend checks`, `Frontend checks`, `Backend integration tests (PostgreSQL)`,
-  `Compose stack smoke test (dev + prod overlay)` — все `success`.
-  Реальные исполнения GitHub Actions на раннере репозитория.
+- **CI**: runs (событие `pull_request`, все — реальные исполнения GitHub Actions
+  на раннере репозитория):
+  - https://github.com/sledovatel61/HR-Manager/actions/runs/33774446217
+    (head `9f68758`) — conclusion `success`, 4/4 job;
+  - https://github.com/sledovatel61/HR-Manager/actions/runs/33774767503
+    (финальный head `9fdc1ac`) — conclusion `success`, 4/4 job:
+    `Backend checks`, `Frontend checks`, `Backend integration tests (PostgreSQL)`,
+    `Compose stack smoke test (dev + prod overlay)` — все `success`
+    (`gh pr checks` по PR #8: 4/4 pass).
