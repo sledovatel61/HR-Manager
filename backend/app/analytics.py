@@ -96,19 +96,19 @@ def resolve_period_query(
     end = _as_utc(to_dt)
     if start >= end:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Начало периода должно быть раньше окончания.",
         )
     if end - start > timedelta(days=MAX_PERIOD_DAYS):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Период не может превышать {MAX_PERIOD_DAYS} дней.",
         )
     try:
         tz = ZoneInfo(timezone)
     except ZoneInfoNotFoundError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Неизвестная таймзона: {timezone}.",
         ) from exc
 
@@ -116,7 +116,7 @@ def resolve_period_query(
         hr = db.get(User, hr_id)
         if hr is None or hr.role != UserRole.HR:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Фильтр по ответственному должен указывать на пользователя с ролью HR.",
             )
 

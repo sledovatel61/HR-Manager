@@ -122,7 +122,7 @@ def export(
     _require_analytics_access(user)
     if format != "csv":
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Поддерживается только формат экспорта csv.",
         )
     pq = _resolve_query(db, from_, to, timezone, hr_id, source)
