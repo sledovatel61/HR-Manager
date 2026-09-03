@@ -402,3 +402,133 @@ export interface EventUpdateInput {
   status?: CalendarEventStatus;
   assignee_user_id?: string | null;
 }
+
+// --- Analytics (analytics phase) ---------------------------------------------
+
+/** Period presets; custom shows explicit from/to date inputs. */
+export type AnalyticsPreset = "day" | "week" | "month" | "quarter" | "custom";
+
+/** Views of the analytics section; period/filters survive switching. */
+export type AnalyticsView = "kpi" | "funnel" | "breakdowns";
+
+export const ANALYTICS_PRESET_LABELS: Record<AnalyticsPreset, string> = {
+  day: "День",
+  week: "Неделя",
+  month: "Месяц",
+  quarter: "Квартал",
+  custom: "Произвольный",
+};
+
+export interface AnalyticsPeriod {
+  from: string;
+  to: string;
+  timezone: string;
+}
+
+export interface AnalyticsFilters {
+  hr_id: string | null;
+  source: CandidateSource | null;
+}
+
+export interface AnalyticsKpis {
+  created_candidates: number;
+  processed_candidates: number;
+  calls: number;
+  reached: number;
+  interviews_scheduled: number;
+  interviews_done: number;
+  offers: number;
+  hired: number;
+  dismissed: number;
+  terminated: number;
+}
+
+export interface AnalyticsConversion {
+  from_stage: string;
+  to_stage: string;
+  numerator: number;
+  denominator: number;
+  rate: number | null;
+}
+
+export interface AnalyticsSourceRow {
+  source: CandidateSource;
+  created: number;
+  hired: number;
+  dismissed: number;
+  terminated: number;
+}
+
+export interface AnalyticsHrRow {
+  hr_id: string;
+  username: string;
+  created: number;
+  processed: number;
+  hired: number;
+  dismissed: number;
+  terminated: number;
+}
+
+export interface AnalyticsKpiReport {
+  period: AnalyticsPeriod;
+  filters: AnalyticsFilters;
+  scope: "team";
+  kpis: AnalyticsKpis;
+  conversions: AnalyticsConversion[];
+  by_source: AnalyticsSourceRow[];
+  by_hr: AnalyticsHrRow[];
+}
+
+export interface AnalyticsFunnelStage {
+  stage: CandidateStage;
+  reached: number;
+}
+
+export interface AnalyticsFunnelReport {
+  period: AnalyticsPeriod;
+  filters: AnalyticsFilters;
+  stages: AnalyticsFunnelStage[];
+  conversions: AnalyticsConversion[];
+}
+
+/** Query parameters shared by /analytics/kpi, /analytics/funnel, /analytics/export. */
+export interface AnalyticsQuery {
+  from: string;
+  to: string;
+  timezone?: string;
+  hr_id?: string;
+  source?: CandidateSource;
+}
+
+/** Russian labels of the ten KPIs (definition tooltips in KPI_DEFINITIONS). */
+export const KPI_LABELS: Record<keyof AnalyticsKpis, string> = {
+  created_candidates: "Создано кандидатов",
+  processed_candidates: "В работе",
+  calls: "Звонки",
+  reached: "Дозвоны",
+  interviews_scheduled: "Интервью назначено",
+  interviews_done: "Интервью проведено",
+  offers: "Офферы",
+  hired: "Наймы",
+  dismissed: "Отказы",
+  terminated: "Увольнения",
+};
+
+/** Metric definitions shown as tooltips/screen-reader text (server-side fact
+ * definitions — the UI never recomputes them). */
+export const KPI_DEFINITIONS: Record<keyof AnalyticsKpis, string> = {
+  created_candidates:
+    "Уникальные кандидаты, созданные в периоде (включая позже удалённых — это исторический факт).",
+  processed_candidates:
+    "Уникальные кандидаты с деловой активностью в периоде: взаимодействие, смена этапа, передача или событие создано/завершено.",
+  calls: "Записи взаимодействий типа «звонок», созданные в периоде.",
+  reached: "Уникальные кандидаты, переведённые на этап «Дозвон» в периоде.",
+  interviews_scheduled: "События-интервью, созданные в периоде (уникальные события).",
+  interviews_done: "События-интервью, завершённые в периоде (уникальные события).",
+  offers: "Уникальные кандидаты, впервые переведённые на этап «Оффер» в периоде.",
+  hired: "Уникальные кандидаты, переведённые на этапы «Оформлен»/«Вышел» в периоде.",
+  dismissed:
+    "Уникальные кандидаты с переходом на этап «Отказ» в периоде (историческое событие, не текущий статус).",
+  terminated:
+    "Уникальные кандидаты с зарегистрированным увольнением (дата + причина) в периоде. Статус «Уволен» без даты не учитывается.",
+};
