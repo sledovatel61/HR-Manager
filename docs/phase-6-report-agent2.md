@@ -33,7 +33,8 @@
 | `6b79d34` | feat(backend): analytics API with facts ledger, terminations and CSV export |
 | `fa2c766` | feat(frontend): analytics section with presets, filters, KPI/funnel/breakdowns and CSV export |
 | `686f2f8` | docs: analytics section in README and ARCHITECTURE; HTTP 422 constant |
-| `9f68758` | docs: phase 6 report (agent-2) |
+| `9f68758` | docs: phase 6 analytics report |
+| `b5ef66c` | docs: phase 6 report with PR #8 and CI links |
 
 ## Изменённые/новые файлы
 
