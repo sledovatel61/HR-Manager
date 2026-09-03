@@ -1,4 +1,6 @@
 import type {
+  AuditEvent,
+  CalendarEvent,
   Candidate,
   CandidateCreateInput,
   CandidateInteraction,
@@ -10,9 +12,12 @@ import type {
   CandidateUpdateInput,
   CurrentUser,
   DuplicateCandidateDetail,
+  EventCreateInput,
+  EventHistoryEntry,
+  EventListQuery,
+  EventUpdateInput,
   HealthResponse,
   Paginated,
-  AuditEvent,
   User,
   UserListItems,
 } from "./types";
@@ -318,4 +323,49 @@ export async function listCandidateTransfers(
   return request<Paginated<CandidateTransfer>>(
     `/candidates/${id}/transfers?limit=${limit}&offset=${offset}`
   );
+}
+
+// --- Phase 5: calendar events ------------------------------------------------
+
+/** Server-side event listing (calendar, upcoming/overdue, reminders). */
+export async function listEvents(params: EventListQuery = {}): Promise<Paginated<CalendarEvent>> {
+  const search = new URLSearchParams();
+  if (params.from) search.set("from", params.from);
+  if (params.to) search.set("to", params.to);
+  if (params.owner_id) search.set("owner_id", params.owner_id);
+  if (params.candidate_id) search.set("candidate_id", params.candidate_id);
+  if (params.type) search.set("type", params.type);
+  if (params.status) search.set("status", params.status);
+  if (params.remind_from) search.set("remind_from", params.remind_from);
+  if (params.remind_to) search.set("remind_to", params.remind_to);
+  if (params.sort) search.set("sort", params.sort);
+  if (params.direction) search.set("direction", params.direction);
+  if (params.limit !== undefined) search.set("limit", String(params.limit));
+  if (params.offset !== undefined) search.set("offset", String(params.offset));
+  const suffix = search.toString();
+  return request<Paginated<CalendarEvent>>(`/events${suffix ? `?${suffix}` : ""}`);
+}
+
+/** One event in the current user's visibility zone. */
+export async function getEvent(id: string): Promise<CalendarEvent> {
+  return request<CalendarEvent>(`/events/${id}`);
+}
+
+/** Create a scheduled event for an accessible candidate. */
+export async function createEvent(input: EventCreateInput): Promise<CalendarEvent> {
+  return request<CalendarEvent>("/events", { method: "POST", body: input });
+}
+
+/** Edit/reschedule/complete/postpone (optimistic concurrency). */
+export async function updateEvent(id: string, input: EventUpdateInput): Promise<CalendarEvent> {
+  return request<CalendarEvent>(`/events/${id}`, { method: "PATCH", body: input });
+}
+
+/** Immutable business history of an event (oldest first, paginated). */
+export async function listEventHistory(
+  id: string,
+  limit = 50,
+  offset = 0
+): Promise<Paginated<EventHistoryEntry>> {
+  return request<Paginated<EventHistoryEntry>>(`/events/${id}/history?limit=${limit}&offset=${offset}`);
 }

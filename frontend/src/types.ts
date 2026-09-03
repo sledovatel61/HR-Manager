@@ -278,3 +278,127 @@ export interface CandidateTransferResult {
   transfer: CandidateTransfer;
   candidate: Candidate;
 }
+
+// --- Phase 5: calendar events ------------------------------------------------
+
+/** Closed event-type vocabulary (backend EventType). */
+export type CalendarEventType = "call" | "interview" | "reminder";
+
+export const EVENT_TYPE_LABELS: Record<CalendarEventType, string> = {
+  call: "Звонок",
+  interview: "Собеседование",
+  reminder: "Напоминание",
+};
+
+/** Closed event-status vocabulary (backend EventStatus). */
+export type CalendarEventStatus = "scheduled" | "completed" | "postponed";
+
+export const EVENT_STATUS_LABELS: Record<CalendarEventStatus, string> = {
+  scheduled: "Запланировано",
+  completed: "Выполнено",
+  postponed: "Отложено",
+};
+
+/** Immutable business-history kinds (backend EventHistoryKind). */
+export type EventHistoryKind =
+  | "created"
+  | "updated"
+  | "rescheduled"
+  | "completed"
+  | "postponed"
+  | "assignee_changed";
+
+export const EVENT_HISTORY_KIND_LABELS: Record<EventHistoryKind, string> = {
+  created: "Создано",
+  updated: "Изменено",
+  rescheduled: "Перенесено",
+  completed: "Выполнено",
+  postponed: "Отложено",
+  assignee_changed: "Смена исполнителя",
+};
+
+/** A calendar event (backend EventOut). All timestamps are UTC ISO 8601. */
+export interface CalendarEvent {
+  id: string;
+  candidate_id: string;
+  candidate_full_name: string;
+  type: CalendarEventType;
+  title: string;
+  note: string | null;
+  status: CalendarEventStatus;
+  starts_at: string;
+  ends_at: string | null;
+  remind_at: string | null;
+  completed_at: string | null;
+  author_user_id: string;
+  author_username: string;
+  assignee_user_id: string;
+  assignee_username: string;
+  /** Optimistic-concurrency counter: PATCH must send the current value. */
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One immutable business-history entry (backend EventHistoryOut). */
+export interface EventHistoryEntry {
+  id: string;
+  event_id: string;
+  changed_by_user_id: string;
+  changed_by_username: string;
+  kind: EventHistoryKind;
+  status_old: string | null;
+  status_new: string | null;
+  starts_at_old: string | null;
+  starts_at_new: string | null;
+  ends_at_old: string | null;
+  ends_at_new: string | null;
+  remind_at_old: string | null;
+  remind_at_new: string | null;
+  assignee_user_id_old: string | null;
+  assignee_user_id_new: string | null;
+  title_changed: boolean;
+  note_changed: boolean;
+  created_at: string;
+}
+
+/** GET /events query parameters (server-side filters). */
+export interface EventListQuery {
+  from?: string;
+  to?: string;
+  owner_id?: string;
+  candidate_id?: string;
+  type?: CalendarEventType;
+  status?: CalendarEventStatus;
+  /** Filter by the reminder moment (remind_at or reminder starts_at). */
+  remind_from?: string;
+  remind_to?: string;
+  sort?: "starts_at" | "created_at" | "updated_at";
+  direction?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}
+
+/** POST /events payload. */
+export interface EventCreateInput {
+  candidate_id: string;
+  type: CalendarEventType;
+  title: string;
+  note?: string | null;
+  starts_at: string;
+  ends_at?: string | null;
+  remind_at?: string | null;
+  assignee_user_id?: string | null;
+}
+
+/** PATCH /events/{id} payload (expected_version is REQUIRED). */
+export interface EventUpdateInput {
+  expected_version: number;
+  title?: string;
+  note?: string | null;
+  starts_at?: string;
+  ends_at?: string | null;
+  remind_at?: string | null;
+  status?: CalendarEventStatus;
+  assignee_user_id?: string | null;
+}
