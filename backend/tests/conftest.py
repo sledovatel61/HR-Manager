@@ -10,6 +10,7 @@ they never fall back to SQLite.
 
 import os
 from collections.abc import Iterator
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -26,6 +27,9 @@ from app.models import (
     CandidateSource,
     CandidateStage,
     CandidateTransfer,
+    Event,
+    EventStatus,
+    EventType,
     User,
     UserRole,
 )
@@ -164,6 +168,47 @@ def make_candidate(
     return candidate
 
 
+def make_event(
+    db: Session,
+    *,
+    candidate: Candidate,
+    author: User,
+    assignee: User,
+    type_: EventType = EventType.CALL,
+    title: str = "Созвон",
+    note: str | None = None,
+    status: EventStatus = EventStatus.SCHEDULED,
+    starts_at: datetime | None = None,
+    ends_at: datetime | None = None,
+    remind_at: datetime | None = None,
+    completed_at: datetime | None = None,
+    version: int = 1,
+) -> Event:
+    """Create and persist a calendar event (times default around a fixed
+    near-future moment so status/consistency checks hold)."""
+    starts_at = starts_at or utc_now() + timedelta(hours=2)
+    if status == EventStatus.COMPLETED:
+        completed_at = completed_at or utc_now()
+    event = Event(
+        candidate_id=candidate.id,
+        author_user_id=author.id,
+        assignee_user_id=assignee.id,
+        type=type_,
+        title=title,
+        note=note,
+        status=status,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        remind_at=remind_at,
+        completed_at=completed_at,
+        version=version,
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return event
+
+
 def _require_integration_url() -> str:
     """Return TEST_DATABASE_URL when it points at PostgreSQL, else skip."""
     url = os.environ.get("TEST_DATABASE_URL")
@@ -209,8 +254,9 @@ def pg_client(pg_settings: Settings, pg_engine: Engine) -> Iterator[TestClient]:
     with pg_engine.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE TABLE audit_log, candidate_transfers, candidate_interactions, "
-                "candidates, user_sessions, users RESTART IDENTITY CASCADE"
+                "TRUNCATE TABLE audit_log, event_history, events, candidate_transfers, "
+                "candidate_interactions, candidates, user_sessions, users "
+                "RESTART IDENTITY CASCADE"
             )
         )
     app = create_app(pg_settings, engine=pg_engine)

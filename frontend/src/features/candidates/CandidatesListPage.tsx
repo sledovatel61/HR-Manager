@@ -37,10 +37,19 @@ type SortField = "created_at" | "updated_at" | "full_name" | "stage";
 interface CandidatesListPageProps {
   user: User;
   mode: CandidatesMode;
+  /** Cross-section navigation: a candidate card to open on mount. */
+  openCandidateId?: string | null;
+  /** Called once the cross-section candidate card has been opened. */
+  onCandidateOpened?: () => void;
 }
 
 /** Table view over GET /candidates: server-side search, filters, sort, page. */
-export default function CandidatesListPage({ user, mode }: CandidatesListPageProps) {
+export default function CandidatesListPage({
+  user,
+  mode,
+  openCandidateId = null,
+  onCandidateOpened,
+}: CandidatesListPageProps) {
   const isDeleted = mode === "deleted";
   const canSeeAll = user.role !== "hr";
 
@@ -70,6 +79,14 @@ export default function CandidatesListPage({ user, mode }: CandidatesListPagePro
   );
 
   const { items, total, loading, error, reload } = useCandidatesList(queryObject);
+
+  useEffect(() => {
+    if (openCandidateId) {
+      setDrawerCandidateId(openCandidateId);
+      onCandidateOpened?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cross-section hand-off fires once
+  }, [openCandidateId]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;

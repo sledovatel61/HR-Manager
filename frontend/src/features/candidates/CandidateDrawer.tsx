@@ -6,9 +6,12 @@ import {
   getCandidate,
   listCandidateInteractions,
   listCandidateTransfers,
+  listEvents,
   updateCandidate,
+  updateEvent,
   type DuplicateCandidateError,
 } from "../../api";
+import { EventFormModal } from "../calendar/EventFormModal";
 import { Button, IconButton } from "../../design-system/components/Button";
 import { ConfirmDialog } from "../../design-system/components/ConfirmDialog";
 import { Drawer } from "../../design-system/components/Drawer";
@@ -19,8 +22,11 @@ import { Tabs } from "../../design-system/components/Tabs";
 import { useToast } from "../../design-system/components/ToastContext";
 import {
   CANDIDATE_STAGE_ORDER,
+  EVENT_STATUS_LABELS,
+  EVENT_TYPE_LABELS,
   SOURCE_LABELS,
   STAGE_LABELS,
+  type CalendarEvent,
   type Candidate,
   type CandidateInteraction,
   type CandidateInteractionType,
@@ -37,7 +43,7 @@ import "./drawer.css";
 const INTERACTION_PAGE_SIZE = 20;
 const TRANSFER_PAGE_SIZE = 20;
 
-type DrawerTab = "info" | "interactions" | "transfers";
+type DrawerTab = "info" | "interactions" | "events" | "transfers";
 
 interface CandidateDrawerProps {
   candidateId: string;
@@ -142,6 +148,7 @@ export function CandidateDrawer({
   const tabs = [
     { id: "info" as const, label: "Сведения" },
     { id: "interactions" as const, label: "Взаимодействия" },
+    { id: "events" as const, label: "События" },
     { id: "transfers" as const, label: "Передачи" },
   ];
 
@@ -193,6 +200,14 @@ export function CandidateDrawer({
           )}
 
           {tab === "interactions" && <InteractionsTab candidate={candidate} />}
+
+          {tab === "events" && (
+            <EventsTab
+              candidate={candidate}
+              user={user}
+              onChanged={onChanged}
+            />
+          )}
 
           {tab === "transfers" && (
             <TransfersTab candidate={candidate} onOpenTransfer={() => setTransferOpen(true)} />
@@ -682,6 +697,148 @@ function TransfersTab({ candidate, onOpenTransfer }: TransfersTabProps) {
             </Button>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+interface EventsTabProps {
+  candidate: Candidate;
+  user: User;
+  onChanged: () => void;
+}
+
+/** Events of the candidate: server-filtered list, create/edit dialog and
+ * quick complete/postpone actions. */
+function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
+  const { pushToast } = useToast();
+  const [items, setItems] = useState<CalendarEvent[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editEvent, setEditEvent] = useState<CalendarEvent | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const page = await listEvents({
+        candidate_id: candidate.id,
+        sort: "starts_at",
+        direction: "asc",
+        limit: 20,
+        offset,
+      });
+      setItems(page.items);
+      setTotal(page.total);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Не удалось загрузить события.");
+    } finally {
+      setLoading(false);
+    }
+  }, [candidate.id, offset]);
+
+  useEffect(() => {
+    void load();
+  }, [load, reloadTick]);
+
+  const quickComplete = async (event: CalendarEvent) => {
+    if (busyId) return;
+    setBusyId(event.id);
+    try {
+      await updateEvent(event.id, { expected_version: event.version, status: "completed" });
+      pushToast("success", "Событие выполнено.");
+      setReloadTick((tick) => tick + 1);
+    } catch (caught) {
+      pushToast(
+        "danger",
+        caught instanceof ApiError ? caught.message : "Не удалось выполнить событие."
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="interactions-tab">
+      <Button variant="secondary" icon="plus" onClick={() => setCreateOpen(true)}>
+        Запланировать событие
+      </Button>
+
+      {loading && <SkeletonRows rows={3} columns={2} />}
+      {!loading && error && <ErrorState onRetry={() => void load()} />}
+      {!loading && !error && items.length === 0 && (
+        <p className="muted-text">Событий пока нет.</p>
+      )}
+      {!loading && !error && items.length > 0 && (
+        <>
+          <ul className="events-list">
+            {items.map((event) => (
+              <li key={event.id} className="events-item">
+                <button
+                  type="button"
+                  className="events-item-main"
+                  onClick={() => setEditEvent(event)}
+                >
+                  <span className="events-item-title">
+                    {EVENT_TYPE_LABELS[event.type]}: {event.title}
+                  </span>
+                  <span className="events-item-meta">
+                    {formatDateTime(event.starts_at)} · {EVENT_STATUS_LABELS[event.status]}
+                  </span>
+                </button>
+                {event.status !== "completed" && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busyId === event.id}
+                    onClick={() => void quickComplete(event)}
+                  >
+                    Выполнено
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+          {total > items.length && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setOffset((current) => current + 20)}
+            >
+              Показать ещё ({total - items.length})
+            </Button>
+          )}
+        </>
+      )}
+
+      <EventFormModal
+        open={createOpen}
+        user={user}
+        candidate={candidate}
+        onClose={() => setCreateOpen(false)}
+        onSaved={() => {
+          setCreateOpen(false);
+          setReloadTick((tick) => tick + 1);
+        }}
+      />
+
+      {editEvent && (
+        <EventFormModal
+          open
+          user={user}
+          event={editEvent}
+          onClose={() => setEditEvent(null)}
+          onSaved={(updated) => {
+            setEditEvent(null);
+            if (updated.candidate_id !== candidate.id) onChanged();
+            setReloadTick((tick) => tick + 1);
+          }}
+        />
       )}
     </div>
   );
