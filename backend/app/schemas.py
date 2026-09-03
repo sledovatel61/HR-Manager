@@ -611,6 +611,13 @@ class CandidateTerminationOut(BaseModel):
     created_by_user_id: UUID
     created_by_username: str
 
+    @field_validator("terminated_at")
+    @classmethod
+    def _terminated_at_utc(cls, value: datetime) -> datetime:
+        # SQLite DATETIME returns naive values; emit an explicit UTC offset
+        # so responses never shift with the host's local timezone.
+        return _as_utc(value)
+
 
 class CandidateTerminationList(BaseModel):
     """All termination records of one candidate, newest first."""
