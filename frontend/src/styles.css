@@ -324,3 +324,13 @@ body {
   clip: rect(0 0 0 0);
   border: 0;
 }
+
+/* Full-viewport wrapper for the session-check state (post-login layout lives
+   in the app-shell). */
+.auth-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-canvas);
+}

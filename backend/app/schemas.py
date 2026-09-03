@@ -262,6 +262,7 @@ class CandidateOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+    deleted_by_user_id: UUID | None = None
     is_deleted: bool = False
 
 
@@ -317,3 +318,77 @@ class InteractionList(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# --- HR directory (phase 4): minimal user cards for owner pickers ------------
+
+
+class UserListItem(BaseModel):
+    """Minimal, safe user card for owner/HR pickers (no admin fields)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    username: str
+    full_name: str
+    role: UserRole
+    is_active: bool
+
+
+class UserListItems(BaseModel):
+    """Non-paginated list of minimal user cards."""
+
+    items: list[UserListItem]
+    total: int
+
+
+# --- Candidate transfer history (phase 4) ------------------------------------
+
+
+class CandidateTransferCreate(BaseModel):
+    """Payload for ``POST /candidates/{id}/transfer``."""
+
+    new_owner_user_id: UUID
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Причина передачи обязательна.")
+        return value
+
+
+class TransferOut(BaseModel):
+    """One immutable ownership-transfer record."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    candidate_id: UUID
+    initiator_user_id: UUID
+    initiator_username: str
+    from_user_id: UUID
+    from_username: str
+    to_user_id: UUID
+    to_username: str
+    reason: str
+    created_at: datetime
+
+
+class TransferList(BaseModel):
+    """Paginated transfer history."""
+
+    items: list[TransferOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class CandidateTransferOut(BaseModel):
+    """``POST /candidates/{id}/transfer`` response: the new record plus the
+    refreshed candidate, so the UI can update itself without refetching."""
+
+    transfer: TransferOut
+    candidate: CandidateOut

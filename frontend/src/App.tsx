@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchCurrentUser, login as defaultLogin } from "./api";
-import Dashboard from "./components/Dashboard";
 import LoginForm from "./components/LoginForm";
+import Workspace from "./app-shell/Workspace";
+import { ToastProvider } from "./design-system/components/Toast";
 import type { CurrentUser } from "./types";
 
 type AuthState = "loading" | "anonymous" | "authenticated";
@@ -34,20 +35,23 @@ export default function App({ currentUserFetcher, loginFetcher = defaultLogin }:
     void restore();
   }, [restore]);
 
-  return (
-    <div className="page">
-      <header className="header">
-        <h1>HR Manager</h1>
-        <p>Идентификация и безопасность — вход, роли и аудит</p>
-      </header>
-
-      {state === "loading" && (
+  if (state === "loading") {
+    return (
+      <div className="auth-screen">
         <section className="panel">
           <p className="muted">Проверяем сессию…</p>
         </section>
-      )}
+      </div>
+    );
+  }
 
-      {state === "anonymous" && (
+  if (state === "anonymous" || !current) {
+    return (
+      <div className="page">
+        <header className="header">
+          <h1>HR Manager</h1>
+          <p>Вход в рабочее пространство рекрутинга</p>
+        </header>
         <LoginForm
           onLoggedIn={(me) => {
             setCurrent(me);
@@ -55,17 +59,19 @@ export default function App({ currentUserFetcher, loginFetcher = defaultLogin }:
           }}
           loginFetcher={loginFetcher}
         />
-      )}
+      </div>
+    );
+  }
 
-      {state === "authenticated" && current && (
-        <Dashboard
-          current={current}
-          onLoggedOut={() => {
-            setCurrent(null);
-            setState("anonymous");
-          }}
-        />
-      )}
-    </div>
+  return (
+    <ToastProvider>
+      <Workspace
+        current={current}
+        onLoggedOut={() => {
+          setCurrent(null);
+          setState("anonymous");
+        }}
+      />
+    </ToastProvider>
   );
 }

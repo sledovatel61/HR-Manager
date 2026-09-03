@@ -13,14 +13,21 @@ HR-Manager/
 │   │   ├── config.py         # настройки из переменных окружения + production-guard
 │   │   ├── db.py             # engine + проверка доступности БД
 │   │   ├── main.py           # фабрика приложения, lifespan, GET /health
-│   │   ├── schemas.py        # Pydantic-схемы ответов
-│   │   └── routers/health.py # health endpoint
-│   ├── alembic/              # миграции БД (заготовка: включение pgcrypto)
+│   │   ├── models.py         # User/сессии/аудит + кандидаты/взаимодействия/передачи
+│   │   ├── schemas.py        # Pydantic-схемы запросов/ответов
+│   │   └── routers/          # health, auth, users(+справочник HR),
+│   │                         # audit, candidates(+передачи)
+│   ├── alembic/              # миграции БД (0001–0004, головная — передачи)
 │   ├── tests/                # unit (SQLite in-memory) + integration (PostgreSQL)
 │   ├── requirements*.txt     # зафиксированные зависимости (lock-файлы)
 │   └── Dockerfile            # образ: миграции + uvicorn
 ├── frontend/                 # React + TypeScript + Vite
-│   ├── src/                  # статусная страница этапа 1
+│   ├── src/
+│   │   ├── design-system/    # токены + общие UI-примитивы (из дизайн-трека)
+│   │   ├── app-shell/        # Workspace: навигация, пользователь, выход
+│   │   ├── features/candidates/  # таблица, Kanban, карточка, передача, дубли
+│   │   ├── api.ts / types.ts # API-клиент и общие контракты
+│   │   └── App.tsx           # вход/сессия + гейт на workspace
 │   ├── nginx.conf            # SPA fallback + прокси /api → backend
 │   └── Dockerfile            # сборка Node → nginx
 ├── infra/
@@ -165,6 +172,68 @@ HR-Manager/
 `candidate_deleted`, `candidate_restored`, `duplicate_candidate_created`
 пишутся в существующую `audit_log` с `candidate_id`; в `details` — только
 идентификаторы, стадии и источники, **без** персональных данных.
+
+## Рабочий интерфейс HR (этап 4)
+
+### Контракт передачи ответственности
+
+- **`POST /candidates/{id}/transfer`**, тело `{new_owner_user_id, reason}`.
+  В одной транзакции: проверка видимости (чужой/удалённый — 404, как
+  принято), блокировка строки кандидата `SELECT … FOR UPDATE` с повторным
+  чтением (`populate_existing`) и повторной проверкой видимости/владельца —
+  конкурентная передача не может перезаписать чужое изменение (409 или
+  404 в зависимости от момента), атомарная смена `owner_user_id`, запись
+  неизменяемой строки в `candidate_transfers` (инициатор, from, to, причина,
+  время) и аудит-событие `candidate_transferred` (только id, без PII и без
+  текста причины). Новый владелец — только другой активный пользователь
+  роли `hr`; пустая причина отклоняется на уровне Pydantic и CHECK-ограничения
+  `ck_candidate_transfers_reason_not_blank`. HR передаёт только своего
+  кандидата (иначе 404/403), manager/admin — любого видимого. Ответ —
+  `{transfer, candidate}`: UI обновляется без повторной загрузки.
+- **`GET /candidates/{id}/transfers`** — пагинируемая история передач
+  (старые записи первыми) с правилами видимости карточки: после передачи
+  бывший HR не читает ни карточку, ни историю через прямой URL.
+- **`GET /admin/users/hr`** — минимальный справочник активных HR
+  (id/username/full_name/role/is_active) для выбора ответственного;
+  административные поля не отдаются.
+- **`GET /candidates?include_deleted=true`** — серверный список мягко
+  удалённых (видимость та же, что у обычного списка); используется экраном
+  «Удалённые».
+
+Бизнес-история передач хранится только в `candidate_transfers`; audit log
+остаётся журналом безопасности и не является историей кандидата.
+
+### Frontend-структура (production)
+
+```
+frontend/src/
+  design-system/        # перенесённые из дизайн-прототипа токены и примитивы
+    tokens.css          # semantic-токены (единственное место «сырых» цветов)
+    global.css          # базовые стили, focus-ring, reduced-motion, skip-link
+    icons/Icon.tsx      # единый inline-SVG набор (ноль зависимостей)
+    components/         # Button, Field, Modal, Drawer, ConfirmDialog, Tabs,
+                        # StatusChip, StateViews, Toast (+Context), useFocusTrap
+  app-shell/            # Workspace (sidebar/topbar/выход) + hash-навигация
+  features/candidates/  # таблица, Kanban, drawer карточки, форма создания,
+                        # диалог передачи, дубль-подтверждение, deleted-экран
+```
+
+- Навигация — лёгкий hash-роутер (`useWorkspaceSection`), без React Router;
+  глобальное состояние — локальные хуки (React state), без внешних
+  state-библиотек; DnD в Kanban — нативный HTML5 + обязательная
+  keyboard-альтернатива (select этапа на каждой карточке).
+- Kanban-стратегия загрузки (задокументированное решение): каждая из 11
+  колонок постранично запрашивает свою ленту
+  `GET /candidates?stage=…&limit=20&offset=…` и растёт кнопкой «Показать
+  ещё»; доска никогда не запрашивает всю базу разом.
+- Оптимистичная смена этапа: мгновенное перемещение + блокировка повтора,
+  серверное подтверждение и жёсткий откат при ошибке (таблица — только
+  серверные данные, без оптимизма).
+- Сессии: любой `401` вне `/auth/login` через `api.onUnauthorized`
+  возвращает приложение на экран входа; `403` отображается как состояние
+  недостаточных прав; CSRF-заголовок добавляется в API-клиенте как и раньше.
+- Моки API используются только в тестах; production-экраны без
+  `mockData` и без client-only операций.
 
 ## Стратегия тестирования
 

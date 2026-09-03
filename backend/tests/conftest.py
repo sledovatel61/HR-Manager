@@ -25,6 +25,7 @@ from app.models import (
     Candidate,
     CandidateSource,
     CandidateStage,
+    CandidateTransfer,
     User,
     UserRole,
 )
@@ -103,6 +104,29 @@ def make_user(
     db.commit()
     db.refresh(user)
     return user
+
+
+def make_transfer(
+    db: Session,
+    *,
+    candidate: Candidate,
+    initiator: User,
+    from_user: User,
+    to_user: User,
+    reason: str = "Перераспределение нагрузки",
+) -> CandidateTransfer:
+    """Create and persist an immutable ownership-transfer record."""
+    transfer = CandidateTransfer(
+        candidate_id=candidate.id,
+        initiator_user_id=initiator.id,
+        from_user_id=from_user.id,
+        to_user_id=to_user.id,
+        reason=reason,
+    )
+    db.add(transfer)
+    db.commit()
+    db.refresh(transfer)
+    return transfer
 
 
 def make_candidate(
@@ -185,8 +209,8 @@ def pg_client(pg_settings: Settings, pg_engine: Engine) -> Iterator[TestClient]:
     with pg_engine.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE TABLE audit_log, candidate_interactions, candidates, "
-                "user_sessions, users RESTART IDENTITY CASCADE"
+                "TRUNCATE TABLE audit_log, candidate_transfers, candidate_interactions, "
+                "candidates, user_sessions, users RESTART IDENTITY CASCADE"
             )
         )
     app = create_app(pg_settings, engine=pg_engine)
