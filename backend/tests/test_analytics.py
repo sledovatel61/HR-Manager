@@ -517,9 +517,9 @@ def test_termination_endpoint_and_metric(client: TestClient, db_session: Session
     assert response.status_code == 201
     body = response.json()
     assert body["candidate_id"] == str(candidate.id)
-    assert datetime.fromisoformat(body["terminated_at"]).astimezone(UTC) == datetime.fromisoformat(
-        terminated_at
-    )
+    parsed = datetime.fromisoformat(body["terminated_at"])
+    assert parsed.tzinfo is not None  # API must emit an explicit UTC offset
+    assert parsed.astimezone(UTC) == datetime.fromisoformat(terminated_at)
     assert body["reason"] == "Переезд в другой город"
     assert body["created_by_username"] == "manager"
 
@@ -527,6 +527,9 @@ def test_termination_endpoint_and_metric(client: TestClient, db_session: Session
     assert listing.status_code == 200
     assert listing.json()["total"] == 1
     assert listing.json()["items"][0]["reason"] == "Переезд в другой город"
+    listed_at = datetime.fromisoformat(listing.json()["items"][0]["terminated_at"])
+    assert listed_at.tzinfo is not None
+    assert listed_at.astimezone(UTC) == datetime.fromisoformat(terminated_at)
 
     kpis = client.get(f"/analytics/kpi?from={_q(frm)}&to={_q(to)}").json()["kpis"]
     assert kpis["terminated"] == 1

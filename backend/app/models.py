@@ -15,7 +15,7 @@ UUID columns via the Alembic migration.
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from sqlalchemy import (
@@ -29,13 +29,45 @@ from sqlalchemy import (
     Text,
     text,
 )
+from sqlalchemy.engine.interfaces import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 from app.utils import utc_now
 
 
 class Base(DeclarativeBase):
     """Declarative base for all ORM models."""
+
+
+class UTCDateTime(TypeDecorator):
+    """Datetime column that is always timezone-aware UTC at the ORM boundary.
+
+    PostgreSQL ``timestamptz`` round-trips aware datetimes, but SQLite's
+    DATETIME has no timezone support and returns naive values. Serializing a
+    naive value shifts timestamps by the machine-local offset on non-UTC
+    hosts (a Moscow reviewer saw termination times move by 3 hours). This
+    decorator normalizes both directions: naive input is interpreted as UTC
+    (the documented API contract), and reads always carry ``tzinfo=UTC`` so
+    API responses never depend on the host timezone.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 class UserRole(StrEnum):
@@ -891,7 +923,7 @@ class CandidateTermination(Base):
     candidate_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
     )
-    terminated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    terminated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     reason: Mapped[str] = mapped_column(String(500), nullable=False)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
