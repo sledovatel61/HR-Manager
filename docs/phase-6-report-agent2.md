@@ -5,8 +5,9 @@
 Контракт этапа — `prompts/PHASE_6_PROMPT.md`; все решения ниже сверены с ним.
 
 > Статус: ветка опубликована на GitHub (`origin/arena/phase-6-analytics`),
-> открыт PR #8 в `main` (без merge), CI GitHub Actions завершился зелёным
-> (4/4 job). Ссылки и run ID — в разделе «CI/PR» ниже.
+> открыт PR #8 в `main` (без merge). CI GitHub Actions зелёный, в т.ч. на
+> head с исправлениями по ревью оркестратора (см. «Ревью-фиксы» и «CI/PR»
+> ниже).
 
 ## Объём и план (зафиксированы до реализации)
 
@@ -36,6 +37,8 @@
 | `9f68758` | docs: phase 6 analytics report |
 | `b5ef66c` | docs: phase 6 report with PR #8 and CI links |
 | `9fdc1ac` | docs: exact commit titles in phase 6 report |
+| `3b1839d` | style(backend): remove trailing whitespace in migration 0006 |
+| `fab3b19` | fix(backend): always emit explicit UTC offset for termination timestamps |
 
 Полный список коммитов ветки — `git log --oneline origin/main..arena/phase-6-analytics`;
 финальные docs-правки отчёта также видны там.
@@ -154,13 +157,21 @@ JSON общего формата, частичный «успешный» фай
 Базовая линия (до изменений, на `002fa45`): backend 176 passed, frontend 69
 passed, `npm audit` 0 уязвимостей.
 
-Backend (после изменений):
+Backend (после изменений и ревью-фиксов):
 ```
-ruff check . → All checks passed!
-ruff format --check . → 48 files already formatted
+ruff check app tests alembic → All checks passed!
+ruff format --check app tests alembic → 48 files already formatted
 mypy app tests → Success: no issues found in 41 source files
-pytest -q → 209 passed (SQLite unit + PostgreSQL integration)
+TZ=Europe/Moscow TEST_DATABASE_URL=postgresql+psycopg://…/hr_manager_test \
+  pytest -q → 209 passed, 0 failed, 0 skipped (SQLite unit + PostgreSQL integration)
+git diff --check origin/main...HEAD → чисто (весь диапазон ветки)
 ```
+Для локального запуска интеграционных тестов обязателен `TEST_DATABASE_URL`
+(PostgreSQL URL, тот же формат, что в `.github/workflows/ci.yml`:
+`postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/hr_manager_test`).
+Без него pytest пропускает интеграционные и миграционные тесты (45 skips:
+именно это видит ревьюер без настроенного PostgreSQL). SQLite-сюита отдельно:
+`APP_ENV=test pytest -q` → 164 passed, 45 skipped, 0 failed.
 Frontend (после изменений):
 ```
 npm run lint → чисто · npm run typecheck → чисто
@@ -198,6 +209,30 @@ reached/offer = 1), фильтры `hr_id`/`source` (неизвестный hr_i
 - Формат CSV-имени файла продублирован на клиенте только как fallback:
   клиент берёт имя из `Content-Disposition` сервера.
 
+## Ревью-фиксы (по результатам независимой проверки оркестратора)
+
+1. **Timezone увольнений на SQLite.** Независимая проверка на машине с
+   TZ=Europe/Moscow поймала: `test_termination_endpoint_and_metric` падал,
+   т.к. SQLite DATETIME возвращает naive-значения и endpoint отдавал
+   `terminated_at` без offset — на не-UTC машине инстант сдвигался на 3 часа
+   (в песочнице TZ=UTC баг не проявлялся). Исправлено на уровне модели:
+   `UTCDateTime` TypeDecorator (`backend/app/models.py`) нормализует
+   terminated_at в aware UTC на чтении/записи для любого диалекта;
+   дополнительно `CandidateTerminationOut` получил валидатор `_as_utc`
+   (контракт на границе API). Тест усилен: явная проверка
+   `tzinfo is not None` в ответах POST и GET — теперь падает на любой
+   машине при регрессии. Проверено: тест зелёный в TZ=UTC, Europe/Moscow,
+   America/New_York, Asia/Tokyo; полная сюита 209 passed в TZ=Europe/Moscow.
+2. **Trailing whitespace.** `git diff --check` по диапазону
+   `origin/main...HEAD` ловил 5 строк в `0006_analytics_ledger_and_terminations.py`
+   (мой локальный `git diff --check` проверял только рабочее дерево и потому
+   молчал). Убрано (коммит `3b1839d`), проверка по всему диапазону ветки —
+   чисто (exit 0).
+3. **Интеграционные тесты у ревьюера.** `45 skipped` у оркестратора — это
+   интеграционные и миграционные тесты, пропущенные без `TEST_DATABASE_URL`
+   (см. команду выше). На GitHub Actions они выполняются в service-контейнере
+   PostgreSQL; локально — с локальным PostgreSQL по той же URL-схеме.
+
 ## CI/PR
 
 - **PR**: https://github.com/sledovatel61/HR-Manager/pull/8
@@ -208,7 +243,10 @@ reached/offer = 1), фильтры `hr_id`/`source` (неизвестный hr_i
   - https://github.com/sledovatel61/HR-Manager/actions/runs/33774446217
     (head `9f68758`) — conclusion `success`, 4/4 job;
   - https://github.com/sledovatel61/HR-Manager/actions/runs/33774767503
-    (финальный head `9fdc1ac`) — conclusion `success`, 4/4 job:
+    (head `9fdc1ac`) — conclusion `success`, 4/4 job;
+  - https://github.com/sledovatel61/HR-Manager/actions/runs/33779265894
+    (head `fab3b19`, с ревью-фиксами) — conclusion `success`, 4/4 job:
     `Backend checks`, `Frontend checks`, `Backend integration tests (PostgreSQL)`,
     `Compose stack smoke test (dev + prod overlay)` — все `success`
-    (`gh pr checks` по PR #8: 4/4 pass).
+    (`gh pr checks` по PR #8: 4/4 pass). Полный список запусков ветки:
+    `gh run list --branch arena/phase-6-analytics`.
