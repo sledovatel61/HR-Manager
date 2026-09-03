@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 
-export type WorkspaceSection = "queue" | "candidates" | "calendar" | "kanban" | "deleted";
+export type WorkspaceSection =
+  | "queue"
+  | "candidates"
+  | "calendar"
+  | "kanban"
+  | "deleted"
+  | "analytics";
 
 const SECTION_HASHES: Record<WorkspaceSection, string> = {
   queue: "#/queue",
@@ -8,6 +14,7 @@ const SECTION_HASHES: Record<WorkspaceSection, string> = {
   calendar: "#/calendar",
   kanban: "#/kanban",
   deleted: "#/deleted",
+  analytics: "#/analytics",
 };
 
 function sectionFromHash(hash: string, fallback: WorkspaceSection): WorkspaceSection {

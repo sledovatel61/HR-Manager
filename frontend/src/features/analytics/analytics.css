@@ -1,0 +1,154 @@
+/* Analytics section (Phase 6). Follows the design-system tokens; the generic
+   .data-table styles live in styles.css. */
+
+.analytics {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.analytics-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.analytics-period {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+
+.analytics-custom {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.analytics-custom .field {
+  margin: 0;
+}
+
+.analytics-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: flex-end;
+}
+
+.analytics-filters .field {
+  margin: 0;
+  min-width: 180px;
+}
+
+.analytics-export {
+  margin-left: auto;
+  align-self: flex-end;
+}
+
+.analytics-empty-note {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  color: var(--text-secondary);
+  font-size: var(--text-size-sm);
+}
+
+.analytics-tabs {
+  margin-bottom: var(--space-2);
+}
+
+.analytics-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* --- KPI strip -------------------------------------------------------------- */
+
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-3);
+}
+
+.kpi-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-app);
+}
+
+.kpi-value {
+  font-size: var(--text-size-xl);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-label {
+  color: var(--text-secondary);
+  font-size: var(--text-size-sm);
+}
+
+.kpi-card-warning {
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg);
+}
+
+.rejection-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--space-3);
+}
+
+/* --- Blocks ------------------------------------------------------------------ */
+
+.analytics-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.analytics-block-title {
+  margin: 0;
+  font-size: var(--text-size-lg);
+  font-weight: var(--font-weight-semibold);
+}
+
+.analytics-block-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-size-sm);
+  max-width: 72ch;
+}
+
+/* --- Data table extensions ----------------------------------------------------- */
+
+.data-table .num-cell {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table tbody th {
+  font-weight: var(--font-weight-medium);
+}
+
+.rate-na {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .analytics * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
