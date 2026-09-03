@@ -6,8 +6,8 @@
 - **PR для ревью:** https://github.com/sledovatel61/HR-Manager/pull/6
 - **Коммиты ветки:**
   - реализация: `49ac0f01b9266230d7411d77cec618d300f185d8`;
-  - отчёт: `468ce54ebbdcc628f5c0153955cc2fe740be6ed3` (docs-only,
-    актуальный tip ветки).
+  - отчёт: `468ce54ebbdcc628f5c0153955cc2fe740be6ed3`;
+  - финализация отчёта: `075ba80316683fd08d5d4251dcfb913fad55b914` (docs-only, актуальный tip ветки).
 - **База ветки:** актуальный `origin/main` =
   `86ef5eda18759fe1aa984361ed86ee1eb43037b0`, включающий принятый
   merge-коммит этапа 3 `19caa3df211a431455052df7a825b5099921984a`.
