@@ -35,6 +35,7 @@ from app.models import (
     CandidateInteraction,
     CandidateSource,
     CandidateStage,
+    CandidateTransfer,
     User,
     UserRole,
 )
@@ -42,11 +43,15 @@ from app.schemas import (
     CandidateCreate,
     CandidateList,
     CandidateOut,
+    CandidateTransferCreate,
+    CandidateTransferOut,
     CandidateUpdate,
     DuplicateCandidateDetail,
     InteractionCreate,
     InteractionList,
     InteractionOut,
+    TransferList,
+    TransferOut,
 )
 from app.utils import (
     client_ip,
@@ -147,7 +152,10 @@ def _build_list_query(
 ) -> Select[tuple[Candidate]]:
     """Shared filter builder for list/count queries."""
     conditions = _scope_for_user(user)
-    if not include_deleted:
+    if include_deleted:
+        # The deleted-candidates view: only soft-deleted rows, same RBAC scope.
+        conditions.append(Candidate.deleted_at.is_not(None))
+    else:
         conditions.append(Candidate.deleted_at.is_(None))
 
     if query:
@@ -256,6 +264,7 @@ def list_candidates(
     stage: CandidateStage | None = Query(default=None),
     owner_id: UUID | None = Query(default=None),
     source: CandidateSource | None = Query(default=None),
+    include_deleted: bool = Query(default=False),
     sort: str = Query(default="created_at"),
     direction: str = Query(default="desc", pattern="^(asc|desc)$"),
     limit: int = Query(default=_DEFAULT_LIST_LIMIT, ge=1, le=_MAX_LIST_LIMIT),
@@ -269,9 +278,18 @@ def list_candidates(
       email;
     * HRs always see only their own candidates regardless of ``owner_id``;
       managers/admins may filter by owner;
-    * soft-deleted candidates are excluded.
+    * soft-deleted candidates are excluded by default;
+      ``include_deleted=true`` scopes the listing to soft-deleted candidates
+      only (the deleted-candidates view) — visibility rules stay the same.
     """
-    stmt = _build_list_query(user, query=query, stage=stage, owner_id=owner_id, source=source)
+    stmt = _build_list_query(
+        user,
+        query=query,
+        stage=stage,
+        owner_id=owner_id,
+        source=source,
+        include_deleted=include_deleted,
+    )
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
 
@@ -562,3 +580,156 @@ def add_interaction(
         details=f"type={interaction.type.value}",
     )
     return InteractionOut.model_validate(interaction)
+
+
+# --- Ownership transfer ------------------------------------------------------
+
+
+def _resolve_new_owner(db: Session, candidate: Candidate, requested_id: UUID) -> User:
+    """The new owner must be a different, active HR user."""
+    if requested_id == candidate.owner_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Передача тому же ответственному невозможна.",
+        )
+    new_owner = db.get(User, requested_id)
+    if new_owner is None or not new_owner.is_active or new_owner.role != UserRole.HR:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Новый ответственный должен быть активным пользователем с ролью HR.",
+        )
+    return new_owner
+
+
+@router.post(
+    "/{candidate_id}/transfer",
+    response_model=CandidateTransferOut,
+    summary="Transfer candidate responsibility to another HR",
+)
+def transfer_candidate(
+    candidate_id: str,
+    payload: CandidateTransferCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CandidateTransferOut:
+    """Transfer a candidate to another HR in one atomic transaction.
+
+    * visibility first (foreign/deleted candidates keep the established 404);
+    * the candidate row is locked ``FOR UPDATE`` and re-checked against the
+      authorized snapshot, so two concurrent transfers cannot interleave;
+    * an HR may transfer only their own candidate; managers/admins may
+      transfer any visible candidate;
+    * the new owner must be a different, active HR user;
+    * one immutable history row is created (initiator, from, to, reason,
+      time) alongside a PII-free audit event.
+    """
+    candidate = _get_visible_candidate(db, candidate_id, user)
+
+    # HRs may only hand over their own candidates; managers/admins may
+    # transfer any visible one. Existence stays hidden for foreign HRs (404
+    # from _get_visible_candidate above).
+    if user.role == UserRole.HR and candidate.owner_user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="HR может передавать только своих кандидатов.",
+        )
+
+    new_owner = _resolve_new_owner(db, candidate, payload.new_owner_user_id)
+
+    # Lock the candidate row and re-read its current state (populate_existing
+    # defeats the identity-map cache so we see the post-lock row version).
+    snapshot_owner = candidate.owner_user_id
+    locked = db.execute(
+        select(Candidate)
+        .where(Candidate.id == candidate.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    if locked.deleted_at is not None or not _can_see(user, locked):
+        # Ownership changed concurrently and the candidate is no longer
+        # accessible to this caller: keep the established no-leak 404.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Кандидат не найден.")
+    if locked.owner_user_id != snapshot_owner:
+        # The row changed while we waited for the lock — never overwrite a
+        # concurrent transfer silently.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ответственный кандидата уже изменился; обновите данные и повторите.",
+        )
+
+    transfer = CandidateTransfer(
+        candidate_id=candidate.id,
+        initiator_user_id=user.id,
+        from_user_id=candidate.owner_user_id,
+        to_user_id=new_owner.id,
+        reason=payload.reason,
+    )
+    locked.owner_user_id = new_owner.id
+    locked.updated_at = utc_now()
+    db.add(transfer)
+
+    # The audit event joins the SAME transaction (commit=False): ownership
+    # change, immutable history record and audit event commit together with
+    # a single db.commit() — if the audit write fails, the whole operation
+    # rolls back and nothing is transferred.
+    _audit_candidate(
+        db,
+        request,
+        AuditAction.CANDIDATE_TRANSFERRED,
+        actor=user,
+        candidate=locked,
+        details=f"to={new_owner.id} from={transfer.from_user_id}",
+        commit=False,
+    )
+    db.commit()
+    db.refresh(transfer)
+    db.refresh(locked)
+
+    return CandidateTransferOut(
+        transfer=TransferOut.model_validate(transfer),
+        candidate=CandidateOut.model_validate(locked),
+    )
+
+
+@router.get(
+    "/{candidate_id}/transfers",
+    response_model=TransferList,
+    summary="List the candidate ownership-transfer history",
+)
+def list_transfers(
+    candidate_id: str,
+    limit: int = Query(default=_DEFAULT_LIST_LIMIT, ge=1, le=_MAX_LIST_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TransferList:
+    """Paginated transfer history with the same visibility rules as the card.
+
+    After a transfer the previous HR can no longer read the card or the
+    history through a direct URL (404); the new owner, managers and admins
+    see the current data.
+    """
+    candidate = _get_visible_candidate(db, candidate_id, user)
+
+    total = (
+        db.scalar(
+            select(func.count())
+            .select_from(CandidateTransfer)
+            .where(CandidateTransfer.candidate_id == candidate.id)
+        )
+        or 0
+    )
+    transfers = db.scalars(
+        select(CandidateTransfer)
+        .where(CandidateTransfer.candidate_id == candidate.id)
+        .order_by(CandidateTransfer.created_at.asc(), CandidateTransfer.id)
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    return TransferList(
+        items=[TransferOut.model_validate(t) for t in transfers],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )

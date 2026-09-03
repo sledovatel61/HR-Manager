@@ -113,6 +113,31 @@ export const STAGE_LABELS: Record<CandidateStage, string> = {
   rejected: "Отказ",
 };
 
+/** Semantic tone used to style stage chips without relying on color alone. */
+export type StageTone =
+  | "neutral"
+  | "info"
+  | "teal"
+  | "violet"
+  | "indigo"
+  | "amber"
+  | "success"
+  | "danger";
+
+export const STAGE_TONE: Record<CandidateStage, StageTone> = {
+  new: "neutral",
+  contacted: "info",
+  reached: "teal",
+  interview_scheduled: "violet",
+  interview_done: "indigo",
+  offer: "amber",
+  hired: "success",
+  started: "indigo",
+  probation: "teal",
+  fired: "danger",
+  rejected: "neutral",
+};
+
 /** Candidate acquisition sources (closed set shared with the backend). */
 export type CandidateSource =
   | "site"
@@ -176,6 +201,8 @@ export interface CandidateListQuery {
   stage?: CandidateStage;
   source?: CandidateSource;
   owner_id?: string;
+  /** Scope the listing to soft-deleted candidates (the trash view). */
+  include_deleted?: boolean;
   sort?: "created_at" | "updated_at" | "full_name" | "stage";
   direction?: "asc" | "desc";
   limit?: number;
@@ -196,7 +223,7 @@ export interface CandidateCreateInput {
 /** PATCH /candidates/{id} payload — all fields optional. */
 export type CandidateUpdateInput = Partial<
   Omit<CandidateCreateInput, "full_name"> & { full_name?: string }
->;
+> & { stage?: CandidateStage };
 
 /** POST /candidates/{id}/interactions payload. */
 export interface CandidateInteractionCreateInput {
@@ -208,4 +235,46 @@ export interface CandidateInteractionCreateInput {
 export interface DuplicateCandidateDetail {
   message: string;
   duplicates: Candidate[];
+}
+
+// --- Phase 4: transfer history & HR directory ---------------------------------
+
+/** Minimal safe user card for owner/HR pickers (backend UserListItem). */
+export interface UserListItem {
+  id: string;
+  username: string;
+  full_name: string;
+  role: UserRole;
+  is_active: boolean;
+}
+
+export interface UserListItems {
+  items: UserListItem[];
+  total: number;
+}
+
+/** One immutable ownership-transfer record (backend TransferOut). */
+export interface CandidateTransfer {
+  id: string;
+  candidate_id: string;
+  initiator_user_id: string;
+  initiator_username: string;
+  from_user_id: string;
+  from_username: string;
+  to_user_id: string;
+  to_username: string;
+  reason: string;
+  created_at: string;
+}
+
+/** POST /candidates/{id}/transfer payload. */
+export interface CandidateTransferInput {
+  new_owner_user_id: string;
+  reason: string;
+}
+
+/** POST /candidates/{id}/transfer response (record + refreshed candidate). */
+export interface CandidateTransferResult {
+  transfer: CandidateTransfer;
+  candidate: Candidate;
 }

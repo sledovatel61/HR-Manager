@@ -6,11 +6,15 @@ import {
   createCandidateInteraction,
   deleteCandidate,
   listCandidateInteractions,
+  listCandidateTransfers,
   listCandidates,
+  listHrUsers,
   login,
   logout,
+  onUnauthorized,
   readCsrfCookie,
   restoreCandidate,
+  transferCandidate,
 } from "./api";
 
 const API_BASE = "/api";
@@ -181,11 +185,59 @@ describe("Candidates API client", () => {
       type: "call",
       comment: "Звонок",
     });
-    expect(String(calls[3][0])).toBe(`${API_BASE}/candidates/${candidate.id}/interactions`);
+    expect(String(calls[3][0])).toBe(
+      `${API_BASE}/candidates/${candidate.id}/interactions?limit=50&offset=0`
+    );
     expect(calls[3][1]?.method).toBe("GET");
     for (const [, init] of calls.slice(0, 3)) {
       expect((init?.headers as Record<string, string>)?.["X-CSRF-Token"]).toBe("tok123");
     }
     expect((calls[3][1]?.headers as Record<string, string>)?.["X-CSRF-Token"]).toBeUndefined();
+  });
+});
+
+// --- Phase 4: HR directory, transfers, session-expiry notifications ---------
+
+describe("Phase 4 API surface", () => {
+  it("listHrUsers reads the HR directory endpoint", async () => {
+    const fetchMock = stubFetch(Response.json({ items: [], total: 0 }));
+    await listHrUsers();
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`${API_BASE}/admin/users/hr`);
+  });
+
+  it("transferCandidate posts reason and new owner", async () => {
+    const fetchMock = stubFetch(Response.json({ transfer: {}, candidate: {} }));
+    await transferCandidate("c-1", {
+      new_owner_user_id: "u-2",
+      reason: "Перераспределение",
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe(`${API_BASE}/candidates/c-1/transfer`);
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({
+      new_owner_user_id: "u-2",
+      reason: "Перераспределение",
+    });
+  });
+
+  it("listCandidateTransfers paginates the history endpoint", async () => {
+    const fetchMock = stubFetch(Response.json({ items: [], total: 0, limit: 20, offset: 0 }));
+    await listCandidateTransfers("c-1", 20, 40);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      `${API_BASE}/candidates/c-1/transfers?limit=20&offset=40`
+    );
+  });
+
+  it("emits onUnauthorized for 401 responses outside login", async () => {
+    stubFetch(Response.json({ detail: "Сессия истекла." }, { status: 401 }));
+    const listener = vi.fn();
+    const unsubscribe = onUnauthorized(listener);
+
+    await expect(listCandidates({})).rejects.toBeInstanceOf(ApiError);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    await expect(listCandidates({})).rejects.toBeInstanceOf(ApiError);
+    expect(listener).toHaveBeenCalledTimes(1); // unsubscribed
   });
 });
