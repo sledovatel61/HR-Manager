@@ -73,6 +73,13 @@ class AuditAction(StrEnum):
     CANDIDATE_INTERACTION_ADDED = "candidate_interaction_added"
     DUPLICATE_CANDIDATE_CREATED = "duplicate_candidate_created"
     CANDIDATE_TRANSFERRED = "candidate_transferred"
+    # Calendar events (roadmap phase: events and calendar).
+    EVENT_CREATED = "event_created"
+    EVENT_UPDATED = "event_updated"
+    EVENT_RESCHEDULED = "event_rescheduled"
+    EVENT_COMPLETED = "event_completed"
+    EVENT_POSTPONED = "event_postponed"
+    EVENT_ASSIGNEE_CHANGED = "event_assignee_changed"
 
 
 class CandidateStage(StrEnum):
@@ -511,3 +518,220 @@ class CandidateTransfer(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<CandidateTransfer id={self.id} candidate_id={self.candidate_id}>"
+
+
+class EventType(StrEnum):
+    """Kinds of calendar events tied to a candidate (PRODUCT_SPEC §5).
+
+    ``call``/``interview`` are scheduled activities with an optional
+    ``remind_at``; ``reminder`` is a pure reminder whose ``starts_at`` is
+    the reminder moment itself. No other types exist on purpose — the
+    vocabulary is a closed API contract mirrored in
+    ``frontend/src/types.ts``.
+    """
+
+    CALL = "call"
+    INTERVIEW = "interview"
+    REMINDER = "reminder"
+
+
+class EventStatus(StrEnum):
+    """Lifecycle of an event: planned, done or postponed.
+
+    ``completed`` is terminal (no further edits). ``postponed`` requires a
+    new ``starts_at`` (postponing always re-schedules).
+    """
+
+    SCHEDULED = "scheduled"
+    COMPLETED = "completed"
+    POSTPONED = "postponed"
+
+
+class EventHistoryKind(StrEnum):
+    """Kinds of immutable business-history entries for an event."""
+
+    CREATED = "created"
+    UPDATED = "updated"
+    RESCHEDULED = "rescheduled"
+    COMPLETED = "completed"
+    POSTPONED = "postponed"
+    ASSIGNEE_CHANGED = "assignee_changed"
+
+
+class Event(Base):
+    """A calendar event bound to a candidate (call, interview, reminder).
+
+    All timestamps are timezone-aware UTC. ``version`` is the optimistic
+    concurrency counter: every mutation must carry the current
+    ``expected_version`` and bumps it. Deletion is physical only through
+    the candidate FK cascade; there is no event delete endpoint.
+    """
+
+    __tablename__ = "events"
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('call', 'interview', 'reminder')",
+            name="ck_events_type_valid",
+        ),
+        CheckConstraint(
+            "status IN ('scheduled', 'completed', 'postponed')",
+            name="ck_events_status_valid",
+        ),
+        CheckConstraint(
+            "length(trim(title)) > 0",
+            name="ck_events_title_not_blank",
+        ),
+        CheckConstraint(
+            "ends_at IS NULL OR ends_at > starts_at",
+            name="ck_events_ends_after_starts",
+        ),
+        CheckConstraint(
+            "remind_at IS NULL OR remind_at <= starts_at",
+            name="ck_events_remind_before_start",
+        ),
+        CheckConstraint(
+            "(status = 'completed' AND completed_at IS NOT NULL) "
+            "OR (status <> 'completed' AND completed_at IS NULL)",
+            name="ck_events_completed_at_consistent",
+        ),
+        Index("ix_events_candidate_id", "candidate_id"),
+        Index("ix_events_assignee_user_id", "assignee_user_id"),
+        Index("ix_events_starts_at", "starts_at"),
+        Index("ix_events_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    author_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    assignee_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    type: Mapped[EventType] = mapped_column(
+        Enum(
+            EventType,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[EventStatus] = mapped_column(
+        Enum(
+            EventStatus,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=EventStatus.SCHEDULED,
+    )
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remind_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    candidate: Mapped[Candidate] = relationship(foreign_keys=[candidate_id])
+    author: Mapped[User] = relationship(foreign_keys=[author_user_id])
+    assignee: Mapped[User] = relationship(foreign_keys=[assignee_user_id])
+    history: Mapped[list["EventHistory"]] = relationship(
+        back_populates="event", cascade="all, delete-orphan", order_by="EventHistory.created_at"
+    )
+
+    @property
+    def author_username(self) -> str:
+        """Username of the event author (lazy relationship access)."""
+        return self.author.username if self.author is not None else ""
+
+    @property
+    def assignee_username(self) -> str:
+        """Username of the assignee (lazy relationship access)."""
+        return self.assignee.username if self.assignee is not None else ""
+
+    @property
+    def candidate_full_name(self) -> str:
+        """Candidate name for list rendering (lazy relationship access)."""
+        return self.candidate.full_name if self.candidate is not None else ""
+
+    @property
+    def is_overdue(self) -> bool:
+        """A scheduled event whose start has passed is overdue."""
+        return self.status == EventStatus.SCHEDULED and self.starts_at <= utc_now()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<Event id={self.id} type={self.type} status={self.status}>"
+
+
+class EventHistory(Base):
+    """Immutable business history of one event mutation.
+
+    One row per mutation with typed old/new values for the safe fields
+    (timestamps, ids, status). ``title``/``note`` are recorded only as
+    changed-flags — their content is never copied into history or audit.
+    """
+
+    __tablename__ = "event_history"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('created', 'updated', 'rescheduled', 'completed', "
+            "'postponed', 'assignee_changed')",
+            name="ck_event_history_kind_valid",
+        ),
+        Index("ix_event_history_event_id", "event_id"),
+        Index("ix_event_history_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE"), nullable=False
+    )
+    changed_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[EventHistoryKind] = mapped_column(
+        Enum(
+            EventHistoryKind,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    status_old: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status_new: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    starts_at_old: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    starts_at_new: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ends_at_old: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ends_at_new: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remind_at_old: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remind_at_new: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assignee_user_id_old: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    assignee_user_id_new: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    title_changed: Mapped[bool] = mapped_column(nullable=False, default=False)
+    note_changed: Mapped[bool] = mapped_column(nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    event: Mapped[Event] = relationship(back_populates="history")
+    changed_by: Mapped[User] = relationship(foreign_keys=[changed_by_user_id])
+
+    @property
+    def changed_by_username(self) -> str:
+        """Username of the user who performed the mutation."""
+        return self.changed_by.username if self.changed_by is not None else ""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<EventHistory id={self.id} event_id={self.event_id} kind={self.kind}>"

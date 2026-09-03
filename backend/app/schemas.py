@@ -6,20 +6,36 @@ or a password hash.
 """
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, ValidationInfo, field_validator
 
 from app.models import (
     AuditAction,
     CandidateInteractionType,
     CandidateSource,
     CandidateStage,
+    EventHistoryKind,
+    EventStatus,
+    EventType,
     UserRole,
 )
 from app.utils import normalize_phone
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Canonical form of incoming timestamps: timezone-aware UTC.
+
+    ISO 8601 with an offset/Z is expected; a naive value is interpreted as
+    UTC (documented contract). All stored timestamps are UTC; the UI renders
+    them in the browser's local timezone.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
 
 # --- Health (phase 0) -------------------------------------------------------
 
@@ -392,3 +408,163 @@ class CandidateTransferOut(BaseModel):
 
     transfer: TransferOut
     candidate: CandidateOut
+
+
+# --- Calendar events (phase 5) ----------------------------------------------
+
+
+class EventCreate(BaseModel):
+    """Payload for ``POST /events``.
+
+    ``status`` always starts as ``scheduled`` — transitions happen through
+    PATCH. ``assignee_user_id`` defaults per role rules server-side.
+    """
+
+    candidate_id: UUID
+    type: EventType
+    title: str = Field(min_length=1, max_length=200)
+    note: str | None = Field(default=None, max_length=2000)
+    starts_at: datetime
+    ends_at: datetime | None = None
+    remind_at: datetime | None = None
+    assignee_user_id: UUID | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Название события обязательно.")
+        return value
+
+    @field_validator("note")
+    @classmethod
+    def _strip_note(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None and value.strip() else None
+
+    @field_validator("starts_at", "ends_at", "remind_at")
+    @classmethod
+    def _times_are_utc(cls, value: datetime | None) -> datetime | None:
+        return _as_utc(value) if value is not None else None
+
+    @field_validator("ends_at")
+    @classmethod
+    def _ends_after_starts(cls, value: datetime | None, info: ValidationInfo) -> datetime | None:
+        starts_at = info.data.get("starts_at")
+        if value is not None and starts_at is not None and value <= starts_at:
+            raise ValueError("Окончание должно быть позже начала.")
+        return value
+
+    @field_validator("remind_at")
+    @classmethod
+    def _remind_before_start(cls, value: datetime | None, info: ValidationInfo) -> datetime | None:
+        starts_at = info.data.get("starts_at")
+        if value is not None and starts_at is not None and value > starts_at:
+            raise ValueError("Напоминание должно быть не позже начала события.")
+        return value
+
+
+class EventUpdate(BaseModel):
+    """Payload for ``PATCH /events/{id}`` — all fields optional.
+
+    ``expected_version`` is REQUIRED: the optimistic-concurrency guard. On
+    mismatch the server answers 409 without applying anything, so a stale
+    editor can never silently overwrite a newer version.
+    """
+
+    expected_version: int = Field(ge=1)
+    title: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=2000)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    remind_at: datetime | None = None
+    status: EventStatus | None = None
+    assignee_user_id: UUID | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Название события обязательно.")
+        return value
+
+    @field_validator("note")
+    @classmethod
+    def _strip_note(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None and value.strip() else None
+
+    @field_validator("starts_at", "ends_at", "remind_at")
+    @classmethod
+    def _times_are_utc(cls, value: datetime | None) -> datetime | None:
+        return _as_utc(value) if value is not None else None
+
+
+class EventOut(BaseModel):
+    """Public event representation."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    candidate_id: UUID
+    candidate_full_name: str
+    type: EventType
+    title: str
+    note: str | None = None
+    status: EventStatus
+    starts_at: datetime
+    ends_at: datetime | None = None
+    remind_at: datetime | None = None
+    completed_at: datetime | None = None
+    author_user_id: UUID
+    author_username: str
+    assignee_user_id: UUID
+    assignee_username: str
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class EventList(BaseModel):
+    """Paginated event list."""
+
+    items: list[EventOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class EventHistoryOut(BaseModel):
+    """One immutable business-history entry of an event mutation."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    event_id: UUID
+    changed_by_user_id: UUID
+    changed_by_username: str
+    kind: EventHistoryKind
+    status_old: str | None = None
+    status_new: str | None = None
+    starts_at_old: datetime | None = None
+    starts_at_new: datetime | None = None
+    ends_at_old: datetime | None = None
+    ends_at_new: datetime | None = None
+    remind_at_old: datetime | None = None
+    remind_at_new: datetime | None = None
+    assignee_user_id_old: UUID | None = None
+    assignee_user_id_new: UUID | None = None
+    title_changed: bool = False
+    note_changed: bool = False
+    created_at: datetime
+
+
+class EventHistoryList(BaseModel):
+    """Paginated event business history."""
+
+    items: list[EventHistoryOut]
+    total: int
+    limit: int
+    offset: int
