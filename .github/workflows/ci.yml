@@ -27,6 +27,13 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt -r requirements-dev.txt
+      - name: Install PostgreSQL client tools (backup integration tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl               postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          pg_dump --version
       - name: Ruff lint
         run: ruff check .
       - name: Ruff format check
@@ -72,6 +79,34 @@ jobs:
               bash infra/scripts/check_env.sh; then
             echo "expected failure for dev BOOTSTRAP_ADMIN_PASSWORD" >&2; exit 1
           fi
+          # ...the backup contour must be rejected when BACKUP_ENABLED=true
+          # and the encryption key is missing, weak or still the dev value...
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+              POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BACKUP_ENABLED=true \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure without backup encryption keys" >&2; exit 1
+          fi
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+              POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BACKUP_ENABLED=true BACKUP_KEY_ID=k1 \
+              BACKUP_ENC_KEY=ZGV2LW9ubHktYmFja3VwLWtleS0wMDAwMDAwMDAwMDA= \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure for the development-only backup key" >&2; exit 1
+          fi
+          # ...and ACCEPTED with a real 32-byte key.
+          env -i PATH=/usr/bin:/bin APP_ENV=production \
+            SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+            POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+            BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+            BACKUP_ENABLED=true BACKUP_KEY_ID=prod-1 \
+            BACKUP_ENC_KEY="$(python3 -c 'import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')" \
+            bash infra/scripts/check_env.sh
+
           # ...and ACCEPT a fully configured production environment.
           env -i PATH=/usr/bin:/bin APP_ENV=production \
             SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
@@ -103,7 +138,12 @@ jobs:
       - name: Production build
         run: npm run build
       - name: Dependency audit (high and above)
-        run: npm audit --audit-level=high
+        run: |
+          # The npm registry retired the legacy quick-audit endpoint; npm < 11
+          # posts there and fails/hangs. npm 11 uses the bulk-advisory
+          # endpoint, so pin it for the audit.
+          npm install -g npm@11
+          npm audit --audit-level=high
 
   integration:
     name: Backend integration tests (PostgreSQL)
@@ -147,6 +187,12 @@ jobs:
         env:
           APP_ENV: test
           TEST_DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/hr_manager_test
+          # Backup/restore-drill integration tests: the CI PostgreSQL user is
+          # superuser, so the same credentials can create/drop the drill
+          # databases; pg_dump/pg_restore come from the client tools above.
+          BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/postgres
+          BACKUP_PGDUMP_BIN: pg_dump
+          BACKUP_RESTORE_BIN: pg_restore
         run: pytest -m integration -v
 
   stack:
@@ -185,6 +231,37 @@ jobs:
           code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/health)"
           [ "$code" = "200" ] || { echo "expected 200, got $code" >&2; exit 1; }
           curl -fsS http://localhost:8000/health | grep -q '"status":"ok"'
+
+      - name: Validate HTTPS proxy overlay configuration
+        run: |
+          export SERVER_NAME=hr-manager.example.com
+          export TLS_CERT_DIR=/tmp/hr-manager-tls
+          docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml \
+              -f infra/docker-compose.proxy.yml config -q
+          rendered="$(docker compose -f infra/docker-compose.yml \
+              -f infra/compose.prod.yml -f infra/docker-compose.proxy.yml config)"
+          if ! echo "$rendered" | grep -q 'target: 443'; then
+            echo "proxy overlay must publish HTTPS" >&2; exit 1
+          fi
+          if echo "$rendered" | grep -q 'hr_manager_dev_password'; then
+            echo "proxy overlay leaks development credentials" >&2; exit 1
+          fi
+          echo "proxy overlay is clean (HTTPS published, no dev credentials)"
+
+      - name: Verify the backup service produced an encrypted backup
+        run: |
+          # BACKUP_ON_START=1 in the dev stack: the scheduler encrypts a dump
+          # into the dedicated backups volume soon after the db is healthy.
+          for attempt in $(seq 1 24); do
+            if docker compose -f infra/docker-compose.yml exec -T backup \
+                sh -lc 'ls /var/backups/hr-manager/*.pgdump.enc >/dev/null 2>&1'; then
+              echo "encrypted backup found"; exit 0
+            fi
+            sleep 5
+          done
+          echo "no encrypted backup appeared in the backups volume" >&2
+          docker compose -f infra/docker-compose.yml logs backup
+          exit 1
 
       - name: Verify frontend serves the app and proxies the API
         run: |

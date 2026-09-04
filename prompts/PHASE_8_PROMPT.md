@@ -270,3 +270,21 @@
 - security/PII review;
 - инструкция чистой установки;
 - ограничения и явный handoff для этапов 9–11.
+
+## 14. Ветка, публикация и передача на review
+
+1. Начни от фактического актуального `origin/main`; перед созданием ветки
+   зафиксируй его полный SHA в плане и baseline-отчёте. Состояние принятого
+   Phase 7 и команды проверки описаны в `docs/CURRENT_STATUS.md` и
+   `docs/phase-7-report-agent2.md`.
+2. Создай отдельную ветку `arena/phase-8-notifications` (если занята — добавь
+   краткий суффикс агента). Не разрабатывай непосредственно в `main` и не
+   выполняй merge самостоятельно.
+3. До кода запусти доступный baseline. После реализации выполни весь набор из
+   раздела 12, общий regression suite, `git diff --check`, production build,
+   Compose config/smoke и проверку миграций на чистой PostgreSQL.
+4. Добавь `docs/phase-8-report-<agent>.md` с полным SHA, ссылками на PR и CI,
+   точными командами и результатами (включая число passed/skipped), решениями
+   по RBAC/outbox/lease/dedup/timezone, security/PII review и ограничениями.
+5. Опубликуй ветку и открой PR в `main`. Работа считается переданной на review
+   только после зелёных обязательных GitHub checks для финального SHA ветки.
