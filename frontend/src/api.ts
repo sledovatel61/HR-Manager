@@ -1,4 +1,7 @@
 import type {
+  AnalyticsFunnelReport,
+  AnalyticsKpiReport,
+  AnalyticsQuery,
   AuditEvent,
   CalendarEvent,
   Candidate,
@@ -368,4 +371,78 @@ export async function listEventHistory(
   offset = 0
 ): Promise<Paginated<EventHistoryEntry>> {
   return request<Paginated<EventHistoryEntry>>(`/events/${id}/history?limit=${limit}&offset=${offset}`);
+}
+
+// --- Analytics (analytics phase) --------------------------------------------
+
+function analyticsSearch(query: AnalyticsQuery): string {
+  const search = new URLSearchParams();
+  search.set("from", query.from);
+  search.set("to", query.to);
+  if (query.timezone) search.set("timezone", query.timezone);
+  if (query.hr_id) search.set("hr_id", query.hr_id);
+  if (query.source) search.set("source", query.source);
+  return search.toString();
+}
+
+/** Team KPI report for the period (manager/admin only). */
+export async function fetchAnalyticsKpi(query: AnalyticsQuery): Promise<AnalyticsKpiReport> {
+  return request<AnalyticsKpiReport>(`/analytics/kpi?${analyticsSearch(query)}`);
+}
+
+/** Funnel + inter-stage conversions for the period (manager/admin only). */
+export async function fetchAnalyticsFunnel(query: AnalyticsQuery): Promise<AnalyticsFunnelReport> {
+  return request<AnalyticsFunnelReport>(`/analytics/funnel?${analyticsSearch(query)}`);
+}
+
+export interface AnalyticsCsvExport {
+  blob: Blob;
+  /** Server-provided attachment filename (Content-Disposition). */
+  filename: string;
+}
+
+/**
+ * Download the CSV export for the current report parameters. The export is
+ * only successful after a 2xx response arrives; any error (401/403/422/5xx)
+ * raises ApiError with the backend detail — the UI shows no false success.
+ */
+export async function exportAnalyticsCsv(query: AnalyticsQuery): Promise<AnalyticsCsvExport> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/analytics/export?format=csv&${analyticsSearch(query)}`, {
+      method: "GET",
+      headers: { Accept: "text/csv" },
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError(0, "Сеть недоступна: не удалось связаться с сервером.");
+  }
+
+  if (response.status === 401) {
+    emitUnauthorized();
+  }
+
+  if (!response.ok) {
+    let rawDetail: unknown = null;
+    try {
+      const data: unknown = await response.json();
+      if (data && typeof data === "object" && "detail" in data) {
+        rawDetail = (data as { detail: unknown }).detail;
+      }
+    } catch {
+      // non-JSON error body — keep the generic message
+    }
+    const detail =
+      typeof rawDetail === "string"
+        ? rawDetail
+        : `Ошибка экспорта (${response.status}).`;
+    throw new ApiError(response.status, detail, rawDetail);
+  }
+
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+  return {
+    blob: await response.blob(),
+    filename: match?.[1] ?? "analytics.csv",
+  };
 }

@@ -28,10 +28,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.analytics_ledger import record_fact
 from app.audit import record_event
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import (
+    AnalyticsFactType,
     AuditAction,
     Candidate,
     Event,
@@ -328,6 +330,19 @@ def create_event(
     db.add(event)
     db.flush()  # event.id for history/audit
 
+    # The scheduled event is an analytics fact; the responsible HR at fact
+    # time is the candidate owner (the assignee is a manager/admin).
+    record_fact(
+        db,
+        fact_type=AnalyticsFactType.EVENT_CREATED,
+        candidate_id=event.candidate_id,
+        owner_user_id=candidate.owner_user_id,
+        fact_at=event.created_at,
+        fact_subtype=event.type.value,
+        source=candidate.source.value,
+        event_id=event.id,
+    )
+
     history = EventHistory(
         event_id=event.id,
         changed_by_user_id=user.id,
@@ -527,6 +542,19 @@ def update_event(
     locked.completed_at = utc_now() if new_status == EventStatus.COMPLETED else None
     locked.version = locked.version + 1
     locked.updated_at = utc_now()
+
+    # Completing an event is an analytics fact (same single transaction).
+    if new_status == EventStatus.COMPLETED:
+        record_fact(
+            db,
+            fact_type=AnalyticsFactType.EVENT_COMPLETED,
+            candidate_id=locked.candidate_id,
+            owner_user_id=locked.candidate.owner_user_id,
+            fact_at=locked.completed_at,
+            fact_subtype=locked.type.value,
+            source=locked.candidate.source.value,
+            event_id=locked.id,
+        )
 
     db.add(history)
     _audit_event(

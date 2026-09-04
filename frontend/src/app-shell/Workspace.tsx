@@ -5,6 +5,7 @@ import { ROLE_LABELS, type CurrentUser, type UserRole } from "../types";
 import CandidatesListPage from "../features/candidates/CandidatesListPage";
 import KanbanPage from "../features/candidates/KanbanPage";
 import CalendarPage from "../features/calendar/CalendarPage";
+import AnalyticsPage from "../features/analytics/AnalyticsPage";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
 import "./workspace.css";
 
@@ -19,12 +20,15 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   calendar: { label: "Календарь", icon: "calendar" },
   kanban: { label: "Kanban", icon: "kanban" },
   deleted: { label: "Удалённые", icon: "trash" },
+  analytics: { label: "Аналитика", icon: "bar-chart" },
 };
 
 function sectionsForRole(role: UserRole): WorkspaceSection[] {
+  // Analytics is a team-level report: manager/admin only (HR gets 403 from
+  // the API and never sees the navigation item).
   return role === "hr"
     ? ["queue", "calendar", "kanban", "deleted"]
-    : ["candidates", "calendar", "kanban", "deleted"];
+    : ["candidates", "calendar", "kanban", "deleted", "analytics"];
 }
 
 function initialsOf(fullName: string, username: string): string {
@@ -111,7 +115,8 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             <CalendarPage user={user} onOpenCandidate={openCandidate} />
           )}
           {section === "kanban" && <KanbanPage user={user} />}
-          {section !== "calendar" && section !== "kanban" && (
+          {section === "analytics" && <AnalyticsPage user={user} />}
+          {section !== "calendar" && section !== "kanban" && section !== "analytics" && (
             <CandidatesListPage
               key={section}
               user={user}
