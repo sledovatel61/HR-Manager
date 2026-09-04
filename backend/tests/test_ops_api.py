@@ -203,18 +203,37 @@ def test_backup_trigger_rejects_non_admin_and_missing_tooling(
 
 
 def test_backup_trigger_delegates_to_runner_and_records_audit(
-    client: TestClient,
-    db_session: Session,
     unit_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """Endpoint plumbing: 202 + background delegation. The runner itself is
     exercised for real in the PostgreSQL integration tests; here a recording
-    stub proves the endpoint never fabricates a backup result of its own."""
-    import app.routers.ops as ops_module
+    stub proves the endpoint never fabricates a backup result of its own.
 
-    make_user(db_session, username="admin1", role=UserRole.ADMIN)
+    The audit row is committed from the background thread's own session, so
+    this test uses a file-backed SQLite database: the shared in-memory unit
+    engine is a single StaticPool connection, and two concurrent sessions on
+    one connection race nondeterministically. A pooled production database
+    (PostgreSQL) has no such constraint.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session as OrmSession
+
+    import app.routers.ops as ops_module
+    from app.main import create_app
+    from app.models import Base
+
+    engine = create_engine(
+        f"sqlite+pysqlite:///{tmp_path / 'ops.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    app = create_app(unit_settings, engine=engine)
+
+    with OrmSession(engine) as db_session:
+        make_user(db_session, username="admin1", role=UserRole.ADMIN)
+
     unit_settings.backup_pgdump_bin = "/bin/true"  # executable exists
     unit_settings.backup_dir = str(tmp_path)
     unit_settings.backup_state_file = str(tmp_path / "state.json")
@@ -242,37 +261,45 @@ def test_backup_trigger_delegates_to_runner_and_records_audit(
         return BackupOutcome(ok=False, exit_code=1, message="stub failure", request_id=request_id)
 
     monkeypatch.setattr(ops_module, "run_backup", fake_runner)
-    csrf = _login(client, "admin1")
-    response = client.post(
-        "/admin/ops/backup",
-        json={"reason": "перед обновлением", "request_id": "req-123"},
-        headers={"X-CSRF-Token": csrf},
-    )
-    assert response.status_code == 202
-    assert response.json()["request_id"] == "req-123"
 
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and not calls:
-        time.sleep(0.05)
-    assert len(calls) == 1
-    assert calls[0]["reason"] == "перед обновлением"
-    assert calls[0]["actor"] == "admin1"
+    with TestClient(app) as client:
+        csrf = _login(client, "admin1")
+        response = client.post(
+            "/admin/ops/backup",
+            json={"reason": "перед обновлением", "request_id": "req-123"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert response.status_code == 202
+        assert response.json()["request_id"] == "req-123"
 
-    # The failure was recorded in the audit trail (no fabricated success).
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not calls:
+            time.sleep(0.05)
+        assert len(calls) == 1
+        assert calls[0]["reason"] == "перед обновлением"
+        assert calls[0]["actor"] == "admin1"
+
+        # The failure was recorded in the audit trail (no fabricated success).
+        # Poll with a fresh session each time so every read starts a new
+        # snapshot and observes the background thread's commit.
+        from collections.abc import Sequence
+
         from sqlalchemy import select
 
         from app.models import AuditEvent
 
-        rows = db_session.scalars(
-            select(AuditEvent).where(AuditEvent.action == AuditAction.BACKUP_FAILED)
-        ).all()
-        if rows:
-            break
-        time.sleep(0.05)
-    assert len(rows) == 1
-    assert rows and "stub failure" in (rows[0].details or "")
+        rows: Sequence[AuditEvent] = []
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with OrmSession(engine) as poll_session:
+                rows = poll_session.scalars(
+                    select(AuditEvent).where(AuditEvent.action == AuditAction.BACKUP_FAILED)
+                ).all()
+            if rows:
+                break
+            time.sleep(0.05)
+        assert len(rows) == 1
+        assert rows and "stub failure" in (rows[0].details or "")
 
 
 def test_backup_trigger_rejects_duplicate_request_id(
