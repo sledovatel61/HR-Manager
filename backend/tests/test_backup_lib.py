@@ -328,3 +328,19 @@ def test_list_backup_files_filters_by_pattern(tmp_path: Path) -> None:
     files = list_backup_files(tmp_path)
     assert [name for name, _ in files] == ["hr-manager-20260904T120000Z-abcdef12.pgdump.enc"]
     assert list_backup_files(tmp_path / "missing") == []
+
+
+def test_sqlalchemy_url_stringification_hides_password_trap() -> None:
+    """Regression: str(URL) masks passwords as '***' in SQLAlchemy 2.x.
+
+    The restore-drill and admin URLs carry credentials; they must be built
+    with render_as_string(hide_password=False), never str(make_url(...)).
+    """
+    from sqlalchemy.engine import make_url
+
+    url = make_url("postgresql+psycopg://app:secret-pass@db:5432/hr_manager")
+    # Document the trap: plain stringification hides the password.
+    assert "secret-pass" not in str(url)
+    # The credential-bearing render must keep it.
+    rendered = url.set(database="restore").render_as_string(hide_password=False)
+    assert "secret-pass" in rendered
