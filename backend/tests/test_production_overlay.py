@@ -199,6 +199,10 @@ def test_backup_dockerfile_is_nonroot_and_parity_with_backend() -> None:
     assert "POSTGRES_SHA256=c1afb748" in backup
     assert "ZLIB_VERSION=1.3.2" in backup
     assert "sha256sum -c -" in backup
+    # PostgreSQL release tags use underscores (REL_16_15), not dots — the
+    # download tag is pinned explicitly or the image build fails with 404.
+    assert "POSTGRES_TAG=REL_16_15" in backup
+    assert "refs/tags/${POSTGRES_TAG}" in backup
     # No secrets in the image layers.
     for forbidden in ("hr_manager_dev_password", "dev-only-secret-key", DEV_BACKUP_KEY):
         assert forbidden not in backup
