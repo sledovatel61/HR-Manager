@@ -138,7 +138,12 @@ jobs:
       - name: Production build
         run: npm run build
       - name: Dependency audit (high and above)
-        run: npm audit --audit-level=high
+        run: |
+          # The npm registry retired the legacy quick-audit endpoint; npm < 11
+          # posts there and fails/hangs. npm 11 uses the bulk-advisory
+          # endpoint, so pin it for the audit.
+          npm install -g npm@11
+          npm audit --audit-level=high
 
   integration:
     name: Backend integration tests (PostgreSQL)

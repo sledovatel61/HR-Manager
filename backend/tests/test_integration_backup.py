@@ -42,9 +42,33 @@ from app.utils import utc_now
 pytestmark = pytest.mark.integration
 
 
-PGDUMP_BIN = os.environ.get("BACKUP_PGDUMP_BIN", "/tmp/pginst/bin/pg_dump")
-PGRESTORE_BIN = os.environ.get("BACKUP_RESTORE_BIN", "/tmp/pginst/bin/pg_restore")
+def _resolve_pg_tool(env_var: str, default_path: str, name: str) -> str | None:
+    """Locate a PostgreSQL client tool for the tests.
+
+    Priority: explicit env override, the agent-sandbox self-built binary,
+    then the tool on PATH (the GitHub runner ships PG 16 client tools).
+    """
+    explicit = os.environ.get(env_var)
+    if explicit:
+        return explicit
+    if Path(default_path).exists():
+        return default_path
+    return shutil.which(name)
+
+
+PGDUMP_BIN = _resolve_pg_tool("BACKUP_PGDUMP_BIN", "/tmp/pginst/bin/pg_dump", "pg_dump")
+PGRESTORE_BIN = _resolve_pg_tool("BACKUP_RESTORE_BIN", "/tmp/pginst/bin/pg_restore", "pg_restore")
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _pgdump() -> str:
+    assert PGDUMP_BIN is not None  # guaranteed by the autouse skip fixture
+    return PGDUMP_BIN
+
+
+def _pgrestore() -> str:
+    assert PGRESTORE_BIN is not None  # guaranteed by the autouse skip fixture
+    return PGRESTORE_BIN
 
 
 def _require_test_db_url() -> str:
@@ -71,7 +95,10 @@ def _admin_url() -> str:
         return explicit
     source = os.environ.get("TEST_DATABASE_URL", "")
     if source.startswith("postgresql"):
-        return str(make_url(source).set(database="postgres"))
+        # str(URL) masks the password as "***" in SQLAlchemy 2.x — render
+        # explicitly without hiding so the admin engine gets real credentials.
+        url = make_url(source).set(database="postgres")
+        return url.render_as_string(hide_password=False)
     return "postgresql+psycopg://postgres@localhost:5432/postgres"
 
 
@@ -91,16 +118,17 @@ def _ensure_backup_test_db(admin_url: str, name: str) -> None:
 
 @pytest.fixture(scope="module", autouse=True)
 def _require_dump_tools() -> None:
-    """Skip when no pg_dump is available.
+    """Skip when no pg_dump/pg_restore is available.
 
-    The agent sandbox ships self-built tools in /tmp/pginst; CI installs the
-    PostgreSQL client tools (see the transfer workflow patch in
-    review-artifacts/). Without either, the suite skips instead of failing.
+    The agent sandbox ships self-built tools in /tmp/pginst; the GitHub
+    runner image has the PostgreSQL client tools on PATH. Without either,
+    the suite skips instead of failing.
     """
-    if not (shutil.which("pg_dump") or Path(PGDUMP_BIN).exists()):
+    if not (PGDUMP_BIN and PGRESTORE_BIN):
         pytest.skip(
             "pg_dump/pg_restore are not installed "
-            "(BACKUP_PGDUMP_BIN or PATH required for the backup integration tests)"
+            "(BACKUP_PGDUMP_BIN/BACKUP_RESTORE_BIN or PATH required "
+            "for the backup integration tests)"
         )
 
 
@@ -131,8 +159,8 @@ def cfg(migrated_source: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         database_url=migrated_source,
         backup_dir=tmp_path / "backups",
         state_file=tmp_path / "state.json",
-        pgdump_bin=PGDUMP_BIN,
-        pgrestore_bin=PGRESTORE_BIN,
+        pgdump_bin=_pgdump(),
+        pgrestore_bin=_pgrestore(),
         drill_admin_url=_admin_url(),
         drill_db_name="hr_manager_drill_test",
         retention_days=7,
@@ -382,8 +410,8 @@ def test_unreachable_database_fails_cleanly(
         database_url="postgresql+psycopg://hr_manager:wrong@localhost:5499/nope",
         backup_dir=cfg.backup_dir,
         state_file=cfg.state_file,
-        pgdump_bin=PGDUMP_BIN,
-        pgrestore_bin=PGRESTORE_BIN,
+        pgdump_bin=_pgdump(),
+        pgrestore_bin=_pgrestore(),
         min_free_mb=1,
     )
     outcome = run_backup(
@@ -518,8 +546,8 @@ def test_cli_backup_now_and_check_end_to_end(
             "BACKUP_KEY_ID": "cli-key",
             "BACKUP_ENC_KEY": base64.b64encode(key).decode("ascii"),
             "BACKUP_ADMIN_PASSWORD": "Str0ng-Pass-2026",
-            "BACKUP_PGDUMP_BIN": PGDUMP_BIN,
-            "BACKUP_RESTORE_BIN": PGRESTORE_BIN,
+            "BACKUP_PGDUMP_BIN": _pgdump(),
+            "BACKUP_RESTORE_BIN": _pgrestore(),
             "LD_LIBRARY_PATH": "/tmp/pginst/lib",
         }
     )

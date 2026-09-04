@@ -561,7 +561,13 @@ def run_restore_drill(
         finally:
             admin_engine.dispose()
 
-        drill_url = str(make_url(cfg.database_url).set(database=cfg.drill_db_name))
+        # str(URL) hides the password ("***") in SQLAlchemy 2.x; render
+        # explicitly so the drill connection carries real credentials.
+        drill_url = (
+            make_url(cfg.database_url)
+            .set(database=cfg.drill_db_name)
+            .render_as_string(hide_password=False)
+        )
         env = _libpq_env(drill_url)
         proc = subprocess.run(
             [cfg.pgrestore_bin, "--exit-on-error", "--no-owner", "-d", cfg.drill_db_name],

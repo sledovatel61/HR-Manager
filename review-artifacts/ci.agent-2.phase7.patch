@@ -1,5 +1,5 @@
 diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index 3e4c7a8..b486213 100644
+index 3e4c7a8..96d268c 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
 @@ -27,6 +27,13 @@ jobs:
@@ -51,7 +51,21 @@ index 3e4c7a8..b486213 100644
            # ...and ACCEPT a fully configured production environment.
            env -i PATH=/usr/bin:/bin APP_ENV=production \
              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
-@@ -147,6 +182,12 @@ jobs:
+@@ -103,7 +138,12 @@ jobs:
+       - name: Production build
+         run: npm run build
+       - name: Dependency audit (high and above)
+-        run: npm audit --audit-level=high
++        run: |
++          # The npm registry retired the legacy quick-audit endpoint; npm < 11
++          # posts there and fails/hangs. npm 11 uses the bulk-advisory
++          # endpoint, so pin it for the audit.
++          npm install -g npm@11
++          npm audit --audit-level=high
+ 
+   integration:
+     name: Backend integration tests (PostgreSQL)
+@@ -147,6 +187,12 @@ jobs:
          env:
            APP_ENV: test
            TEST_DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/hr_manager_test
@@ -64,7 +78,7 @@ index 3e4c7a8..b486213 100644
          run: pytest -m integration -v
  
    stack:
-@@ -186,6 +227,37 @@ jobs:
+@@ -186,6 +232,37 @@ jobs:
            [ "$code" = "200" ] || { echo "expected 200, got $code" >&2; exit 1; }
            curl -fsS http://localhost:8000/health | grep -q '"status":"ok"'
  
