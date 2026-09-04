@@ -6,6 +6,7 @@ Run locally::
 """
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -15,11 +16,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app import __version__
+from app import __version__, metrics
 from app.bootstrap import bootstrap_admin
 from app.config import Settings, get_settings
 from app.db import bind_session_factory, build_engine
-from app.routers import analytics, audit, auth, candidates, events, health, users
+from app.routers import analytics, audit, auth, candidates, events, health, ops, users
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,24 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         for name, value in _SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)
         return response
+
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """Record aggregate request metrics (route template + status class only)."""
+
+    async def dispatch(self, request: Request, call_next: object) -> Response:
+        started = time.monotonic()
+        try:
+            response = await call_next(request)  # type: ignore[operator]
+        except Exception:
+            metrics.observe_request(request, _exception_response(), time.monotonic() - started)
+            raise
+        metrics.observe_request(request, response, time.monotonic() - started)
+        return response
+
+
+def _exception_response() -> Response:
+    return Response(status_code=500)
 
 
 def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:
@@ -77,9 +96,11 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.state.settings = app_settings
     app.state.engine = app_engine
 
+    app.add_middleware(MetricsMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(health.router)
+    app.include_router(ops.router)
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(audit.router)

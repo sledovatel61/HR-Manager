@@ -77,5 +77,46 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # Encrypted backups (roadmap phase 7). Development only credentials and
+  # key: the production overlay replaces them from the environment, and the
+  # backend production guard refuses to run with this exact key value.
+  backup:
+    build:
+      # Repo-root context so backend/ and infra/scripts/ are both available.
+      context: ..
+      dockerfile: backend/Dockerfile.backup
+    environment:
+      APP_ENV: development
+      APP_DEBUG: "false"
+      DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_dev_password@db:5432/hr_manager
+      BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://hr_manager:hr_manager_dev_password@db:5432/postgres
+      BACKUP_DIR: /var/backups/hr-manager
+      BACKUP_STATE_FILE: /var/backups/hr-manager/state.json
+      # DEVELOPMENT ONLY — never reuse in production.
+      BACKUP_KEY_ID: dev-backup-key
+      BACKUP_ENC_KEY: "ZGV2LW9ubHktYmFja3VwLWtleS0wMDAwMDAwMDAwMDA="
+      BACKUP_SCHEDULE_UTC: "02:00"
+      BACKUP_DRILL_INTERVAL_HOURS: "168"
+      BACKUP_ON_START: "1"
+      BACKUP_MIN_FREE_MB: "512"
+      TZ: UTC
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - backups:/var/backups/hr-manager
+    healthcheck:
+      # The scheduler touches the marker when its loop starts; the backup
+      # itself is monitored through /ops/backup-health, not this check.
+      test: ["CMD-SHELL", "test -f /tmp/backup-scheduler-ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  # Dedicated storage for encrypted backups — separate from the application
+  # volume so backups never share a lifecycle with app data.
+  backups:

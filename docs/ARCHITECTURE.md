@@ -458,14 +458,102 @@ manager/admin), KPI-полоса с определениями (tooltip + `dl/dt
 представлений, конструктора отчётов, сравнения периодов, графиков,
 интеграций, расписаний/email и импорта.
 
+## Backup, deployment и release (этап 7)
+
+### Контур резервного копирования
+
+Полное описание — `docs/backup-and-restore.md` (формат, имена, timezone,
+retention, ротация ключей, RPO/RTO, алерты). Кратко:
+
+- `app/backup.py` — формат `HRMBCK1`: AES-256-GCM (1 МиБ-записи), JSON-заголовок
+  в AAD, отсоединённый SHA-256, атомарная публикация, retention с нижней
+  границей `BACKUP_MIN_COPIES`, state-файл.
+- `app/backup_runner.py` — оркестрация: `flock` (без параллельных запусков),
+  0600 staging без umask-окна, `pg_dump -Fc` → шифрование → обратная
+  проверка → публикация; restore drill в отдельную БД с миграциями,
+  проверкой ключевых таблиц и `/health`; exit-коды 0/2/3/4/5/6/7/8/9/10/11.
+- `app/cli.py` (`backup-now/check/drill/list/prune`; `--actor` — серверная
+  авторизация администратора по паролю, `--as-scheduler` — сервисная
+  идентичность), `app/routers/ops.py` (`POST /admin/ops/backup` 202/409/403,
+  фоновый поток, аудит без PII).
+- Композ-сервис `backup` (образ `backend/Dockerfile.backup`: pg_dump/pg_restore
+  16.15 собраны из исходников с pinned SHA-256, не-root процесс, отдельный
+  volume `backups`); планировщик `infra/scripts/backup_scheduler.sh`
+  (UTC, retry/backoff, маркер healthcheck).
+- Backup — секретный актив: не попадает в git/образы/артефакты/логи/volume
+  приложения; ключи только через environment.
+
+### Deployment и release
+
+- Образы: `backend` (python:3.12-slim), `frontend` (nginx-unprivileged
+  1.27-alpine), `backup` — все non-root, без секретов; версии закреплены
+  (стратегия обновления: ручной подъём пинов с диффом и CI).
+- production-оверлей публикует **ноль портов**; миграции НЕ выполняются при
+  старте контейнера — только `infra/scripts/migrate.sh up` до переключения
+  трафика (one-shot, concurrency guard: `pg_advisory_xact_lock(767147072)`
+  в `alembic/env.py` — второй запуск ждёт и видит уже применённый head).
+- `infra/scripts/deploy.sh`: preflight (`check_env.sh`) → build + теги
+  `release-<sha>`/`release-current`/`release-prev` → миграции → переключение
+  с readiness-гейтом (`compose up --wait`) → smoke (`/health` + `release_sha`
+  из `/ops/status`) → **автоматический rollback** на предыдущий релиз при
+  провале readiness/smoke; `--failure-drill` доказывает откат в тестовом
+  контуре (сломанный релиз → откат → smoke). Предыдущие образы не удаляются.
+- CI/CD: обновлённый `ci.yml` и новый `release.yml` (деплой только с тега
+  `release-*` после зелёного CI для точного SHA) лежат в `review-artifacts/`
+  (ci.agent-2.phase7.*, release.agent-2.*) — публикующая App не имеет
+  права `workflows`, переносит владелец (инструкция в
+  `review-artifacts/README.md`). Без `DEPLOY_HOST` release-пайплайн
+  исполняется на CI-раннере как локальный тестовый контур.
+- Release notes: SHA, миграции, изменения конфигурации, известные
+  ограничения (`/tmp/release-notes-<sha>.md`, артефакт в CI).
+
+### HTTPS
+
+- `infra/docker-compose.proxy.yml` + `infra/nginx/default.conf.template`:
+  TLS-терминация (1.2/1.3), HTTP→HTTPS redirect (политика документирована,
+  замена на reject — одна строка), `Strict-Transport-Security`,
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
+  `Permissions-Policy`, CSP (зеркало `frontend/nginx.conf`, совместима с UI),
+  `client_max_body_size 10m`, `server_tokens off`. Сертификаты/DNS не
+  поставляются и не предполагаются существующими — шаги оператора и
+  проверка срока действия в `infra/nginx/README.md`. Ключ TLS недоступен
+  приложению (mount только в proxy).
+
+### Наблюдаемость
+
+- `/health` — liveness + readiness БД (семантика этапов 1–6 сохранена: 200
+  только при доступной БД, иначе 503; backup-сигналы сюда не подмешаны,
+  чтобы не менять контракт).
+- `/ops/status` — `release_sha`, `database`, `migrations`
+  (current/expected revision), `backup` (available/ok/size/age,
+  `last_drill_ok`).
+- `/ops/backup-health` — 200 только при свежем (≤ `BACKUP_MAX_AGE_HOURS`) и
+  целостном backup, иначе 503 (без «фальшивых 200»).
+- `/ops/metrics` — Prometheus text: счётчики/латентность по шаблону
+  маршрута; query/cookies/authorization/тела не логируются.
+- Алерты (severity/dedup/cooldown/действия) — таблица в
+  `docs/backup-and-restore.md`.
+
+### Миграции этапа 7
+
+Новых Alembic-ревизий не потребовалось: audit-действия — строковый
+`Enum(native_enum=False)` без CHECK-констрейнта (новые значения
+`backup_*`/`deploy_recorded`/`release_recorded` валидны на head `0006`).
+Стратегия: каждая миграция backward-compatible с предыдущей версией кода
+(двухшаговый деплой, если нет); колонки/таблицы не удаляются, пока старый
+код их использует; rollback кода ≠ rollback схемы (downgrade только по
+явному безопасному плану, иначе restore-forward); автоматический downgrade
+production запрещён (`migrate.sh` его не имеет).
+
 ## Стратегия тестирования
 
 | Уровень | Что проверяет | Где исполняется |
 |---|---|---|
-| Unit (pytest) | /health (ok и degraded-ветка), production-guard конфигурации, lifecycle (dispose engine при завершении) | in-memory SQLite, CI |
-| Integration (pytest) | /health против настоящего PostgreSQL 16, деградация при недоступной БД, конвейер миграций (upgrade/downgrade/upgrade + идемпотентность) | `TEST_DATABASE_URL`, CI service container |
+| Unit (pytest) | /health (ok и degraded-ветка), production-guard конфигурации (включая backup-ключи/retention), ops endpoints (RBAC, audit, 202/409/503), backup-формат (шифрование, tamper, ротация, retention, state), lifecycle | in-memory SQLite, CI |
+| Integration (pytest) | /health против настоящего PostgreSQL 16, конвейер миграций; **этап 7**: реальный зашифрованный backup (pg_dump → HRMBCK1) и restore drill в отдельную БД (pg_restore + миграции + ключевые таблицы + /health + cleanup), повреждённый ciphertext → failure, lock от параллельных запусков, слабые ключи/недоступная БД → безопасная ошибка, CLI end-to-end, advisory-lock миграций | `TEST_DATABASE_URL`, CI service container (+ pg_dump/pg_restore 16 из PGDG после переноса workflow) |
 | Frontend (Vitest) | отображение всех состояний статусной страницы | jsdom, CI |
-| Compose smoke (CI) | валидация dev/prod конфигураций, полный запуск стека, health 200, прокси, деградация 503 | GitHub Actions, Docker на раннере |
+| Compose smoke (CI) | валидация dev/prod/proxy конфигураций, полный запуск стека, health 200, прокси, деградация 503, реальный зашифрованный backup в volume | GitHub Actions, Docker на раннере |
+| Оверлей-тесты (pytest) | статическая проверка compose-файлов/Dockerfile/nginx/скриптов (порты, секреты, non-root, UTC, retry, запрет downgrade, check_env.sh-семантика) | везде, без Docker |
 
 Запуск интеграционных тестов локально:
 `TEST_DATABASE_URL=postgresql+psycopg://hr_manager:hr_manager_dev_password@localhost:5432/hr_manager pytest -m integration -v`
@@ -479,8 +567,9 @@ manager/admin), KPI-полоса с определениями (tooltip + `dl/dt
   `alembic upgrade/downgrade/upgrade` и повторное применение
   (`upgrade head` дважды) покрыты интеграционными тестами.
 - Применение в dev/staging: автоматически при старте backend-контейнера.
-  В production — отдельный контролируемый процесс (этап 7), `alembic upgrade`
-  в CMD контейнера для production не используется.
+  В production — отдельный контролируемый процесс `infra/scripts/migrate.sh up`
+  (one-shot, до переключения трафика, advisory lock); `alembic upgrade` в CMD
+  production-контейнера не используется.
 
 ## Известные ограничения этапа 1
 

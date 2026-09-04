@@ -5,6 +5,9 @@ FROM node:22.22.3-alpine AS build
 
 WORKDIR /app
 COPY package.json package-lock.json ./
+# The postinstall hook references scripts/ci-upgrade-npm.mjs, so the scripts
+# directory must be present before `npm ci` runs.
+COPY scripts ./scripts
 RUN npm ci
 COPY . .
 # VITE_API_BASE_URL defaults to "/api", which nginx proxies to the backend.
