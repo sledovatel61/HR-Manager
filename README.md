@@ -3,7 +3,12 @@
 Сетевая система для командного подбора персонала: несколько HR-менеджеров
 ведут кандидатов в единой PostgreSQL-базе, руководитель получает аналитику.
 
-**Статус: этап 5 (события и календарь) завершён.** События, связанные
+**Статус: этап 6 (аналитика и увольнения) завершён; этап 7 (backup,
+deployment и release) — ветка `arena/phase-7-release`.** Зашифрованные
+backup (AES-256-GCM) с retention ≥ 7 дней и restore drill в отдельную БД,
+deploy-скрипт с автоматическим rollback, HTTPS reverse proxy и
+observability-сигналы — см. [`docs/backup-and-restore.md`](docs/backup-and-restore.md).
+Ранее (этап 5) добавлены события, связанные
 с кандидатом (звонки, собеседования, напоминания), с исполнителем,
 сроком, напоминанием, состояниями «запланировано/выполнено/отложено»,
 неизменяемой бизнес-историей изменений и аудитом; календарное недельное
@@ -344,17 +349,27 @@ cp .env.example .env    # .env игнорируется git'ом
 Требуется Docker Compose **v2.24+** (тег `!reset` в overlay).
 
 1. Задайте секреты в окружении: `APP_ENV=production`, сильный `SECRET_KEY`
-   (≥ 32 символов, `openssl rand -hex 32`), свой `POSTGRES_PASSWORD`.
+   (≥ 32 символов, `openssl rand -hex 32`), свой `POSTGRES_PASSWORD`,
+   `BOOTSTRAP_ADMIN_PASSWORD`. Для контура backup (этап 7) —
+   `BACKUP_ENABLED=true`, `BACKUP_KEY_ID` и
+   `BACKUP_ENC_KEY="$(openssl rand -base64 32)"`.
 2. Проверьте конфигурацию: `infra/scripts/check_env.sh`.
-3. Проверьте итоговую конфигурацию:
-   `docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config`.
+3. Миграции до запуска (one-shot, advisory lock): `infra/scripts/migrate.sh up`.
 4. Запуск: `docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml up -d`.
+5. HTTPS: добавьте оверлей proxy (`infra/docker-compose.proxy.yml`) — шаги
+   оператора в [`infra/nginx/README.md`](infra/nginx/README.md).
+6. Деплой релизов — [`infra/scripts/deploy.sh`](infra/scripts/deploy.sh)
+   (build → миграции → переключение с readiness-гейтом → smoke →
+   автоматический rollback), в CI — workflow `release.yml` из
+   `review-artifacts/` (переносит владелец).
 
 Backend **откажется стартовать** в production с дефолтным ключом, dev-учёткой
 БД, отсутствующим паролем или включённым debug. Preflight-скрипт отклоняет
-dev-`SECRET_KEY` и dev-пароль PostgreSQL. Внешние порты production overlay не
-публикует (`ports: !reset []`) — перед приложением ставится reverse proxy с
-HTTPS (этап 7 роадмапа).
+dev-`SECRET_KEY`, dev-пароль PostgreSQL и (при `BACKUP_ENABLED=true`)
+отсутствующие/dev/слабые ключи шифрования backup. Внешние порты production
+overlay не публикует (`ports: !reset []`) — перед приложением ставится
+reverse proxy с HTTPS. Подробнее про backup/restore, RPO/RTO, ротацию
+ключей и алерты — [`docs/backup-and-restore.md`](docs/backup-and-restore.md).
 
 ## CI
 

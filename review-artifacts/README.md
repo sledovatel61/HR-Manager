@@ -91,3 +91,63 @@ python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"  # YA
 Патч генерируется как `git diff` между `.github/workflows/ci.yml` из
 `origin/main` и `review-artifacts/ci.agent-4.yml`, поэтому его blank-context
 строки содержат штатный лидирующий пробел, и `git apply` его принимает.
+
+## Агент №2 (этап 7 — backup, deployment и release)
+
+| Файл | Назначение |
+|---|---|
+| `ci.agent-2.phase7.yml` | полная CI-конфигурация этапа 7 (обновлённые job'ы: integration получает PostgreSQL client tools и переменные backup-контура; preflight проверяет backup-секреты; stack валидирует proxy-оверлей и ждёт реальный зашифрованный backup от сервиса) |
+| `ci.agent-2.phase7.patch` | git-патч относительно текущего `.github/workflows/ci.yml` на `main` |
+| `release.agent-2.yml` | новый workflow `.github/workflows/release.yml`: деплой-конвейер (tag `release-*`/manual dispatch) — обязательный зелёный CI для коммита, preflight, build+tag образов, one-shot миграции с advisory lock, переключение трафика с readiness-гейтом, smoke по `/health` и `release_sha`, автоматический rollback, failure-drill и release notes артефактом |
+| `release.agent-2.patch` | git-патч, создающий `.github/workflows/release.yml` |
+
+Что меняют/добавляют workflow для этапа 7:
+
+- **integration job**: установка `postgresql-client-16` (PGDG) на раннер и
+  переменные `BACKUP_DRILL_ADMIN_URL`/`BACKUP_PGDUMP_BIN`/`BACKUP_RESTORE_BIN`
+  — без этого backup/restore-drill интеграционные тесты корректно
+  скипаются (они сами пропускаются при отсутствии `pg_dump`).
+- **preflight шаг**: негативные проверки backup-секретов
+  (`BACKUP_ENABLED=true` требует реальный 32-байтовый ключ, dev-ключ
+  отклоняется) + позитивная проверка с настоящим ключом.
+- **stack job**: рендер и валидация HTTPS proxy-оверлея (публикуются только
+  80/443, без dev-credentials) и проверка, что backup-сервис реально
+  опубликовал зашифрованный `*.pgdump.enc` в dedicated volume.
+- **release.yml** (новый файл): деплой только после зелёного CI для точного
+  SHA; секреты только из GitHub Secrets (`DEPLOY_HOST`,
+  `DEPLOY_SSH_USER`, `DEPLOY_SSH_KEY`, `SECRET_KEY`, `POSTGRES_PASSWORD`,
+  `BOOTSTRAP_ADMIN_PASSWORD`, `BACKUP_KEY_ID`, `BACKUP_ENC_KEY`); без
+  `DEPLOY_HOST` конвейер выполняется на CI-раннере как локальный тестовый
+  контур (реальные образы, реальная БД, реальный smoke и failure-drill
+  rollback) — production-хост не затрагивается.
+
+Перенос владельцем (однократно; делает учётка с правом записи workflows):
+
+```bash
+git fetch origin
+git checkout -b arena/phase-7-agent-2-workflow origin/arena/phase-7-release
+
+# 1) обновление CI:
+git apply --check review-artifacts/ci.agent-2.phase7.patch
+git apply review-artifacts/ci.agent-2.phase7.patch
+cmp review-artifacts/ci.agent-2.phase7.yml .github/workflows/ci.yml \
+  && echo "ci.yml matches artifact"
+
+# 2) новый workflow релиза:
+git apply --check review-artifacts/release.agent-2.patch
+git apply review-artifacts/release.agent-2.patch
+cmp review-artifacts/release.agent-2.yml .github/workflows/release.yml \
+  && echo "release.yml matches artifact"
+
+# 3) настройка репозитория (settings):
+#    - tag protection rule для `release-*` (деплой только с защищённого тега);
+#    - GitHub Secrets из таблицы выше (для production-деплоя на свой хост).
+
+git commit -m "workflows: phase 7 CI + release pipeline (owner transfer)"
+git push
+```
+
+Без переноса владельцем GitHub Actions выполняет **старую** версию CI:
+backup-интеграционные тесты честно скипаются (нет `pg_dump` на раннере),
+новые шаги preflight/stack/release не запускаются. Это ожидаемое поведение
+до переноса — см. ограничение App в начале файла.
