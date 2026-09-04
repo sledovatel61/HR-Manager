@@ -1,4 +1,4 @@
-.PHONY: help up down logs ps backend-test backend-lint backend-typecheck frontend-test frontend-lint frontend-typecheck frontend-build check prod-preflight
+.PHONY: help up down logs ps backend-test backend-lint backend-typecheck frontend-test frontend-lint frontend-typecheck frontend-build check prod-preflight backup-now backup-check backup-drill prod-migrate prod-deploy
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -37,6 +37,23 @@ frontend-build: ## Produce a production frontend build
 	cd frontend && npm run build
 
 check: backend-lint backend-typecheck backend-test frontend-lint frontend-typecheck frontend-test frontend-build ## Run every check
+
+# --- Backup / deploy operations (roadmap phase 7) ---------------------------
+
+backup-now: ## Run an encrypted backup immediately (via the backup service)
+	docker compose -f infra/docker-compose.yml run --rm backup oneshot
+
+backup-check: ## Deep integrity check of the newest backup
+	docker compose -f infra/docker-compose.yml run --rm backup check
+
+backup-drill: ## Restore drill into a separate database
+	docker compose -f infra/docker-compose.yml run --rm backup drill
+
+prod-migrate: ## Apply migrations to the production database (one-shot, locked)
+	infra/scripts/migrate.sh up
+
+prod-deploy: ## Deploy RELEASE_SHA with verified switch and auto-rollback
+	infra/scripts/deploy.sh --release "$(RELEASE_SHA)"
 
 compose-config: ## Validate the dev Compose configuration
 	docker compose -f infra/docker-compose.yml config -q
