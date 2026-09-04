@@ -3,10 +3,12 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "npm@11",
   "engines": {
     "node": ">=22.22.2"
   },
   "scripts": {
+    "postinstall": "node scripts/ci-upgrade-npm.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",

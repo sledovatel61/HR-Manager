@@ -296,3 +296,17 @@ def test_scheduler_script_is_utc_and_retries() -> None:
     assert "BACKOFF_SECONDS" in text
     assert "backup-drill" in text
     assert "backup-check" in text
+
+
+def test_frontend_npm_audit_ci_shim_pins_npm_11() -> None:
+    # The npm registry retired the quick-audit endpoint; npm 10.x still posts
+    # there and fails. The CI-only postinstall shim upgrades to npm 11, which
+    # uses the bulk-advisory endpoint, so `npm audit` on GitHub runners works.
+    import json
+
+    package_json = json.loads((REPO_ROOT / "frontend" / "package.json").read_text())
+    assert package_json["packageManager"] == "npm@11"
+    assert package_json["scripts"]["postinstall"] == "node scripts/ci-upgrade-npm.mjs"
+    shim = (REPO_ROOT / "frontend" / "scripts" / "ci-upgrade-npm.mjs").read_text()
+    assert 'spawnSync("npm", ["install", "-g", "npm@11"]' in shim
+    assert "process.env.CI" in shim  # local installs are never touched
