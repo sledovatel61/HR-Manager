@@ -310,3 +310,7 @@ def test_frontend_npm_audit_ci_shim_pins_npm_11() -> None:
     shim = (REPO_ROOT / "frontend" / "scripts" / "ci-upgrade-npm.mjs").read_text()
     assert 'spawnSync("npm", ["install", "-g", "npm@11"]' in shim
     assert "process.env.CI" in shim  # local installs are never touched
+    # The Docker build runs `npm ci` before `COPY . .`, so the shim must be
+    # copied explicitly or the postinstall hook fails the image build.
+    dockerfile = (REPO_ROOT / "frontend" / "Dockerfile").read_text()
+    assert dockerfile.index("COPY scripts ./scripts") < dockerfile.index("RUN npm ci")
