@@ -35,8 +35,10 @@ RUN apt-get update \
         build-essential ca-certificates curl libssl-dev perl pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Pinned, checksum-verified sources.
+# Pinned, checksum-verified sources. PostgreSQL release tags use
+# underscores (REL_16_15), so the tag is pinned explicitly.
 ARG POSTGRES_VERSION=16.15
+ARG POSTGRES_TAG=REL_16_15
 ARG POSTGRES_SHA256=c1afb748843644f8cc79de12892b9024bc4b82f6c9fe0353c0fcd31aa9fe16ea
 ARG ZLIB_VERSION=1.3.2
 ARG ZLIB_SHA256=b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1
@@ -44,7 +46,7 @@ ARG ZLIB_SHA256=b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1
 WORKDIR /build
 
 RUN curl -fsSL -o pg.tar.gz \
-        "https://codeload.github.com/postgres/postgres/tar.gz/refs/tags/REL_${POSTGRES_VERSION}" \
+        "https://codeload.github.com/postgres/postgres/tar.gz/refs/tags/${POSTGRES_TAG}" \
     && echo "${POSTGRES_SHA256}  pg.tar.gz" | sha256sum -c - \
     && curl -fsSL -o zlib.tar.gz \
         "https://codeload.github.com/madler/zlib/tar.gz/refs/tags/v${ZLIB_VERSION}" \
