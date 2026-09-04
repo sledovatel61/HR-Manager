@@ -3,8 +3,10 @@
 Сетевая система для командного подбора персонала: несколько HR-менеджеров
 ведут кандидатов в единой PostgreSQL-базе, руководитель получает аналитику.
 
-**Статус: этап 6 (аналитика и увольнения) завершён; этап 7 (backup,
-deployment и release) — ветка `arena/phase-7-release`.** Зашифрованные
+**Статус: этап 7 (backup, deployment и release) завершён; следующий — этап 8
+(фундамент уведомлений и пилотный режим).** Актуальный handoff находится в
+[`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md), полное задание — в
+[`prompts/PHASE_8_PROMPT.md`](prompts/PHASE_8_PROMPT.md). Зашифрованные
 backup (AES-256-GCM) с retention ≥ 7 дней и restore drill в отдельную БД,
 deploy-скрипт с автоматическим rollback, HTTPS reverse proxy и
 observability-сигналы — см. [`docs/backup-and-restore.md`](docs/backup-and-restore.md).
