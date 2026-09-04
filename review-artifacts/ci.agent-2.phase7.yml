@@ -1,0 +1,274 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Keep in sync with frontend/Dockerfile and frontend/package.json engines.
+  NODE_VERSION: "22.22.3"
+
+jobs:
+  backend:
+    name: Backend checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Install PostgreSQL client tools (backup integration tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl               postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          pg_dump --version
+      - name: Ruff lint
+        run: ruff check .
+      - name: Ruff format check
+        run: ruff format --check .
+      - name: Mypy typecheck
+        run: mypy app tests
+      - name: Unit tests
+        run: pytest -m "not integration" -v
+      - name: Production preflight script checks
+        working-directory: .
+        run: |
+          # The preflight must REJECT missing/insecure configuration...
+          if bash infra/scripts/check_env.sh; then
+            echo "expected failure without configuration" >&2; exit 1
+          fi
+          if env -i PATH=/usr/bin:/bin APP_ENV=production bash infra/scripts/check_env.sh; then
+            echo "expected failure without secrets" >&2; exit 1
+          fi
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY=dev-only-secret-key-not-for-production \
+              POSTGRES_PASSWORD=strong-ci-pass-123 \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure for dev SECRET_KEY" >&2; exit 1
+          fi
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+              POSTGRES_PASSWORD=hr_manager_dev_password \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure for dev DB password" >&2; exit 1
+          fi
+          # A strong SECRET_KEY/POSTGRES_PASSWORD but missing bootstrap admin
+          # password must also be rejected...
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+              POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure without BOOTSTRAP_ADMIN_PASSWORD" >&2; exit 1
+          fi
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+              POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BOOTSTRAP_ADMIN_PASSWORD=AdminAdmin123 \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure for dev BOOTSTRAP_ADMIN_PASSWORD" >&2; exit 1
+          fi
+          # ...the backup contour must be rejected when BACKUP_ENABLED=true
+          # and the encryption key is missing, weak or still the dev value...
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+              POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BACKUP_ENABLED=true \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure without backup encryption keys" >&2; exit 1
+          fi
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+              POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BACKUP_ENABLED=true BACKUP_KEY_ID=k1 \
+              BACKUP_ENC_KEY=ZGV2LW9ubHktYmFja3VwLWtleS0wMDAwMDAwMDAwMDA= \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure for the development-only backup key" >&2; exit 1
+          fi
+          # ...and ACCEPTED with a real 32-byte key.
+          env -i PATH=/usr/bin:/bin APP_ENV=production \
+            SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+            POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+            BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+            BACKUP_ENABLED=true BACKUP_KEY_ID=prod-1 \
+            BACKUP_ENC_KEY="$(python3 -c 'import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')" \
+            bash infra/scripts/check_env.sh
+
+          # ...and ACCEPT a fully configured production environment.
+          env -i PATH=/usr/bin:/bin APP_ENV=production \
+            SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+            POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+            BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+            bash infra/scripts/check_env.sh
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: ESLint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm run test
+      - name: Production build
+        run: npm run build
+      - name: Dependency audit (high and above)
+        run: npm audit --audit-level=high
+
+  integration:
+    name: Backend integration tests (PostgreSQL)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hr_manager_test
+          POSTGRES_USER: hr_manager
+          POSTGRES_PASSWORD: hr_manager_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hr_manager -d hr_manager_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Apply Alembic migrations
+        env:
+          # alembic/env.py builds the URL from the app settings (DATABASE_URL);
+          # point it at the same PostgreSQL service database the tests use so
+          # the schema exists before the integration tests run.
+          APP_ENV: test
+          DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/hr_manager_test
+        run: alembic upgrade head
+      - name: Integration tests (real PostgreSQL + migration pipeline)
+        env:
+          APP_ENV: test
+          TEST_DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/hr_manager_test
+          # Backup/restore-drill integration tests: the CI PostgreSQL user is
+          # superuser, so the same credentials can create/drop the drill
+          # databases; pg_dump/pg_restore come from the client tools above.
+          BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/postgres
+          BACKUP_PGDUMP_BIN: pg_dump
+          BACKUP_RESTORE_BIN: pg_restore
+        run: pytest -m integration -v
+
+  stack:
+    name: Compose stack smoke test (dev + prod overlay)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate dev Compose configuration
+        run: docker compose -f infra/docker-compose.yml config
+
+      - name: Validate production overlay configuration
+        run: |
+          export APP_ENV=production
+          export SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          export POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+          export BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+          docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config -q
+          rendered="$(docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config)"
+          if echo "$rendered" | grep -q 'hr_manager_dev_password'; then
+            echo "production configuration leaks development credentials" >&2
+            exit 1
+          fi
+          if echo "$rendered" | grep -qE 'published:\s*"'; then
+            echo "production configuration publishes external ports" >&2
+            exit 1
+          fi
+          echo "production overlay is clean (no dev credentials, no published ports)"
+
+      - name: Build and start the full stack (wait for healthy)
+        run: docker compose -f infra/docker-compose.yml up --build --wait --wait-timeout 300
+
+      - name: Verify backend /health returns HTTP 200
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/health)"
+          [ "$code" = "200" ] || { echo "expected 200, got $code" >&2; exit 1; }
+          curl -fsS http://localhost:8000/health | grep -q '"status":"ok"'
+
+      - name: Validate HTTPS proxy overlay configuration
+        run: |
+          export SERVER_NAME=hr-manager.example.com
+          export TLS_CERT_DIR=/tmp/hr-manager-tls
+          docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml \
+              -f infra/docker-compose.proxy.yml config -q
+          rendered="$(docker compose -f infra/docker-compose.yml \
+              -f infra/compose.prod.yml -f infra/docker-compose.proxy.yml config)"
+          if ! echo "$rendered" | grep -q 'target: 443'; then
+            echo "proxy overlay must publish HTTPS" >&2; exit 1
+          fi
+          if echo "$rendered" | grep -q 'hr_manager_dev_password'; then
+            echo "proxy overlay leaks development credentials" >&2; exit 1
+          fi
+          echo "proxy overlay is clean (HTTPS published, no dev credentials)"
+
+      - name: Verify the backup service produced an encrypted backup
+        run: |
+          # BACKUP_ON_START=1 in the dev stack: the scheduler encrypts a dump
+          # into the dedicated backups volume soon after the db is healthy.
+          for attempt in $(seq 1 24); do
+            if docker compose -f infra/docker-compose.yml exec -T backup \
+                sh -lc 'ls /var/backups/hr-manager/*.pgdump.enc >/dev/null 2>&1'; then
+              echo "encrypted backup found"; exit 0
+            fi
+            sleep 5
+          done
+          echo "no encrypted backup appeared in the backups volume" >&2
+          docker compose -f infra/docker-compose.yml logs backup
+          exit 1
+
+      - name: Verify frontend serves the app and proxies the API
+        run: |
+          curl -fsS http://localhost:8080/ | grep -q 'HR Manager'
+          curl -fsS http://localhost:8080/api/health | grep -q '"status":"ok"'
+
+      - name: Stop PostgreSQL and verify degraded health (HTTP 503)
+        run: |
+          docker compose -f infra/docker-compose.yml stop db
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/health)"
+          [ "$code" = "503" ] || { echo "expected 503, got $code" >&2; exit 1; }
+
+      - name: Clean up the stack
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down -v --remove-orphans

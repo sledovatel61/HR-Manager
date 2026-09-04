@@ -1,0 +1,156 @@
+# Release (deploy) pipeline for HR Manager.
+#
+# Deploys a tagged release (tags `release-*` on a protected branch) or a
+# manually dispatched SHA through the verified switch implemented by
+# infra/scripts/deploy.sh:
+#
+#   preflight -> build+tag images -> one-shot locked migration -> traffic
+#   switch with readiness gate -> smoke (/health + release SHA) ->
+#   automatic rollback to the previous release on readiness failure.
+#
+# Deployment target:
+#   * DEPLOY_HOST secret set      -> the sequence runs on the operator's host
+#                                    over SSH (production).
+#   * DEPLOY_HOST unset           -> the sequence runs on the CI runner as a
+#                                    LOCAL TEST CONTOUR (real images, real
+#                                    database, real smoke and rollback drill —
+#                                    no production host is touched).
+#
+# Required GitHub Actions secrets (production target only):
+#   DEPLOY_HOST, DEPLOY_SSH_USER, DEPLOY_SSH_KEY, SECRET_KEY,
+#   POSTGRES_PASSWORD, BOOTSTRAP_ADMIN_PASSWORD, BACKUP_KEY_ID, BACKUP_ENC_KEY
+# (backup secrets are mandatory for production deploys; the local test
+# contour generates ephemeral values instead).
+#
+# Rollback: dispatch the workflow with mode=rollback and the previous SHA
+# (or run the documented one-liner on the host — see infra/scripts/deploy.sh).
+name: Release
+
+on:
+  push:
+    tags: ["release-*"]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "deploy (default) or rollback to the previous release"
+        required: false
+        default: deploy
+      release_sha:
+        description: "Full git SHA to deploy (defaults to HEAD/tag)"
+        required: false
+      previous_sha:
+        description: "For rollback: the SHA of the release to return to"
+        required: false
+      failure_drill:
+        description: "After a deploy, install a broken release and verify automatic rollback"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy or rollback
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release SHAs
+        id: release
+        run: |
+          case "${{ github.event_name }}" in
+            push)
+              # Protected tags only: repository tag protection must allow only
+              # release-* tags (see review-artifacts/README.md, owner setup).
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              ;;
+            workflow_dispatch)
+              if [ -n "${{ inputs.release_sha }}" ]; then
+                git fetch origin "${{ inputs.release_sha }}" --depth=1
+                git checkout -q FETCH_HEAD
+                echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              else
+                echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+          esac
+          echo "mode=${{ inputs.mode || 'deploy' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Mandatory CI checks must be green for the release commit
+        if: steps.release.outputs.mode == 'deploy'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          # Deploy only after the mandatory checks passed for this exact
+          # commit (the CI workflow runs on the protected branch).
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=20" \
+            --jq '.workflow_runs[] | select(.name=="CI" and .status=="completed" and .conclusion=="success") | .head_sha' | head -1)"
+          [ -n "$runs" ] || { echo "error: no successful CI run for ${SHA}; deploy refused" >&2; exit 1; }
+          echo "CI is green for ${SHA}"
+
+      - name: Rollback to the previous release
+        if: steps.release.outputs.mode == 'rollback'
+        env:
+          SHA: ${{ inputs.previous_sha }}
+        run: |
+          : "${SHA:?previous_sha is required for rollback}"
+          export RELEASE_SHA="$SHA"
+          export RELEASE_TAG=release-prev
+          docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml \
+            up -d --wait --wait-timeout 180 backend frontend backup
+          docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml \
+            exec -T backend python -c \
+            "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/ops/status', timeout=5).read().decode())" \
+            | grep -q "\"release_sha\":\"${SHA}\"" \
+            || { echo "error: rollback smoke failed" >&2; exit 1; }
+          echo "traffic is back on ${SHA}"
+
+      - name: Deploy (verified switch + smoke + automatic rollback)
+        if: steps.release.outputs.mode == 'deploy'
+        env:
+          SHA: ${{ steps.release.outputs.sha }}
+          DRILL: ${{ inputs.failure_drill }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.BOOTSTRAP_ADMIN_PASSWORD }}
+          BACKUP_KEY_ID: ${{ secrets.BACKUP_KEY_ID }}
+          BACKUP_ENC_KEY: ${{ secrets.BACKUP_ENC_KEY }}
+        run: |
+          set -euo pipefail
+          # Production deploys require real backup secrets; the local test
+          # contour generates ephemeral values (it is not a production system).
+          if [ -n "$DEPLOY_HOST" ] && [ -z "$BACKUP_ENC_KEY" ]; then
+            echo "error: BACKUP_ENC_KEY secret is required for production deploys" >&2
+            exit 1
+          fi
+          export SECRET_KEY="${SECRET_KEY:-$(python3 -c 'import secrets; print(secrets.token_hex(32))')}"
+          export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(python3 -c 'import secrets; print(secrets.token_hex(16))')}"
+          export BOOTSTRAP_ADMIN_PASSWORD="${BOOTSTRAP_ADMIN_PASSWORD:-$(python3 -c 'import secrets; print(secrets.token_hex(16))')}"
+          export BACKUP_KEY_ID="${BACKUP_KEY_ID:-ci-ephemeral}"
+          export BACKUP_ENC_KEY="${BACKUP_ENC_KEY:-$(python3 -c 'import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')}"
+          target="local"
+          if [ -n "$DEPLOY_HOST" ]; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            eval "$(ssh-agent -s)" >/dev/null
+            printf '%s' "$DEPLOY_SSH_KEY" | ssh-add - >/dev/null 2>&1
+            ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+            target="ssh"
+          fi
+          bash infra/scripts/deploy.sh --release "$SHA" --target "$target" \
+            $([ "$DRILL" = "true" ] && echo --failure-drill)
+
+      - name: Upload release notes
+        if: steps.release.outputs.mode == 'deploy'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: /tmp/release-notes-*.md
+          if-no-files-found: warn
