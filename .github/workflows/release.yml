@@ -81,7 +81,6 @@ jobs:
               # release-* tags (see review-artifacts/README.md, owner setup).
           sha="$(git rev-parse HEAD)"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "mode=$MODE_INPUT" >> "$GITHUB_OUTPUT"
               ;;
             workflow_dispatch)
               if [ -n "$RELEASE_INPUT" ]; then
@@ -99,6 +98,7 @@ jobs:
           git merge-base --is-ancestor "$sha" origin/main || {
             echo "error: release SHA must belong to origin/main" >&2; exit 1;
           }
+          echo "mode=$MODE_INPUT" >> "$GITHUB_OUTPUT"
 
       - name: Mandatory CI checks must be green for the release commit
         if: steps.release.outputs.mode == 'deploy'
