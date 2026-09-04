@@ -203,6 +203,11 @@ def test_backup_dockerfile_is_nonroot_and_parity_with_backend() -> None:
     # download tag is pinned explicitly or the image build fails with 404.
     assert "POSTGRES_TAG=REL_16_15" in backup
     assert "refs/tags/${POSTGRES_TAG}" in backup
+    # The sandbox-validated build toolchain (no libssl-dev keeps the recipe
+    # identical to the verified one), and the build-stage library path that
+    # makes the pg_dump/pg_restore version self-checks runnable.
+    assert "build-essential ca-certificates curl perl pkg-config" in backup
+    assert "ENV BISON=/bin/true FLEX=/bin/true LD_LIBRARY_PATH=/usr/local/pgtools/lib" in backup
     # No secrets in the image layers.
     for forbidden in ("hr_manager_dev_password", "dev-only-secret-key", DEV_BACKUP_KEY):
         assert forbidden not in backup

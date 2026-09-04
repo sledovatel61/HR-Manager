@@ -30,9 +30,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Build-time only toolchain (never copied into the final image). perl is
 # required by PostgreSQL's configure script and is absent from python:slim.
+# No libssl-dev: the sandbox-validated recipe builds without OpenSSL support
+# (internal tooling only), keeping the image's runtime dependencies minimal.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl libssl-dev perl pkg-config \
+        build-essential ca-certificates curl perl pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Pinned, checksum-verified sources. PostgreSQL release tags use
@@ -59,7 +61,9 @@ RUN curl -fsSL -o pg.tar.gz \
 # BISON/FLEX are stubbed out for the whole build: pg_dump/pg_restore and
 # their libraries contain no generated parser code. psqlscan.c (psql-only)
 # is replaced by a compiling stub so flex is not required at all.
-ENV BISON=/bin/true FLEX=/bin/true
+# LD_LIBRARY_PATH points at the freshly installed libpq.so so the build-stage
+# version self-checks below can run without a system-wide linker update.
+ENV BISON=/bin/true FLEX=/bin/true LD_LIBRARY_PATH=/usr/local/pgtools/lib
 
 RUN cd /build/zsrc \
     && ./configure --prefix=/usr/local/pgtools --static \
