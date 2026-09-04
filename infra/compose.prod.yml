@@ -27,6 +27,10 @@ services:
     ports: !reset []
 
   backend:
+    # Release-tagged image: the deploy pipeline builds/tags every release and
+    # switches traffic by changing RELEASE_TAG; the previous tag stays
+    # available for rollback (see infra/scripts/deploy.sh).
+    image: hr-manager-backend:${RELEASE_TAG:-local}
     environment:
       APP_ENV: ${APP_ENV:-production}
       APP_DEBUG: "false"
@@ -36,10 +40,43 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?set a strong BOOTSTRAP_ADMIN_PASSWORD for production (>=12 chars)}
       BOOTSTRAP_ADMIN_FULL_NAME: ${BOOTSTRAP_ADMIN_FULL_NAME:-Администратор системы}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hr_manager}
+      # Reported by /ops/status; the deploy pipeline injects the full SHA of
+      # the release commit so operators can map a running container to code.
+      RELEASE_SHA: ${RELEASE_SHA:-}
     ports: !reset []
+    # Production never auto-migrates at container start: migrations run as a
+    # separate one-shot job (infra/scripts/migrate.sh) BEFORE the traffic is
+    # switched, guarded by the advisory lock in alembic/env.py.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   frontend:
+    image: hr-manager-frontend:${RELEASE_TAG:-local}
+    ports: !reset []
+
+  backup:
+    image: hr-manager-backup:${RELEASE_TAG:-local}
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_DEBUG: "false"
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hr_manager}
+      BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/postgres
+      BACKUP_DIR: /var/backups/hr-manager
+      BACKUP_STATE_FILE: /var/backups/hr-manager/state.json
+      # Encryption secrets come from the environment only. When unset the
+      # container fails its runs loudly (no unencrypted backup is possible);
+      # infra/scripts/check_env.sh warns and, with BACKUP_ENABLED=true,
+      # rejects the configuration outright.
+      BACKUP_KEY_ID: ${BACKUP_KEY_ID:-}
+      BACKUP_ENC_KEY: ${BACKUP_ENC_KEY:-}
+      BACKUP_LEGACY_KEYS: ${BACKUP_LEGACY_KEYS:-}
+      BACKUP_SCHEDULE_UTC: ${BACKUP_SCHEDULE_UTC:-"02:00"}
+      BACKUP_DRILL_INTERVAL_HOURS: ${BACKUP_DRILL_INTERVAL_HOURS:-168}
+      BACKUP_ON_START: ${BACKUP_ON_START:-0}
+      BACKUP_MIN_FREE_MB: ${BACKUP_MIN_FREE_MB:-512}
+      BACKUP_REASON: ${BACKUP_REASON:-scheduled backup}
+      TZ: UTC
     ports: !reset []
 
 volumes:
   pgdata:
+  backups:
