@@ -49,6 +49,12 @@
   `/admin/ops/releases`, `/ops/status`, `/ops/backup-health` (503 при
   просрочке/нецелостности — без фальшивых 200), `/ops/metrics` (Prometheus,
   route-шаблоны, без query/cookie/заголовков).
+- Observability-модель: `/health` остаётся чистым liveness/readiness
+  (зависимость от БД, 200/503); операционные сигналы — время/размер/возраст
+  последнего backup, результат drill, миграции, release SHA, latency/error
+  counters — вынесены в `/ops/status` и `/ops/metrics` (одно место для
+  мониторинга, без PII и query-строк). Таблица алертов
+  (severity/dedup/cooldown/действия) — в `docs/backup-and-restore.md`.
 - Аудит: `backup_started/succeeded/failed`, `backup_retention_cleaned`,
   `backup_restore_drill_started/succeeded/failed`, `backup_verify_failed`,
   `deploy_recorded`, `release_recorded` — без PII, строк подключения, ключей
@@ -155,11 +161,14 @@ trust-аутентификация, пароль игнорируется):
 | 33867376956 | пин тега (a498244) | pass | pass | **fail** (audit 503, transient) | skip |
 | 33870628712 | npm-шим (f0cf536) | **fail** (flaky п. 6) | pass | pass | **fail** (Docker `npm ci`, п. 5) |
 | 33870958295 | фикс Dockerfile (9e60b8c) | **fail** (flaky п. 6) | pass | pass | skip |
+| **33873582295** | фикс flaky (cb05412) + отчёт | **pass** | **pass** | **pass** | **pass** |
 
 Rerun упавших джобов недоступен (403 на `rerun-failed-jobs` для App),
-поэтому каждая итерация — новый коммит. После фикса п. 6 (cb05412) и
-последнего push ожидается полностью зелёный прогон (backend, integration,
-frontend, stack).
+поэтому каждая итерация — новый коммит. **Итог: run 33873582295 —
+полностью зелёный** (backend, integration, frontend, stack; stack-джоб
+реально собрал образы — включая backup-образ из исходников — поднял весь
+стек с `--wait` по healthcheck'ам, проверил `/health` 200, frontend +
+`/api` proxy и деградацию 503 при остановке БД).
 
 ## Формат backup и команды
 
@@ -263,9 +272,12 @@ frontend, stack).
   exec в контейнер — в production порты не публикуются); провал readiness →
   автоматический откат на `release-prev`; `--failure-drill` проверяет откат
   намеренно сломанным релизом и повторный smoke после отката.
-- Стек (CI, после переноса workflow): `/health` 200, frontend + `/api/health`,
-  деградация 503 при остановке БД, реальный `*.pgdump.enc` в volume
-  backup-сервиса, валидация proxy-оверлея (только 80/443, без dev-креденшелов).
+- Стек (CI): прогон 33873582295 — сборка всех образов (включая backup-образ
+  из исходников), `compose up --wait` по healthcheck'ам, `/health` 200,
+  frontend + `/api/health`, деградация 503 при остановке БД — зелёно.
+  Проверка реального `*.pgdump.enc` в volume backup-сервиса и валидация
+  proxy-оверлея (только 80/443, без dev-креденшелов) добавлены в
+  передаваемый workflow (`review-artifacts/ci.agent-2.phase7.*`).
 
 ## Изменённые файлы
 
