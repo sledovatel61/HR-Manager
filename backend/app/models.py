@@ -115,6 +115,17 @@ class AuditAction(StrEnum):
     # Analytics (roadmap phase: analytics and reports).
     CANDIDATE_TERMINATED = "candidate_terminated"
     ANALYTICS_EXPORTED = "analytics_exported"
+    # Backup, deployment and release (roadmap phase: backup, deployment, release).
+    BACKUP_STARTED = "backup_started"
+    BACKUP_SUCCEEDED = "backup_succeeded"
+    BACKUP_FAILED = "backup_failed"
+    BACKUP_VERIFY_FAILED = "backup_verify_failed"
+    BACKUP_RESTORE_DRILL_STARTED = "backup_restore_drill_started"
+    BACKUP_RESTORE_DRILL_SUCCEEDED = "backup_restore_drill_succeeded"
+    BACKUP_RESTORE_DRILL_FAILED = "backup_restore_drill_failed"
+    BACKUP_RETENTION_CLEANED = "backup_retention_cleaned"
+    DEPLOY_RECORDED = "deploy_recorded"
+    RELEASE_RECORDED = "release_recorded"
 
 
 class CandidateStage(StrEnum):
