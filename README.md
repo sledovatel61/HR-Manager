@@ -5,8 +5,9 @@
 
 **Статус: этап 7 (backup, deployment и release) завершён; следующий — этап 8
 (фундамент уведомлений и пилотный режим).** Актуальный handoff находится в
-[`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md), полное задание — в
-[`prompts/PHASE_8_PROMPT.md`](prompts/PHASE_8_PROMPT.md). Зашифрованные
+[`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md), готовый промпт для нового
+чата — в [`prompts/PHASE_8_START_PROMPT.md`](prompts/PHASE_8_START_PROMPT.md),
+полное задание — в [`prompts/PHASE_8_PROMPT.md`](prompts/PHASE_8_PROMPT.md). Зашифрованные
 backup (AES-256-GCM) с retention ≥ 7 дней и restore drill в отдельную БД,
 deploy-скрипт с автоматическим rollback, HTTPS reverse proxy и
 observability-сигналы — см. [`docs/backup-and-restore.md`](docs/backup-and-restore.md).
