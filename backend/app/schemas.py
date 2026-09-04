@@ -717,3 +717,82 @@ class AnalyticsFunnelResponse(BaseModel):
     filters: AnalyticsFiltersOut
     stages: list[AnalyticsFunnelStageOut]
     conversions: list[AnalyticsConversionOut]
+
+
+# --- Ops contour: backup / deployment / monitoring (phase 7) -----------------
+
+
+class OpsBackupSignal(BaseModel):
+    """Backup-related monitoring signals (never PII or dump contents)."""
+
+    available: bool
+    last_backup_at: str | None = None
+    age_seconds: float | None = None
+    ok: bool | None = None
+    size_bytes: int | None = None
+    last_check_at: str | None = None
+    last_check_ok: bool | None = None
+    last_drill_at: str | None = None
+    last_drill_ok: bool | None = None
+
+
+class OpsMigrationSignal(BaseModel):
+    """Schema migration state of the connected database."""
+
+    current_revision: str | None
+    expected_revision: str | None
+    ok: bool | None
+
+
+class OpsStatusResponse(BaseModel):
+    """Body of ``GET /ops/status`` (no PII, no connection details)."""
+
+    status: Literal["ok", "degraded"]
+    service: str
+    version: str
+    environment: str
+    release_sha: str
+    uptime_seconds: float
+    time: str
+    database: DatabaseHealth
+    migrations: OpsMigrationSignal
+    backup: OpsBackupSignal
+
+
+class OpsBackupHealthResponse(BaseModel):
+    """Body of ``GET /ops/backup-health`` (HTTP 503 when unhealthy)."""
+
+    status: Literal["ok", "degraded"]
+    fresh: bool
+    age_seconds: float | None
+    last_backup_at: str | None
+    message: str
+
+
+class OpsBackupTriggerRequest(BaseModel):
+    """Payload for ``POST /admin/ops/backup`` (manual backup trigger)."""
+
+    reason: str = Field(min_length=1, max_length=200)
+    request_id: str | None = Field(default=None, max_length=64)
+
+
+class OpsBackupTriggerResponse(BaseModel):
+    """202 response of a manual backup trigger."""
+
+    status: Literal["accepted"] = "accepted"
+    request_id: str
+    message: str
+
+
+class OpsDrillTriggerRequest(BaseModel):
+    """Payload for ``POST /admin/ops/restore-drill``."""
+
+    file: str | None = Field(default=None, max_length=200)
+
+
+class OpsReleaseRecordRequest(BaseModel):
+    """Payload for ``POST /admin/ops/releases`` (deploy audit record)."""
+
+    sha: str = Field(min_length=7, max_length=64)
+    status: Literal["deployed", "rolled_back", "failed"] = "deployed"
+    details: str | None = Field(default=None, max_length=500)

@@ -82,3 +82,55 @@ def test_session_cookie_secure_can_be_forced_in_development() -> None:
         }
     )
     assert settings.session_cookie_is_secure is True
+
+
+# --- phase 7: backup contour configuration ------------------------------------
+
+
+def test_backup_settings_defaults_and_aliases() -> None:
+    settings = Settings.model_validate(BASE_PRODUCTION_ENV)
+    assert settings.backup_dir == "/var/backups/hr-manager"
+    assert settings.backup_state_file == "/var/backups/hr-manager/state.json"
+    assert settings.backup_retention_days == 7
+    assert settings.backup_min_copies == 2
+    assert settings.backup_max_age_hours == 26
+    assert settings.backup_drill_db_name == "hr_manager_restore_drill"
+    assert settings.backup_health_timeout_s == 90.0
+    assert settings.backup_min_free_mb == 512
+
+
+def test_production_rejects_development_backup_key() -> None:
+    from app.config import DEVELOPMENT_BACKUP_ENC_KEY
+
+    env = dict(BASE_PRODUCTION_ENV)
+    env["BACKUP_ENC_KEY"] = DEVELOPMENT_BACKUP_ENC_KEY
+    with pytest.raises(ValidationError, match="BACKUP_ENC_KEY"):
+        Settings.model_validate(env)
+
+
+def test_production_rejects_short_backup_key() -> None:
+    env = dict(BASE_PRODUCTION_ENV)
+    env["BACKUP_ENC_KEY"] = "c2hvcnQ="  # base64 of "short"
+    with pytest.raises(ValidationError, match="BACKUP_ENC_KEY"):
+        Settings.model_validate(env)
+
+
+def test_production_accepts_real_backup_key_and_drill_settings() -> None:
+    import base64
+
+    env = dict(BASE_PRODUCTION_ENV)
+    env["BACKUP_ENC_KEY"] = base64.b64encode(b"k" * 32).decode()
+    env["BACKUP_DRILL_ADMIN_URL"] = "postgresql+psycopg://app:strong-pass@db:5432/postgres"
+    env["BACKUP_DRILL_DB_NAME"] = "hr_manager_drill_test"
+    settings = Settings.model_validate(env)
+    assert (
+        settings.backup_drill_admin_url == "postgresql+psycopg://app:strong-pass@db:5432/postgres"
+    )
+    assert settings.backup_drill_db_name == "hr_manager_drill_test"
+
+
+def test_retention_below_seven_days_is_rejected() -> None:
+    env = dict(BASE_PRODUCTION_ENV)
+    env["BACKUP_RETENTION_DAYS"] = "6"
+    with pytest.raises(ValidationError, match="BACKUP_RETENTION_DAYS"):
+        Settings.model_validate(env)

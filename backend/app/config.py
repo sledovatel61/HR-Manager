@@ -24,6 +24,32 @@ Environment variables
 ``BOOTSTRAP_ADMIN_FULL_NAME``  initial administrator (created once, when the
                            user table is empty; safe development default in
                            non-production, never used implicitly in production)
+``RELEASE_SHA``            full git SHA of the running release (reported by
+                           the ops status endpoint; injected by CI/deploy)
+``BACKUP_DIR``             directory holding encrypted backups and state
+``BACKUP_STATE_FILE``      JSON state file for backup/monitoring signals
+``BACKUP_RETENTION_DAYS``  how long backups are kept (minimum 7)
+``BACKUP_MAX_AGE_HOURS``   freshness threshold used by backup check/status
+``BACKUP_MIN_COPIES``      newest copies never removed by retention
+``BACKUP_PGDUMP_BIN``      pg_dump executable used by backup commands
+                           (defaults to ``pg_dump`` from PATH)
+``BACKUP_RESTORE_BIN``     pg_restore executable used by restore drills
+``BACKUP_KEY_ID``          id of the primary encryption key (stored inside
+                           the backup header, used by the runner/CLI)
+``BACKUP_ENC_KEY``         base64-encoded 32-byte AES-256-GCM key; production
+                           rejects missing/weak/development-only values when
+                           the backup contour is enabled (BACKUP_ENABLED)
+``BACKUP_LEGACY_KEYS``     JSON object ``{key_id: base64 key}`` of rotated
+                           keys kept only to decrypt/verify old backups
+``BACKUP_DRILL_ADMIN_URL`` SQLAlchemy URL of a superuser connection able to
+                           create/drop the drill database (used by restore
+                           drills; without it drills fail with a clear error)
+``BACKUP_DRILL_DB_NAME``   name of the temporary drill database
+                           (default ``hr_manager_restore_drill``)
+``BACKUP_ALEMBIC_DIR``     directory with ``alembic.ini`` used by drill
+                           migrations (defaults to the backend source root)
+``BACKUP_HEALTH_TIMEOUT_S`` how long the drill waits for ``/health`` to turn
+                           200 on the restored database (default 90)
 """
 
 from functools import lru_cache
@@ -44,6 +70,14 @@ DEVELOPMENT_DATABASE_URL = (
 # a weak/implicit password.
 DEVELOPMENT_BOOTSTRAP_ADMIN_USERNAME = "admin"
 DEVELOPMENT_BOOTSTRAP_ADMIN_PASSWORD = "AdminAdmin123"
+
+# Development-only backup encryption key (base64 of a 32-byte value). The dev
+# Compose stack uses it so the backup contour can be exercised locally; a
+# production environment must never run with it (see the validator below).
+DEVELOPMENT_BACKUP_ENC_KEY = "ZGV2LW9ubHktYmFja3VwLWtleS0wMDAwMDAwMDAwMDA="
+# The backup key is exactly 32 bytes (AES-256): 44 base64 characters.
+BACKUP_KEY_BYTES = 32
+BACKUP_KEY_BASE64_LENGTH = 44
 
 MIN_SECRET_KEY_LENGTH = 32
 
@@ -96,6 +130,26 @@ class Settings(BaseSettings):
         default="Администратор системы",
         validation_alias="BOOTSTRAP_ADMIN_FULL_NAME",
     )
+
+    # Ops/release contour (roadmap phase 7).
+    release_sha: str = Field(default="", validation_alias="RELEASE_SHA")
+    backup_dir: str = Field(default="/var/backups/hr-manager", validation_alias="BACKUP_DIR")
+    backup_state_file: str = Field(
+        default="/var/backups/hr-manager/state.json", validation_alias="BACKUP_STATE_FILE"
+    )
+    backup_retention_days: int = Field(default=7, validation_alias="BACKUP_RETENTION_DAYS")
+    backup_max_age_hours: int = Field(default=26, validation_alias="BACKUP_MAX_AGE_HOURS")
+    backup_min_copies: int = Field(default=2, validation_alias="BACKUP_MIN_COPIES")
+    backup_pgdump_bin: str = Field(default="pg_dump", validation_alias="BACKUP_PGDUMP_BIN")
+    backup_restore_bin: str = Field(default="pg_restore", validation_alias="BACKUP_RESTORE_BIN")
+    backup_min_free_mb: int = Field(default=512, validation_alias="BACKUP_MIN_FREE_MB")
+    backup_enc_key: str = Field(default="", validation_alias="BACKUP_ENC_KEY")
+    backup_drill_admin_url: str = Field(default="", validation_alias="BACKUP_DRILL_ADMIN_URL")
+    backup_drill_db_name: str = Field(
+        default="hr_manager_restore_drill", validation_alias="BACKUP_DRILL_DB_NAME"
+    )
+    backup_alembic_dir: str = Field(default="", validation_alias="BACKUP_ALEMBIC_DIR")
+    backup_health_timeout_s: float = Field(default=90.0, validation_alias="BACKUP_HEALTH_TIMEOUT_S")
 
     @property
     def is_production(self) -> bool:
@@ -150,6 +204,27 @@ class Settings(BaseSettings):
                     f"BOOTSTRAP_ADMIN_PASSWORD must be at least {MIN_PASSWORD_LENGTH} characters "
                     "in production"
                 )
+            # Backups are secret assets: when the backup contour is enabled in
+            # production the encryption key must be a real, correctly sized,
+            # non-development value. The runner re-validates the key on every
+            # run; this guard fails fast at startup instead.
+            if self.backup_enc_key:
+                if self.backup_enc_key == DEVELOPMENT_BACKUP_ENC_KEY:
+                    problems.append(
+                        "BACKUP_ENC_KEY must not be the development-only backup key in production"
+                    )
+                elif len(self.backup_enc_key) < BACKUP_KEY_BASE64_LENGTH:
+                    problems.append(
+                        f"BACKUP_ENC_KEY must decode to {BACKUP_KEY_BYTES} bytes "
+                        f"({BACKUP_KEY_BASE64_LENGTH} base64 characters)"
+                    )
+
+        if self.backup_retention_days < 7:
+            problems.append("BACKUP_RETENTION_DAYS must be at least 7 (backup retention policy)")
+        if self.backup_min_copies < 1:
+            problems.append("BACKUP_MIN_COPIES must be at least 1")
+        if self.backup_max_age_hours < 1:
+            problems.append("BACKUP_MAX_AGE_HOURS must be at least 1")
 
         if problems:
             raise ValueError(
