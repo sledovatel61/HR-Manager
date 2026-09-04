@@ -9,8 +9,22 @@
   4. `0a20e66` — фикс кавычек в compose-дефолте `BACKUP_SCHEDULE_UTC`
   5. `8b2a368` — фикс маскирования паролей в производных URL + резолвинг
      dump-тулинга для CI (см. «Что поймал CI»)
+  6. `96e6f8c` — docs: этот отчёт (первая редакция, CI-находки)
+  7. `a498244` — фикс: явный пин `POSTGRES_TAG=REL_16_15` в `Dockerfile.backup`
+     (тег codeload не содержит точек — `REL_16.15` давал 404 при сборке)
+  8. `a0cafef` — фикс: паритет сборочной стадии `Dockerfile.backup` с
+     рецептом, проверенным в песочнице (`LD_LIBRARY_PATH=/usr/local/pgtools/lib`
+     для самопроверок `pg_dump --version`, без `libssl-dev`)
+  9. `f0cf536` — фикс: CI-only postinstall-шим `npm@11` (frontend), чтобы
+     `npm audit` ходил в новый bulk-advisory endpoint (см. «Что поймал CI»)
+  10. `9e60b8c` — фикс: `COPY scripts` до `RUN npm ci` во frontend/Dockerfile
+      (postinstall-хук исполняется уже на `npm ci` сборки образа)
+  11. `cb05412` — фикс: flaky-тест audit-записи backup-триггера переведён на
+      файловую SQLite (фоновый тред получает собственное соединение, как в
+      проде с пулом PostgreSQL)
 - Pull request: https://github.com/sledovatel61/HR-Manager/pull/9
-- CI: https://github.com/sledovatel61/HR-Manager/actions/runs/33860309810 (см. ниже)
+- CI: https://github.com/sledovatel61/HR-Manager/actions/runs/33860309810
+  (первый прогон; хронология всех прогонов — в «Что поймал CI»)
 - **Merge в `main` не выполнялся** — это действие владельца.
 
 ## Что сделано
@@ -107,9 +121,45 @@ trust-аутентификация, пароль игнорируется):
    Локально подтверждено: `npm audit` с npm@11 → `found 0 vulnerabilities`
    (npm@10.9.4 зависает). Шаг аудита исправлен в передаваемом CI
    (`review-artifacts/ci.agent-2.phase7.yml/.patch`: `npm install -g npm@11`
-   перед аудитом). В текущем (неперенесённом) workflow шаг `npm audit`
-   редактировать нельзя — App не имеет права `workflows`; до переноса
-   владельцем этот шаг будет красным по причине реестра (не зависимостей).
+   перед аудитом) **и** — поскольку сам `ci.yml` App редактировать не может
+   (нет права `workflows`) — в дерево репозитория добавлен CI-gated
+   postinstall-шим `frontend/scripts/ci-upgrade-npm.mjs` (`npm ci` на
+   GitHub-раннере сам обновляет глобальный npm до 11; локально и в Docker-
+   сборке не срабатывает). Frontend-джоб в текущем (неперенесённом)
+   workflow стал зелёным на прогонах 33870628712/33870958295.
+4. **503 на quick-audit endpoint (transient).** Прогон 33867376956: frontend
+   упал на `npm audit` — `503 Service Unavailable` от
+   `/-/npm/v1/security/audits/quick` после ~7 минут ретраев (сбой реестра;
+   тот же шаг на прогоне 33866426699 проходил). Исправление — тот же шим из
+   п.3 (npm 11 → bulk endpoint; песочница: 200, 0 уязвимостей).
+5. **Сборка frontend-образа падала на postinstall-шиме** (прогон
+   33870628712, stack-джоб): `npm ci` в `frontend/Dockerfile` выполнялся до
+   `COPY . .`, поэтому `node scripts/ci-upgrade-npm.mjs` не существовал и
+   сборка падала с exit 1. Исправлено `COPY scripts ./scripts` до
+   `RUN npm ci` (9e60b8c); порядок закреплён оверлей-тестом.
+6. **Flaky unit-тест backup-триггера** (прогоны 33870628712 и
+   33870958295, backend-джоб): audit-запись `BACKUP_FAILED` коммитится из
+   фонового треда собственной сессией, а общий in-memory SQLite юнит-движок —
+   одно StaticPool-соединение; две конкурентные сессии на одном соединении
+   гоняются недетерминированно (воспроизведено локально, ~40% падений,
+   `assert 0 == 1` после 10 с поллинга). Тест переведён на файловую SQLite
+   и поллит свежей сессией (cb05412): 30/30 стресс-прогонов зелёные,
+   полный сьют — 5/5.
+
+**Хронология прогонов CI (GitHub Actions, реальные прогоны):**
+
+| Run | Причина прогона | Backend | Integration | Frontend | Stack |
+|---|---|---|---|---|---|
+| 33860309810 | первый прогон PR | fail (scram-маска) | fail (scram) | fail (audit 400) | skip |
+| 33866426699 | фиксы пп. 1–3 | pass | pass | pass | **fail** (codeload 404, тег `REL_16.15`) |
+| 33867376956 | пин тега (a498244) | pass | pass | **fail** (audit 503, transient) | skip |
+| 33870628712 | npm-шим (f0cf536) | **fail** (flaky п. 6) | pass | pass | **fail** (Docker `npm ci`, п. 5) |
+| 33870958295 | фикс Dockerfile (9e60b8c) | **fail** (flaky п. 6) | pass | pass | skip |
+
+Rerun упавших джобов недоступен (403 на `rerun-failed-jobs` для App),
+поэтому каждая итерация — новый коммит. После фикса п. 6 (cb05412) и
+последнего push ожидается полностью зелёный прогон (backend, integration,
+frontend, stack).
 
 ## Формат backup и команды
 
@@ -154,10 +204,18 @@ trust-аутентификация, пароль игнорируется):
   снятия `pg_advisory_xact_lock(767147072)` первым.
 - CLI end-to-end: `python -m app.cli backup-now --actor <admin>` (аутентификация
   по паролю против БД) и `backup-check --deep` — 0, аудит под администратором.
-- Полный backend-сьют: **272 passed** с интеграциями (unit 216 + integration
-  56, включая новые backup-интеграционные), ruff/mypy/format — чисто.
+- Полный backend-сьют: **273 passed** с интеграциями (unit 217 + integration
+  56, включая 11 backup-интеграционных), ruff/mypy/format — чисто.
+  Оверлей-тесты `test_production_overlay.py` — 21 passed (включая пин
+  `POSTGRES_TAG=REL_16_15`, паритет toolchain/ENV `Dockerfile.backup`,
+  npm-шим и порядок `COPY scripts` → `RUN npm ci` во frontend/Dockerfile).
+  Flaky-тест audit-записи: 30/30 стресс-прогонов; полный сьют — 5/5
+  зелёных подряд.
 - Frontend: ESLint/tsc чисто, 101 тест, production build; `npm audit` — 0
-  уязвимостей (npm@11, bulk-advisory endpoint; см. «Что поймал CI»).
+  уязвимостей (npm 11.19.1, bulk-advisory endpoint; npm 10.9.8 в песочнице
+  продемонстрировал 400 на retire'нутом quick endpoint — см. «Что поймал CI»).
+  Точная последовательность CI (`CI=true npm ci` → `npm audit`) пройдена
+  локально.
 - `bash -n` для всех скриптов `infra/scripts/*.sh`; `check_env.sh` прогнан
   поведенчески (warning-режим и жёсткий режим `BACKUP_ENABLED=true`).
 - `git diff --check` чистый (для unified-diff патчей в review-artifacts
@@ -217,6 +275,8 @@ Backend: `app/backup.py`, `app/backup_runner.py`, `app/metrics.py`,
 `requirements.txt`, `Dockerfile.backup`; тесты: `test_backup_lib.py`,
 `test_ops_api.py`, `test_integration_backup.py`, `test_config.py`,
 `test_production_overlay.py`.
+Frontend: `package.json` (+`postinstall`/`packageManager`),
+`package-lock.json`, `scripts/ci-upgrade-npm.mjs`, `Dockerfile`.
 Infra: `docker-compose.yml`, `compose.prod.yml`, `docker-compose.proxy.yml`,
 `nginx/default.conf.template`, `nginx/README.md`,
 `scripts/{backup_scheduler.sh,migrate.sh,deploy.sh,check_env.sh}`.
@@ -238,13 +298,14 @@ ci.agent-2.phase7.patch,release.agent-2.yml,release.agent-2.patch,README.md}`.
   первоначального плана: на ubuntu-24.04 раннере **уже есть**
   pg_dump/pg_restore 16, поэтому backup-интеграционные тесты в старом CI не
   скипаются, а реально выполняются (см. «Что поймал CI»).
-- **Шаг `npm audit` в текущем (неперенесённом) CI будет красным**: npm
-  registry увёл legacy quick-audit endpoint, а npm < 11 (бандлится с Node
-  22 на раннере) шлёт запрос именно туда — 400 «Invalid package tree»/
-  зависание, к зависимостям отношения не имеет. Локально npm@11 → 0
-  уязвимостей. Исправление — в передаваемом workflow
+- **`npm audit` в текущем (неперенесённом) CI работает благодаря
+  CI-gated postinstall-шиму** (`frontend/scripts/ci-upgrade-npm.mjs`):
+  `npm ci` на раннере сам обновляет глобальный npm до 11 (bulk-advisory
+  endpoint) — frontend-джоб зелёный на прогонах 33870628712/33870958295.
+  Дублирующее (durable) исправление — в передаваемом workflow
   (`review-artifacts/ci.agent-2.phase7.*`: `npm install -g npm@11` перед
-  аудитом); изменить сам шаг App не может (нет права `workflows`).
+  аудитом); после переноса шим можно удалить. Сам `ci.yml` App изменить не
+  может (нет права `workflows`).
 - Sandbox-интеграция использовала встроенный PostgreSQL 18.4 и pg_dump 18.4
   (эквивалентный путь), production/dev/CI закрепляют PostgreSQL 16; смешение
   major-версий дампа и сервера не допускается (pg_dump отказывается от более
