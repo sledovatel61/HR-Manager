@@ -1,65 +1,106 @@
-"""Тесты health-check приложения.
+"""Tests for GET /health."""
 
-Единица тестирования — FastAPI app с TestClient. Реальное подключение к БД
-не выполняется: в успешном сценарии заглушается проверка доступности БД,
-в сценарии отказа — используется гарантированно недоступный URL.
-"""
-
-from unittest.mock import Mock
+import os
+from typing import cast
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 
-from hr_manager.api import health as health_module
-from hr_manager.main import app
-
-
-@pytest.fixture()
-def client() -> TestClient:
-    """TestClient без внешних зависимостей."""
-    return TestClient(app)
+RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
 
 
-def test_health_returns_ok_when_database_available(client: TestClient, monkeypatch) -> None:
-    """GET /health -> 200 с пометкой, что БД доступна."""
-    monkeypatch.setattr(health_module, "check_database", Mock())  # БД считаем доступной
-
+def test_health_ok_returns_200(client: TestClient) -> None:
     response = client.get("/health")
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["database"] == "ok"
-    assert body["environment"] == "test"
+    assert body["service"] == "hr-manager"
     assert body["version"]
+    assert body["checks"]["database"]["status"] == "ok"
+    assert isinstance(body["checks"]["database"]["latency_ms"], int)
 
 
-def test_health_returns_503_when_database_unavailable(
-    client: TestClient, monkeypatch, database_url_unreachable
-) -> None:
-    """GET /health -> 503, если подключение к БД не удалось."""
-    # Handler обращается к get_settings() через имя, импортированное в модуль
-    # health, поэтому подменяем имя именно в пространстве health_module.
-    # Исходную функцию сохраняем до подмены, чтобы избежать рекурсии.
-    original_get_settings = health_module.get_settings
+def test_health_degrades_when_database_is_unavailable(client: TestClient) -> None:
+    """Health must report 503 (not 500 or a crash) when the DB is unreachable."""
+    broken_engine = create_engine(
+        # Directory does not exist, so every connect attempt fails.
+        "sqlite+pysqlite:////nonexistent_hr_manager_dir/test.db",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    app = cast(FastAPI, client.app)
+    app.state.engine = broken_engine
 
-    def _unreachable_settings():
-        return original_get_settings().model_copy(
-            update={"database_url": database_url_unreachable}
-        )
-
-    monkeypatch.setattr(health_module, "get_settings", _unreachable_settings)
-
-    response = client.get("/health")
+    try:
+        response = client.get("/health")
+    finally:
+        broken_engine.dispose()
 
     assert response.status_code == 503
     body = response.json()
-    assert body["status"] == "error"
-    assert body["database"] == "unavailable"
+    assert body["status"] == "degraded"
+    assert body["checks"]["database"]["status"] == "error"
+    assert body["checks"]["database"]["latency_ms"] is None
 
 
-def test_health_endpoint_registered_on_root_docs(client: TestClient) -> None:
-    """Health виден в OpenAPI и у корня нет скрытых эндпоинтов."""
-    schema = client.get("/openapi.json").json()
-    assert "/health" in schema["paths"]
-    assert "get" in schema["paths"]["/health"]
+@pytest.mark.integration
+@pytest.mark.skipif(not RUN_INTEGRATION, reason="TEST_DATABASE_URL is not set")
+def test_health_against_real_postgresql() -> None:
+    """Verify the full request path against a real PostgreSQL instance."""
+    from app.config import Settings
+    from app.main import create_app
+
+    settings = Settings.model_validate(
+        {
+            "APP_ENV": "test",
+            "APP_DEBUG": "false",
+            "SECRET_KEY": "integration-test-secret-key",
+            "DATABASE_URL": os.environ["TEST_DATABASE_URL"],
+        }
+    )
+    with TestClient(create_app(settings)) as test_client:
+        response = test_client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["checks"]["database"]["status"] == "ok"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not RUN_INTEGRATION, reason="TEST_DATABASE_URL is not set")
+def test_health_degrades_against_stopped_postgresql() -> None:
+    """Health must report 503 (not 500/crash) when PostgreSQL is unreachable."""
+    # Point at a port where nothing listens (replace any host:port/ segment,
+    # e.g. localhost:5432 or 127.0.0.1:55432, with a closed port).
+    import re
+
+    from app.config import Settings
+    from app.main import create_app
+
+    stopped_url = re.sub(
+        r"(@[^/:]+:)\d+(/|$)",
+        r"\g<1>5599\g<2>",
+        os.environ["TEST_DATABASE_URL"],
+        count=1,
+    )
+    settings = Settings.model_validate(
+        {
+            "APP_ENV": "test",
+            "APP_DEBUG": "false",
+            "SECRET_KEY": "integration-test-secret-key",
+            "DATABASE_URL": stopped_url,
+            "DB_CONNECT_TIMEOUT_SECONDS": "0.5",
+        }
+    )
+    with TestClient(create_app(settings)) as test_client:
+        response = test_client.get("/health")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["checks"]["database"]["status"] == "error"

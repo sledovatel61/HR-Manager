@@ -1,0 +1,324 @@
+/**
+ * HR Manager — design tokens (foundations).
+ * См. design/DESIGN_SYSTEM.md для описания и rationale.
+ *
+ * Правило: компоненты используют ТОЛЬКО semantic-переменные (--color-*,
+ * --surface-*, --text-*...), не сырые палитровые токены (--palette-*)
+ * напрямую. Тема переключается заменой значений semantic-переменных.
+ *
+ * Шрифт — системный стек (никаких внешних запросов к веб-шрифтам):
+ * это соответствует ограничению "нет внешних runtime-запросов".
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ---------- Raw palette (not for direct component use) ---------- */
+  --palette-white: #ffffff;
+  --palette-slate-25: #fbfbfd;
+  --palette-slate-50: #f6f7f9;
+  --palette-slate-100: #eef0f3;
+  --palette-slate-150: #e6e8ed;
+  --palette-slate-200: #dde0e6;
+  --palette-slate-300: #c4c9d4;
+  --palette-slate-400: #9aa1b2;
+  --palette-slate-500: #717889;
+  --palette-slate-600: #545b6b;
+  --palette-slate-700: #3b4150;
+  --palette-slate-800: #262b37;
+  --palette-slate-900: #171a22;
+  --palette-slate-950: #0d0f15;
+
+  --palette-indigo-50: #eef1ff;
+  --palette-indigo-100: #dde3ff;
+  --palette-indigo-300: #a6b3ff;
+  --palette-indigo-500: #4f5eea;
+  --palette-indigo-600: #3f4bd1;
+  --palette-indigo-700: #333cac;
+  --palette-indigo-900: #1f2566;
+
+  --palette-teal-50: #eafaf6;
+  --palette-teal-100: #d1f2e9;
+  --palette-teal-500: #17936f;
+  --palette-teal-600: #127a5c;
+  --palette-teal-900: #0b4a38;
+
+  --palette-amber-50: #fff8ea;
+  --palette-amber-100: #ffedc2;
+  --palette-amber-500: #b3760a;
+  --palette-amber-600: #96620a;
+  --palette-amber-900: #5c3c07;
+
+  --palette-red-50: #fdf0ef;
+  --palette-red-100: #fbdcda;
+  --palette-red-500: #c23b30;
+  --palette-red-600: #a52f26;
+  --palette-red-900: #611e18;
+
+  --palette-violet-50: #f6effd;
+  --palette-violet-100: #ebdcf9;
+  --palette-violet-500: #8146c1;
+  --palette-violet-600: #6d38a6;
+  --palette-violet-900: #421f66;
+
+  --palette-cyan-50: #eaf7fb;
+  --palette-cyan-500: #1084a8;
+  --palette-cyan-900: #0a4d61;
+
+  --palette-rose-50: #fdf0f4;
+  --palette-rose-500: #c23b6b;
+  --palette-rose-900: #611e35;
+
+  /* ---------- Semantic: surfaces ---------- */
+  --surface-canvas: var(--palette-slate-50);
+  --surface-app: var(--palette-white);
+  --surface-raised: var(--palette-white);
+  --surface-sunken: var(--palette-slate-25);
+  --surface-overlay: rgba(13, 15, 21, 0.48);
+  --surface-hover: var(--palette-slate-100);
+  --surface-pressed: var(--palette-slate-150);
+  --surface-selected: var(--palette-indigo-50);
+  --surface-selected-hover: var(--palette-indigo-100);
+  --surface-disabled: var(--palette-slate-100);
+  --surface-sidebar: var(--palette-slate-900);
+  --surface-sidebar-hover: rgba(255, 255, 255, 0.06);
+  --surface-sidebar-active: rgba(255, 255, 255, 0.1);
+
+  /* ---------- Semantic: text ---------- */
+  --text-primary: var(--palette-slate-900);
+  --text-secondary: var(--palette-slate-600);
+  --text-tertiary: var(--palette-slate-500);
+  --text-disabled: var(--palette-slate-400);
+  --text-inverse: var(--palette-white);
+  --text-link: var(--palette-indigo-600);
+  --text-on-accent: var(--palette-white);
+  --text-sidebar: rgba(255, 255, 255, 0.86);
+  --text-sidebar-muted: rgba(255, 255, 255, 0.56);
+
+  /* ---------- Semantic: borders ---------- */
+  --border-subtle: var(--palette-slate-150);
+  --border-default: var(--palette-slate-200);
+  --border-strong: var(--palette-slate-300);
+  --border-focus: var(--palette-indigo-500);
+  --border-sidebar: rgba(255, 255, 255, 0.08);
+
+  /* ---------- Semantic: accent / brand ---------- */
+  --accent-default: var(--palette-indigo-600);
+  --accent-hover: var(--palette-indigo-700);
+  --accent-pressed: var(--palette-indigo-900);
+  --accent-subtle: var(--palette-indigo-50);
+  --accent-subtle-border: var(--palette-indigo-100);
+
+  /* ---------- Semantic: status/feedback ---------- */
+  --status-info-fg: var(--palette-indigo-700);
+  --status-info-bg: var(--palette-indigo-50);
+  --status-info-border: var(--palette-indigo-100);
+
+  --status-success-fg: var(--palette-teal-600);
+  --status-success-bg: var(--palette-teal-50);
+  --status-success-border: var(--palette-teal-100);
+
+  --status-warning-fg: var(--palette-amber-600);
+  --status-warning-bg: var(--palette-amber-50);
+  --status-warning-border: var(--palette-amber-100);
+
+  --status-danger-fg: var(--palette-red-600);
+  --status-danger-bg: var(--palette-red-50);
+  --status-danger-border: var(--palette-red-100);
+
+  --status-neutral-fg: var(--palette-slate-600);
+  --status-neutral-bg: var(--palette-slate-100);
+  --status-neutral-border: var(--palette-slate-200);
+
+  --status-violet-fg: var(--palette-violet-600);
+  --status-violet-bg: var(--palette-violet-50);
+  --status-violet-border: var(--palette-violet-100);
+
+  --status-teal-fg: var(--palette-teal-600);
+  --status-teal-bg: var(--palette-teal-50);
+  --status-teal-border: var(--palette-teal-100);
+
+  --status-indigo-fg: var(--palette-indigo-700);
+  --status-indigo-bg: var(--palette-indigo-50);
+  --status-indigo-border: var(--palette-indigo-100);
+
+  /* ---------- Focus ring ---------- */
+  --focus-ring-color: var(--palette-indigo-500);
+  --focus-ring: 0 0 0 2px var(--surface-app), 0 0 0 4px var(--focus-ring-color);
+
+  /* ---------- Spacing scale (4px base) ---------- */
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 48px;
+  --space-10: 64px;
+
+  /* ---------- Radius scale ---------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 999px;
+
+  /* ---------- Shadows / elevation ---------- */
+  --shadow-1: 0 1px 2px rgba(13, 15, 21, 0.06);
+  --shadow-2: 0 2px 8px rgba(13, 15, 21, 0.08);
+  --shadow-3: 0 8px 24px rgba(13, 15, 21, 0.12);
+  --shadow-4: 0 16px 48px rgba(13, 15, 21, 0.18);
+
+  /* ---------- Typography ---------- */
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+
+  --text-size-2xs: 11px;
+  --text-size-xs: 12px;
+  --text-size-sm: 13px;
+  --text-size-md: 14px;
+  --text-size-lg: 16px;
+  --text-size-xl: 20px;
+  --text-size-2xl: 24px;
+  --text-size-3xl: 32px;
+
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.45;
+  --line-height-relaxed: 1.6;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* ---------- Icon sizes ---------- */
+  --icon-size-sm: 14px;
+  --icon-size-md: 16px;
+  --icon-size-lg: 20px;
+
+  /* ---------- Layout ---------- */
+  --sidebar-width: 248px;
+  --sidebar-width-collapsed: 64px;
+  --topbar-height: 56px;
+  --content-max-width: 1440px;
+
+  /* ---------- Motion ---------- */
+  --duration-instant: 80ms;
+  --duration-fast: 130ms;
+  --duration-base: 180ms;
+  --duration-slow: 260ms;
+  --easing-standard: cubic-bezier(0.2, 0.0, 0, 1);
+  --easing-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --easing-accelerate: cubic-bezier(0.4, 0, 1, 1);
+
+  /* ---------- Z-index layers ---------- */
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-dropdown: 20;
+  --z-drawer: 30;
+  --z-modal-overlay: 40;
+  --z-modal: 41;
+  --z-toast: 50;
+  --z-tooltip: 60;
+}
+
+/* ---------- Dark theme (secondary; built on the same semantic tokens) ---------- */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --surface-canvas: var(--palette-slate-950);
+  --surface-app: var(--palette-slate-900);
+  --surface-raised: var(--palette-slate-800);
+  --surface-sunken: #14161d;
+  --surface-overlay: rgba(0, 0, 0, 0.6);
+  --surface-hover: rgba(255, 255, 255, 0.06);
+  --surface-pressed: rgba(255, 255, 255, 0.1);
+  --surface-selected: rgba(79, 94, 234, 0.18);
+  --surface-selected-hover: rgba(79, 94, 234, 0.28);
+  --surface-disabled: rgba(255, 255, 255, 0.06);
+  --surface-sidebar: #0a0b10;
+  --surface-sidebar-hover: rgba(255, 255, 255, 0.06);
+  --surface-sidebar-active: rgba(255, 255, 255, 0.1);
+
+  --text-primary: var(--palette-slate-50);
+  --text-secondary: var(--palette-slate-300);
+  --text-tertiary: var(--palette-slate-400);
+  --text-disabled: var(--palette-slate-600);
+  --text-inverse: var(--palette-slate-900);
+  --text-link: var(--palette-indigo-300);
+  --text-sidebar: rgba(255, 255, 255, 0.88);
+  --text-sidebar-muted: rgba(255, 255, 255, 0.5);
+
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.2);
+  --border-sidebar: rgba(255, 255, 255, 0.08);
+
+  --accent-default: var(--palette-indigo-500);
+  --accent-hover: var(--palette-indigo-300);
+  --accent-pressed: var(--palette-indigo-100);
+  --accent-subtle: rgba(79, 94, 234, 0.16);
+  --accent-subtle-border: rgba(79, 94, 234, 0.32);
+
+  --status-info-bg: rgba(79, 94, 234, 0.16);
+  --status-info-fg: var(--palette-indigo-300);
+  --status-info-border: rgba(79, 94, 234, 0.32);
+
+  --status-success-bg: rgba(23, 147, 111, 0.18);
+  --status-success-fg: #4bd6ac;
+  --status-success-border: rgba(23, 147, 111, 0.36);
+
+  --status-warning-bg: rgba(179, 118, 10, 0.2);
+  --status-warning-fg: #f0b73f;
+  --status-warning-border: rgba(179, 118, 10, 0.38);
+
+  --status-danger-bg: rgba(194, 59, 48, 0.2);
+  --status-danger-fg: #f18b81;
+  --status-danger-border: rgba(194, 59, 48, 0.38);
+
+  --status-neutral-bg: rgba(255, 255, 255, 0.08);
+  --status-neutral-fg: var(--palette-slate-300);
+  --status-neutral-border: rgba(255, 255, 255, 0.14);
+
+  --status-violet-bg: rgba(129, 70, 193, 0.2);
+  --status-violet-fg: #c298ee;
+  --status-violet-border: rgba(129, 70, 193, 0.4);
+
+  --status-teal-bg: rgba(23, 147, 111, 0.18);
+  --status-teal-fg: #4bd6ac;
+  --status-teal-border: rgba(23, 147, 111, 0.36);
+
+  --status-indigo-bg: rgba(79, 94, 234, 0.18);
+  --status-indigo-fg: #a6b3ff;
+  --status-indigo-border: rgba(79, 94, 234, 0.36);
+
+  --focus-ring-color: var(--palette-indigo-300);
+  --focus-ring: 0 0 0 2px var(--surface-app), 0 0 0 4px var(--focus-ring-color);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-4: 0 16px 48px rgba(0, 0, 0, 0.6);
+}
+
+/* ---------- Density modes (compact / comfortable) ---------- */
+:root,
+[data-density="comfortable"] {
+  --row-height: 48px;
+  --control-height-md: 36px;
+  --control-height-sm: 30px;
+  --table-cell-padding-y: 12px;
+}
+
+[data-density="compact"] {
+  --row-height: 36px;
+  --control-height-md: 32px;
+  --control-height-sm: 26px;
+  --table-cell-padding-y: 7px;
+}

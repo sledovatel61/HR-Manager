@@ -1,0 +1,125 @@
+.candidate-table-wrap {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: auto;
+  background: var(--surface-raised);
+}
+
+.candidate-table-wrap:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.candidate-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-size-sm);
+  min-width: 920px;
+}
+
+.candidate-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-sunken);
+  text-align: left;
+  padding: var(--space-3) var(--space-3);
+  font-size: var(--text-size-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-medium);
+  border-bottom: 1px solid var(--border-default);
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.candidate-table tbody tr {
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  height: var(--row-height);
+}
+
+.candidate-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.candidate-table tbody tr.is-selected {
+  background: var(--surface-selected);
+}
+
+.candidate-table tbody tr:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-ring-color);
+}
+
+.candidate-table td {
+  padding: var(--table-cell-padding-y) var(--space-3);
+  vertical-align: middle;
+  color: var(--text-primary);
+}
+
+.col-checkbox { width: 36px; }
+.col-actions { width: 96px; }
+
+.candidate-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 180px;
+}
+
+.candidate-cell-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.candidate-name {
+  font-weight: var(--font-weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-meta {
+  font-size: var(--text-size-xs);
+  color: var(--text-tertiary);
+}
+
+.owner-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-size-xs);
+  white-space: nowrap;
+}
+
+.muted-cell {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--easing-standard);
+}
+
+.candidate-table tbody tr:hover .row-actions,
+.candidate-table tbody tr:focus-within .row-actions {
+  opacity: 1;
+}
+
+.th-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 2px;
+}
+
+.th-sort-btn.is-active { color: var(--text-primary); }
+.th-sort-btn svg { opacity: 0.6; }
+.th-sort-btn.is-active svg { opacity: 1; color: var(--accent-default); }

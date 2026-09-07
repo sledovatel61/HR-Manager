@@ -1,71 +1,277 @@
-"""Общие фикстуры backend-тестов.
+"""Shared pytest fixtures for the HR Manager backend.
 
-Принципы:
-  * Тесты НИКОГДА не ходят в настоящую production-БД или прод-окружение:
-    APP_ENV принудительно выставляется в "test" до импорта приложения.
-  * Для изолированных unit-тестов разрешён SQLite (in-memory) — это явно
-    документированное исключение из правила «PostgreSQL everywhere»
-    (см. agents.md и README). Интеграционные проверки с настоящим
-    PostgreSQL выполняются только в CI с сервисным контейнером.
+Unit tests run against an in-memory SQLite database (allowed ONLY for isolated
+unit tests with APP_ENV=test, documented in README and ARCHITECTURE.md). The
+ORM schema is created directly from the models metadata. Integration tests
+(marker ``integration``) run against a real PostgreSQL via
+``TEST_DATABASE_URL`` after the Alembic migration pipeline has been applied —
+they never fall back to SQLite.
 """
 
-import logging
 import os
+from collections.abc import Iterator
+from datetime import datetime, timedelta
+from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
-logger = logging.getLogger(__name__)
-
-# 1) Окружение теста выставляется ДО любого импорта приложения.
-os.environ.setdefault("APP_ENV", "test")
-os.environ.setdefault(
-    "DATABASE_URL",
-    # PostgreSQL по умолчанию. Если PostgreSQL недоступен, применяйте
-    # явную пометку pytest.mark.database и запускайте только при живом PG.
-    "postgresql+psycopg://test:test@127.0.0.1:1/hr_manager_test",
+from app.config import Settings
+from app.main import create_app
+from app.models import (
+    Base,
+    Candidate,
+    CandidateSource,
+    CandidateStage,
+    CandidateTransfer,
+    Event,
+    EventStatus,
+    EventType,
+    User,
+    UserRole,
 )
+from app.security import hash_password
+from app.utils import normalize_email, normalize_full_name, normalize_phone, utc_now
 
-# 2) Блокируем случайное обращение к настоящим окружениям: любой тест,
-#    импортирующий приложение при APP_ENV=production, падает сразу.
-if os.environ.get("APP_ENV") == "production":
-    raise RuntimeError(
-        "Запрещено запускать тесты с APP_ENV=production: "
-        "тесты могут задеть прод-ресурсы."
-    )
+TEST_SQLITE_URL = "sqlite+pysqlite://"
 
-
-@pytest.fixture()
-def database_url_unreachable() -> str:
-    """URL гарантированно недоступной БД — для проверки отказа health.
-
-    Порт 1 вряд ли слушает PostgreSQL; соединение отклоняется быстро.
-    """
-    return "postgresql+psycopg://nobody:nothing@127.0.0.1:1/none"
+# A valid strong password used by fixtures (satisfies the password policy).
+FIXTURE_PASSWORD = "Str0ng-Pass-2026"
 
 
 @pytest.fixture()
-def db_engine(sqlite_memory_engine):
-    """Тестовая БД (по умолчанию изолированный SQLite in-memory).
-
-    Единственное место, где используется SQLite: изолированные unit-тесты,
-    которым не нужен настоящий PostgreSQL. Интеграционные тесты БД должны
-    переопределять эту фикстуру реальным engine PostgreSQL (CI).
-    """
-    return sqlite_memory_engine
-
-
-@pytest.fixture()
-def sqlite_memory_engine():
-    """Отдельный in-memory SQLite engine для unit-тестов схемы."""
-    from sqlalchemy import create_engine
-
-    from hr_manager.db.schema import Base
-
+def unit_engine() -> Iterator[Engine]:
     engine = create_engine(
-        "sqlite+pysqlite:///:memory:",
+        TEST_SQLITE_URL,
         connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
     yield engine
-    Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+@pytest.fixture()
+def unit_settings() -> Settings:
+    # model_validate mirrors how real environment variables map into the
+    # settings (validation aliases), without touching the process env.
+    return Settings.model_validate(
+        {
+            "APP_ENV": "test",
+            "APP_DEBUG": "false",
+            "SECRET_KEY": "unit-test-secret-key",
+            "DATABASE_URL": TEST_SQLITE_URL,
+            # Fast lockout threshold for deterministic unit tests.
+            "LOGIN_MAX_FAILURES": "5",
+            "LOGIN_LOCK_MINUTES": "15",
+        }
+    )
+
+
+@pytest.fixture()
+def client(unit_settings: Settings, unit_engine: Engine) -> Iterator[TestClient]:
+    """TestClient backed by an in-memory SQLite engine with schema created."""
+    app = create_app(unit_settings, engine=unit_engine)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture()
+def db_session(unit_engine: Engine) -> Iterator[Session]:
+    """Direct ORM session over the in-memory test database."""
+    with Session(unit_engine) as session:
+        yield session
+        session.rollback()
+
+
+def make_user(
+    db: Session,
+    *,
+    username: str,
+    role: UserRole = UserRole.HR,
+    password: str = FIXTURE_PASSWORD,
+    full_name: str = "",
+    is_active: bool = True,
+) -> User:
+    """Create and persist a user with an Argon2id password hash."""
+    user = User(
+        username=username,
+        full_name=full_name or username,
+        role=role,
+        password_hash=hash_password(password),
+        is_active=is_active,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def make_transfer(
+    db: Session,
+    *,
+    candidate: Candidate,
+    initiator: User,
+    from_user: User,
+    to_user: User,
+    reason: str = "Перераспределение нагрузки",
+) -> CandidateTransfer:
+    """Create and persist an immutable ownership-transfer record."""
+    transfer = CandidateTransfer(
+        candidate_id=candidate.id,
+        initiator_user_id=initiator.id,
+        from_user_id=from_user.id,
+        to_user_id=to_user.id,
+        reason=reason,
+    )
+    db.add(transfer)
+    db.commit()
+    db.refresh(transfer)
+    return transfer
+
+
+def make_candidate(
+    db: Session,
+    *,
+    owner: User,
+    full_name: str = "Иванов Иван Иванович",
+    phone: str | None = None,
+    email: str | None = None,
+    source: CandidateSource = CandidateSource.SITE,
+    position: str = "",
+    stage: CandidateStage = CandidateStage.NEW,
+    deleted: bool = False,
+) -> Candidate:
+    """Create and persist a candidate owned by ``owner``."""
+    from app.models import CANDIDATE_STAGE_POSITION
+
+    candidate = Candidate(
+        full_name=full_name,
+        full_name_normalized=normalize_full_name(full_name),
+        phone=phone,
+        phone_normalized=normalize_phone(phone),
+        email=email,
+        email_normalized=normalize_email(email),
+        source=source,
+        position=position,
+        owner_user_id=owner.id,
+        stage=stage,
+        stage_position=CANDIDATE_STAGE_POSITION[stage],
+        deleted_at=utc_now() if deleted else None,
+    )
+    db.add(candidate)
+    db.commit()
+    db.refresh(candidate)
+    return candidate
+
+
+def make_event(
+    db: Session,
+    *,
+    candidate: Candidate,
+    author: User,
+    assignee: User,
+    type_: EventType = EventType.CALL,
+    title: str = "Созвон",
+    note: str | None = None,
+    status: EventStatus = EventStatus.SCHEDULED,
+    starts_at: datetime | None = None,
+    ends_at: datetime | None = None,
+    remind_at: datetime | None = None,
+    completed_at: datetime | None = None,
+    version: int = 1,
+) -> Event:
+    """Create and persist a calendar event (times default around a fixed
+    near-future moment so status/consistency checks hold)."""
+    starts_at = starts_at or utc_now() + timedelta(hours=2)
+    if status == EventStatus.COMPLETED:
+        completed_at = completed_at or utc_now()
+    event = Event(
+        candidate_id=candidate.id,
+        author_user_id=author.id,
+        assignee_user_id=assignee.id,
+        type=type_,
+        title=title,
+        note=note,
+        status=status,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        remind_at=remind_at,
+        completed_at=completed_at,
+        version=version,
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return event
+
+
+def _require_integration_url() -> str:
+    """Return TEST_DATABASE_URL when it points at PostgreSQL, else skip."""
+    url = os.environ.get("TEST_DATABASE_URL")
+    if not url or not url.startswith("postgresql"):
+        pytest.skip("TEST_DATABASE_URL with a PostgreSQL URL is required for integration tests")
+    return url
+
+
+@pytest.fixture()
+def integration_url() -> str:
+    return _require_integration_url()
+
+
+@pytest.fixture(scope="session")
+def pg_engine() -> Iterator[Engine]:
+    """Engine for the real PostgreSQL integration database.
+
+    The schema is expected to exist (the integration test job runs
+    ``alembic upgrade head`` beforehand; the migration tests manage upgrades
+    themselves). Tables are truncated between tests for isolation.
+    """
+    url = _require_integration_url()
+    engine = create_engine(url, pool_pre_ping=True)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture()
+def pg_settings(integration_url: str) -> Settings:
+    return Settings.model_validate(
+        {
+            "APP_ENV": "test",
+            "APP_DEBUG": "false",
+            "SECRET_KEY": "integration-test-secret-key",
+            "DATABASE_URL": integration_url,
+        }
+    )
+
+
+@pytest.fixture()
+def pg_client(pg_settings: Settings, pg_engine: Engine) -> Iterator[TestClient]:
+    """TestClient against PostgreSQL. Tables are truncated for a clean state."""
+    with pg_engine.begin() as connection:
+        connection.execute(
+            text(
+                "TRUNCATE TABLE audit_log, event_history, events, candidate_transfers, "
+                "candidate_interactions, candidates, user_sessions, users "
+                "RESTART IDENTITY CASCADE"
+            )
+        )
+    app = create_app(pg_settings, engine=pg_engine)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture()
+def pg_db(pg_engine: Engine) -> Iterator[Session]:
+    """Direct ORM session over the PostgreSQL integration database."""
+    with Session(pg_engine) as session:
+        yield session
+        session.rollback()
+
+
+def user_id(user: User) -> UUID:
+    """Typed helper for readability in tests."""
+    return user.id

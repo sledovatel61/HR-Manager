@@ -1,0 +1,22 @@
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+
+.status-chip-md { padding: 3px 10px 3px 8px; font-size: var(--text-size-xs); }
+.status-chip-sm { padding: 2px 8px 2px 6px; font-size: var(--text-size-2xs); }
+.badge-plain { padding: 2px 8px; }
+
+.status-chip-neutral { background: var(--status-neutral-bg); color: var(--status-neutral-fg); border-color: var(--status-neutral-border); }
+.status-chip-info { background: var(--status-info-bg); color: var(--status-info-fg); border-color: var(--status-info-border); }
+.status-chip-teal { background: var(--status-teal-bg); color: var(--status-teal-fg); border-color: var(--status-teal-border); }
+.status-chip-violet { background: var(--status-violet-bg); color: var(--status-violet-fg); border-color: var(--status-violet-border); }
+.status-chip-indigo { background: var(--status-indigo-bg); color: var(--status-indigo-fg); border-color: var(--status-indigo-border); }
+.status-chip-amber { background: var(--status-warning-bg); color: var(--status-warning-fg); border-color: var(--status-warning-border); }
+.status-chip-success { background: var(--status-success-bg); color: var(--status-success-fg); border-color: var(--status-success-border); }
+.status-chip-danger { background: var(--status-danger-bg); color: var(--status-danger-fg); border-color: var(--status-danger-border); }
