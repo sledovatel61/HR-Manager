@@ -61,14 +61,26 @@ def setup_state(
     user: User = Depends(get_current_user),
 ) -> SetupStateOut:
     """Honest status: pilot presence, own preferences, worker, channels."""
+    from app.smtp import config_from_settings as smtp_config_from_settings
+    from app.telegram import config_from_settings as telegram_config_from_settings
+
+    settings = request.app.state.settings
     pilot_grant = _active_pilot_grant(db)
     preferences = db.get(NotificationPreference, user.id)
+    telegram_ready = telegram_config_from_settings(settings).is_configured
+    smtp_ready = smtp_config_from_settings(settings).is_configured
     return SetupStateOut(
         pilot_exists=pilot_grant is not None,
         pilot_grant_active=pilot_grant is not None,
         preferences_initialized=preferences is not None,
-        worker_alive=worker_is_healthy(db, settings=request.app.state.settings, now=utc_now()),
-        channels={"telegram": "not_configured", "email": "not_configured"},
+        worker_alive=worker_is_healthy(db, settings=settings, now=utc_now()),
+        channels={
+            # Global availability only (per-user bindings live in
+            # /integrations/status); «available» never claims the user's
+            # own channel works.
+            "telegram": "available" if telegram_ready else "not_configured",
+            "email": "available" if smtp_ready else "not_configured",
+        },
     )
 
 

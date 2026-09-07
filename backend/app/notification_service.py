@@ -33,11 +33,20 @@ from app.models import (
     NotificationPriority,
     NotificationSource,
     NotificationType,
+    TelegramLink,
     User,
+    UserEmail,
 )
 from app.utils import ensure_aware, utc_now
 
 logger = logging.getLogger(__name__)
+
+# Outbox templates with special worker handling (phase 9).
+EMAIL_VERIFICATION_TEMPLATE = "email_verification"
+CHANNEL_TEST_TEMPLATE = "channel_test"
+# Templates that never require a stored opt-in (the action itself is the
+# explicit one-shot consent: confirming an address, testing own channel).
+CONSENT_EXEMPT_TEMPLATES = frozenset({EMAIL_VERIFICATION_TEMPLATE, CHANNEL_TEST_TEMPLATE})
 
 
 def is_duplicate_key_error(exc: IntegrityError) -> bool:
@@ -279,6 +288,167 @@ def schedule_notification_row(
     )
 
 
+# --- External channels (phase 9): fan-out over the same outbox -----------------
+
+
+def external_channels_for(
+    db: Session, *, user_id: UUID, settings: Settings
+) -> list[DeliveryChannel]:
+    """Channels eligible for a NEW outbox row for ``user_id``.
+
+    A channel is listed only when the global configuration is enabled AND
+    the user has a valid binding (confirmed Telegram chat_id / verified
+    email) AND an explicit opt-in consent. The worker re-validates all of
+    this at send time; this check only avoids queueing hopeless rows.
+    Never enabled silently: without consent the list is empty.
+    """
+    from app.smtp import config_from_settings as smtp_config_from_settings
+    from app.telegram import config_from_settings as telegram_config_from_settings
+
+    preference = db.get(NotificationPreference, user_id)
+    telegram_consent = bool(preference is not None and preference.telegram_opt_in)
+    email_consent = bool(preference is not None and preference.email_opt_in)
+    channels: list[DeliveryChannel] = []
+    if telegram_consent and telegram_config_from_settings(settings).is_configured:
+        link = db.get(TelegramLink, user_id)
+        if link is not None and link.is_linked:
+            channels.append(DeliveryChannel.TELEGRAM)
+    if email_consent and smtp_config_from_settings(settings).is_configured:
+        address = db.get(UserEmail, user_id)
+        if address is not None and address.is_verified:
+            channels.append(DeliveryChannel.EMAIL)
+    return channels
+
+
+def schedule_fan_out(
+    db: Session,
+    *,
+    type_: NotificationType,
+    recipient_user_id: UUID,
+    title: str | None = None,
+    body: str | None = None,
+    object_type: str | None = None,
+    object_id: UUID | None = None,
+    dedupe_key: str,
+    scheduled_at: datetime | None = None,
+    priority: NotificationPriority = NotificationPriority.NORMAL,
+    source: NotificationSource = NotificationSource.SYSTEM,
+    initiator_user_id: UUID | None = None,
+    settings: Settings,
+) -> list[NotificationOutbox | None]:
+    """Schedule in-app delivery plus every eligible external channel.
+
+    The in-app row keeps the phase-8 idempotency key (unchanged contract);
+    external rows use ``{key}:{channel}`` keys and a consent snapshot.
+    Without consent/bindings exactly one (in-app) row is created, so all
+    phase-8 callers keep their behavior until the user opts in.
+    """
+    from app.config import CONSENT_POLICY_VERSION
+
+    rows: list[NotificationOutbox | None] = [
+        schedule_notification_row(
+            db,
+            type_=type_,
+            recipient_user_id=recipient_user_id,
+            title=title,
+            body=body,
+            object_type=object_type,
+            object_id=object_id,
+            dedupe_key=dedupe_key,
+            scheduled_at=scheduled_at,
+            priority=priority,
+            source=source,
+            initiator_user_id=initiator_user_id,
+        )
+    ]
+    for channel in external_channels_for(db, user_id=recipient_user_id, settings=settings):
+        rows.append(
+            schedule(
+                db,
+                recipient_user_id=recipient_user_id,
+                channel=channel,
+                type_=type_,
+                source=source,
+                title=title,
+                body=body,
+                priority=priority,
+                object_type=object_type,
+                object_id=object_id,
+                dedupe_key=f"{dedupe_key}:{channel.value}",
+                scheduled_at=scheduled_at,
+                initiator_user_id=initiator_user_id,
+                consent_snapshot={
+                    "channel": channel.value,
+                    "opt_in": True,
+                    "policy_version": CONSENT_POLICY_VERSION,
+                },
+                quiet_hours_bypassed=False,
+            )
+        )
+    return rows
+
+
+def schedule_verification_email(
+    db: Session, *, pending_email: str, token: str, request_id: str
+) -> NotificationOutbox | None:
+    """Queue the address-confirmation email to a not-yet-verified mailbox.
+
+    The external recipient is allow-listed by construction (the address the
+    owning user just entered, validated server-side) — never an arbitrary
+    payload value. The exact text (including the token) is snapshotted as
+    required for the immutable delivery history.
+    """
+    return schedule(
+        db,
+        recipient_user_id=None,
+        external_recipient=pending_email,
+        channel=DeliveryChannel.EMAIL,
+        type_=NotificationType.SYSTEM_ALERT,
+        source=NotificationSource.SYSTEM,
+        title="Подтвердите адрес электронной почты",
+        body=(
+            "Вы указали этот адрес для уведомлений HR Manager.\n\n"
+            f"Код подтверждения: {token}\n\n"
+            "Введите код в разделе «Интеграции». "
+            "Если вы не запрашивали код, проигнорируйте это письмо."
+        ),
+        object_type=None,
+        object_id=None,
+        dedupe_key=f"email-verify:{request_id}",
+        scheduled_at=utc_now(),
+        template=EMAIL_VERIFICATION_TEMPLATE,
+        template_version=1,
+    )
+
+
+def schedule_channel_test(
+    db: Session,
+    *,
+    recipient_user_id: UUID,
+    channel: DeliveryChannel,
+    request_id: str,
+) -> NotificationOutbox | None:
+    """Queue an explicit test message to the user's own channel binding."""
+    label = "Telegram" if channel == DeliveryChannel.TELEGRAM else "email"
+    return schedule(
+        db,
+        recipient_user_id=recipient_user_id,
+        channel=channel,
+        type_=NotificationType.SYSTEM_ALERT,
+        source=NotificationSource.MANUAL,
+        title="Тестовое уведомление",
+        body=(
+            f"Это тестовое уведомление HR Manager (канал: {label}). "
+            "Канал работает: сообщение принято провайдером."
+        ),
+        dedupe_key=f"channel-test:{channel.value}:{request_id}",
+        scheduled_at=utc_now(),
+        template=CHANNEL_TEST_TEMPLATE,
+        template_version=1,
+        initiator_user_id=recipient_user_id,
+    )
+
+
 # --- Event planning (called from the events router inside its transaction) ----
 
 
@@ -304,7 +474,7 @@ def plan_event_notifications(
     """
     now = now or utc_now()
     if assignee.id != author.id:
-        schedule_notification_row(
+        schedule_fan_out(
             db,
             type_=NotificationType.EVENT_ASSIGNED,
             recipient_user_id=assignee.id,
@@ -313,6 +483,7 @@ def plan_event_notifications(
             dedupe_key=f"{event.id}:{event.version}:assigned:{assignee.id}",
             scheduled_at=now,
             initiator_user_id=author.id,
+            settings=settings,
         )
     if event.status.value == "scheduled":
         _plan_approaching_and_overdue(db, event=event, settings=settings, now=now)
@@ -325,9 +496,10 @@ def plan_event_state_notification(
     recipient: User,
     type_: NotificationType,
     initiator_user_id: UUID,
+    settings: Settings,
 ) -> None:
     """One-shot notification about a lifecycle change (rescheduled/cancelled)."""
-    schedule_notification_row(
+    schedule_fan_out(
         db,
         type_=type_,
         recipient_user_id=recipient.id,
@@ -336,6 +508,7 @@ def plan_event_state_notification(
         dedupe_key=f"{event.id}:{event.version}:{type_.value}",
         scheduled_at=utc_now(),
         initiator_user_id=initiator_user_id,
+        settings=settings,
     )
 
 
@@ -347,7 +520,7 @@ def _plan_approaching_and_overdue(
         at = starts - timedelta(hours=offset_h)
         if at <= now:
             continue
-        schedule_notification_row(
+        schedule_fan_out(
             db,
             type_=NotificationType.EVENT_APPROACHING,
             recipient_user_id=event.assignee_user_id,
@@ -355,8 +528,9 @@ def _plan_approaching_and_overdue(
             object_id=event.id,
             dedupe_key=f"{event.id}:{event.version}:approaching:{offset_h}",
             scheduled_at=at,
+            settings=settings,
         )
-    schedule_notification_row(
+    schedule_fan_out(
         db,
         type_=NotificationType.EVENT_OVERDUE,
         recipient_user_id=event.assignee_user_id,
@@ -364,6 +538,7 @@ def _plan_approaching_and_overdue(
         object_id=event.id,
         dedupe_key=f"{event.id}:{event.version}:overdue",
         scheduled_at=starts,
+        settings=settings,
     )
 
 
@@ -377,9 +552,11 @@ def _approach_hours_for(event: Event, settings: Settings) -> list[float]:
     return [float(part) for part in raw.split(",") if part]
 
 
-def transfer_notification(db: Session, *, transfer: CandidateTransfer, new_owner: User) -> None:
+def transfer_notification(
+    db: Session, *, transfer: CandidateTransfer, new_owner: User, settings: Settings
+) -> None:
     """Notify the new responsible HR that a candidate was handed to them."""
-    schedule_notification_row(
+    schedule_fan_out(
         db,
         type_=NotificationType.CANDIDATE_TRANSFERRED,
         recipient_user_id=new_owner.id,
@@ -387,4 +564,5 @@ def transfer_notification(db: Session, *, transfer: CandidateTransfer, new_owner
         object_id=transfer.candidate_id,
         dedupe_key=f"transfer:{transfer.id}",
         scheduled_at=utc_now(),
+        settings=settings,
     )
