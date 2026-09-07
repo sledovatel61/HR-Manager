@@ -127,6 +127,19 @@ def preference_for(db: Session, user_id: UUID, settings_timezone: str) -> Notifi
         workdays=[int(day) for day in DEFAULT_WORKDAYS.split(",")],
         enabled_types=[member.value for member in NotificationType],
         enabled_channels=[DeliveryChannel.IN_APP.value],
+        telegram_chat_id=None,
+        telegram_username=None,
+        telegram_linked_at=None,
+        telegram_opt_in=False,
+        telegram_consent_at=None,
+        telegram_consent_source=None,
+        telegram_consent_policy_version=None,
+        email_address=None,
+        email_opt_in=False,
+        email_consent_at=None,
+        email_consent_source=None,
+        email_consent_policy_version=None,
+        channel_health=None,
     )
 
 
@@ -168,6 +181,12 @@ def schedule(
     if recipient_user_id is not None and external_recipient is not None:
         raise ValueError("recipient_user_id and external_recipient are mutually exclusive")
 
+    idempotency_key = (
+        f"{type_.value}:{dedupe_key}"
+        if channel == DeliveryChannel.IN_APP
+        else f"{channel.value}:{type_.value}:{dedupe_key}"
+    )
+
     row = NotificationOutbox(
         recipient_user_id=recipient_user_id,
         external_recipient=external_recipient,
@@ -184,7 +203,7 @@ def schedule(
         scheduled_at=scheduled_at,
         queued_at=utc_now(),
         status=DeliveryStatus.QUEUED,
-        idempotency_key=f"{type_.value}:{dedupe_key}",
+        idempotency_key=idempotency_key,
         consent_snapshot=consent_snapshot,
         quiet_hours_bypassed=quiet_hours_bypassed,
     )
@@ -260,23 +279,115 @@ def schedule_notification_row(
     priority: NotificationPriority = NotificationPriority.NORMAL,
     source: NotificationSource = NotificationSource.SYSTEM,
     initiator_user_id: UUID | None = None,
+    channel: DeliveryChannel | None = None,
 ) -> NotificationOutbox | None:
-    """Convenience wrapper for the in-app channel (see :func:`schedule`)."""
-    return schedule(
-        db,
-        recipient_user_id=recipient_user_id,
-        channel=DeliveryChannel.IN_APP,
-        type_=type_,
-        source=source,
-        title=title,
-        body=body,
-        priority=priority,
-        object_type=object_type,
-        object_id=object_id,
-        dedupe_key=dedupe_key,
-        scheduled_at=scheduled_at,
-        initiator_user_id=initiator_user_id,
-    )
+    """Convenience wrapper for scheduling notification row(s).
+
+    When ``channel`` is explicitly provided, only that channel is scheduled.
+    Otherwise, the recipient's preferences are checked and an outbox row is
+    created for each active/consented channel (in-app, Telegram, email).
+    Returns the primary in-app outbox row (or the first created row).
+    """
+    if channel is not None:
+        return schedule(
+            db,
+            recipient_user_id=recipient_user_id,
+            channel=channel,
+            type_=type_,
+            source=source,
+            title=title,
+            body=body,
+            priority=priority,
+            object_type=object_type,
+            object_id=object_id,
+            dedupe_key=dedupe_key,
+            scheduled_at=scheduled_at,
+            initiator_user_id=initiator_user_id,
+        )
+
+    pref = preference_for(db, recipient_user_id, "Europe/Moscow")
+    primary_row: NotificationOutbox | None = None
+
+    if DeliveryChannel.IN_APP.value in pref.enabled_channels or not pref.enabled_channels:
+        primary_row = schedule(
+            db,
+            recipient_user_id=recipient_user_id,
+            channel=DeliveryChannel.IN_APP,
+            type_=type_,
+            source=source,
+            title=title,
+            body=body,
+            priority=priority,
+            object_type=object_type,
+            object_id=object_id,
+            dedupe_key=dedupe_key,
+            scheduled_at=scheduled_at,
+            initiator_user_id=initiator_user_id,
+        )
+
+    if (
+        DeliveryChannel.TELEGRAM.value in pref.enabled_channels
+        and pref.telegram_opt_in
+        and pref.telegram_chat_id is not None
+    ):
+        consent = {
+            "chat_id": pref.telegram_chat_id,
+            "opt_in": True,
+            "consent_at": (
+                pref.telegram_consent_at.isoformat() if pref.telegram_consent_at else None
+            ),
+            "policy_version": pref.telegram_consent_policy_version,
+        }
+        tg_row = schedule(
+            db,
+            recipient_user_id=recipient_user_id,
+            channel=DeliveryChannel.TELEGRAM,
+            type_=type_,
+            source=source,
+            title=title,
+            body=body,
+            priority=priority,
+            object_type=object_type,
+            object_id=object_id,
+            dedupe_key=dedupe_key,
+            scheduled_at=scheduled_at,
+            initiator_user_id=initiator_user_id,
+            consent_snapshot=consent,
+        )
+        if primary_row is None:
+            primary_row = tg_row
+
+    if (
+        DeliveryChannel.EMAIL.value in pref.enabled_channels
+        and pref.email_opt_in
+        and pref.email_address
+    ):
+        consent = {
+            "email": pref.email_address,
+            "opt_in": True,
+            "consent_at": pref.email_consent_at.isoformat() if pref.email_consent_at else None,
+            "policy_version": pref.email_consent_policy_version,
+        }
+        em_row = schedule(
+            db,
+            recipient_user_id=recipient_user_id,
+            channel=DeliveryChannel.EMAIL,
+            type_=type_,
+            source=source,
+            title=title,
+            body=body,
+            priority=priority,
+            object_type=object_type,
+            object_id=object_id,
+            dedupe_key=dedupe_key,
+            scheduled_at=scheduled_at,
+            initiator_user_id=initiator_user_id,
+            consent_snapshot=consent,
+        )
+        if primary_row is None:
+            primary_row = em_row
+
+    return primary_row
 
 
 # --- Event planning (called from the events router inside its transaction) ----

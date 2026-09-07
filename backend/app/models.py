@@ -20,6 +20,8 @@ from enum import StrEnum
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -138,6 +140,15 @@ class AuditAction(StrEnum):
     PILOT_USER_CREATED = "pilot_user_created"
     PILOT_ACCESS_GRANTED = "pilot_access_granted"
     PILOT_ACCESS_REVOKED = "pilot_access_revoked"
+    # Phase 9: Telegram and email integrations.
+    TELEGRAM_LINK_INITIATED = "telegram_link_initiated"
+    TELEGRAM_LINK_CONFIRMED = "telegram_link_confirmed"
+    TELEGRAM_UNLINKED = "telegram_unlinked"
+    TELEGRAM_CONSENT_UPDATED = "telegram_consent_updated"
+    EMAIL_SETTINGS_UPDATED = "email_settings_updated"
+    EMAIL_CONSENT_UPDATED = "email_consent_updated"
+    INTEGRATION_TEST_SENT = "integration_test_sent"
+    INTEGRATION_CONNECTION_TESTED = "integration_connection_tested"
 
 
 class CandidateStage(StrEnum):
@@ -1120,10 +1131,49 @@ class NotificationPreference(Base):
     workdays: Mapped[list] = mapped_column(JSON, nullable=False)
     enabled_types: Mapped[list] = mapped_column(JSON, nullable=False)
     enabled_channels: Mapped[list] = mapped_column(JSON, nullable=False)
+    # Phase 9: external channels (Telegram and email) settings, binding, and consent.
+    telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    telegram_linked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    telegram_opt_in: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    telegram_consent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    telegram_consent_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    telegram_consent_policy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    email_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email_opt_in: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    email_consent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    email_consent_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    email_consent_policy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    channel_health: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
     )
+
+    user: Mapped[User] = relationship()
+
+
+class TelegramLinkToken(Base):
+    """Single-use, expiring token for linking Telegram accounts (phase 9).
+
+    Entropy is high (256-bit random token); the DB stores only a SHA-256
+    hash of the token to prevent token theft from database backups.
+    """
+
+    __tablename__ = "telegram_link_tokens"
+    __table_args__ = (
+        Index("ix_telegram_link_tokens_hash", "token_hash"),
+        Index("ix_telegram_link_tokens_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
 
     user: Mapped[User] = relationship()
 

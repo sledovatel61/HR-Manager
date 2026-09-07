@@ -858,6 +858,7 @@ class DeliveryAttemptOut(BaseModel):
     outcome: str
     error_code: str | None = None
     error_class: str | None = None
+    provider_message_id: str | None = None
 
 
 class DeliveryInfoOut(BaseModel):
@@ -870,12 +871,15 @@ class DeliveryInfoOut(BaseModel):
     scheduled_at: datetime | None = None
     scheduled_at_effective: datetime | None = None
     queued_at: datetime
+    accepted_at: datetime | None = None
     delivered_at: datetime | None = None
     failed_at: datetime | None = None
     cancelled_at: datetime | None = None
     attempts: int
     next_attempt_at: datetime | None = None
     error_class: str | None = None
+    error_code: str | None = None
+    provider_message_id: str | None = None
     attempts_history: list[DeliveryAttemptOut] = []
 
 
@@ -971,6 +975,12 @@ class PreferenceUpdate(BaseModel):
     workdays: list[int] = Field(min_length=1, max_length=7)
     enabled_types: list[str] = Field(min_length=0, max_length=32)
     enabled_channels: list[str] = Field(min_length=0, max_length=8)
+    # Phase 9: optional email and Telegram settings/consent
+    email_address: str | None = Field(default=None, max_length=255)
+    email_opt_in: bool | None = None
+    email_consent_granted: bool | None = None
+    telegram_opt_in: bool | None = None
+    telegram_consent_granted: bool | None = None
 
 
 class PreferenceOut(BaseModel):
@@ -985,6 +995,96 @@ class PreferenceOut(BaseModel):
     enabled_types: list[str]
     enabled_channels: list[str]
     initialized: bool
+    telegram_chat_id: int | None = None
+    telegram_username: str | None = None
+    telegram_linked_at: datetime | None = None
+    telegram_opt_in: bool = False
+    telegram_consent_at: datetime | None = None
+    telegram_consent_source: str | None = None
+    telegram_consent_policy_version: str | None = None
+    email_address: str | None = None
+    email_opt_in: bool = False
+    email_consent_at: datetime | None = None
+    email_consent_source: str | None = None
+    email_consent_policy_version: str | None = None
+    channel_health: dict | None = None
+    telegram_bot_username: str | None = None
+
+
+class TelegramLinkInitiateOut(BaseModel):
+    """Result of initiating a Telegram linking flow."""
+
+    token: str
+    bot_username: str | None = None
+    deep_link: str | None = None
+    expires_at: datetime
+
+
+class TelegramLinkConfirmRequest(BaseModel):
+    """Payload to confirm a Telegram link token."""
+
+    token: str = Field(min_length=1, max_length=128)
+    chat_id: int
+    username: str | None = Field(default=None, max_length=64)
+
+
+class IntegrationChannelStatus(BaseModel):
+    """Status of an integration channel for current user (no secrets)."""
+
+    status: str
+    configured_in_system: bool
+    linked: bool = False
+    opt_in: bool = False
+    has_consent: bool = False
+    details: dict | None = None
+
+
+class IntegrationStatusResponse(BaseModel):
+    """Overall status of all communication channels."""
+
+    telegram: IntegrationChannelStatus
+    email: IntegrationChannelStatus
+    in_app: IntegrationChannelStatus
+
+
+class AdminTelegramTestConnectionOut(BaseModel):
+    """Admin-only Telegram Bot API probe result (no token leaked)."""
+
+    ok: bool
+    bot_id: int | None = None
+    bot_username: str | None = None
+    first_name: str | None = None
+    error: str | None = None
+
+
+class AdminSmtpTestConnectionOut(BaseModel):
+    """Admin-only SMTP handshake probe result (no password leaked)."""
+
+    ok: bool
+    host: str
+    port: int
+    use_tls: bool
+    use_starttls: bool
+    authenticated: bool
+    error: str | None = None
+
+
+class AdminTestSendRequest(BaseModel):
+    """Admin test message dispatch request."""
+
+    channel: Literal["telegram", "email"]
+    recipient: str | None = Field(default=None, max_length=255)
+    subject: str | None = Field(default=None, max_length=200)
+    body: str | None = Field(default=None, max_length=2000)
+
+
+class AdminTestSendOut(BaseModel):
+    """Admin test message dispatch result."""
+
+    ok: bool
+    channel: str
+    provider_message_id: str | None = None
+    message: str
 
 
 class TimezonesOut(BaseModel):

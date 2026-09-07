@@ -1,17 +1,10 @@
 import type {
   AccessGrant,
+  AdminSmtpTestConnectionOut,
+  AdminTelegramTestConnectionOut,
+  AdminTestSendOut,
+  AdminTestSendRequest,
   AnalyticsFunnelReport,
-  DeliveryInfo,
-  NotificationListPayload,
-  NotificationPreferences,
-  NotificationResolve,
-  QueueDiagnostics,
-  Reminder,
-  ReminderImportance,
-  ReminderListPayload,
-  ReminderRecurrence,
-  ReminderStatus,
-  SetupState,
   AnalyticsKpiReport,
   AnalyticsQuery,
   AuditEvent,
@@ -26,13 +19,29 @@ import type {
   CandidateTransferResult,
   CandidateUpdateInput,
   CurrentUser,
+  DeliveryInfo,
   DuplicateCandidateDetail,
   EventCreateInput,
   EventHistoryEntry,
   EventListQuery,
   EventUpdateInput,
   HealthResponse,
+  IntegrationChannelStatus,
+  IntegrationStatusResponse,
+  NotificationListPayload,
+  NotificationPreferences,
+  NotificationPreferencesUpdate,
+  NotificationResolve,
   Paginated,
+  QueueDiagnostics,
+  Reminder,
+  ReminderImportance,
+  ReminderListPayload,
+  ReminderRecurrence,
+  ReminderStatus,
+  SetupState,
+  TelegramLinkConfirmRequest,
+  TelegramLinkInitiateOut,
   User,
   UserListItems,
 } from "./types";
@@ -547,20 +556,15 @@ export async function cancelReminder(id: string): Promise<Reminder> {
   return request<Reminder>(`/reminders/${id}/cancel`, { method: "POST" });
 }
 
-// --- Phase 8: notification preferences --------------------------------------
+// --- Phase 8 & 9: notification preferences & integrations -------------------
 
 export async function getPreferences(): Promise<NotificationPreferences> {
   return request<NotificationPreferences>("/notification-preferences");
 }
 
-export async function savePreferences(input: {
-  timezone: string;
-  quiet_hours_start: string;
-  quiet_hours_end: string;
-  workdays: number[];
-  enabled_types: string[];
-  enabled_channels: string[];
-}): Promise<NotificationPreferences> {
+export async function savePreferences(
+  input: NotificationPreferencesUpdate
+): Promise<NotificationPreferences> {
   return request<NotificationPreferences>("/notification-preferences", {
     method: "PUT",
     body: input,
@@ -569,6 +573,63 @@ export async function savePreferences(input: {
 
 export async function listTimezones(): Promise<{ timezones: string[] }> {
   return request<{ timezones: string[] }>("/notification-preferences/timezones");
+}
+
+export async function fetchIntegrationsStatus(): Promise<IntegrationStatusResponse> {
+  return request<IntegrationStatusResponse>("/integrations/status");
+}
+
+export async function initiateTelegramLink(): Promise<TelegramLinkInitiateOut> {
+  return request<TelegramLinkInitiateOut>("/integrations/telegram/link/initiate", {
+    method: "POST",
+  });
+}
+
+export async function confirmTelegramLink(
+  input: TelegramLinkConfirmRequest
+): Promise<IntegrationChannelStatus> {
+  return request<IntegrationChannelStatus>("/integrations/telegram/link/confirm", {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function unlinkTelegram(): Promise<{ ok: boolean; message: string }> {
+  return request<{ ok: boolean; message: string }>("/integrations/telegram/unlink", {
+    method: "POST",
+  });
+}
+
+export async function adminTestTelegramConnection(): Promise<AdminTelegramTestConnectionOut> {
+  return request<AdminTelegramTestConnectionOut>(
+    "/admin/integrations/telegram/test-connection",
+    {
+      method: "POST",
+    }
+  );
+}
+
+export async function adminTestSmtpConnection(): Promise<AdminSmtpTestConnectionOut> {
+  return request<AdminSmtpTestConnectionOut>("/admin/integrations/smtp/test-connection", {
+    method: "POST",
+  });
+}
+
+export async function adminTestSend(input: AdminTestSendRequest): Promise<AdminTestSendOut> {
+  return request<AdminTestSendOut>("/admin/integrations/test-send", {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function listDeliveries(query: {
+  limit?: number;
+  offset?: number;
+} = {}): Promise<Paginated<DeliveryInfo>> {
+  const params = new URLSearchParams();
+  params.set("limit", String(query.limit ?? 20));
+  params.set("offset", String(query.offset ?? 0));
+  return request<Paginated<DeliveryInfo>>(`/notifications/deliveries?${params}`);
 }
 
 // --- Phase 8: setup wizard and admin queue ----------------------------------

@@ -696,3 +696,89 @@ production запрещён (`migrate.sh` его не имеет).
 - PII/секреты: нет в логах, метриках и диагностике (диагностика очереди —
   только счётчики/статусы).
 - Спам: dedupe-ключи событий + «один экземпляр напоминания на срабатывание».
+
+## Интеграции доставки: Telegram Bot API и SMTP (этап 9)
+
+### Модель данных и миграция (0009_telegram_email_integrations)
+
+- **`telegram_link_tokens`** — одноразовые токены связывания аккаунтов Telegram:
+  `user_id` (FK `users.id`, ON DELETE CASCADE), `token_hash` (SHA-256 хеш
+  токена, в БД никогда не хранится исходный токен в открытом виде),
+  `status` (`pending | confirmed | expired | cancelled`), `expires_at` (TTL
+  по умолчанию 15 минут), `confirmed_at`, `telegram_chat_id` (BigInteger),
+  `telegram_username` (справочно), `created_at`.
+- **`notification_preferences` (расширение)**:
+  - Telegram: `telegram_chat_id` (BigInteger, строгий числовой ID чата,
+    username не используется для маршрутизации), `telegram_username` (для UI),
+    `telegram_opt_in` (boolean), `telegram_linked_at` (TIMESTAMPTZ),
+    `telegram_consent_version` (varchar), `telegram_consent_at` (TIMESTAMPTZ),
+    `telegram_consent_source` (varchar).
+  - Email: `email_address` (varchar), `email_opt_in` (boolean),
+    `email_consent_version` (varchar), `email_consent_at` (TIMESTAMPTZ),
+    `email_consent_source` (varchar).
+- **Аудит**: добавлены действия `telegram_link_initiated`,
+  `telegram_link_confirmed`, `telegram_unlinked`, `telegram_consent_updated`,
+  `email_settings_updated`, `email_consent_updated`, `integration_test_sent`,
+  `integration_connection_tested`.
+
+### Контракт доставки и Transactional Outbox
+
+- **Разделение статусов (Outbox Contract)**:
+  - `queued`: сообщение поставлено в очередь.
+  - `sending`: захвачено worker-ом с lease (`FOR UPDATE SKIP LOCKED`).
+  - `accepted`: сообщение успешно принято шлюзом внешнего провайдера (Telegram
+    Bot API ответил `200 ok=True`, либо SMTP-сервер подтвердил приём письма).
+    **`accepted` честно отделён от `delivered`** и human read: в логах и UI
+    не имитируется доставка/прочтение, если шлюз не даёт webhook-подтверждения.
+  - `delivered`: подтверждённая конечная доставка (для in-app).
+  - `failed`: терминальная ошибка или исчерпание лимита попыток.
+  - `skipped`: канал не включён получателем, отсутствует явное согласие
+    (consent), либо канал не сконфигурирован на сервере.
+- **История попыток (`notification_delivery_attempts`)**:
+  - Неизменяемый журнал (append-only) фиксирует каждый сетевой вызов с
+    `provider_message_id`, `error_code`, `error_class`, временем выполнения и
+    номером попытки.
+- **Обработка сбоев и Rate Limiting**:
+  - Telegram `429 Too Many Requests`: разбор `parameters.retry_after` и
+    откладывание `next_attempt_at = now + retry_after + jitter` с сохранением
+    `error_class = rate_limit`.
+  - Постоянные ошибки (permanent): `400 Bad Request`, `403 Forbidden` (бот
+    заблокирован пользователем), `404 Not Found`, SMTP `550 Mailbox Unavailable`
+    сразу переводят строку в `failed` без бессмысленных повторов.
+  - Временные ошибки (transient): сетевые таймауты, `5xx Server Error`, SMTP
+    соединения планируют повтор с экспоненциальным backoff.
+
+### Telegram Bot API адаптер (`app/telegram_adapter.py`)
+
+- Все сетевые запросы используют `httpx.Client` с настраиваемыми таймаутами.
+- Секретные токены ботов маскируются во всех строках URL, исключениях и логах
+  (`_redact_url`).
+- Тексты сообщений экранируются от нежелательных HTML-тегов (`html.escape`).
+- Поддерживается deep-link команда `/start <token>` и webhook/polling проверка
+  токена связывания.
+- Диагностический зонд `getMe` проверяет валидность токена бота без раскрытия
+  секрета.
+
+### Universal SMTP адаптер (`app/smtp_adapter.py`)
+
+- Поддержка явного TLS (`port 465`) и STARTTLS (`port 587`).
+- Защита от Header Injection: строгая проверка и удаление символов `\r` и `\n`
+  из заголовков темы, отправителя и получателя.
+- Корректное кодирование русских символов в заголовках (RFC 2047 UTF-8
+  `Header(..., "utf-8")`) и многокомпонентных телах писем (MIME UTF-8 plain/html).
+- Формирование уникального RFC 5322 `Message-ID` и отслеживание его как
+  `provider_message_id`.
+- Проверка подключения через `NOOP`/`EHLO` для операторов.
+
+### Безопасность и RBAC
+
+- Связывание Telegram: одноразовый криптографически стойкий токен (15 мин),
+  хранение только SHA-256 хеша, привязка исключительно к числовому
+  `chat_id` (защита от кражи юзернеймов).
+- IDOR-защита: изменение настроек каналов, привязка и отвязка строго ограничены
+  текущим аутентифицированным пользователем (`current_user.id`).
+- Защита от спама и утечек: диагностика очереди и каналов не содержит
+  персональных данных кандидатов и сотрудников; адреса email маскируются в
+  ответах (`j***n@c***y.test`); тестовые отправки и зонды каналов разрешены
+  только администраторам (`role = admin`) с защитой CSRF double-submit и
+  обязательной записью в аудит.

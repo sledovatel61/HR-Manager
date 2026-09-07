@@ -61,14 +61,34 @@ def setup_state(
     user: User = Depends(get_current_user),
 ) -> SetupStateOut:
     """Honest status: pilot presence, own preferences, worker, channels."""
+    settings = request.app.state.settings
     pilot_grant = _active_pilot_grant(db)
     preferences = db.get(NotificationPreference, user.id)
+
+    tg_status = "not_configured"
+    if settings.telegram_bot_token.strip():
+        if preferences and preferences.telegram_chat_id is not None and preferences.telegram_opt_in:
+            tg_status = "working"
+        elif preferences and preferences.telegram_chat_id is not None:
+            tg_status = "revoked"
+        else:
+            tg_status = "configured_in_system"
+
+    email_status = "not_configured"
+    if settings.smtp_host.strip():
+        if preferences and preferences.email_address and preferences.email_opt_in:
+            email_status = "working"
+        elif preferences and preferences.email_address:
+            email_status = "revoked"
+        else:
+            email_status = "configured_in_system"
+
     return SetupStateOut(
         pilot_exists=pilot_grant is not None,
         pilot_grant_active=pilot_grant is not None,
         preferences_initialized=preferences is not None,
-        worker_alive=worker_is_healthy(db, settings=request.app.state.settings, now=utc_now()),
-        channels={"telegram": "not_configured", "email": "not_configured"},
+        worker_alive=worker_is_healthy(db, settings=settings, now=utc_now()),
+        channels={"telegram": tg_status, "email": email_status},
     )
 
 

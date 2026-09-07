@@ -315,6 +315,131 @@
 .status-pill.bad { background: rgba(248, 113, 113, 0.12); color: var(--bad); }
 .status-pill.neutral { background: rgba(147, 163, 189, 0.12); color: var(--muted); }
 
+/* --- Phase 9: Integration boxes & Deep Link / QR ---------------------------- */
+
+.integration-channel-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.integration-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.integration-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.integration-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.integration-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 0.85rem;
+}
+
+.link-token-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px dashed var(--accent);
+  border-radius: 10px;
+}
+
+.deep-link-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(2, 8, 23, 0.8);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  word-break: break-all;
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+.qr-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  background: #ffffff;
+  color: #020817;
+  border-radius: 8px;
+  width: fit-content;
+  margin: 0 auto;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.consent-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 0.88rem;
+}
+
+.consent-checkbox-row input[type="checkbox"] {
+  margin-top: 3px;
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+}
+
+.consent-meta-info {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.admin-test-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.admin-test-result {
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.admin-test-result.success {
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid var(--ok);
+  color: var(--ok);
+}
+
+.admin-test-result.error {
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid var(--bad);
+  color: var(--bad);
+}
+
 @media (max-width: 640px) {
   .bell-popover {
     position: fixed;
