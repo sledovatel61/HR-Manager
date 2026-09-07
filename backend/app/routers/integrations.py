@@ -319,7 +319,7 @@ def _set_consent(
     # change (no silent activation, ever).
     if opt_in != consent_granted:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "Для включения канала нужны opt_in=true и явное consent_granted=true; "
                 "для выключения — оба false."
@@ -548,6 +548,13 @@ def confirm_link(
             status_code=status.HTTP_409_CONFLICT,
             detail="Нет активного кода привязки. Создайте новый код.",
         )
+    if token.user_id != user.id:
+        # Defense in depth: the lookup is already user-scoped, but a foreign
+        # token must never reach the poll/mutation phase (fail closed, 403).
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Код привязки принадлежит другому пользователю.",
+        )
     state = _poll_state_for_update(db)
     offset = state.last_update_id + 1 if state.last_update_id is not None else None
     poll = _poll_starts(config, offset=offset)
@@ -597,42 +604,104 @@ def confirm_link(
                 "Откройте ссылку, нажмите «Запустить» в Telegram и повторите."
             ),
         )
-    # Single-use, race-safe consume: exactly one confirm wins.
-    consumed_result = db.execute(
-        update(TelegramLinkToken)
-        .where(
-            TelegramLinkToken.id == token.id,
-            TelegramLinkToken.consumed_at.is_(None),
+    # An active chat_id is globally unique: one Telegram chat can never
+    # serve two users. If the observed chat is already bound to someone
+    # else, fail closed — no takeover, no consume — and keep the token
+    # active so the user can retry after the holder unlinks.
+    holder = (
+        db.execute(
+            select(TelegramLink.user_id).where(
+                TelegramLink.chat_id == event.chat_id,
+                TelegramLink.revoked_at.is_(None),
+                TelegramLink.user_id != user.id,
+            )
         )
-        .values(consumed_at=now, consume_reason="linked")
+        .scalars()
+        .first()
     )
-    consumed = consumed_result.rowcount  # type: ignore[attr-defined]
-    if consumed != 1:
-        db.rollback()
+    if holder is not None:
+        db.execute(
+            delete(TelegramStartEvent).where(TelegramStartEvent.token_hash == token.token_hash)
+        )
+        record_event(
+            db,
+            AuditAction.TELEGRAM_LINK_CONFLICT,
+            actor=user,
+            details="channel=telegram",
+            commit=False,
+        )
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Код уже использован. Создайте новый код.",
+            detail=(
+                "Этот чат Telegram уже привязан к другой учётной записи. "
+                "Попросите владельца отвязать его и подтвердите заново тем же кодом."
+            ),
         )
-    link = db.get(TelegramLink, user.id)
-    if link is None:
-        link = TelegramLink(user_id=user.id, created_at=now)
-        db.add(link)
-    link.chat_id = event.chat_id
-    link.linked_at = now
-    link.revoked_at = None
-    link.revoke_reason = None
-    link.last_error_class = None
-    link.last_error_at = None
-    link.updated_at = now
-    db.execute(delete(TelegramStartEvent).where(TelegramStartEvent.token_hash == token.token_hash))
-    record_event(
-        db,
-        AuditAction.TELEGRAM_LINK_CONFIRMED,
-        actor=user,
-        details="channel=telegram",
-        commit=False,
-    )
-    db.commit()
+    try:
+        # Single-use, race-safe consume: exactly one confirm wins.
+        consumed_result = db.execute(
+            update(TelegramLinkToken)
+            .where(
+                TelegramLinkToken.id == token.id,
+                TelegramLinkToken.consumed_at.is_(None),
+            )
+            .values(consumed_at=now, consume_reason="linked")
+        )
+        consumed = consumed_result.rowcount  # type: ignore[attr-defined]
+        if consumed != 1:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Код уже использован. Создайте новый код.",
+            )
+        link = db.get(TelegramLink, user.id)
+        if link is None:
+            link = TelegramLink(user_id=user.id, created_at=now)
+            db.add(link)
+        link.chat_id = event.chat_id
+        link.linked_at = now
+        link.revoked_at = None
+        link.revoke_reason = None
+        link.last_error_class = None
+        link.last_error_at = None
+        link.updated_at = now
+        db.execute(
+            delete(TelegramStartEvent).where(TelegramStartEvent.token_hash == token.token_hash)
+        )
+        record_event(
+            db,
+            AuditAction.TELEGRAM_LINK_CONFIRMED,
+            actor=user,
+            details="channel=telegram",
+            commit=False,
+        )
+        db.commit()
+    except IntegrityError as exc:
+        # Lost a same-chat race between the pre-check and the merge: the
+        # partial unique index is the backstop. The rollback also reverts
+        # the consume, so the token stays active for a retry.
+        db.rollback()
+        if not is_duplicate_key_error(exc):
+            raise
+        db.execute(
+            delete(TelegramStartEvent).where(TelegramStartEvent.token_hash == token.token_hash)
+        )
+        record_event(
+            db,
+            AuditAction.TELEGRAM_LINK_CONFLICT,
+            actor=user,
+            details="channel=telegram",
+            commit=False,
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Этот чат Telegram уже привязан к другой учётной записи. "
+                "Попросите владельца отвязать его и подтвердите заново тем же кодом."
+            ),
+        ) from exc
     preference = db.get(NotificationPreference, user.id)
     opt_in = has_channel_consent(preference, DeliveryChannel.TELEGRAM)
     return TelegramConfirmOut(
@@ -747,7 +816,7 @@ def _validate_email_or_422(value: EmailStr) -> str:
         return validate_mailbox(str(value), field="email")
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from None
 
 

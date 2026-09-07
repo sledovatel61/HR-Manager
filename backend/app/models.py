@@ -142,6 +142,7 @@ class AuditAction(StrEnum):
     # Phase 9: external channels (Telegram/SMTP), consent and bindings.
     TELEGRAM_LINK_STARTED = "telegram_link_started"
     TELEGRAM_LINK_CONFIRMED = "telegram_link_confirmed"
+    TELEGRAM_LINK_CONFLICT = "telegram_link_conflict"
     TELEGRAM_UNLINKED = "telegram_unlinked"
     TELEGRAM_CONSENT_UPDATED = "telegram_consent_updated"
     TELEGRAM_CHECKED = "telegram_checked"
