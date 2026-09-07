@@ -71,4 +71,43 @@ if [ "$BACKUP_ENABLED" != "false" ] && [ "$BACKUP_ENABLED" != "0" ]; then
   fi
 fi
 
+# External channels (phase 9). Disabled by default: nothing to check then.
+# When a channel is enabled, its configuration must be complete — the
+# backend would refuse to start otherwise, so fail early with a clear
+# message. Plaintext SMTP in production is a hard failure as well.
+TELEGRAM_ENABLED="${TELEGRAM_ENABLED:-false}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+TELEGRAM_BOT_USERNAME="${TELEGRAM_BOT_USERNAME:-}"
+SMTP_ENABLED="${SMTP_ENABLED:-false}"
+SMTP_HOST="${SMTP_HOST:-}"
+SMTP_PORT="${SMTP_PORT:-587}"
+SMTP_ENCRYPTION="${SMTP_ENCRYPTION:-starttls}"
+SMTP_USERNAME="${SMTP_USERNAME:-}"
+SMTP_PASSWORD="${SMTP_PASSWORD:-}"
+SMTP_FROM_ADDRESS="${SMTP_FROM_ADDRESS:-}"
+
+if [ "$TELEGRAM_ENABLED" = "true" ] || [ "$TELEGRAM_ENABLED" = "1" ]; then
+  if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+    fail "TELEGRAM_ENABLED is true but TELEGRAM_BOT_TOKEN is not set"
+  fi
+  if [ -z "$TELEGRAM_BOT_USERNAME" ]; then
+    fail "TELEGRAM_ENABLED is true but TELEGRAM_BOT_USERNAME is not set"
+  fi
+fi
+
+if [ "$SMTP_ENABLED" = "true" ] || [ "$SMTP_ENABLED" = "1" ]; then
+  if [ -z "$SMTP_HOST" ]; then
+    fail "SMTP_ENABLED is true but SMTP_HOST is not set"
+  fi
+  if [ -z "$SMTP_FROM_ADDRESS" ]; then
+    fail "SMTP_ENABLED is true but SMTP_FROM_ADDRESS is not set"
+  fi
+  if [ "$SMTP_ENCRYPTION" = "none" ]; then
+    fail "SMTP_ENCRYPTION=none is forbidden in production (use starttls or tls)"
+  fi
+  if [ -n "$SMTP_USERNAME" ] && [ -z "$SMTP_PASSWORD" ]; then
+    fail "SMTP_USERNAME is set but SMTP_PASSWORD is not set"
+  fi
+fi
+
 echo "ok: production configuration preflight passed"

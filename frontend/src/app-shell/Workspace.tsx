@@ -10,6 +10,7 @@ import { NotificationBell } from "../features/notifications/NotificationBell";
 import { NotificationCenterPage } from "../features/notifications/NotificationCenterPage";
 import { RemindersPage } from "../features/notifications/RemindersPage";
 import { PreferencesPage } from "../features/notifications/PreferencesPage";
+import { IntegrationsPage } from "../features/notifications/IntegrationsPage";
 import { AdminQueuePage } from "../features/notifications/AdminQueuePage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
@@ -30,6 +31,7 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   notifications: { label: "Уведомления", icon: "bell" },
   reminders: { label: "Напоминания", icon: "clock" },
   preferences: { label: "Настройки уведомлений", icon: "settings" },
+  integrations: { label: "Интеграции", icon: "arrow-right-left" },
   admin: { label: "Администрирование", icon: "shield" },
 };
 
@@ -39,7 +41,7 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   // reminders and preferences are available to every role; the admin
   // screen (queue diagnostics + pilot setup) is admin-only. The backend
   // re-checks every right regardless of the navigation.
-  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences"];
+  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations"];
   return role === "hr"
     ? ["queue", "calendar", "kanban", "deleted", ...personal]
     : ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "admin"];
@@ -142,6 +144,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           )}
           {section === "reminders" && <RemindersPage user={user} />}
           {section === "preferences" && <PreferencesPage />}
+          {section === "integrations" && <IntegrationsPage user={user} />}
           {section === "admin" && <AdminQueuePage />}
           {section !== "calendar" &&
             section !== "kanban" &&
@@ -149,6 +152,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             section !== "notifications" &&
             section !== "reminders" &&
             section !== "preferences" &&
+            section !== "integrations" &&
             section !== "admin" && (
             <CandidatesListPage
               key={section}

@@ -42,6 +42,15 @@ services:
       # DEVELOPMENT ONLY — the production guard in app/config.py rejects it.
       SECRET_KEY: dev-only-secret-key-not-for-production
       DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_dev_password@db:5432/hr_manager
+      # External channels (phase 9): Telegram off by default (needs a real
+      # bot token via TELEGRAM_BOT_TOKEN); SMTP points at local Mailpit.
+      TELEGRAM_ENABLED: "false"
+      SMTP_ENABLED: "true"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_ENCRYPTION: "none"
+      SMTP_FROM_ADDRESS: "noreply@hr-manager.local"
+      SMTP_FROM_NAME: "HR Manager"
     depends_on:
       db:
         condition: service_healthy
@@ -136,6 +145,14 @@ services:
       WORKER_POLL_INTERVAL_S: "2"
       WORKER_LEASE_SECONDS: "120"
       WORKER_MAX_ATTEMPTS: "5"
+      # Same external-channel vision as the backend (phase 9).
+      TELEGRAM_ENABLED: "false"
+      SMTP_ENABLED: "true"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_ENCRYPTION: "none"
+      SMTP_FROM_ADDRESS: "noreply@hr-manager.local"
+      SMTP_FROM_NAME: "HR Manager"
       TZ: UTC
     command: ["python", "-m", "app.cli", "worker"]
     depends_on:
@@ -148,6 +165,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    restart: unless-stopped
+
+  # Local SMTP sink (phase 9): captures every letter the stack sends.
+  # No authentication, no TLS — development only. Web UI on
+  # http://127.0.0.1:8025 shows the captured mail; nothing ever leaves
+  # the machine.
+  mailpit:
+    image: axllent/mailpit:v1
+    ports:
+      - "127.0.0.1:8025:8025"
+    # No healthcheck: SMTP is dialed lazily per send, nothing needs Mailpit
+    # at boot; the stack `--wait` must not depend on it. The production
+    # overlay removes the published port (see compose.prod.yml).
     restart: unless-stopped
 
 volumes:

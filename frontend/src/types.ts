@@ -661,3 +661,91 @@ export interface AccessGrant {
   revoked_at: string | null;
   revoke_reason: string | null;
 }
+
+// --- Phase 9: external integrations (Telegram/SMTP) ---------------------------
+
+export type ChannelState =
+  | "not_configured"
+  | "pending"
+  | "works"
+  | "temporarily_unavailable"
+  | "revoked";
+
+export interface TelegramChannelStatus {
+  state: ChannelState;
+  configured: boolean;
+  linked: boolean;
+  masked_chat_id: string | null;
+  pending_confirmation: boolean;
+  opt_in: boolean;
+  consent_at: string | null;
+  linked_at: string | null;
+}
+
+export interface EmailChannelStatus {
+  state: ChannelState;
+  configured: boolean;
+  verified: boolean;
+  address_masked: string | null;
+  pending_email_masked: string | null;
+  pending_confirmation: boolean;
+  opt_in: boolean;
+  consent_at: string | null;
+}
+
+export interface IntegrationStatus {
+  telegram: TelegramChannelStatus;
+  email: EmailChannelStatus;
+}
+
+export interface TelegramLinkCode {
+  deep_link: string;
+  expires_at: string;
+}
+
+export interface TelegramConfirmResult {
+  linked: boolean;
+  state: ChannelState;
+}
+
+export interface ConsentResult {
+  channel: string;
+  opt_in: boolean;
+  consent_at: string | null;
+  policy_version: string | null;
+}
+
+export interface EmailSetResult {
+  pending_email_masked: string;
+  expires_at: string;
+  verification_queued: boolean;
+}
+
+export interface EmailConfirmResult {
+  verified: boolean;
+  address_masked: string;
+}
+
+export interface AdminChannels {
+  telegram: { enabled: boolean; configured: boolean; bot_username: string | null };
+  smtp: {
+    enabled: boolean;
+    configured: boolean;
+    host: string | null;
+    port: number | null;
+    encryption: string | null;
+    from_address: string | null;
+  };
+}
+
+export interface ChannelCheckResult {
+  ok: boolean;
+  detail: string;
+  error_class: string | null;
+  bot_username: string | null;
+}
+
+export interface ChannelTestResult {
+  outbox_id: string;
+  status: string;
+}
