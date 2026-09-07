@@ -17,8 +17,11 @@
   (1m41s), Backend integration tests — pass (1m43s), Frontend checks —
   pass (48s); stack-job зелёный вплоть до шага владельца «Validate
   HTTPS proxy overlay configuration» — то же предсуществующее падение,
-  что и на принятом tip Phase 8 (см. «Ограничения»). Плюс docs-коммиты
-  отчёта поверх (tip ветки = верхний из них).
+  что и на принятом tip Phase 8 (см. «Ограничения»). Tip-прогон
+  run 34123534981 (head `34f01b2`, docs поверх того же кода):
+  backend/integration/frontend — pass, stack — та же сигнатура
+  (всё зелёное до шага владельца включительно «/health 200»).
+  Плюс этот docs-коммит поверх (tip ветки = верхний из них).
 
 ## Резюме
 
