@@ -314,3 +314,44 @@ def test_frontend_npm_audit_ci_shim_pins_npm_11() -> None:
     # copied explicitly or the postinstall hook fails the image build.
     dockerfile = (REPO_ROOT / "frontend" / "Dockerfile").read_text()
     assert dockerfile.index("COPY scripts ./scripts") < dockerfile.index("RUN npm ci")
+
+
+def test_worker_service_in_dev_and_prod() -> None:
+    """Phase 8: the notification worker runs as its own service, built from
+    the same backend image, with a heartbeat-based healthcheck."""
+    dev = yaml.load(DEV_COMPOSE.read_text(), Loader=_ComposeLoader)
+    prod = yaml.load(PROD_OVERLAY.read_text(), Loader=_ComposeLoader)
+    worker = dev["services"]["worker"]
+    assert worker["command"] == ["python", "-m", "app.cli", "worker"]
+    assert "db" in worker["depends_on"]
+    assert "worker-check" in str(worker["healthcheck"])
+    assert worker["environment"]["APP_ENV"] == "development"
+    assert "NOTIFICATION_DEFAULT_TIMEZONE" in worker["environment"]
+    assert worker["environment"]["TZ"] == "UTC"
+    assert worker["build"]["context"] == "../backend"
+
+    prod_worker = prod["services"]["worker"]
+    assert prod_worker["image"] == "hr-manager-backend:${RELEASE_TAG:-local}"
+    assert prod_worker.get("ports") in (None, [])
+    assert prod_worker["environment"]["APP_ENV"] == "${APP_ENV:-production}"
+    assert "SECRET_KEY" in prod_worker["environment"]
+    assert "WORKER_MAX_ATTEMPTS" in prod_worker["environment"]
+    # No secrets literals in the overlay.
+    assert "hr_manager_dev_password" not in str(prod_worker)
+
+
+def test_worker_settings_defaults_match_config() -> None:
+    """The Compose defaults must match the application defaults so a missing
+    environment variable can never change the delivery behaviour."""
+    from app.config import Settings
+
+    dev = yaml.load(DEV_COMPOSE.read_text(), Loader=_ComposeLoader)
+    worker_env = dev["services"]["worker"]["environment"]
+    defaults = Settings.model_validate(
+        {"APP_ENV": "test", "SECRET_KEY": "x", "DATABASE_URL": "sqlite+pysqlite://"}
+    )
+    assert worker_env["NOTIFICATION_QUIET_HOURS_START"] == defaults.notification_quiet_hours_start
+    assert worker_env["NOTIFICATION_QUIET_HOURS_END"] == defaults.notification_quiet_hours_end
+    assert worker_env["NOTIFICATION_DEFAULT_TIMEZONE"] == defaults.notification_default_timezone
+    assert int(worker_env["WORKER_LEASE_SECONDS"]) == defaults.worker_lease_seconds
+    assert int(worker_env["WORKER_MAX_ATTEMPTS"]) == defaults.worker_max_attempts

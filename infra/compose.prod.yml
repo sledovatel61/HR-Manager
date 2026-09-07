@@ -53,6 +53,25 @@ services:
     image: hr-manager-frontend:${RELEASE_TAG:-local}
     ports: !reset []
 
+  # Notification delivery worker: the same release-tagged backend image,
+  # running `python -m app.cli worker`. Production tuning via environment;
+  # no ports are published (the worker is internal).
+  worker:
+    image: hr-manager-backend:${RELEASE_TAG:-local}
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY:?set a strong SECRET_KEY (>=32 chars) for production}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hr_manager}
+      NOTIFICATION_DEFAULT_TIMEZONE: ${NOTIFICATION_DEFAULT_TIMEZONE:-Europe/Moscow}
+      NOTIFICATION_QUIET_HOURS_START: ${NOTIFICATION_QUIET_HOURS_START:-21:00}
+      NOTIFICATION_QUIET_HOURS_END: ${NOTIFICATION_QUIET_HOURS_END:-08:00}
+      WORKER_POLL_INTERVAL_S: ${WORKER_POLL_INTERVAL_S:-2}
+      WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-120}
+      WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-5}
+      TZ: UTC
+    ports: !reset []
+
   backup:
     image: hr-manager-backup:${RELEASE_TAG:-local}
     environment:

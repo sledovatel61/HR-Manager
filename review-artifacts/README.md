@@ -151,3 +151,43 @@ git push
 backup-интеграционные тесты честно скипаются (нет `pg_dump` на раннере),
 новые шаги preflight/stack/release не запускаются. Это ожидаемое поведение
 до переноса — см. ограничение App в начале файла.
+
+## Обновление этапа 8 (2026-09-07)
+
+Workflows перенесены владельцем (коммит `784f388` на `main`: обновлённый
+`ci.yml` + `release.yml`). В перенесённом `ci.yml` шаг
+`Validate HTTPS proxy overlay configuration` ссылается на
+`${SECRET_KEY:?}`/`${POSTGRES_PASSWORD:?}`/`${BOOTSTRAP_ADMIN_PASSWORD:?}`
+production-оверлея, но не экспортирует эти переменные (каждый CI-шаг —
+изолированный shell, экспорт соседнего шага не наследуется). Шаг падает
+на любом PR (зафиксировано на PR #10, run 34089737761: остальные шаги
+stack-job — dev/prod config, полный запуск стека с worker-ом, /health,
+backup — зелёные).
+
+Артефакты исправления:
+
+- `ci.agent-2.phase8.yml` — полный `ci.yml` с исправленным шагом
+  (экспорт эфемерных `APP_ENV/SECRET_KEY/POSTGRES_PASSWORD/
+  BOOTSTRAP_ADMIN_PASSWORD` перед рендером proxy-оверлея);
+- `ci.agent-2.phase8.patch` — минимальный diff от текущего
+  `.github/workflows/ci.yml`.
+
+Перенос владельцем (однократно; учётка с правом записи workflows):
+
+```bash
+git fetch origin
+git checkout -b arena/phase-8-agent-2-workflow origin/main
+
+git apply --check review-artifacts/ci.agent-2.phase8.patch
+git apply review-artifacts/ci.agent-2.phase8.patch
+cmp review-artifacts/ci.agent-2.phase8.yml .github/workflows/ci.yml \
+  && echo "ci.yml matches artifact"
+
+git commit -m "workflows: export required env in the proxy overlay CI step"
+git push
+```
+
+До переноса stack-job каждого PR останавливается на этом шаге (остальные
+три job — backend, frontend, integration — зелёные и не зависят от
+переноса). Семантика `:?`-охран в `compose.prod.yml` намеренно НЕ
+ослабляется: они — защита «fail fast» production-конфигурации.

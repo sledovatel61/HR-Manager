@@ -1,5 +1,17 @@
 import type {
+  AccessGrant,
   AnalyticsFunnelReport,
+  DeliveryInfo,
+  NotificationListPayload,
+  NotificationPreferences,
+  NotificationResolve,
+  QueueDiagnostics,
+  Reminder,
+  ReminderImportance,
+  ReminderListPayload,
+  ReminderRecurrence,
+  ReminderStatus,
+  SetupState,
   AnalyticsKpiReport,
   AnalyticsQuery,
   AuditEvent,
@@ -445,4 +457,155 @@ export async function exportAnalyticsCsv(query: AnalyticsQuery): Promise<Analyti
     blob: await response.blob(),
     filename: match?.[1] ?? "analytics.csv",
   };
+}
+
+// --- Phase 8: notification center -------------------------------------------
+
+export async function listNotifications(query: {
+  unread_only?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<NotificationListPayload> {
+  const params = new URLSearchParams();
+  if (query.unread_only) params.set("unread_only", "true");
+  params.set("limit", String(query.limit ?? 20));
+  params.set("offset", String(query.offset ?? 0));
+  return request<NotificationListPayload>(`/notifications?${params}`);
+}
+
+export async function unreadCount(): Promise<{ count: number }> {
+  return request<{ count: number }>("/notifications/unread-count");
+}
+
+export async function markNotificationsRead(ids: string[]): Promise<void> {
+  await request<void>("/notifications/mark-read", { method: "POST", body: { ids } });
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await request<void>("/notifications/mark-all-read", { method: "POST" });
+}
+
+export async function dismissNotifications(ids: string[]): Promise<void> {
+  await request<void>("/notifications/dismiss", { method: "POST", body: { ids } });
+}
+
+export async function resolveNotification(id: string): Promise<NotificationResolve> {
+  return request<NotificationResolve>(`/notifications/${id}/resolve`);
+}
+
+export async function notificationDelivery(id: string): Promise<DeliveryInfo> {
+  return request<DeliveryInfo>(`/notifications/${id}/delivery`);
+}
+
+// --- Phase 8: personal reminders --------------------------------------------
+
+export async function listReminders(query: {
+  status?: ReminderStatus;
+  limit?: number;
+  offset?: number;
+}): Promise<ReminderListPayload> {
+  const params = new URLSearchParams();
+  if (query.status) params.set("status", query.status);
+  params.set("limit", String(query.limit ?? 20));
+  params.set("offset", String(query.offset ?? 0));
+  return request<ReminderListPayload>(`/reminders?${params}`);
+}
+
+export async function createReminder(input: {
+  title: string;
+  note?: string | null;
+  candidate_id?: string | null;
+  due_at: string;
+  timezone: string;
+  importance?: ReminderImportance;
+  recurrence?: ReminderRecurrence;
+  assignee_user_id?: string | null;
+}): Promise<Reminder> {
+  return request<Reminder>("/reminders", { method: "POST", body: input });
+}
+
+export async function updateReminder(
+  id: string,
+  input: { expected_version: number } & Partial<{
+    title: string;
+    note: string | null;
+    due_at: string;
+    timezone: string;
+    importance: ReminderImportance;
+    recurrence: ReminderRecurrence;
+    candidate_id: string | null;
+  }>,
+): Promise<Reminder> {
+  return request<Reminder>(`/reminders/${id}`, { method: "PATCH", body: input });
+}
+
+export async function completeReminder(id: string): Promise<Reminder> {
+  return request<Reminder>(`/reminders/${id}/complete`, { method: "POST" });
+}
+
+export async function cancelReminder(id: string): Promise<Reminder> {
+  return request<Reminder>(`/reminders/${id}/cancel`, { method: "POST" });
+}
+
+// --- Phase 8: notification preferences --------------------------------------
+
+export async function getPreferences(): Promise<NotificationPreferences> {
+  return request<NotificationPreferences>("/notification-preferences");
+}
+
+export async function savePreferences(input: {
+  timezone: string;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  workdays: number[];
+  enabled_types: string[];
+  enabled_channels: string[];
+}): Promise<NotificationPreferences> {
+  return request<NotificationPreferences>("/notification-preferences", {
+    method: "PUT",
+    body: input,
+  });
+}
+
+export async function listTimezones(): Promise<{ timezones: string[] }> {
+  return request<{ timezones: string[] }>("/notification-preferences/timezones");
+}
+
+// --- Phase 8: setup wizard and admin queue ----------------------------------
+
+export async function fetchSetupState(): Promise<SetupState> {
+  return request<SetupState>("/setup/state");
+}
+
+export async function createPilot(input: {
+  username: string;
+  password: string;
+  full_name?: string;
+}): Promise<{ user_id: string; username: string }> {
+  return request<{ user_id: string; username: string }>("/setup/pilot", {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function listAccessGrants(): Promise<{ items: AccessGrant[] }> {
+  return request<{ items: AccessGrant[] }>("/admin/access-grants");
+}
+
+export async function grantPilotAccess(userId: string): Promise<AccessGrant> {
+  return request<AccessGrant>("/admin/access-grants", {
+    method: "POST",
+    body: { user_id: userId },
+  });
+}
+
+export async function revokePilotAccess(userId: string, reason: string): Promise<AccessGrant> {
+  return request<AccessGrant>("/admin/access-grants", {
+    method: "POST",
+    body: { user_id: userId, revoke: true, revoke_reason: reason },
+  });
+}
+
+export async function fetchQueueDiagnostics(): Promise<QueueDiagnostics> {
+  return request<QueueDiagnostics>("/admin/ops/notifications/queue");
 }

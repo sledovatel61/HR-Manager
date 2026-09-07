@@ -115,6 +115,41 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # Notification delivery worker (phase 8): the same backend image running a
+  # separate process that polls the PostgreSQL outbox. The HTTP API never
+  # blocks on delivery; /ops/status reports worker liveness (PII-free) and
+  # this container's healthcheck uses `python -m app.cli worker-check`.
+  worker:
+    build:
+      # Relative to this compose file: repo-root/backend
+      context: ../backend
+    environment:
+      APP_ENV: development
+      APP_DEBUG: "false"
+      # DEVELOPMENT ONLY — the production guard in app/config.py rejects it.
+      SECRET_KEY: dev-only-secret-key-not-for-production
+      DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_dev_password@db:5432/hr_manager
+      # Notification contour defaults (explicit, matching app/config.py).
+      NOTIFICATION_DEFAULT_TIMEZONE: "Europe/Moscow"
+      NOTIFICATION_QUIET_HOURS_START: "21:00"
+      NOTIFICATION_QUIET_HOURS_END: "08:00"
+      WORKER_POLL_INTERVAL_S: "2"
+      WORKER_LEASE_SECONDS: "120"
+      WORKER_MAX_ATTEMPTS: "5"
+      TZ: UTC
+    command: ["python", "-m", "app.cli", "worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # Fresh worker heartbeat → healthy; stale/missing → unhealthy.
+      test: ["CMD-SHELL", "python -m app.cli worker-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
 volumes:
   pgdata:
   # Dedicated storage for encrypted backups — separate from the application

@@ -6,7 +6,11 @@ export type WorkspaceSection =
   | "calendar"
   | "kanban"
   | "deleted"
-  | "analytics";
+  | "analytics"
+  | "notifications"
+  | "reminders"
+  | "preferences"
+  | "admin";
 
 const SECTION_HASHES: Record<WorkspaceSection, string> = {
   queue: "#/queue",
@@ -15,6 +19,10 @@ const SECTION_HASHES: Record<WorkspaceSection, string> = {
   kanban: "#/kanban",
   deleted: "#/deleted",
   analytics: "#/analytics",
+  notifications: "#/notifications",
+  reminders: "#/reminders",
+  preferences: "#/preferences",
+  admin: "#/admin",
 };
 
 function sectionFromHash(hash: string, fallback: WorkspaceSection): WorkspaceSection {
