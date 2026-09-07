@@ -42,6 +42,7 @@ from app.models import (
     User,
     UserRole,
 )
+from app.notification_service import transfer_notification
 from app.schemas import (
     CandidateCreate,
     CandidateList,
@@ -717,6 +718,10 @@ def transfer_candidate(
     locked.owner_user_id = new_owner.id
     locked.updated_at = utc_now()
     db.add(transfer)
+    db.flush()  # transfer.id for the notification dedupe key
+    # Phase 8: the handover notification joins the SAME transaction — a
+    # crash can never lose it.
+    transfer_notification(db, transfer=transfer, new_owner=new_owner)
 
     # The transfer is an analytics fact; the new owner is the responsible HR
     # at fact time (later transfers never rewrite earlier facts).

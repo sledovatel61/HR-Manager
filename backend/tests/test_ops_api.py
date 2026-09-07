@@ -22,6 +22,7 @@ from app.backup import BackupRecord, BackupState, save_state
 from app.backup_runner import BackupOutcome, RunnerConfig
 from app.config import Settings
 from app.models import AuditAction, User, UserRole
+from app.utils import utc_now
 from tests.conftest import FIXTURE_PASSWORD, make_user
 
 NOW = datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC)
@@ -38,7 +39,11 @@ def _fresh_state_file(tmp_path: Path, *, status: str = "ok", age_hours: int = 2)
     state = BackupState(
         last_backup=BackupRecord(
             file="hr-manager-20260904T100000Z-abcdef12.pgdump.enc",
-            at=(NOW - timedelta(hours=age_hours)).isoformat(),
+            # Freshness is evaluated against the real clock by /ops/status,
+            # so the record must be recent relative to *now*, not to a fixed
+            # constant — a hard-coded timestamp turns this test into a time
+            # bomb that starts failing a few hours later.
+            at=(utc_now() - timedelta(hours=age_hours)).isoformat(),
             size=4096,
             enc_sha256="a" * 64,
             status=status,

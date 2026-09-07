@@ -20,7 +20,20 @@ from app import __version__, metrics
 from app.bootstrap import bootstrap_admin
 from app.config import Settings, get_settings
 from app.db import bind_session_factory, build_engine
-from app.routers import analytics, audit, auth, candidates, events, health, ops, users
+from app.routers import (
+    analytics,
+    audit,
+    auth,
+    candidates,
+    events,
+    health,
+    notifications,
+    ops,
+    preferences,
+    reminders,
+    setup,
+    users,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +120,10 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(candidates.router)
     app.include_router(events.router)
     app.include_router(analytics.router)
+    app.include_router(notifications.router)
+    app.include_router(reminders.router)
+    app.include_router(preferences.router)
+    app.include_router(setup.router)
     return app
 
 

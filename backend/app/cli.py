@@ -320,7 +320,43 @@ def build_parser() -> argparse.ArgumentParser:
     prune.add_argument("--yes", action="store_true", help="confirm the cleanup")
     add_actor_arguments(prune)
     prune.set_defaults(func=backup_prune)
+
+    # Phase 8: notification worker + health probe.
+    worker = sub.add_parser("worker", help="run the notification delivery worker")
+    worker.set_defaults(func=run_notification_worker)
+    worker_check = sub.add_parser("worker-check", help="exit 0 when the worker heartbeat is fresh")
+    worker_check.set_defaults(func=worker_check_command)
     return parser
+
+
+def run_notification_worker(args: argparse.Namespace) -> int:
+    """Run the notification worker until SIGTERM/SIGINT (Compose service)."""
+    from app.worker import run_worker
+
+    run_worker(get_settings())
+    return EXIT_OK
+
+
+def worker_check_command(args: argparse.Namespace) -> int:
+    """Readiness probe for the worker container healthcheck.
+
+    Exit 0 only when a worker heartbeat exists and is fresh; otherwise 1.
+    Never prints PII (only the status word).
+    """
+    from sqlalchemy.orm import Session
+
+    from app.db import build_engine
+    from app.worker import worker_is_healthy
+
+    settings = get_settings()
+    engine = build_engine(settings)
+    try:
+        with Session(engine) as db:
+            healthy = worker_is_healthy(db, settings=settings)
+        print("worker healthy" if healthy else "worker unhealthy")
+        return EXIT_OK if healthy else 1
+    finally:
+        engine.dispose()
 
 
 def main(argv: list[str] | None = None) -> int:

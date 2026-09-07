@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     DateTime,
     Enum,
@@ -27,6 +28,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.engine.interfaces import Dialect
@@ -111,6 +113,7 @@ class AuditAction(StrEnum):
     EVENT_RESCHEDULED = "event_rescheduled"
     EVENT_COMPLETED = "event_completed"
     EVENT_POSTPONED = "event_postponed"
+    EVENT_CANCELLED = "event_cancelled"
     EVENT_ASSIGNEE_CHANGED = "event_assignee_changed"
     # Analytics (roadmap phase: analytics and reports).
     CANDIDATE_TERMINATED = "candidate_terminated"
@@ -126,6 +129,15 @@ class AuditAction(StrEnum):
     BACKUP_RETENTION_CLEANED = "backup_retention_cleaned"
     DEPLOY_RECORDED = "deploy_recorded"
     RELEASE_RECORDED = "release_recorded"
+    # Phase 8: notification contour and pilot access.
+    PREFERENCE_UPDATED = "preference_updated"
+    NOTIFICATION_RETRY = "notification_retry"
+    NOTIFICATION_CANCEL = "notification_cancel"
+    NOTIFICATION_URGENT_OVERRIDE = "notification_urgent_override"
+    QUEUE_DIAGNOSTICS_VIEWED = "queue_diagnostics_viewed"
+    PILOT_USER_CREATED = "pilot_user_created"
+    PILOT_ACCESS_GRANTED = "pilot_access_granted"
+    PILOT_ACCESS_REVOKED = "pilot_access_revoked"
 
 
 class CandidateStage(StrEnum):
@@ -582,15 +594,19 @@ class EventType(StrEnum):
 
 
 class EventStatus(StrEnum):
-    """Lifecycle of an event: planned, done or postponed.
+    """Lifecycle of an event: planned, done, postponed or cancelled.
 
-    ``completed`` is terminal (no further edits). ``postponed`` requires a
-    new ``starts_at`` (postponing always re-schedules).
+    ``completed`` and ``cancelled`` are terminal (no further edits).
+    ``postponed`` requires a new ``starts_at`` (postponing always
+    re-schedules). ``cancelled`` was added in phase 8 (notification
+    trigger «событие отменено»); it is a documented extension of the
+    phase-5 vocabulary.
     """
 
     SCHEDULED = "scheduled"
     COMPLETED = "completed"
     POSTPONED = "postponed"
+    CANCELLED = "cancelled"
 
 
 class EventHistoryKind(StrEnum):
@@ -601,6 +617,7 @@ class EventHistoryKind(StrEnum):
     RESCHEDULED = "rescheduled"
     COMPLETED = "completed"
     POSTPONED = "postponed"
+    CANCELLED = "cancelled"
     ASSIGNEE_CHANGED = "assignee_changed"
 
 
@@ -620,7 +637,7 @@ class Event(Base):
             name="ck_events_type_valid",
         ),
         CheckConstraint(
-            "status IN ('scheduled', 'completed', 'postponed')",
+            "status IN ('scheduled', 'completed', 'postponed', 'cancelled')",
             name="ck_events_status_valid",
         ),
         CheckConstraint(
@@ -639,6 +656,11 @@ class Event(Base):
             "(status = 'completed' AND completed_at IS NOT NULL) "
             "OR (status <> 'completed' AND completed_at IS NULL)",
             name="ck_events_completed_at_consistent",
+        ),
+        CheckConstraint(
+            "(status = 'cancelled' AND cancelled_at IS NOT NULL) "
+            "OR (status <> 'cancelled' AND cancelled_at IS NULL)",
+            name="ck_events_cancelled_at_consistent",
         ),
         Index("ix_events_candidate_id", "candidate_id"),
         Index("ix_events_assignee_user_id", "assignee_user_id"),
@@ -681,6 +703,7 @@ class Event(Base):
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     remind_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -732,7 +755,7 @@ class EventHistory(Base):
     __table_args__ = (
         CheckConstraint(
             "kind IN ('created', 'updated', 'rescheduled', 'completed', "
-            "'postponed', 'assignee_changed')",
+            "'postponed', 'cancelled', 'assignee_changed')",
             name="ck_event_history_kind_valid",
         ),
         Index("ix_event_history_event_id", "event_id"),
@@ -953,3 +976,575 @@ class CandidateTermination(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<CandidateTermination id={self.id} candidate_id={self.candidate_id}>"
+
+
+def _sql_list(values: list[str]) -> str:
+    """Render a closed vocabulary as a SQL IN-list for CHECK constraints."""
+    return ", ".join(f"'{value}'" for value in values)
+
+
+# --- Phase 8: notification foundation and pilot mode --------------------------
+
+
+class NotificationType(StrEnum):
+    """Closed vocabulary of internal notification types (phase 8)."""
+
+    EVENT_ASSIGNED = "event_assigned"
+    EVENT_APPROACHING = "event_approaching"
+    EVENT_OVERDUE = "event_overdue"
+    EVENT_RESCHEDULED = "event_rescheduled"
+    EVENT_CANCELLED = "event_cancelled"
+    CANDIDATE_TRANSFERRED = "candidate_transferred"
+    REMINDER_DUE = "reminder_due"
+    REMINDER_OVERDUE = "reminder_overdue"
+    SYSTEM_ALERT = "system_alert"
+
+
+class NotificationPriority(StrEnum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+
+class NotificationSource(StrEnum):
+    """Who produced the notification (outbox records the same source)."""
+
+    SYSTEM = "system"
+    RULE = "rule"
+    REMINDER = "reminder"
+    MANUAL = "manual"
+
+
+class DeliveryChannel(StrEnum):
+    """Delivery channels. Only ``in_app`` is implemented in phase 8;
+    ``email``/``telegram`` are reserved by the contract (phase 9) and any
+    job queued for them is honestly marked ``skipped``."""
+
+    IN_APP = "in_app"
+    EMAIL = "email"
+    TELEGRAM = "telegram"
+
+
+class DeliveryStatus(StrEnum):
+    """Outbox row lifecycle: queued -> sending -> accepted/delivered;
+    failed (terminal after retries), cancelled (explicit), skipped
+    (channel not configured — never a fake delivered)."""
+
+    QUEUED = "queued"
+    SENDING = "sending"
+    ACCEPTED = "accepted"
+    DELIVERED = "delivered"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    SKIPPED = "skipped"
+
+
+class AttemptOutcome(StrEnum):
+    ACCEPTED = "accepted"
+    DELIVERED = "delivered"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+
+
+class ReminderRecurrence(StrEnum):
+    """Closed recurrence set for personal reminders (phase 8 contract)."""
+
+    NONE = "none"
+    DAILY = "daily"
+    WORKDAYS = "workdays"
+    WEEKLY = "weekly"
+
+
+class ReminderStatus(StrEnum):
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class ReminderImportance(StrEnum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+
+class AccessGrantScope(StrEnum):
+    """Explicit access grants. ``pilot_full_access`` marks the single pilot
+    user of phase 8: the backend keeps all role checks active (the grant is
+    an explicit, audited designation — it never bypasses RBAC)."""
+
+    PILOT_FULL_ACCESS = "pilot_full_access"
+
+
+_NOTIFICATION_TYPES = [member.value for member in NotificationType]
+_PRIORITIES = [member.value for member in NotificationPriority]
+_SOURCES = [member.value for member in NotificationSource]
+_CHANNELS = [member.value for member in DeliveryChannel]
+_STATUSES = [member.value for member in DeliveryStatus]
+_OUTCOMES = [member.value for member in AttemptOutcome]
+_RECURRENCES = [member.value for member in ReminderRecurrence]
+_REMINDER_STATUSES = [member.value for member in ReminderStatus]
+_IMPORTANCES = [member.value for member in ReminderImportance]
+_GRANT_SCOPES = [member.value for member in AccessGrantScope]
+
+
+class NotificationPreference(Base):
+    """Per-user notification settings (timezone, quiet hours, workdays,
+    enabled types/channels). A missing row means system defaults; the row
+    is created lazily on first read/write by the owning user."""
+
+    __tablename__ = "notification_preferences"
+    __table_args__ = (
+        CheckConstraint(
+            "length(timezone) BETWEEN 1 AND 64",
+            name="ck_notification_preferences_tz_len",
+        ),
+        # Portable format guard: HH:MM shape. Full digit validation lives
+        # in the API layer (SQLite has no '~' regex operator).
+        CheckConstraint(
+            "quiet_hours_start LIKE '__:__'",
+            name="ck_notification_preferences_quiet_start_format",
+        ),
+        CheckConstraint(
+            "quiet_hours_end LIKE '__:__'",
+            name="ck_notification_preferences_quiet_end_format",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    quiet_hours_start: Mapped[str] = mapped_column(String(5), nullable=False)
+    quiet_hours_end: Mapped[str] = mapped_column(String(5), nullable=False)
+    workdays: Mapped[list] = mapped_column(JSON, nullable=False)
+    enabled_types: Mapped[list] = mapped_column(JSON, nullable=False)
+    enabled_channels: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    user: Mapped[User] = relationship()
+
+
+class Notification(Base):
+    """A logical in-app notification (immutable snapshot; history never
+    edited — a corrected resend creates a new outbox row)."""
+
+    __tablename__ = "notifications"
+    __table_args__ = (
+        CheckConstraint(
+            f"type IN ({_sql_list(_NOTIFICATION_TYPES)})",
+            name="ck_notifications_type_valid",
+        ),
+        CheckConstraint(
+            f"priority IN ({_sql_list(_PRIORITIES)})",
+            name="ck_notifications_priority_valid",
+        ),
+        CheckConstraint(
+            f"source IN ({_sql_list(_SOURCES)})",
+            name="ck_notifications_source_valid",
+        ),
+        CheckConstraint("length(trim(title)) > 0", name="ck_notifications_title_not_blank"),
+        Index("ix_notifications_user_created", "user_id", "created_at"),
+        Index("ix_notifications_user_unread", "user_id", "read_at"),
+        Index(
+            "uq_notifications_dedupe_key",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text("dedupe_key IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    type: Mapped[NotificationType] = mapped_column(
+        Enum(
+            NotificationType,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    priority: Mapped[NotificationPriority] = mapped_column(
+        Enum(
+            NotificationPriority,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=NotificationPriority.NORMAL,
+    )
+    source: Mapped[NotificationSource] = mapped_column(
+        Enum(
+            NotificationSource,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    object_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    object_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # Structured, PII-free metadata: only ids and timestamps. Never names,
+    # notes or other personal data. (Column is ``metadata``; the attribute is
+    # ``meta`` to avoid shadowing DeclarativeBase.metadata.)
+    meta: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+    user: Mapped[User] = relationship()
+
+
+class Reminder(Base):
+    """A personal reminder with an owner, an assignee (defaults to owner),
+    an optional candidate/event link, a UTC due time and an IANA display
+    timezone. ``version`` is the optimistic-concurrency counter."""
+
+    __tablename__ = "reminders"
+    __table_args__ = (
+        CheckConstraint(
+            f"recurrence IN ({_sql_list(_RECURRENCES)})",
+            name="ck_reminders_recurrence_valid",
+        ),
+        CheckConstraint(
+            f"status IN ({_sql_list(_REMINDER_STATUSES)})",
+            name="ck_reminders_status_valid",
+        ),
+        CheckConstraint(
+            f"importance IN ({_sql_list(_IMPORTANCES)})",
+            name="ck_reminders_importance_valid",
+        ),
+        CheckConstraint("length(trim(title)) > 0", name="ck_reminders_title_not_blank"),
+        CheckConstraint(
+            "length(timezone) BETWEEN 1 AND 64",
+            name="ck_reminders_tz_len",
+        ),
+        CheckConstraint(
+            "(status = 'completed' AND completed_at IS NOT NULL) "
+            "OR (status <> 'completed' AND completed_at IS NULL)",
+            name="ck_reminders_completed_at_consistent",
+        ),
+        Index("ix_reminders_assignee_due", "assignee_user_id", "due_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    assignee_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("events.id", ondelete="SET NULL"), nullable=True
+    )
+    due_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    importance: Mapped[ReminderImportance] = mapped_column(
+        Enum(
+            ReminderImportance,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=ReminderImportance.NORMAL,
+    )
+    recurrence: Mapped[ReminderRecurrence] = mapped_column(
+        Enum(
+            ReminderRecurrence,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=ReminderRecurrence.NONE,
+    )
+    status: Mapped[ReminderStatus] = mapped_column(
+        Enum(
+            ReminderStatus,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=ReminderStatus.ACTIVE,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # Monotonic occurrence counter: each due occurrence (recurrence step)
+    # bumps it; the delivery dedupe key embeds it, so a repeated worker pass
+    # can never deliver one occurrence twice.
+    occurrence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    owner: Mapped[User] = relationship(foreign_keys=[owner_user_id])
+    assignee: Mapped[User] = relationship(foreign_keys=[assignee_user_id])
+    candidate: Mapped[Candidate | None] = relationship(foreign_keys=[candidate_id])
+
+    @property
+    def owner_username(self) -> str:
+        return self.owner.username if self.owner is not None else ""
+
+    @property
+    def assignee_username(self) -> str:
+        return self.assignee.username if self.assignee is not None else ""
+
+
+class NotificationOutbox(Base):
+    """The transactional delivery queue (outbox). One row per logical
+    message per channel; the row itself is a state machine, the append-only
+    ``notification_delivery_attempts`` table is its immutable history."""
+
+    __tablename__ = "notification_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            f"channel IN ({_sql_list(_CHANNELS)})",
+            name="ck_notification_outbox_channel_valid",
+        ),
+        CheckConstraint(
+            f"status IN ({_sql_list(_STATUSES)})",
+            name="ck_notification_outbox_status_valid",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_notification_outbox_attempts_nonnegative"),
+        CheckConstraint(
+            "(recipient_user_id IS NOT NULL) <> (external_recipient IS NOT NULL)",
+            name="ck_notification_outbox_exactly_one_recipient",
+        ),
+        CheckConstraint(
+            "(status = 'sending' AND lease_expires_at IS NOT NULL) "
+            "OR (status <> 'sending' AND lease_expires_at IS NULL)",
+            name="ck_notification_outbox_lease_consistent",
+        ),
+        Index(
+            "ix_notification_outbox_queued_due",
+            "status",
+            "scheduled_at",
+            postgresql_where=text("status = 'queued'"),
+        ),
+        Index(
+            "ix_notification_outbox_sending_lease",
+            "status",
+            "lease_expires_at",
+            postgresql_where=text("status = 'sending'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    recipient_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    # Reserved for phase 9 external recipients (Telegram/SMTP); exactly one
+    # of recipient_user_id / external_recipient must be set (CHECK above).
+    external_recipient: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    channel: Mapped[DeliveryChannel] = mapped_column(
+        Enum(
+            DeliveryChannel,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    # Snapshot of the planned logical notification (type + origin). The
+    # in-app delivery materializes a notifications row from these.
+    notification_type: Mapped[NotificationType] = mapped_column(
+        Enum(
+            NotificationType,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    source: Mapped[NotificationSource] = mapped_column(
+        Enum(
+            NotificationSource,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=NotificationSource.SYSTEM,
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    initiator_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    rule_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    object_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    object_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # Original requested send time (UTC). Quiet hours never rewrite it:
+    # the effective (shifted) time lives in scheduled_at_effective for audit.
+    scheduled_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    scheduled_at_effective: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    queued_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    status: Mapped[DeliveryStatus] = mapped_column(
+        Enum(
+            DeliveryStatus,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=DeliveryStatus.QUEUED,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # Safe error classification only — never messages, provider responses or
+    # anything that could carry PII.
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    # Snapshot of the channel consent/permission state at scheduling time.
+    # Explicitly no secrets, tokens or passwords.
+    consent_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # True when an admin confirmed a manual send inside quiet hours
+    # (audited separately).
+    quiet_hours_bypassed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    attempts_history: Mapped[list["NotificationDeliveryAttempt"]] = relationship(
+        back_populates="outbox",
+        cascade="all, delete-orphan",
+        order_by="NotificationDeliveryAttempt.attempt_no",
+    )
+
+
+class NotificationDeliveryAttempt(Base):
+    """Append-only attempt history. Rows are created once and never updated
+    or edited: the accepted record of what was attempted."""
+
+    __tablename__ = "notification_delivery_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "outbox_id", "attempt_no", name="uq_notification_delivery_attempts_outbox_attempt"
+        ),
+        CheckConstraint(
+            f"outcome IN ({_sql_list(_OUTCOMES)})",
+            name="ck_notification_delivery_attempts_outcome_valid",
+        ),
+        CheckConstraint("attempt_no >= 1", name="ck_notification_delivery_attempts_no_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    outbox_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("notification_outbox.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    outcome: Mapped[AttemptOutcome] = mapped_column(
+        Enum(
+            AttemptOutcome,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    outbox: Mapped[NotificationOutbox] = relationship(back_populates="attempts_history")
+
+
+class WorkerHeartbeat(Base):
+    """Singleton row (id=1) written by the active worker process. The
+    worker healthcheck and /ops/status read it; there is no PII here."""
+
+    __tablename__ = "worker_heartbeat"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    worker_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    pid: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    processed_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_lease_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class AccessGrant(Base):
+    """Explicit, audited access grants. An active grant is unique per user
+    and scope (partial unique index); grants never bypass role checks."""
+
+    __tablename__ = "access_grants"
+    __table_args__ = (
+        CheckConstraint(
+            f"scope IN ({_sql_list(_GRANT_SCOPES)})",
+            name="ck_access_grants_scope_valid",
+        ),
+        Index(
+            "uq_access_grants_active",
+            "user_id",
+            "scope",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    scope: Mapped[AccessGrantScope] = mapped_column(
+        Enum(
+            AccessGrantScope,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    granted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    granted_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+    granted_by: Mapped[User | None] = relationship(foreign_keys=[granted_by_user_id])
+
+    @property
+    def username(self) -> str:
+        return self.user.username if self.user is not None else ""
+
+    @property
+    def granted_by_username(self) -> str | None:
+        return self.granted_by.username if self.granted_by is not None else None

@@ -54,6 +54,23 @@ def unit_engine() -> Iterator[Engine]:
     engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _clean_login_limiter() -> Iterator[None]:
+    """Reset the process-global login rate limiter around every test.
+
+    The limiter is a module-level singleton in ``app.routers.auth``; without
+    a per-test reset, any suite that logs in more than LOGIN_RATE_LIMIT
+    times in total trips 429 for unrelated tests (all requests share one
+    client IP). This mirrors the fixture that used to live only in
+    test_auth.py and applies the same isolation to the whole suite.
+    """
+    from app.routers.auth import reset_login_limiter
+
+    reset_login_limiter()
+    yield
+    reset_login_limiter()
+
+
 @pytest.fixture()
 def unit_settings() -> Settings:
     # model_validate mirrors how real environment variables map into the

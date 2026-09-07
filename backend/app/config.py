@@ -54,6 +54,7 @@ Environment variables
 
 from functools import lru_cache
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -83,6 +84,17 @@ MIN_SECRET_KEY_LENGTH = 32
 
 # Password policy (also enforced in app/security.py with a dedicated message).
 MIN_PASSWORD_LENGTH = 12
+
+# Notification contour defaults (phase 8). All persisted timestamps stay
+# timezone-aware UTC; these defaults describe the *display/scheduling*
+# behaviour of the recipient and are validated against zoneinfo.
+DEFAULT_NOTIFICATION_TIMEZONE = "Europe/Moscow"
+DEFAULT_QUIET_HOURS_START = "21:00"
+DEFAULT_QUIET_HOURS_END = "08:00"
+DEFAULT_WORKDAYS = "1,2,3,4,5"  # ISO weekdays, Monday = 1
+# Approaching-event offsets (hours before starts_at) per event type.
+DEFAULT_INTERVIEW_APPROACH_HOURS = "24,1"
+DEFAULT_CALL_APPROACH_HOURS = "1"
 
 
 class Settings(BaseSettings):
@@ -150,6 +162,37 @@ class Settings(BaseSettings):
     )
     backup_alembic_dir: str = Field(default="", validation_alias="BACKUP_ALEMBIC_DIR")
     backup_health_timeout_s: float = Field(default=90.0, validation_alias="BACKUP_HEALTH_TIMEOUT_S")
+
+    # Notification contour (phase 8): delivery queue, worker and quiet hours.
+    notification_default_timezone: str = Field(
+        default=DEFAULT_NOTIFICATION_TIMEZONE, validation_alias="NOTIFICATION_DEFAULT_TIMEZONE"
+    )
+    notification_quiet_hours_start: str = Field(
+        default=DEFAULT_QUIET_HOURS_START, validation_alias="NOTIFICATION_QUIET_HOURS_START"
+    )
+    notification_quiet_hours_end: str = Field(
+        default=DEFAULT_QUIET_HOURS_END, validation_alias="NOTIFICATION_QUIET_HOURS_END"
+    )
+    notification_workdays: str = Field(
+        default=DEFAULT_WORKDAYS, validation_alias="NOTIFICATION_WORKDAYS"
+    )
+    notification_interview_approach_hours: str = Field(
+        default=DEFAULT_INTERVIEW_APPROACH_HOURS,
+        validation_alias="NOTIFICATION_INTERVIEW_APPROACH_HOURS",
+    )
+    notification_call_approach_hours: str = Field(
+        default=DEFAULT_CALL_APPROACH_HOURS, validation_alias="NOTIFICATION_CALL_APPROACH_HOURS"
+    )
+    worker_poll_interval_s: float = Field(default=2.0, validation_alias="WORKER_POLL_INTERVAL_S")
+    worker_lease_seconds: int = Field(default=120, validation_alias="WORKER_LEASE_SECONDS")
+    worker_max_attempts: int = Field(default=5, validation_alias="WORKER_MAX_ATTEMPTS")
+    worker_backoff_base_s: float = Field(default=60.0, validation_alias="WORKER_BACKOFF_BASE_S")
+    worker_backoff_cap_s: float = Field(default=3600.0, validation_alias="WORKER_BACKOFF_CAP_S")
+    worker_batch_size: int = Field(default=20, validation_alias="WORKER_BATCH_SIZE")
+    worker_heartbeat_interval_s: float = Field(
+        default=10.0, validation_alias="WORKER_HEARTBEAT_INTERVAL_S"
+    )
+    worker_stale_after_s: float = Field(default=45.0, validation_alias="WORKER_STALE_AFTER_S")
 
     @property
     def is_production(self) -> bool:
@@ -226,12 +269,87 @@ class Settings(BaseSettings):
         if self.backup_max_age_hours < 1:
             problems.append("BACKUP_MAX_AGE_HOURS must be at least 1")
 
+        # Notification contour invariants (phase 8). These defaults are safe,
+        # but a misconfigured deployment must fail fast instead of silently
+        # delivering at wrong times or never delivering at all.
+        if not _is_iana_timezone(self.notification_default_timezone):
+            problems.append(
+                "NOTIFICATION_DEFAULT_TIMEZONE must be a valid IANA timezone "
+                f"(got {self.notification_default_timezone!r})"
+            )
+        for name, value in (
+            ("NOTIFICATION_QUIET_HOURS_START", self.notification_quiet_hours_start),
+            ("NOTIFICATION_QUIET_HOURS_END", self.notification_quiet_hours_end),
+        ):
+            if not _is_hh_mm(value):
+                problems.append(f"{name} must be HH:MM (got {value!r})")
+        if not _is_workday_list(self.notification_workdays):
+            problems.append(
+                "NOTIFICATION_WORKDAYS must be a comma-separated list of ISO weekdays "
+                f"1..7 (got {self.notification_workdays!r})"
+            )
+        for name, value in (
+            ("NOTIFICATION_INTERVIEW_APPROACH_HOURS", self.notification_interview_approach_hours),
+            ("NOTIFICATION_CALL_APPROACH_HOURS", self.notification_call_approach_hours),
+        ):
+            if not _is_hour_list(value):
+                problems.append(
+                    f"{name} must be a comma-separated list of non-negative hours (got {value!r})"
+                )
+        if self.worker_lease_seconds < 5:
+            problems.append("WORKER_LEASE_SECONDS must be at least 5")
+        if self.worker_max_attempts < 1:
+            problems.append("WORKER_MAX_ATTEMPTS must be at least 1")
+        if self.worker_batch_size < 1:
+            problems.append("WORKER_BATCH_SIZE must be at least 1")
+
         if problems:
             raise ValueError(
                 f"invalid configuration for environment '{self.environment}': "
                 + "; ".join(problems)
             )
         return self
+
+
+def _is_iana_timezone(value: str) -> bool:
+    """True when ``value`` names an IANA timezone known to the stdlib zoneinfo."""
+    try:
+        ZoneInfo(value)
+    except Exception:
+        return False
+    return True
+
+
+def _is_hh_mm(value: str) -> bool:
+    if len(value) != 5 or value[2] != ":":
+        return False
+    try:
+        hours, minutes = int(value[:2]), int(value[3:])
+    except ValueError:
+        return False
+    return 0 <= hours <= 23 and 0 <= minutes <= 59
+
+
+def _is_workday_list(value: str) -> bool:
+    parts = value.split(",")
+    if not parts or any(not part for part in parts):
+        return False
+    try:
+        days = [int(part) for part in parts]
+    except ValueError:
+        return False
+    return all(1 <= day <= 7 for day in days) and len(set(days)) == len(days)
+
+
+def _is_hour_list(value: str) -> bool:
+    parts = value.split(",")
+    if not parts or any(not part for part in parts):
+        return False
+    try:
+        hours = [float(part) for part in parts]
+    except ValueError:
+        return False
+    return all(hour >= 0 for hour in hours)
 
 
 @lru_cache
