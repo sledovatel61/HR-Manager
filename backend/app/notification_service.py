@@ -171,11 +171,23 @@ def schedule(
     * every other error (FK/CHECK violations, schema drift, connection
       failures, ...) propagates to the caller unchanged — it is never
       masked as a deduplication no-op.
+    * ``external_recipient`` bypasses the user binding/consent lookups, so
+      it is accepted ONLY for the address-verification letter (EMAIL
+      channel + ``EMAIL_VERIFICATION_TEMPLATE``) and must be a valid
+      mailbox — anything else raises ValueError and queues nothing. All
+      other templates resolve the recipient from the user's own verified
+      binding at send time and ignore any stored external value.
     """
     if recipient_user_id is None and external_recipient is None:
         raise ValueError("either recipient_user_id or external_recipient is required")
     if recipient_user_id is not None and external_recipient is not None:
         raise ValueError("recipient_user_id and external_recipient are mutually exclusive")
+    if external_recipient is not None:
+        from app.smtp import validate_mailbox
+
+        if channel != DeliveryChannel.EMAIL or template != EMAIL_VERIFICATION_TEMPLATE:
+            raise ValueError("external_recipient is allowed only for the email verification letter")
+        external_recipient = validate_mailbox(external_recipient, field="external_recipient")
 
     row = NotificationOutbox(
         recipient_user_id=recipient_user_id,

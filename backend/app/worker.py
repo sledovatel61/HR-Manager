@@ -346,10 +346,18 @@ def _resolve_external_target(
         if template == EMAIL_VERIFICATION_TEMPLATE:
             # The confirmation mail for a not-yet-verified address: the
             # recipient is allow-listed by construction (validated at queue
-            # time), quiet hours and consent do not apply.
+            # time), quiet hours and consent do not apply. Re-validated
+            # here as well: rows predating the queue-time guard (or forged
+            # rows) skip without any network call.
+            from app.smtp import validate_mailbox
+
             to_address = locked.external_recipient
             if not to_address:
                 return None, RECIPIENT_MISSING_ERROR_CLASS
+            try:
+                to_address = validate_mailbox(to_address, field="external_recipient")
+            except ValueError:
+                return None, RECIPIENT_UNAVAILABLE_ERROR_CLASS
             return (
                 _ExternalTarget(
                     channel=channel, email=to_address, title=locked.title, body=locked.body
