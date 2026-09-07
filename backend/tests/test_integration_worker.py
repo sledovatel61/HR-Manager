@@ -12,6 +12,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -337,3 +338,31 @@ def test_admin_queue_diagnostics_has_no_pii(pg_client: TestClient, pg_db: Sessio
     status_body = pg_client.get("/ops/status").json()
     assert "notifications" in status_body
     assert "Секретная" not in str(status_body)
+
+
+def test_schedule_propagates_fk_violation(pg_db: Session) -> None:
+    """PostgreSQL: a foreign-key failure must propagate as an error, never
+    masquerade as a deduplication no-op (regression for the over-broad
+    except-Exception dedupe handler)."""
+    _clean_queue(pg_db)
+    missing_user_id = uuid4()  # no such user row
+    with pytest.raises(IntegrityError):
+        schedule_notification_row(
+            pg_db,
+            type_=NotificationType.EVENT_ASSIGNED,
+            recipient_user_id=missing_user_id,
+            dedupe_key="fk-violation",
+            scheduled_at=NOW,
+        )
+    pg_db.rollback()
+    # Nothing was inserted, and the session is usable again.
+    rows = (
+        pg_db.execute(
+            select(NotificationOutbox).where(
+                NotificationOutbox.idempotency_key == "event_assigned:fk-violation"
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == []

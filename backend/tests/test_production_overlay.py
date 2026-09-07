@@ -355,3 +355,31 @@ def test_worker_settings_defaults_match_config() -> None:
     assert worker_env["NOTIFICATION_DEFAULT_TIMEZONE"] == defaults.notification_default_timezone
     assert int(worker_env["WORKER_LEASE_SECONDS"]) == defaults.worker_lease_seconds
     assert int(worker_env["WORKER_MAX_ATTEMPTS"]) == defaults.worker_max_attempts
+
+
+def test_backup_scheduler_line_endings_protected() -> None:
+    """Phase 8 fix: the backup scheduler must survive Windows checkouts.
+
+    A Windows clone with core.autocrlf=true turns the committed LF file
+    into CRLF, which breaks the container entrypoint
+    (`env: 'bash\r': No such file or directory`, backup unhealthy). Two
+    independent layers of protection are required:
+    1. .gitattributes forces `eol=lf` for scripts/Dockerfiles/nginx
+       templates at checkout time on every platform;
+    2. Dockerfile.backup strips stray CR at build time for repositories
+       cloned before the attribute existed.
+    """
+    attributes = (REPO_ROOT / ".gitattributes").read_text()
+    assert "*.sh text eol=lf" in attributes
+    assert "infra/scripts/*.sh text eol=lf" in attributes
+    assert "backend/Dockerfile.backup text eol=lf" in attributes
+    assert "infra/nginx/default.conf.template text eol=lf" in attributes
+
+    dockerfile = (REPO_ROOT / "backend" / "Dockerfile.backup").read_text()
+    assert "COPY infra/scripts/backup_scheduler.sh" in dockerfile
+    assert "sed -i 's/\\r$//' /usr/local/bin/backup-scheduler" in dockerfile
+
+    # The committed script itself is LF-only.
+    raw = (SCRIPTS_DIR / "backup_scheduler.sh").read_bytes()
+    assert b"\r" not in raw
+    assert raw.startswith(b"#!/usr/bin/env bash")

@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -291,3 +292,78 @@ def test_plan_skips_self_assignment_notification(
     rows = db_session.execute(select(NotificationOutbox)).scalars().all()
     types = {row.notification_type for row in rows}
     assert NotificationType.EVENT_ASSIGNED not in types
+
+
+def test_schedule_dedupe_keeps_outer_transaction_intact(db_session: Session) -> None:
+    """A duplicate key returns None WITHOUT rolling back the caller's unit
+    of work: a row planned before the duplicate survives and commits."""
+    user = make_user(db_session, username="hr-tx")
+    first = schedule_notification_row(
+        db_session,
+        type_=NotificationType.EVENT_ASSIGNED,
+        recipient_user_id=user.id,
+        dedupe_key="tx-outer",
+        scheduled_at=NOW,
+    )
+    assert first is not None
+
+    # The duplicate is attempted while another row is still pending.
+    second = schedule_notification_row(
+        db_session,
+        type_=NotificationType.EVENT_ASSIGNED,
+        recipient_user_id=user.id,
+        dedupe_key="tx-outer",  # duplicate idempotency key
+        scheduled_at=NOW,
+    )
+    assert second is None
+    # The outer transaction is still usable: the first row commits fine.
+    db_session.commit()
+    rows = db_session.execute(select(NotificationOutbox)).scalars().all()
+    assert len(rows) == 1
+
+
+def test_schedule_propagates_check_violation(db_session: Session) -> None:
+    """A CHECK violation (non-empty title) must propagate, not become None.
+
+    The outbox model itself has no title CHECK, so build the row directly
+    with a violating value and flush through the same savepoint helper
+    semantics used by deliver_in_app."""
+    user = make_user(db_session, username="hr-check")
+    outbox = NotificationOutbox(
+        recipient_user_id=user.id,
+        channel=DeliveryChannel.IN_APP,
+        notification_type=NotificationType.SYSTEM_ALERT,
+        source=NotificationSource.SYSTEM,
+        title="",  # violates ck_notifications_title_not_blank on delivery
+        status=DeliveryStatus.QUEUED,
+        idempotency_key=f"check-{uuid4().hex}",
+        queued_at=NOW,
+    )
+    db_session.add(outbox)
+    db_session.commit()
+
+    with pytest.raises(IntegrityError):
+        deliver_in_app(db_session, outbox, now=NOW)
+    db_session.rollback()
+
+
+def test_deliver_returns_false_only_for_duplicate(db_session: Session) -> None:
+    """First delivery True, second (duplicate) False — with the surrounding
+    transaction intact both times."""
+    user = make_user(db_session, username="hr-dup")
+    row = schedule_notification_row(
+        db_session,
+        type_=NotificationType.EVENT_ASSIGNED,
+        recipient_user_id=user.id,
+        dedupe_key="dup-deliver",
+        scheduled_at=NOW,
+    )
+    assert row is not None
+    db_session.commit()
+
+    assert deliver_in_app(db_session, row, now=NOW) is True
+    db_session.commit()
+    assert deliver_in_app(db_session, row, now=NOW) is False
+    db_session.commit()
+    notifications = db_session.execute(select(Notification)).scalars().all()
+    assert len(notifications) == 1

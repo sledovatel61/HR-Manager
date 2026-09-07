@@ -205,6 +205,12 @@ def test_assignee_delegation_and_edit_restriction(client: TestClient, db_session
     body = created.json()
     assert body["assignee_user_id"] == str(other_hr.id)
 
+    # The OWNER still sees the reminder they delegated (owner-or-assignee
+    # scope; regression for the assignee-only list filter).
+    owner_list = client.get("/reminders").json()
+    assert owner_list["total"] == 1
+    assert owner_list["items"][0]["id"] == body["id"]
+
     # The assignee sees the reminder but cannot edit it.
     csrf_other = _login(client, "other_hr")
     assert client.get(f"/reminders/{body['id']}").status_code == 200
@@ -223,3 +229,54 @@ def test_assignee_delegation_and_edit_restriction(client: TestClient, db_session
         ).status_code
         == 200
     )
+
+
+def test_list_scope_is_owner_or_assignee(client: TestClient, db_session: Session) -> None:
+    """Regression: the list must include reminders where the user is the
+    OWNER (even when delegated) or the ASSIGNEE — and nothing else."""
+    owner = make_user(db_session, username="owner", role=UserRole.HR)
+    other_hr = make_user(db_session, username="other_hr", role=UserRole.HR)
+    make_user(db_session, username="bystander", role=UserRole.HR)
+    candidate = Candidate(
+        full_name="Кандидат",
+        full_name_normalized="кандидат",
+        source=CandidateSource.REFERRAL,
+        position="Dev",
+        owner_user_id=owner.id,
+        stage=CandidateStage.NEW,
+        stage_position=0,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    db_session.add(candidate)
+    db_session.commit()
+
+    # Delegated reminder: owner != assignee.
+    csrf_owner = _login(client, "owner")
+    delegated = client.post(
+        "/reminders",
+        json=_payload(assignee_user_id=str(other_hr.id)),
+        headers={"X-CSRF-Token": csrf_owner},
+    )
+    assert delegated.status_code == 201, delegated.text
+    delegated_id = delegated.json()["id"]
+
+    # Own reminder: owner == assignee.
+    own = client.post("/reminders", json=_payload(), headers={"X-CSRF-Token": csrf_owner})
+    assert own.status_code == 201
+
+    # The owner sees BOTH (one as owner, one as owner+assignee).
+    owner_list = client.get("/reminders").json()
+    assert owner_list["total"] == 2
+    assert {item["id"] for item in owner_list["items"]} == {delegated_id, own.json()["id"]}
+
+    # The assignee sees the delegated one only.
+    _login(client, "other_hr")
+    assignee_list = client.get("/reminders").json()
+    assert assignee_list["total"] == 1
+    assert assignee_list["items"][0]["id"] == delegated_id
+
+    # A bystander sees nothing and gets 404 on the direct id.
+    _login(client, "bystander")
+    assert client.get("/reminders").json()["total"] == 0
+    assert client.get(f"/reminders/{delegated_id}").status_code == 404
