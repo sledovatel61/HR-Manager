@@ -904,3 +904,60 @@ def test_telegram_test_rate_limit(limited_client: TestClient, db_session: Sessio
     assert "Retry-After" in third.headers
     rows = db_session.execute(select(NotificationOutbox)).scalars().all()
     assert len(rows) == 2
+
+
+def test_link_and_confirm_misconfigured_return_503_without_side_effects(
+    client: TestClient, db_session: Session
+) -> None:
+    """Polling-only design: with the channel unconfigured, issuing and
+    confirming fail closed (503) and persist nothing."""
+    make_user(db_session, username="hr1", role=UserRole.HR)
+    csrf = _login(client, "hr1")
+    assert (
+        client.post("/integrations/telegram/link-code", headers={"X-CSRF-Token": csrf}).status_code
+        == 503
+    )
+    response = client.post("/integrations/telegram/confirm", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 503
+    assert "Telegram-канал не настроен" in response.json()["detail"]
+    assert db_session.execute(select(TelegramLinkToken)).scalars().all() == []
+    assert db_session.execute(select(TelegramLink)).scalars().all() == []
+
+
+def test_telegram_webhook_path_does_not_exist(channel_client: TestClient) -> None:
+    """No webhook receiver exists by design (outbound polling only): the
+    path stays 404 for every method instead of half-accepting updates."""
+    assert channel_client.get("/integrations/telegram/webhook").status_code == 404
+    assert channel_client.post("/integrations/telegram/webhook", json={}).status_code == 404
+
+
+def test_confirm_foreign_token_only_is_409_token_stays_active(
+    channel_client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The inbox holds only someone else's /start: the user gets 409 with
+    guidance (not a binding, not a consume) and retries with the same code."""
+    from app.models import TelegramPollState, TelegramStartEvent
+
+    make_user(db_session, username="hr1", role=UserRole.HR)
+    csrf = _login(channel_client, "hr1")
+    channel_client.post("/integrations/telegram/link-code", headers={"X-CSRF-Token": csrf})
+
+    def fake_poll(config, *, offset):  # type: ignore[no-untyped-def]
+        return TelegramUpdatesResult(
+            ok=True,
+            updates=(TelegramStartUpdate(update_id=81, chat_id=777, token="someone-elses-token"),),
+            max_update_id=81,
+        )
+
+    monkeypatch.setattr(integrations_module, "_poll_starts_impl", fake_poll)
+    response = channel_client.post("/integrations/telegram/confirm", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 409, response.text
+    assert "не видим запуск бота" in response.json()["detail"]
+    token = db_session.execute(select(TelegramLinkToken)).scalar_one()
+    assert token.consumed_at is None
+    assert db_session.execute(select(TelegramLink)).scalars().all() == []
+    # The observed foreign event is recorded and the offset advances, so a
+    # later retry does not rescan it.
+    assert len(db_session.execute(select(TelegramStartEvent)).scalars().all()) == 1
+    state = db_session.execute(select(TelegramPollState)).scalar_one()
+    assert state.last_update_id == 81
