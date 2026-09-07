@@ -11,11 +11,14 @@ access rights before the UI navigates anywhere.
 """
 
 import logging
+import sqlite3
 from datetime import datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from psycopg import errors as pg_errors
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -35,6 +38,49 @@ from app.models import (
 from app.utils import ensure_aware, utc_now
 
 logger = logging.getLogger(__name__)
+
+
+def is_duplicate_key_error(exc: IntegrityError) -> bool:
+    """True ONLY for the unique-violation class of IntegrityError.
+
+    Deduplication must never mask other integrity failures (foreign-key
+    violations, CHECK violations, schema drift, ...): those are bugs or
+    data errors and must propagate to the caller.
+    """
+    orig = exc.orig
+    if orig is None:
+        return False
+    # PostgreSQL raises psycopg.errors.UniqueViolation for UNIQUE / partial
+    # unique indexes.
+    if isinstance(orig, pg_errors.UniqueViolation):
+        return True
+    # SQLite (isolated unit tests) reports the UNIQUE class with this text.
+    if isinstance(orig, sqlite3.IntegrityError):
+        return "UNIQUE constraint failed" in str(orig)
+    return False
+
+
+def _flush_inside_savepoint(db: Session, row: object) -> bool:
+    """Flush one row inside a SAVEPOINT.
+
+    Returns True when the flush succeeded. On a duplicate-key IntegrityError
+    the savepoint alone is rolled back (the row is added INSIDE the
+    savepoint, so SQLAlchemy expunges it on rollback) — the caller's
+    surrounding transaction stays intact (explicit contract:
+    ``schedule``/``deliver_in_app`` return None/False ONLY for a duplicate
+    key and never roll back the caller's unit of work). Any other exception
+    propagates unchanged.
+    """
+    try:
+        with db.begin_nested():
+            db.add(row)
+            db.flush()
+    except IntegrityError as exc:
+        if not is_duplicate_key_error(exc):
+            raise
+        return False
+    return True
+
 
 # Titles are Russian UI strings; they never contain names or other PII.
 _TITLES: dict[NotificationType, str] = {
@@ -107,11 +153,15 @@ def schedule(
 ) -> NotificationOutbox | None:
     """Insert one outbox row (transactional, deduplicated).
 
-    Returns the row (flushed so ``id`` is available), or ``None`` when an
-    identical idempotency key already exists (the business event was
-    processed before — no duplicate is ever created). The caller's
-    transaction is rolled back by the unique-violation handler, so callers
-    must not assume the surrounding unit of work is still usable.
+    Returns the row (flushed so ``id`` is available), or ``None`` ONLY when
+    an identical idempotency key already exists (the business event was
+    processed before — no duplicate is ever created). Explicit contract:
+
+    * a duplicate key rolls back a SAVEPOINT around this single INSERT and
+      leaves the caller's surrounding transaction fully usable;
+    * every other error (FK/CHECK violations, schema drift, connection
+      failures, ...) propagates to the caller unchanged — it is never
+      masked as a deduplication no-op.
     """
     if recipient_user_id is None and external_recipient is None:
         raise ValueError("either recipient_user_id or external_recipient is required")
@@ -138,13 +188,7 @@ def schedule(
         consent_snapshot=consent_snapshot,
         quiet_hours_bypassed=quiet_hours_bypassed,
     )
-    db.add(row)
-    try:
-        db.flush()
-    except Exception:
-        # Unique violation on idempotency_key: the same business event was
-        # scheduled before. Isolate the failed insert and report a no-op.
-        db.rollback()
+    if not _flush_inside_savepoint(db, row):
         logger.info("notification deduplicated (idempotency_key already present)")
         return None
     return row
@@ -178,7 +222,11 @@ def deliver_in_app(db: Session, outbox: NotificationOutbox, *, now: datetime | N
 
     Idempotent: the notification carries the outbox's idempotency key as
     its dedupe key (unique partial index), so a repeated delivery attempt
-    never duplicates the row. Returns True when a new row was created.
+    never duplicates the row. Returns True when a new row was created, and
+    False ONLY for that duplicate-key case (savepoint rollback, caller's
+    transaction untouched). Any other error propagates unchanged — a
+    delivery failure caused by data/schema problems is never disguised as
+    «already delivered».
     """
     now = now or utc_now()
     assert outbox.recipient_user_id is not None
@@ -195,13 +243,7 @@ def deliver_in_app(db: Session, outbox: NotificationOutbox, *, now: datetime | N
         dedupe_key=outbox.idempotency_key,
         created_at=now,
     )
-    db.add(notification)
-    try:
-        db.flush()
-        return True
-    except Exception:
-        db.rollback()
-        return False
+    return _flush_inside_savepoint(db, notification)
 
 
 def schedule_notification_row(

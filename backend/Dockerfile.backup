@@ -108,7 +108,13 @@ COPY backend/alembic ./alembic
 COPY backend/app ./app
 COPY infra/scripts/backup_scheduler.sh /usr/local/bin/backup-scheduler
 
-RUN chmod 0755 /usr/local/bin/backup-scheduler \
+# Line-ending insurance: the file is committed with LF and .gitattributes
+# forces LF at checkout, but a repository cloned on Windows BEFORE that
+# attribute may deliver CRLF — and a CRLF shebang breaks the entrypoint
+# (`env: 'bash\r': No such file or directory`). Strip any stray \r at
+# build time so the scheduler always starts.
+RUN sed -i 's/\r$//' /usr/local/bin/backup-scheduler \
+    && chmod 0755 /usr/local/bin/backup-scheduler \
     && addgroup --system app \
     && adduser --system --ingroup app --no-create-home app \
     # A named volume mounted over this path inherits its ownership on first

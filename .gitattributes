@@ -1,1 +1,18 @@
 review-artifacts/*.patch whitespace=-trailing-space,-blank-at-eof
+
+# Shell scripts and container entrypoints MUST keep LF line endings on
+# every platform: a Windows checkout with core.autocrlf=true would
+# otherwise produce CRLF and break `#!/bin/sh`/`#!/bin/bash` inside
+# containers (`env: 'bash\r': No such file or directory`, backup service
+# unhealthy). `text eol=lf` forces LF at checkout regardless of the
+# platform; the build adds a second layer of insurance (sed -i 's/\r$//'
+# in Dockerfile.backup) for repositories cloned before this attribute.
+*.sh text eol=lf
+infra/scripts/*.sh text eol=lf
+backend/Dockerfile text eol=lf
+backend/Dockerfile.backup text eol=lf
+frontend/Dockerfile text eol=lf
+infra/docker-compose.yml text eol=lf
+infra/compose.prod.yml text eol=lf
+infra/docker-compose.proxy.yml text eol=lf
+infra/nginx/default.conf.template text eol=lf

@@ -10,7 +10,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -101,8 +101,14 @@ def list_reminders(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> ReminderList:
-    """Owner or assignee view, deterministic order (due_at asc, id asc)."""
-    filters = [Reminder.assignee_user_id == user.id]
+    """Owner or assignee view, deterministic order (due_at asc, id asc).
+
+    A reminder is visible to its owner AND its assignee: the owner keeps
+    seeing a reminder they created even when it was delegated to another
+    user, and the assignee sees reminders handed to them. Everyone else
+    gets an empty page (existence never leaks).
+    """
+    filters = [or_(Reminder.assignee_user_id == user.id, Reminder.owner_user_id == user.id)]
     if status_filter is not None:
         if status_filter not in ("active", "completed", "cancelled"):
             raise HTTPException(
