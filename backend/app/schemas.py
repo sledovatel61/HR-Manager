@@ -1132,9 +1132,17 @@ class TelegramConfirmOut(BaseModel):
 
 
 class ConsentUpdate(BaseModel):
-    """Explicit opt-in/opt-out for one external channel."""
+    """Explicit opt-in/opt-out for one external channel.
+
+    Contract (fail-closed): BOTH flags are required and MUST agree.
+    Activation needs ``opt_in=true`` together with an explicit
+    ``consent_granted=true``; anything else is a 422 with no state
+    change. Deactivation (``false``/``false``) is always honored and
+    stops new sends; re-enabling needs a fresh explicit grant.
+    """
 
     opt_in: bool
+    consent_granted: bool
 
 
 class ConsentOut(BaseModel):
@@ -1142,6 +1150,7 @@ class ConsentOut(BaseModel):
 
     channel: str
     opt_in: bool
+    consent_granted: bool
     consent_at: datetime | None = None
     policy_version: str | None = None
 

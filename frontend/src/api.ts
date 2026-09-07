@@ -638,10 +638,13 @@ export async function unlinkTelegram(): Promise<TelegramChannelStatus> {
   return request<TelegramChannelStatus>("/integrations/telegram/unlink", { method: "POST" });
 }
 
-export async function updateTelegramConsent(optIn: boolean): Promise<ConsentResult> {
+export async function updateTelegramConsent(
+  optIn: boolean,
+  consentGranted: boolean,
+): Promise<ConsentResult> {
   return request<ConsentResult>("/integrations/telegram/consent", {
     method: "PUT",
-    body: { opt_in: optIn },
+    body: { opt_in: optIn, consent_granted: consentGranted },
   });
 }
 
@@ -667,10 +670,13 @@ export async function removeNotificationEmail(): Promise<void> {
   return request<void>("/integrations/email", { method: "DELETE" });
 }
 
-export async function updateEmailConsent(optIn: boolean): Promise<ConsentResult> {
+export async function updateEmailConsent(
+  optIn: boolean,
+  consentGranted: boolean,
+): Promise<ConsentResult> {
   return request<ConsentResult>("/integrations/email/consent", {
     method: "PUT",
-    body: { opt_in: optIn },
+    body: { opt_in: optIn, consent_granted: consentGranted },
   });
 }
 

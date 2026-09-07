@@ -711,6 +711,7 @@ export interface TelegramConfirmResult {
 export interface ConsentResult {
   channel: string;
   opt_in: boolean;
+  consent_granted: boolean;
   consent_at: string | null;
   policy_version: string | null;
 }

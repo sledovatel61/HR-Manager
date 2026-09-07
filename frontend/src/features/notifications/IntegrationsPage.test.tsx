@@ -173,16 +173,20 @@ describe("IntegrationsPage", () => {
     vi.mocked(api.updateTelegramConsent).mockResolvedValue({
       channel: "telegram",
       opt_in: true,
+      consent_granted: true,
       consent_at: "2026-09-07T12:00:00Z",
       policy_version: "phase9-v1",
     });
     renderPage();
 
-    await user.click(
-      await screen.findByRole("button", { name: "Получать в Telegram" }),
-    );
+    // The enable button stays disabled until the explicit consent box is checked.
+    const enable = await screen.findByRole("button", { name: "Получать в Telegram" });
+    expect(enable).toHaveProperty("disabled", true);
+    await user.click(screen.getByRole("checkbox"));
+    expect(enable).toHaveProperty("disabled", false);
+    await user.click(enable);
     await waitFor(() => {
-      expect(api.updateTelegramConsent).toHaveBeenCalledWith(true);
+      expect(api.updateTelegramConsent).toHaveBeenCalledWith(true, true);
     });
   });
 

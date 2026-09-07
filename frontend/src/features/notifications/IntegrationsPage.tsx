@@ -75,6 +75,8 @@ export function IntegrationsPage({ user }: IntegrationsPageProps) {
   const [showEmailForm, setShowEmailForm] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState(false);
   const [confirmEmailRemove, setConfirmEmailRemove] = useState(false);
+  const [tgConsentChecked, setTgConsentChecked] = useState(false);
+  const [emailConsentChecked, setEmailConsentChecked] = useState(false);
   const [adminChannels, setAdminChannels] = useState<AdminChannels | null>(null);
   const [adminBusy, setAdminBusy] = useState<string | null>(null);
   const [adminResults, setAdminResults] = useState<Record<string, ChannelCheckResult>>({});
@@ -289,12 +291,32 @@ export function IntegrationsPage({ user }: IntegrationsPageProps) {
                 ? `Уведомления в Telegram включены${telegram.consent_at ? ` (согласие от ${formatDateTime(telegram.consent_at)})` : ""}. Отключить можно в любой момент — привязка сохранится.`
                 : "Привязка есть, но уведомления выключены: сервер ничего не отправляет без вашего согласия."}
             </p>
+            {!telegram.opt_in && (
+              <label className="consent-check">
+                <input
+                  type="checkbox"
+                  checked={tgConsentChecked}
+                  onChange={(event) => setTgConsentChecked(event.target.checked)}
+                />
+                <span>
+                  Я даю согласие на получение уведомлений в Telegram на привязанный чат. Сервер
+                  начнёт отправку только после явного согласия.
+                </span>
+              </label>
+            )}
             <div className="button-row">
               <Button
                 variant={telegram.opt_in ? "secondary" : "primary"}
                 loading={busy === "tg-consent"}
+                disabled={!telegram.opt_in && !tgConsentChecked}
                 onClick={() =>
-                  void runAction("tg-consent", () => updateTelegramConsent(!telegram.opt_in))
+                  telegram.opt_in
+                    ? void runAction("tg-consent", () => updateTelegramConsent(false, false))
+                    : void runAction("tg-consent", async () => {
+                        const result = await updateTelegramConsent(true, true);
+                        setTgConsentChecked(false);
+                        return result;
+                      })
                 }
               >
                 {telegram.opt_in ? "Не получать в Telegram" : "Получать в Telegram"}
@@ -416,12 +438,32 @@ export function IntegrationsPage({ user }: IntegrationsPageProps) {
                 ? `Письма включены${email.consent_at ? ` (согласие от ${formatDateTime(email.consent_at)})` : ""}.`
                 : "Адрес подтверждён, но письма выключены: сервер ничего не отправляет без вашего согласия."}
             </p>
+            {!email.opt_in && (
+              <label className="consent-check">
+                <input
+                  type="checkbox"
+                  checked={emailConsentChecked}
+                  onChange={(event) => setEmailConsentChecked(event.target.checked)}
+                />
+                <span>
+                  Я даю согласие на получение уведомлений по email на подтверждённый адрес. Сервер
+                  начнёт отправку только после явного согласия.
+                </span>
+              </label>
+            )}
             <div className="button-row">
               <Button
                 variant={email.opt_in ? "secondary" : "primary"}
                 loading={busy === "email-consent"}
+                disabled={!email.opt_in && !emailConsentChecked}
                 onClick={() =>
-                  void runAction("email-consent", () => updateEmailConsent(!email.opt_in))
+                  email.opt_in
+                    ? void runAction("email-consent", () => updateEmailConsent(false, false))
+                    : void runAction("email-consent", async () => {
+                        const result = await updateEmailConsent(true, true);
+                        setEmailConsentChecked(false);
+                        return result;
+                      })
                 }
               >
                 {email.opt_in ? "Не получать письма" : "Получать письма"}
