@@ -344,3 +344,51 @@ def test_validate_mailbox_cases() -> None:
         validate_header_text("x\ny", field="subject", max_chars=300)
     with pytest.raises(ValueError):
         validate_header_text("   ", field="subject", max_chars=300)
+
+
+def test_warnings_carry_code_and_request_id_without_recipient(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Failure warnings carry the code/class + the outbox correlation id —
+    never the recipient, subject or body."""
+
+    class RefusingFactory(FakeFactory):
+        def plain(self, host: str, port: int, timeout: float) -> FakeSMTP:
+            client = super().plain(host, port, timeout)
+            # smtplib echoes the refused recipients in the exception value.
+            client.send_side_effect = smtplib.SMTPRecipientsRefused(
+                {"victim@example.test": (550, b"no such user")}
+            )
+            return client
+
+    with caplog.at_level(logging.WARNING, logger="app.smtp"):
+        result = send_email(
+            _config(),
+            to_address="victim@example.test",
+            subject="Секретная тема",
+            text_body="Секретное тело",
+            factory=cast(Any, RefusingFactory()),
+            request_id="req-123",
+        )
+    assert result.outcome == "perm_error"
+    assert result.error_class == "smtp_recipient_refused"
+    assert "request_id=req-123" in caplog.text
+    assert "smtp_recipient_refused" in caplog.text
+    assert "victim@example.test" not in caplog.text
+    assert "Секретная тема" not in caplog.text
+    assert "Секретное тело" not in caplog.text
+
+
+def test_rejected_message_logs_class_not_mailbox(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="app.smtp"):
+        result = send_email(
+            _config(),
+            to_address="bad\nBcc: evil@example.test",
+            subject="S",
+            text_body="B",
+            request_id="req-456",
+        )
+    assert result.outcome == "perm_error"
+    assert "code=invalid" in caplog.text
+    assert "request_id=req-456" in caplog.text
+    assert "evil@example.test" not in caplog.text

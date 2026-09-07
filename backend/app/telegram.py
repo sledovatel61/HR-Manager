@@ -248,6 +248,7 @@ def send_message(
     title: str,
     body: str | None,
     http_post: HttpPost | None = None,
+    request_id: str | None = None,
 ) -> TelegramSendResult:
     """Send one message via ``sendMessage`` (bounded, classified).
 
@@ -256,6 +257,7 @@ def send_message(
     expected conditions; never logs the token, chat id or message text.
     """
     post = http_post or _default_http_post
+    ctx = f" request_id={request_id}" if request_id else ""
     text = render_message_text(title, body)
     if not text:
         return TelegramSendResult(
@@ -265,13 +267,15 @@ def send_message(
     try:
         status, raw = post(url, {"chat_id": chat_id, "text": text}, config.timeout_s)
     except TelegramTimeoutError:
-        logger.warning("telegram sendMessage timeout")
+        logger.warning("telegram sendMessage timeout%s", ctx)
         return TelegramSendResult(outcome="temp_error", error_code="timeout", error_class=TIMEOUT)
     except TelegramNetworkError:
-        logger.warning("telegram sendMessage network error")
+        logger.warning("telegram sendMessage network error%s", ctx)
         return TelegramSendResult(outcome="temp_error", error_code="network", error_class=NETWORK)
-    except Exception:
-        logger.warning("telegram sendMessage transport failed", exc_info=True)
+    except Exception as exc:
+        # Only the exception TYPE is logged: messages and tracebacks may
+        # echo the request URL, which carries the bot token in its path.
+        logger.warning("telegram sendMessage transport failed type=%s%s", type(exc).__name__, ctx)
         return TelegramSendResult(outcome="temp_error", error_code="transport", error_class=NETWORK)
 
     payload = _parse_json_body(raw)
@@ -289,7 +293,7 @@ def send_message(
         return TelegramSendResult(outcome="accepted", provider_message_id=message_id)
 
     error_code, error_class = _classify_send_error(status, payload)
-    logger.warning("telegram sendMessage failed class=%s", error_class)
+    logger.warning("telegram sendMessage failed class=%s%s", error_class, ctx)
     if _is_temporary(error_class):
         return TelegramSendResult(
             outcome="temp_error",
@@ -345,8 +349,9 @@ def get_start_updates(
     except TelegramNetworkError:
         logger.warning("telegram getUpdates network error")
         return TelegramUpdatesResult(ok=False, error_class=NETWORK)
-    except Exception:
-        logger.warning("telegram getUpdates transport failed", exc_info=True)
+    except Exception as exc:
+        # Type only: messages/tracebacks may echo the token-bearing URL.
+        logger.warning("telegram getUpdates transport failed type=%s", type(exc).__name__)
         return TelegramUpdatesResult(ok=False, error_class=NETWORK)
 
     parsed = _parse_json_body(raw)
@@ -397,8 +402,9 @@ def check_connection(
         return TelegramCheckResult(ok=False, error_class=TIMEOUT)
     except TelegramNetworkError:
         return TelegramCheckResult(ok=False, error_class=NETWORK)
-    except Exception:
-        logger.warning("telegram getMe transport failed", exc_info=True)
+    except Exception as exc:
+        # Type only: messages/tracebacks may echo the token-bearing URL.
+        logger.warning("telegram getMe transport failed type=%s", type(exc).__name__)
         return TelegramCheckResult(ok=False, error_class=NETWORK)
     parsed = _parse_json_body(raw)
     if status == 200 and parsed is not None and parsed.get("ok") is True:

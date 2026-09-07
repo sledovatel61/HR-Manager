@@ -88,23 +88,35 @@ _send_email_impl = None
 
 
 def _send_telegram(
-    config: TelegramConfig, *, chat_id: int, title: str, body: str | None
+    config: TelegramConfig,
+    *,
+    chat_id: int,
+    title: str,
+    body: str | None,
+    request_id: str | None = None,
 ) -> TelegramSendResult:
     if _send_telegram_impl is not None:
         return _send_telegram_impl(config, chat_id=chat_id, title=title, body=body)
     from app.telegram import send_message
 
-    return send_message(config, chat_id=chat_id, title=title, body=body)
+    return send_message(config, chat_id=chat_id, title=title, body=body, request_id=request_id)
 
 
 def _send_email(
-    config: SmtpConfig, *, to_address: str, subject: str, text_body: str
+    config: SmtpConfig,
+    *,
+    to_address: str,
+    subject: str,
+    text_body: str,
+    request_id: str | None = None,
 ) -> SmtpSendResult:
     if _send_email_impl is not None:
         return _send_email_impl(config, to_address=to_address, subject=subject, text_body=text_body)
     from app.smtp import send_email
 
-    return send_email(config, to_address=to_address, subject=subject, text_body=text_body)
+    return send_email(
+        config, to_address=to_address, subject=subject, text_body=text_body, request_id=request_id
+    )
 
 
 @dataclass
@@ -293,10 +305,18 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
         )
         db.commit()
         return locked.status.value
-    except Exception:
+    except Exception as exc:
+        # An infrastructure crash (DB/ORM bug), NOT a provider verdict: it
+        # must never inherit the stale error_class of a previous attempt.
+        # Only the exception type is logged — messages may carry row data.
         db.rollback()
-        logger.warning("outbox row %s failed (attempt %s)", locked.id, locked.attempts + 1)
-        return _record_failure(db, locked, settings=settings, now=now)
+        logger.warning(
+            "outbox row %s failed (attempt %s) type=%s",
+            locked.id,
+            locked.attempts + 1,
+            type(exc).__name__,
+        )
+        return _record_failure(db, locked, settings=settings, now=now, error_class="internal_error")
 
 
 def _resolve_external_target(
@@ -551,6 +571,7 @@ def _process_external_row_locked(
                 chat_id=target.chat_id,
                 title=target.title,
                 body=target.body,
+                request_id=str(outbox_id),
             )
             if isinstance(result, TelegramSendResult):
                 retry_after_s = result.retry_after_s
@@ -561,16 +582,22 @@ def _process_external_row_locked(
                 to_address=target.email,
                 subject=target.title,
                 text_body=target.body or "",
+                request_id=str(outbox_id),
             )
         outcome = result.outcome
         provider_message_id = result.provider_message_id
         error_code = result.error_code
         error_class = result.error_class
-    except Exception:
+    except Exception as exc:
         # The adapters never raise for expected conditions; this backstop
         # converts anything unexpected into a bounded retry (never a fake
-        # accepted, never a silent drop).
-        logger.warning("external delivery transport raised unexpectedly", exc_info=True)
+        # accepted, never a silent drop). Type only: messages/tracebacks
+        # may echo recipient data.
+        logger.warning(
+            "external delivery transport raised unexpectedly type=%s request_id=%s",
+            type(exc).__name__,
+            outbox_id,
+        )
         outcome, error_code, error_class = "temp_error", "transport", "transport_error"
 
     # Phase C: atomic finalize under a fresh row lock.
@@ -684,15 +711,28 @@ def _backoff_delay_s(settings: Settings, attempt_no: int) -> float:
 
 
 def _record_failure(
-    db: Session, row: NotificationOutbox, *, settings: Settings, now: datetime
+    db: Session,
+    row: NotificationOutbox,
+    *,
+    settings: Settings,
+    now: datetime,
+    error_class: str | None = None,
 ) -> str:
-    """Bounded exponential backoff; terminal failure alerts the pilot."""
+    """Bounded exponential backoff; terminal failure alerts the pilot.
+
+    ``error_class`` overrides the stored class (clearing the stale code):
+    infrastructure crashes pass ``internal_error`` so they are never
+    misreported under a previous attempt's provider verdict.
+    """
     row = db.execute(
         select(NotificationOutbox)
         .where(NotificationOutbox.id == row.id)
         .with_for_update()
         .execution_options(populate_existing=True)
     ).scalar_one()
+    if error_class is not None:
+        row.error_class = error_class
+        row.error_code = None
     row.attempts += 1
     attempt_no = row.attempts
     row.lease_expires_at = None
