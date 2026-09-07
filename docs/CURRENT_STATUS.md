@@ -1,6 +1,9 @@
 # Текущее состояние и handoff
 
-Актуально после принятия **Phase 7 — backup, deployment и release**. Этот файл
+Актуально после **Phase 8 — фундамент уведомлений и пилотный режим**
+(реализация на ветке `arena/01a060e3-hr-manager`, PR #10; merge в `main` —
+действие владельца). Предыдущий принятый этап — **Phase 7 — backup,
+deployment и release**. Этот файл
 — первая точка входа для нового агента. Готовый текст для вставки в новый чат
 находится в `prompts/PHASE_8_START_PROMPT.md`, а полное техническое задание —
 в `prompts/PHASE_8_PROMPT.md`.
@@ -29,25 +32,38 @@
 Подробный технический отчёт и результаты проверок Phase 7:
 `docs/phase-7-report-agent2.md`.
 
-## Следующая задача: Phase 8
+## Phase 8 — выполнено, ожидает merge
 
-Реализовать **фундамент уведомлений и пилотный режим** строго по
-`prompts/PHASE_8_PROMPT.md`. Ключевой scope:
+Ветка `arena/01a060e3-hr-manager` (head см. в отчёте), PR #10. Что вошло:
 
 1. внутренний notification center и личные напоминания без моков;
-2. transactional outbox/очередь на PostgreSQL и отдельный worker;
-3. lease/retry/dedup/cancel, неизменяемая история попыток и безопасная
-   диагностика;
-4. quiet hours, timezone/DST и повторяющиеся напоминания;
-5. один явно назначенный пилотный пользователь с доказанным совмещённым
-   доступом HR/manager/admin, без отключения RBAC/CSRF/audit;
-6. простой идемпотентный bootstrap/мастер настройки и worker в Compose;
-7. API, UI, миграции, unit/PostgreSQL integration/frontend/Compose тесты и
-   отчёт Phase 8.
+2. transactional outbox на PostgreSQL + отдельный worker (SKIP LOCKED,
+   lease recovery, bounded backoff, dedup, неизменяемая история);
+3. тихие часы с пересечением полночи, DST/zoneinfo, рабочие дни,
+   исходное vs фактическое время планирования;
+4. один явно назначенный пилотный пользователь (admin + грант
+   `pilot_full_access`) с доказанным полным доступом, идемпотентный
+   мастер настройки, worker в dev/prod Compose;
+5. UI: колокольчик, центр уведомлений, напоминания, настройки,
+   админ-экран очереди, мастер первой настройки (всё на русском);
+6. миграции `0007`/`0008`, unit + PostgreSQL integration + frontend +
+   Compose overlay тесты, отчёт `docs/phase-8-report-agent2.md`.
 
-Не подключать в Phase 8 фиктивные SMTP/Telegram-отправки, Redis/RabbitMQ,
-сообщения кандидатам, универсальный rule engine или новые микросервисы. Эти
-функции зарезервированы за этапами 9–11.
+Не подключались (зарезервированы за этапами 9–11): фиктивные
+SMTP/Telegram-отправки, Redis/RabbitMQ, сообщения кандидатам,
+универсальный rule engine, новые микросервисы. Каналы `email`/`telegram`
+в outbox-контракте зарезервированы и честно помечаются `skipped`.
+
+## Известная проблема CI (переносится владельцем)
+
+В перенесённом владельцем `ci.yml` (коммит `784f388`) шаг
+`Validate HTTPS proxy overlay configuration` рендерит production-оверлей
+без обязательных `${SECRET_KEY:?}`/`${POSTGRES_PASSWORD:?}`/
+`${BOOTSTRAP_ADMIN_PASSWORD:?}` — шаг падает на любом PR (впервые
+зафиксировано на PR #10, run 34089737761; остальные шаги stack-job
+зелёные). Исправление — `review-artifacts/ci.agent-2.phase8.yml/.patch`
++ инструкция переноса в `review-artifacts/README.md`. Семантика
+`?`-охран `compose.prod.yml` намеренно не ослабляется.
 
 ## Как начать в новом чате
 
