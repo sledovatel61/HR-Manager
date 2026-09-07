@@ -1,59 +1,42 @@
-# --- Секреты и локальные env-файлы ---
+# ---- Secrets and environment ----
 .env
 .env.*
 !.env.example
-*.pem
-*.key
-*.p12
-*.jks
-secrets/
+!.env.agent-2.yml
 
-# --- Python ---
+# ---- Python / backend ----
 __pycache__/
 *.py[cod]
-*.egg-info/
-.eggs/
-build/
-dist/
 .venv/
 venv/
 .pytest_cache/
-.ruff_cache/
 .mypy_cache/
+.ruff_cache/
 .coverage
-.coverage.*
 htmlcov/
-.tox/
-.nox/
+*.egg-info/
 
-# --- Node / frontend ---
+# ---- Node / frontend ----
 node_modules/
-frontend/dist/
-frontend/.vite/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
+dist/
+build/
+*.local
 
-# --- Базы данных и backup ---
-*.db
-*.sqlite
+# ---- Databases, backups and dumps ----
 *.sqlite3
-backups/
+*.sqlite
+*.db
 *.dump
 *.sql.gz
-*.backup
-*.dmp
+backups/
+dumps/
 
-# --- Логи ---
-logs/
+# ---- Logs ----
 *.log
-*.pid
-*.seed
+logs/
 
-# --- IDE / ОС ---
+# ---- Editor and OS noise ----
 .idea/
 .vscode/
-*.swp
 .DS_Store
 Thumbs.db

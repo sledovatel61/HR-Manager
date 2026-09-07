@@ -1,7 +1,6 @@
-node_modules
-dist
-coverage
-.git
-.gitignore
-*.log
+node_modules/
+dist/
 .env
+.env.local
+*.log
+coverage/

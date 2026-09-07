@@ -1,0 +1,336 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif;
+  line-height: 1.5;
+  color: #1f2430;
+  background-color: #f4f6fa;
+}
+
+body {
+  margin: 0;
+}
+
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 20px 48px;
+}
+
+.header h1 {
+  margin: 0 0 4px;
+  font-size: 1.8rem;
+  letter-spacing: 0.2px;
+}
+
+.header p {
+  margin: 0 0 24px;
+  color: #5a6478;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #e2e6ee;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(20, 30, 60, 0.06);
+}
+
+.status-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-radius: 10px;
+  padding: 18px 20px;
+  border: 1px solid transparent;
+}
+
+.status-card.good {
+  background: #ecf7ef;
+  border-color: #bde5c9;
+}
+
+.status-card.bad {
+  background: #fdeeee;
+  border-color: #f2c3c3;
+}
+
+.status-card.neutral {
+  background: #f0f3f9;
+  border-color: #d9dfeb;
+}
+
+.status-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.good .status-dot {
+  background: #22a05d;
+}
+
+.bad .status-dot {
+  background: #d64545;
+}
+
+.neutral .status-dot {
+  background: #8a94a8;
+}
+
+.status-title {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.status-detail {
+  margin: 2px 0 0;
+  color: #5a6478;
+  font-size: 0.92rem;
+}
+
+.details {
+  margin-top: 24px;
+}
+
+.details h3 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  color: #39414f;
+}
+
+.detail-list {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+
+.detail-row dt {
+  color: #5a6478;
+}
+
+.detail-row dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.good {
+  color: #1c7a46;
+}
+
+.bad {
+  color: #b33232;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #f6e3b4;
+  color: #7a5b10;
+  font-size: 0.78rem;
+  font-weight: 700;
+  vertical-align: 1px;
+}
+
+.footer {
+  margin-top: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.refresh-button {
+  padding: 8px 18px;
+  border: 1px solid #c9d2e0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2430;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background: #f0f3f9;
+}
+
+.refresh-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.last-updated {
+  color: #8a94a8;
+  font-size: 0.85rem;
+}
+
+/* --- Auth phase (login form, dashboard) --- */
+
+.auth-panel {
+  max-width: 420px;
+}
+
+.panel-title {
+  margin: 0 0 4px;
+  font-size: 1.25rem;
+}
+
+.panel-subtitle {
+  margin: 0 0 18px;
+  color: #5a6478;
+  font-size: 0.92rem;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.form-field {
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #39414f;
+}
+
+.form-field input {
+  padding: 10px 12px;
+  border: 1px solid #c9d2e0;
+  border-radius: 8px;
+  font-size: 0.98rem;
+  font-weight: 400;
+  color: #1f2430;
+  background: #ffffff;
+}
+
+.form-field input:focus {
+  outline: 2px solid #3a6ea5;
+  outline-offset: 1px;
+  border-color: #3a6ea5;
+}
+
+.form-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fdeeee;
+  border: 1px solid #f2c3c3;
+  color: #b33232;
+  font-size: 0.9rem;
+}
+
+.primary-button {
+  padding: 11px 20px;
+  border: none;
+  border-radius: 8px;
+  background: #2f6db3;
+  color: #ffffff;
+  font-size: 0.98rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: #275d99;
+}
+
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.secondary-button {
+  padding: 9px 18px;
+  border: 1px solid #c9d2e0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2430;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.secondary-button:hover:not(:disabled) {
+  background: #f0f3f9;
+}
+
+.secondary-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.dashboard-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.admin-section {
+  margin-top: 28px;
+}
+
+.section-title {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  color: #39414f;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e6eaf2;
+}
+
+.data-table th {
+  color: #5a6478;
+  font-weight: 700;
+}
+
+.muted {
+  color: #8a94a8;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  border: 0;
+}
+
+/* Full-viewport wrapper for the session-check state (post-login layout lives
+   in the app-shell). */
+.auth-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-canvas);
+}

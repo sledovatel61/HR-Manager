@@ -1,4 +1,4 @@
-# --- Этап 1: сборочный образ backend -------------------------------------
+# HR Manager backend image: application code only, runs migrations then uvicorn.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -8,16 +8,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Пакет ставится в editable-режиме: bind-mount ./backend/src поверх
-# делает правки кода видимыми в контейнере без пересборки (dev-поток).
-COPY pyproject.toml ./
-COPY src ./src
-COPY alembic ./alembic
-COPY alembic.ini ./
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install --upgrade pip \
- && pip install -e ".[dev]"
+COPY alembic.ini ./
+COPY alembic ./alembic
+COPY app ./app
+
+RUN addgroup --system app && adduser --system --ingroup app --no-create-home app
+USER app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "hr_manager.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Dev/staging convenience: bring the schema up to date, then serve.
+# Production release process (separate migration job, rollback) arrives with
+# the deployment phase; see docs/ARCHITECTURE.md.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
