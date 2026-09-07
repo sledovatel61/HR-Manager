@@ -50,6 +50,7 @@ from app.models import (
     UserRole,
 )
 from app.notification_service import (
+    has_channel_consent,
     is_duplicate_key_error,
     schedule_channel_test,
     schedule_verification_email,
@@ -308,18 +309,32 @@ def _set_consent(
     user: User,
     channel: DeliveryChannel,
     opt_in: bool,
+    consent_granted: bool,
     now: datetime,
 ) -> ConsentOut:
     from app.config import CONSENT_POLICY_VERSION
 
+    # Fail-closed contract: the flags must agree, and activation needs an
+    # explicit grant. A missing/contradictory grant is a 422 with NO state
+    # change (no silent activation, ever).
+    if opt_in != consent_granted:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Для включения канала нужны opt_in=true и явное consent_granted=true; "
+                "для выключения — оба false."
+            ),
+        )
     row = _preference_or_defaults(db, user.id)
     if channel == DeliveryChannel.TELEGRAM:
         row.telegram_opt_in = opt_in
+        row.telegram_consent_granted = consent_granted
         row.telegram_consent_at = now
         row.telegram_consent_source = "web-ui"
         row.telegram_consent_policy_version = CONSENT_POLICY_VERSION
     else:
         row.email_opt_in = opt_in
+        row.email_consent_granted = consent_granted
         row.email_consent_at = now
         row.email_consent_source = "web-ui"
         row.email_consent_policy_version = CONSENT_POLICY_VERSION
@@ -348,6 +363,7 @@ def _set_consent(
     return ConsentOut(
         channel=channel.value,
         opt_in=opt_in,
+        consent_granted=consent_granted,
         consent_at=now,
         policy_version=CONSENT_POLICY_VERSION,
     )
@@ -370,8 +386,8 @@ def integration_status(
     link = db.get(TelegramLink, user.id)
     address = db.get(UserEmail, user.id)
     preference = db.get(NotificationPreference, user.id)
-    telegram_opt_in = bool(preference is not None and preference.telegram_opt_in)
-    email_opt_in = bool(preference is not None and preference.email_opt_in)
+    telegram_opt_in = has_channel_consent(preference, DeliveryChannel.TELEGRAM)
+    email_opt_in = has_channel_consent(preference, DeliveryChannel.EMAIL)
     pending_link = _active_link_token(db, user.id, now) is not None
     return IntegrationStatusOut(
         telegram=TelegramStatusOut(
@@ -618,7 +634,7 @@ def confirm_link(
     )
     db.commit()
     preference = db.get(NotificationPreference, user.id)
-    opt_in = bool(preference is not None and preference.telegram_opt_in)
+    opt_in = has_channel_consent(preference, DeliveryChannel.TELEGRAM)
     return TelegramConfirmOut(
         linked=True,
         state=_telegram_state(configured=True, link=link, pending=False, opt_in=opt_in, now=now),
@@ -645,7 +661,7 @@ def unlink_telegram(
         db.commit()
         db.refresh(link)
     preference = db.get(NotificationPreference, user.id)
-    opt_in = bool(preference is not None and preference.telegram_opt_in)
+    opt_in = has_channel_consent(preference, DeliveryChannel.TELEGRAM)
     configured = _telegram_config(settings).is_configured
     return TelegramStatusOut(
         state=_telegram_state(
@@ -673,7 +689,12 @@ def telegram_consent(
     """Explicit opt-in/opt-out for Telegram delivery (audited)."""
     del request
     return _set_consent(
-        db, user=user, channel=DeliveryChannel.TELEGRAM, opt_in=payload.opt_in, now=utc_now()
+        db,
+        user=user,
+        channel=DeliveryChannel.TELEGRAM,
+        opt_in=payload.opt_in,
+        consent_granted=payload.consent_granted,
+        now=utc_now(),
     )
 
 
@@ -878,7 +899,12 @@ def email_consent(
     """Explicit opt-in/opt-out for email delivery (audited)."""
     del request
     return _set_consent(
-        db, user=user, channel=DeliveryChannel.EMAIL, opt_in=payload.opt_in, now=utc_now()
+        db,
+        user=user,
+        channel=DeliveryChannel.EMAIL,
+        opt_in=payload.opt_in,
+        consent_granted=payload.consent_granted,
+        now=utc_now(),
     )
 
 

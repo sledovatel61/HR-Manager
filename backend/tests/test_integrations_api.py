@@ -328,25 +328,121 @@ def test_telegram_consent_opt_in_and_out(channel_client: TestClient, db_session:
     user = make_user(db_session, username="hr1", role=UserRole.HR)
     csrf = _login(channel_client, "hr1")
     response = channel_client.put(
-        "/integrations/telegram/consent", json={"opt_in": True}, headers={"X-CSRF-Token": csrf}
+        "/integrations/telegram/consent",
+        json={"opt_in": True, "consent_granted": True},
+        headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 200
     assert response.json()["opt_in"] is True
+    assert response.json()["consent_granted"] is True
     assert response.json()["policy_version"] == "phase9-v1"
     preference = db_session.get(NotificationPreference, user.id)
     assert preference is not None and preference.telegram_opt_in is True
+    assert preference.telegram_consent_granted is True
     assert preference.telegram_consent_source == "web-ui"
+    assert preference.telegram_consent_at is not None
     assert "telegram" in preference.enabled_channels
 
     response = channel_client.put(
-        "/integrations/telegram/consent", json={"opt_in": False}, headers={"X-CSRF-Token": csrf}
+        "/integrations/telegram/consent",
+        json={"opt_in": False, "consent_granted": False},
+        headers={"X-CSRF-Token": csrf},
     )
     assert response.json()["opt_in"] is False
     db_session.refresh(preference)
     assert preference.telegram_opt_in is False
+    assert preference.telegram_consent_granted is False
     assert "telegram" not in preference.enabled_channels
     events = db_session.execute(select(AuditEvent)).scalars().all()
     assert sum(1 for e in events if e.action == AuditAction.TELEGRAM_CONSENT_UPDATED) == 2
+
+
+@pytest.mark.parametrize("channel", ["telegram", "email"])
+def test_consent_contract_rejects_missing_or_contradictory_grant(
+    channel_client: TestClient, db_session: Session, channel: str
+) -> None:
+    """Fail-closed consent: activation needs opt_in=true AND an explicit
+    consent_granted=true; anything else is a 422 with no state change."""
+    user = make_user(db_session, username="hr1", role=UserRole.HR)
+    csrf = _login(channel_client, "hr1")
+    url = f"/integrations/{channel}/consent"
+
+    # Missing grant field: pydantic 422, nothing stored.
+    assert (
+        channel_client.put(url, json={"opt_in": True}, headers={"X-CSRF-Token": csrf}).status_code
+        == 422
+    )
+    # Contradictory grant: explicit 422, nothing stored.
+    response = channel_client.put(
+        url, json={"opt_in": True, "consent_granted": False}, headers={"X-CSRF-Token": csrf}
+    )
+    assert response.status_code == 422
+    assert "consent_granted" in response.json()["detail"]
+    preference = db_session.get(NotificationPreference, user.id)
+    assert preference is None or getattr(preference, f"{channel}_opt_in") is not True
+    # No consent audit for rejected attempts.
+    events = db_session.execute(select(AuditEvent)).scalars().all()
+    assert not [e for e in events if e.action.value.endswith("consent_updated")]
+
+    # A bare opt_in=true row without the grant (legacy/inconsistent state)
+    # must NOT report the channel as active.
+    row = preference or NotificationPreference(
+        user_id=user.id,
+        timezone="Europe/Moscow",
+        quiet_hours_start="21:00",
+        quiet_hours_end="08:00",
+        workdays=[1, 2, 3, 4, 5],
+        enabled_types=["system_alert"],
+        enabled_channels=["in_app", channel],
+    )
+    if preference is None:
+        db_session.add(row)
+    setattr(row, f"{channel}_opt_in", True)
+    setattr(row, f"{channel}_consent_granted", False)
+    db_session.commit()
+    status = channel_client.get("/integrations/status").json()[channel]
+    assert status["opt_in"] is False
+
+
+@pytest.mark.parametrize("channel", ["telegram", "email"])
+def test_consent_opt_out_and_reenable(
+    channel_client: TestClient, db_session: Session, channel: str
+) -> None:
+    """Opt-out always revokes (even the grant); re-enabling needs a fresh
+    explicit grant — a revoke never sends and never self-heals."""
+    user = make_user(db_session, username="hr1", role=UserRole.HR)
+    csrf = _login(channel_client, "hr1")
+    url = f"/integrations/{channel}/consent"
+
+    granted = channel_client.put(
+        url, json={"opt_in": True, "consent_granted": True}, headers={"X-CSRF-Token": csrf}
+    )
+    assert granted.status_code == 200
+    revoked = channel_client.put(
+        url, json={"opt_in": False, "consent_granted": False}, headers={"X-CSRF-Token": csrf}
+    )
+    assert revoked.status_code == 200
+    preference = db_session.get(NotificationPreference, user.id)
+    assert preference is not None
+    assert getattr(preference, f"{channel}_opt_in") is False
+    assert getattr(preference, f"{channel}_consent_granted") is False
+    assert getattr(preference, f"{channel}_consent_at") is not None
+    assert getattr(preference, f"{channel}_consent_policy_version") == "phase9-v1"
+    assert channel not in (preference.enabled_channels or [])
+    assert channel_client.get("/integrations/status").json()[channel]["opt_in"] is False
+
+    # Re-enable requires the full explicit pair again.
+    assert (
+        channel_client.put(
+            url, json={"opt_in": True, "consent_granted": False}, headers={"X-CSRF-Token": csrf}
+        ).status_code
+        == 422
+    )
+    again = channel_client.put(
+        url, json={"opt_in": True, "consent_granted": True}, headers={"X-CSRF-Token": csrf}
+    )
+    assert again.status_code == 200
+    assert channel_client.get("/integrations/status").json()[channel]["opt_in"] is True
 
 
 def test_telegram_test_requires_link_then_queues(
@@ -504,7 +600,9 @@ def test_email_remove_and_consent(
         "/integrations/email/confirm", json={"token": raw}, headers={"X-CSRF-Token": csrf}
     )
     consent = channel_client.put(
-        "/integrations/email/consent", json={"opt_in": True}, headers={"X-CSRF-Token": csrf}
+        "/integrations/email/consent",
+        json={"opt_in": True, "consent_granted": True},
+        headers={"X-CSRF-Token": csrf},
     )
     assert consent.json()["opt_in"] is True
     assert channel_client.get("/integrations/status").json()["email"]["state"] == "works"

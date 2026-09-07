@@ -480,6 +480,7 @@ def test_fan_out_creates_external_rows_only_with_consent(
     preference = db_session.get(NotificationPreference, user.id)
     assert preference is not None
     preference.email_opt_in = True
+    preference.email_consent_granted = True
     db_session.commit()
     rows = schedule_fan_out(
         db_session,
@@ -506,3 +507,92 @@ def test_fan_out_creates_external_rows_only_with_consent(
         settings=_settings(),
     )
     assert all(r is None for r in again)
+
+
+def test_opt_in_without_explicit_grant_skips_without_network(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail-closed consent: opt_in=true alone (grant missing/false) never
+    activates — not even with the channel listed in enabled_channels."""
+
+    def fake_send(*args: object, **kwargs: object) -> object:
+        raise AssertionError("sender must not be called without a complete grant")
+
+    monkeypatch.setattr(worker_module, "_send_telegram_impl", fake_send)
+    monkeypatch.setattr(worker_module, "_send_email_impl", fake_send)
+
+    user = _user_with_telegram(db_session, "tg-halfgrant")
+    preference = db_session.get(NotificationPreference, user.id)
+    assert preference is not None
+    preference.telegram_opt_in = True
+    preference.telegram_consent_granted = False
+    preference.enabled_channels = ["in_app", "telegram", "email"]
+    db_session.commit()
+    row = _claimed(db_session, user, DeliveryChannel.TELEGRAM)
+    assert process_external_row(db_session, row.id, settings=_settings(), now=NOW) == "skipped"
+    db_session.refresh(row)
+    assert row.error_class == "consent_missing"
+
+    mail_user = _user_with_email(db_session, "em-halfgrant")
+    mail_preference = db_session.get(NotificationPreference, mail_user.id)
+    assert mail_preference is not None
+    mail_preference.email_opt_in = True
+    mail_preference.email_consent_granted = False
+    db_session.commit()
+    mail_row = _claimed(db_session, mail_user, DeliveryChannel.EMAIL)
+    assert process_external_row(db_session, mail_row.id, settings=_settings(), now=NOW) == "skipped"
+    db_session.refresh(mail_row)
+    assert mail_row.error_class == "consent_missing"
+
+
+def test_opt_out_after_queue_stops_delivery_no_resend(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A revoke between queueing and sending stops the send: the worker
+    re-validates consent at send time, so opt-out never resends."""
+
+    def fake_send(*args: object, **kwargs: object) -> object:
+        raise AssertionError("sender must not be called after opt-out")
+
+    monkeypatch.setattr(worker_module, "_send_telegram_impl", fake_send)
+    user = _user_with_telegram(db_session, "tg-optout")
+    row = _claimed(db_session, user, DeliveryChannel.TELEGRAM)
+    preference = db_session.get(NotificationPreference, user.id)
+    assert preference is not None
+    preference.telegram_opt_in = False
+    preference.telegram_consent_granted = False
+    db_session.commit()
+    assert process_external_row(db_session, row.id, settings=_settings(), now=NOW) == "skipped"
+    db_session.refresh(row)
+    assert row.error_class == "consent_missing"
+    assert _attempts(db_session, row)[0].outcome.value == "skipped"
+
+
+def test_fan_out_ignores_enabled_channels_without_grant(db_session: Session) -> None:
+    """Scheduling consults the explicit grant, never enabled_channels alone."""
+    user = make_user(db_session, username="fanout-channels", role=UserRole.HR)
+    db_session.add(TelegramLink(user_id=user.id, chat_id=777001, linked_at=NOW))
+    db_session.add(
+        NotificationPreference(
+            user_id=user.id,
+            timezone="Europe/Moscow",
+            quiet_hours_start="21:00",
+            quiet_hours_end="08:00",
+            workdays=[1, 2, 3, 4, 5],
+            enabled_types=["system_alert"],
+            enabled_channels=["in_app", "telegram"],
+            telegram_opt_in=True,
+            telegram_consent_granted=False,
+        )
+    )
+    db_session.commit()
+    rows = schedule_fan_out(
+        db_session,
+        type_=NotificationType.SYSTEM_ALERT,
+        recipient_user_id=user.id,
+        dedupe_key="fanout:no-grant",
+        scheduled_at=NOW,
+        settings=_settings(),
+    )
+    assert len(rows) == 1  # in-app only
+    assert rows[0] is not None and rows[0].channel == DeliveryChannel.IN_APP

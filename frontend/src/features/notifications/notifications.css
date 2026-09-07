@@ -360,3 +360,23 @@
   gap: 4px;
   max-width: 420px;
 }
+
+.consent-check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(147, 163, 189, 0.06);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.consent-check input {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
