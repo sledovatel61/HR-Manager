@@ -574,6 +574,7 @@ export interface DeliveryAttempt {
   outcome: string;
   error_code: string | null;
   error_class: string | null;
+  provider_message_id?: string | null;
 }
 
 export interface DeliveryInfo {
@@ -584,12 +585,15 @@ export interface DeliveryInfo {
   scheduled_at: string | null;
   scheduled_at_effective: string | null;
   queued_at: string;
+  accepted_at?: string | null;
   delivered_at: string | null;
   failed_at: string | null;
   cancelled_at: string | null;
   attempts: number;
   next_attempt_at: string | null;
   error_class: string | null;
+  error_code?: string | null;
+  provider_message_id?: string | null;
   attempts_history: DeliveryAttempt[];
 }
 
@@ -634,6 +638,102 @@ export interface NotificationPreferences {
   enabled_types: string[];
   enabled_channels: string[];
   initialized: boolean;
+  telegram_chat_id?: number | null;
+  telegram_username?: string | null;
+  telegram_linked_at?: string | null;
+  telegram_opt_in?: boolean;
+  telegram_consent_at?: string | null;
+  telegram_consent_source?: string | null;
+  telegram_consent_policy_version?: string | null;
+  email_address?: string | null;
+  email_opt_in?: boolean;
+  email_consent_at?: string | null;
+  email_consent_source?: string | null;
+  email_consent_policy_version?: string | null;
+  channel_health?: Record<string, unknown> | null;
+  telegram_bot_username?: string | null;
+}
+
+export interface NotificationPreferencesUpdate {
+  timezone: string;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  workdays: number[];
+  enabled_types: string[];
+  enabled_channels: string[];
+  email_address?: string | null;
+  email_opt_in?: boolean;
+  email_consent_granted?: boolean;
+  telegram_opt_in?: boolean;
+  telegram_consent_granted?: boolean;
+}
+
+export interface IntegrationChannelStatus {
+  status: "working" | "pending_confirmation" | "revoked" | "not_configured" | string;
+  configured_in_system: boolean;
+  linked: boolean;
+  opt_in: boolean;
+  has_consent: boolean;
+  details?: {
+    bot_username?: string | null;
+    username?: string | null;
+    linked_at?: string | null;
+    chat_id_masked?: string | null;
+    address?: string | null;
+    consent_at?: string | null;
+    type?: string | null;
+  } | null;
+}
+
+export interface IntegrationStatusResponse {
+  telegram: IntegrationChannelStatus;
+  email: IntegrationChannelStatus;
+  in_app: IntegrationChannelStatus;
+}
+
+export interface TelegramLinkInitiateOut {
+  token: string;
+  bot_username: string | null;
+  deep_link: string | null;
+  expires_at: string;
+}
+
+export interface TelegramLinkConfirmRequest {
+  token: string;
+  chat_id: number;
+  username?: string | null;
+}
+
+export interface AdminTelegramTestConnectionOut {
+  ok: boolean;
+  bot_id?: number | null;
+  bot_username?: string | null;
+  first_name?: string | null;
+  error?: string | null;
+}
+
+export interface AdminSmtpTestConnectionOut {
+  ok: boolean;
+  host: string;
+  port: number;
+  use_tls: boolean;
+  use_starttls: boolean;
+  authenticated: boolean;
+  error?: string | null;
+}
+
+export interface AdminTestSendRequest {
+  channel: "telegram" | "email";
+  recipient?: string | null;
+  subject?: string | null;
+  body?: string | null;
+}
+
+export interface AdminTestSendOut {
+  ok: boolean;
+  channel: string;
+  provider_message_id?: string | null;
+  message: string;
 }
 
 export interface QueueDiagnostics {

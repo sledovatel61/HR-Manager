@@ -1,4 +1,11 @@
-import { forwardRef, useId, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import {
+  forwardRef,
+  useId,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
+} from "react";
 import "./field.css";
 
 interface FieldProps {
@@ -50,6 +57,21 @@ export const TextInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLIn
     );
   },
 );
+
+export const TextAreaInput = forwardRef<
+  HTMLTextAreaElement,
+  TextareaHTMLAttributes<HTMLTextAreaElement> & { invalid?: boolean; rows?: number }
+>(function TextAreaInput({ className, invalid, rows = 3, ...rest }, ref) {
+  return (
+    <textarea
+      ref={ref}
+      rows={rows}
+      className={["text-input", invalid ? "is-invalid" : "", className].filter(Boolean).join(" ")}
+      aria-invalid={invalid || undefined}
+      {...rest}
+    />
+  );
+});
 
 export const SelectInput = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function SelectInput(
   { className, children, ...rest },

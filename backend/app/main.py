@@ -27,6 +27,7 @@ from app.routers import (
     candidates,
     events,
     health,
+    integrations,
     notifications,
     ops,
     preferences,
@@ -124,6 +125,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(reminders.router)
     app.include_router(preferences.router)
     app.include_router(setup.router)
+    app.include_router(integrations.router)
     return app
 
 

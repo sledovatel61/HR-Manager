@@ -194,6 +194,29 @@ class Settings(BaseSettings):
     )
     worker_stale_after_s: float = Field(default=45.0, validation_alias="WORKER_STALE_AFTER_S")
 
+    # Phase 9: Telegram Bot API integration contour.
+    telegram_bot_token: str = Field(default="", validation_alias="TELEGRAM_BOT_TOKEN")
+    telegram_bot_username: str = Field(default="", validation_alias="TELEGRAM_BOT_USERNAME")
+    telegram_api_base_url: str = Field(
+        default="https://api.telegram.org", validation_alias="TELEGRAM_API_BASE_URL"
+    )
+    telegram_timeout_seconds: float = Field(
+        default=10.0, validation_alias="TELEGRAM_TIMEOUT_SECONDS"
+    )
+    telegram_link_ttl_minutes: int = Field(default=15, validation_alias="TELEGRAM_LINK_TTL_MINUTES")
+    telegram_webhook_secret: str = Field(default="", validation_alias="TELEGRAM_WEBHOOK_SECRET")
+
+    # Phase 9: Universal SMTP integration contour.
+    smtp_host: str = Field(default="", validation_alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, validation_alias="SMTP_PORT")
+    smtp_username: str = Field(default="", validation_alias="SMTP_USERNAME")
+    smtp_password: str = Field(default="", validation_alias="SMTP_PASSWORD")
+    smtp_use_tls: bool = Field(default=False, validation_alias="SMTP_USE_TLS")
+    smtp_use_starttls: bool = Field(default=True, validation_alias="SMTP_USE_STARTTLS")
+    smtp_from_email: str = Field(default="", validation_alias="SMTP_FROM_EMAIL")
+    smtp_from_name: str = Field(default="HR Manager", validation_alias="SMTP_FROM_NAME")
+    smtp_timeout_seconds: float = Field(default=10.0, validation_alias="SMTP_TIMEOUT_SECONDS")
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
@@ -302,6 +325,16 @@ class Settings(BaseSettings):
             problems.append("WORKER_MAX_ATTEMPTS must be at least 1")
         if self.worker_batch_size < 1:
             problems.append("WORKER_BATCH_SIZE must be at least 1")
+
+        # Phase 9: external integrations validation guards.
+        if self.telegram_timeout_seconds <= 0:
+            problems.append("TELEGRAM_TIMEOUT_SECONDS must be greater than 0")
+        if self.telegram_link_ttl_minutes < 1:
+            problems.append("TELEGRAM_LINK_TTL_MINUTES must be at least 1")
+        if not (1 <= self.smtp_port <= 65535):
+            problems.append("SMTP_PORT must be between 1 and 65535")
+        if self.smtp_timeout_seconds <= 0:
+            problems.append("SMTP_TIMEOUT_SECONDS must be greater than 0")
 
         if problems:
             raise ValueError(

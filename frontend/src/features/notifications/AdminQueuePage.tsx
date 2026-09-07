@@ -1,31 +1,42 @@
-/** Admin: notification queue diagnostics + pilot setup.
-
+/** Admin: notification queue diagnostics, pilot setup, and integration channel probes (Phase 9).
+ *
  * Diagnostics are counters and statuses only (the backend never returns
  * PII here). The pilot block creates the single pilot account with an
- * explicit full-access grant — idempotent, audited, never resets an
- * existing password. Channel status is honest: Telegram/email are
- * «not_configured» until phase 9.
+ * explicit full-access grant. Admin probes test Telegram and SMTP
+ * configurations and test message dispatch without leaking tokens or passwords.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  adminTestSend,
+  adminTestSmtpConnection,
+  adminTestTelegramConnection,
   createPilot,
+  fetchIntegrationsStatus,
   fetchQueueDiagnostics,
   fetchSetupState,
   listAccessGrants,
   revokePilotAccess,
 } from "../../api";
 import { Button } from "../../design-system/components/Button";
-import { Field, TextInput } from "../../design-system/components/Field";
+import { Field, SelectInput, TextAreaInput, TextInput } from "../../design-system/components/Field";
 import { ErrorState, SkeletonRows } from "../../design-system/components/StateViews";
 import { useToast } from "../../design-system/components/ToastContext";
-import type { AccessGrant, QueueDiagnostics, SetupState } from "../../types";
+import type {
+  AccessGrant,
+  AdminSmtpTestConnectionOut,
+  AdminTelegramTestConnectionOut,
+  AdminTestSendOut,
+  IntegrationStatusResponse,
+  QueueDiagnostics,
+  SetupState,
+} from "../../types";
 import "./notifications.css";
 
 const STATUS_LABELS: Record<string, string> = {
   queued: "В очереди",
   sending: "Отправляется",
-  accepted: "Принято",
+  accepted: "Принято провайдером",
   delivered: "Доставлено",
   failed: "Ошибка",
   cancelled: "Отменено",
@@ -41,31 +52,55 @@ function workerPill(worker: QueueDiagnostics["worker"]) {
       </span>
     );
   }
-  return <span className="status-pill warn">требуется действие: worker не запущен или не отвечает</span>;
+  return (
+    <span className="status-pill warn">
+      требуется действие: worker не запущен или не отвечает
+    </span>
+  );
 }
 
 export function AdminQueuePage() {
   const { pushToast } = useToast();
   const [diagnostics, setDiagnostics] = useState<QueueDiagnostics | null>(null);
   const [setup, setSetup] = useState<SetupState | null>(null);
+  const [integrationsStatus, setIntegrationsStatus] = useState<IntegrationStatusResponse | null>(null);
   const [grants, setGrants] = useState<AccessGrant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+
+  // Pilot form
   const [pilotForm, setPilotForm] = useState({ username: "", password: "", full_name: "" });
   const [savingPilot, setSavingPilot] = useState(false);
+
+  // Probe testing state
+  const [testingTelegram, setTestingTelegram] = useState(false);
+  const [telegramProbeResult, setTelegramProbeResult] = useState<AdminTelegramTestConnectionOut | null>(null);
+
+  const [testingSmtp, setTestingSmtp] = useState(false);
+  const [smtpProbeResult, setSmtpProbeResult] = useState<AdminSmtpTestConnectionOut | null>(null);
+
+  // Test send state
+  const [testSendChannel, setTestSendChannel] = useState<"telegram" | "email">("telegram");
+  const [testSendRecipient, setTestSendRecipient] = useState("");
+  const [testSendSubject, setTestSendSubject] = useState("");
+  const [testSendBody, setTestSendBody] = useState("");
+  const [sendingTest, setSendingTest] = useState(false);
+  const [testSendResult, setTestSendResult] = useState<AdminTestSendOut | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(false);
     try {
-      const [diag, state, grantList] = await Promise.all([
+      const [diag, state, grantList, integ] = await Promise.all([
         fetchQueueDiagnostics(),
         fetchSetupState(),
         listAccessGrants(),
+        fetchIntegrationsStatus(),
       ]);
       setDiagnostics(diag);
       setSetup(state);
       setGrants(grantList.items);
+      setIntegrationsStatus(integ);
     } catch {
       setError(true);
     } finally {
@@ -76,6 +111,61 @@ export function AdminQueuePage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const handleTestTelegram = useCallback(async () => {
+    setTestingTelegram(true);
+    setTelegramProbeResult(null);
+    try {
+      const res = await adminTestTelegramConnection();
+      setTelegramProbeResult(res);
+      if (res.ok) {
+        pushToast("success", `Бот доступен: @${res.bot_username}`);
+      } else {
+        pushToast("danger", res.error ?? "Ошибка соединения с Telegram Bot API.");
+      }
+    } catch (caught) {
+      pushToast("danger", caught instanceof Error ? caught.message : "Ошибка проверки Telegram.");
+    } finally {
+      setTestingTelegram(false);
+    }
+  }, [pushToast]);
+
+  const handleTestSmtp = useCallback(async () => {
+    setTestingSmtp(true);
+    setSmtpProbeResult(null);
+    try {
+      const res = await adminTestSmtpConnection();
+      setSmtpProbeResult(res);
+      if (res.ok) {
+        pushToast("success", `SMTP сервер доступен: ${res.host}:${res.port}`);
+      } else {
+        pushToast("danger", res.error ?? "Ошибка соединения с SMTP.");
+      }
+    } catch (caught) {
+      pushToast("danger", caught instanceof Error ? caught.message : "Ошибка проверки SMTP.");
+    } finally {
+      setTestingSmtp(false);
+    }
+  }, [pushToast]);
+
+  const handleTestSend = useCallback(async () => {
+    setSendingTest(true);
+    setTestSendResult(null);
+    try {
+      const res = await adminTestSend({
+        channel: testSendChannel,
+        recipient: testSendRecipient.trim() || undefined,
+        subject: testSendSubject.trim() || undefined,
+        body: testSendBody.trim() || undefined,
+      });
+      setTestSendResult(res);
+      pushToast("success", res.message);
+    } catch (caught) {
+      pushToast("danger", caught instanceof Error ? caught.message : "Ошибка тестовой отправки.");
+    } finally {
+      setSendingTest(false);
+    }
+  }, [testSendChannel, testSendRecipient, testSendSubject, testSendBody, pushToast]);
 
   const createPilotAccount = useCallback(async () => {
     if (!pilotForm.username.trim() || pilotForm.password.length < 12) {
@@ -119,6 +209,7 @@ export function AdminQueuePage() {
 
   return (
     <div className="notif-page" aria-live="polite">
+      {/* 1. Queue Status */}
       <div className="pref-card">
         <h3 className="notif-card-title">Состояние очереди и worker</h3>
         <div className="queue-cards">
@@ -145,26 +236,191 @@ export function AdminQueuePage() {
         </p>
       </div>
 
+      {/* 2. Integration Probes & Status */}
       <div className="pref-card">
-        <h3 className="notif-card-title">Каналы интеграций</h3>
+        <h3 className="notif-card-title">Каналы интеграций и диагностика подключения</h3>
         <div className="channel-row">
-          <span>Внутренние уведомления</span>
+          <span>Внутренние уведомления (In-App)</span>
           <span className="status-pill ok">работает</span>
         </div>
-        {(Object.entries(setup.channels) as Array<[string, string]>).map(([channel, state]) => (
-          <div className="channel-row" key={channel}>
-            <span>{channel === "telegram" ? "Telegram" : "Email"}</span>
-            <span className="status-pill neutral">
-              {state === "not_configured" ? "не настроено" : state}
-            </span>
+
+        {/* Telegram Probe */}
+        <div className="admin-test-section">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <strong>Telegram Bot API</strong>
+              <div className="consent-meta-info">
+                Статус в системе:{" "}
+                {integrationsStatus?.telegram.configured_in_system ? (
+                  <span style={{ color: "var(--ok)" }}>настроен на сервере</span>
+                ) : (
+                  <span style={{ color: "var(--muted)" }}>токен не задан</span>
+                )}
+              </div>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={testingTelegram}
+              onClick={() => void handleTestTelegram()}
+            >
+              Проверить подключение getMe
+            </Button>
           </div>
-        ))}
-        <p className="notif-card-body">
-          Отсутствие внешних каналов не мешает внутренним уведомлениям. Подключение —
-          следующий этап.
-        </p>
+
+          {telegramProbeResult && (
+            <div
+              className={`admin-test-result ${telegramProbeResult.ok ? "success" : "error"}`}
+            >
+              {telegramProbeResult.ok ? (
+                <div>
+                  Бот подключен: @{telegramProbeResult.bot_username} (ID:{" "}
+                  {telegramProbeResult.bot_id}, Имя: {telegramProbeResult.first_name})
+                </div>
+              ) : (
+                <div>Ошибка проверки: {telegramProbeResult.error}</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* SMTP Probe */}
+        <div className="admin-test-section">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <strong>SMTP Сервер</strong>
+              <div className="consent-meta-info">
+                Статус в системе:{" "}
+                {integrationsStatus?.email.configured_in_system ? (
+                  <span style={{ color: "var(--ok)" }}>настроен на сервере</span>
+                ) : (
+                  <span style={{ color: "var(--muted)" }}>хост не задан</span>
+                )}
+              </div>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={testingSmtp}
+              onClick={() => void handleTestSmtp()}
+            >
+              Проверить подключение NOOP
+            </Button>
+          </div>
+
+          {smtpProbeResult && (
+            <div className={`admin-test-result ${smtpProbeResult.ok ? "success" : "error"}`}>
+              {smtpProbeResult.ok ? (
+                <div>
+                  SMTP сервер отвечает: {smtpProbeResult.host}:{smtpProbeResult.port} (TLS:{" "}
+                  {smtpProbeResult.use_tls ? "да" : "нет"}, STARTTLS:{" "}
+                  {smtpProbeResult.use_starttls ? "да" : "нет"}, Авторизация:{" "}
+                  {smtpProbeResult.authenticated ? "пройдена" : "анонимная"})
+                </div>
+              ) : (
+                <div>Ошибка проверки SMTP: {smtpProbeResult.error}</div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
+      {/* 3. Admin Test Send */}
+      <div className="pref-card">
+        <h3 className="notif-card-title">Тестовая отправка сообщения</h3>
+        <p className="notif-card-body">
+          Прямая тестовая отправка для проверки каналов связи. Статус <code>accepted</code> означает
+          приём сообщения шлюзом провайдера, но не гарантирует немедленного прочтения или доставки в ящик.
+        </p>
+
+        <form
+          className="reminder-form"
+          data-testid="admin-test-send-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleTestSend();
+          }}
+        >
+          <Field label="Канал доставки" required>
+            {(id) => (
+              <SelectInput
+                id={id}
+                value={testSendChannel}
+                onChange={(e) => setTestSendChannel(e.target.value as "telegram" | "email")}
+              >
+                <option value="telegram">Telegram</option>
+                <option value="email">Email (SMTP)</option>
+              </SelectInput>
+            )}
+          </Field>
+
+          <Field
+            label={testSendChannel === "telegram" ? "Получатель (числовой Chat ID)" : "Получатель (Email)"}
+            hint={
+              testSendChannel === "telegram"
+                ? "Оставьте пустым для отправки в ваш привязанный Telegram"
+                : "Оставьте пустым для отправки на ваш email из профиля"
+            }
+          >
+            {(id, describedBy) => (
+              <TextInput
+                id={id}
+                aria-describedby={describedBy}
+                placeholder={testSendChannel === "telegram" ? "123456789" : "user@company.com"}
+                value={testSendRecipient}
+                onChange={(e) => setTestSendRecipient(e.target.value)}
+              />
+            )}
+          </Field>
+
+          <Field label="Тема (Subject)">
+            {(id) => (
+              <TextInput
+                id={id}
+                placeholder="Тестовое уведомление HR Manager"
+                value={testSendSubject}
+                onChange={(e) => setTestSendSubject(e.target.value)}
+              />
+            )}
+          </Field>
+
+          <div className="field-span-2">
+            <Field label="Текст сообщения">
+              {(id) => (
+                <TextAreaInput
+                  id={id}
+                  placeholder="Проверочное сообщение..."
+                  value={testSendBody}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                    setTestSendBody(e.target.value)
+                  }
+                />
+              )}
+            </Field>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "flex-end" }}>
+            <Button type="submit" variant="primary" loading={sendingTest}>
+              Отправить тест
+            </Button>
+          </div>
+        </form>
+
+        {testSendResult && (
+          <div className="admin-test-result success">
+            <div>
+              <strong>Результат отправки:</strong> {testSendResult.message}
+            </div>
+            {testSendResult.provider_message_id && (
+              <div className="consent-meta-info" style={{ marginTop: "4px" }}>
+                ID сообщения провайдера (Message-ID): {testSendResult.provider_message_id}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 4. Pilot User Management */}
       <div className="pref-card">
         <h3 className="notif-card-title">Пилотный пользователь</h3>
         {setup.pilot_grant_active ? (

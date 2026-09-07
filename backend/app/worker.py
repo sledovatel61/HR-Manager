@@ -49,6 +49,27 @@ from app.models import (
 )
 from app.notification_service import deliver_in_app, preference_for, schedule_notification_row
 from app.quiet_hours import effective_send_time, next_occurrence
+from app.smtp_adapter import (
+    SmtpAuthError,
+    SmtpConnectionError,
+    SmtpHeaderInjectionError,
+    SmtpRecipientError,
+    SmtpTemporaryError,
+    SmtpTimeoutError,
+)
+from app.smtp_adapter import (
+    send_email as smtp_send_email,
+)
+from app.telegram_adapter import (
+    TelegramBlockedError,
+    TelegramPermanentError,
+    TelegramRateLimitError,
+    TelegramTemporaryError,
+    format_telegram_message,
+)
+from app.telegram_adapter import (
+    send_message as telegram_send_message,
+)
 from app.utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -183,38 +204,127 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
     if locked.status != DeliveryStatus.SENDING:
         db.rollback()
         return locked.status.value
+
+    # Quiet hours check
+    if (
+        not locked.quiet_hours_bypassed
+        and locked.recipient_user_id is not None
+        and locked.scheduled_at is not None
+    ):
+        preference = preference_for(
+            db, locked.recipient_user_id, settings.notification_default_timezone
+        )
+        effective = effective_send_time(locked.scheduled_at, preference=preference, now_utc=now)
+        if effective > now:
+            # Inside quiet hours: postpone to the first allowed minute.
+            # The original time stays in scheduled_at; the effective one
+            # is stored separately for audit.
+            locked.scheduled_at_effective = effective
+            locked.next_attempt_at = effective
+            locked.status = DeliveryStatus.QUEUED
+            locked.started_at = None
+            locked.lease_expires_at = None
+            db.commit()
+            return "queued"
+
+    channel = locked.channel.value
+    provider_msg_id: str | None = None
+    outcome: str = "failed"
+
     try:
-        if (
-            not locked.quiet_hours_bypassed
-            and locked.recipient_user_id is not None
-            and locked.scheduled_at is not None
-        ):
-            preference = preference_for(
-                db, locked.recipient_user_id, settings.notification_default_timezone
-            )
-            effective = effective_send_time(locked.scheduled_at, preference=preference, now_utc=now)
-            if effective > now:
-                # Inside quiet hours: postpone to the first allowed minute.
-                # The original time stays in scheduled_at; the effective one
-                # is stored separately for audit.
-                locked.scheduled_at_effective = effective
-                locked.next_attempt_at = effective
-                locked.status = DeliveryStatus.QUEUED
-                locked.started_at = None
-                locked.lease_expires_at = None
-                db.commit()
-                return "queued"
-        if locked.channel.value == "in_app":
+        if channel == "in_app":
             deliver_in_app(db, locked, now=now)
             locked.status = DeliveryStatus.DELIVERED
             locked.delivered_at = now
             outcome = "delivered"
+        elif channel == "telegram":
+            if not settings.telegram_bot_token.strip():
+                locked.status = DeliveryStatus.SKIPPED
+                locked.failed_at = now
+                locked.error_class = CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+                outcome = "skipped"
+            else:
+                chat_id: int | None = None
+                skipped_or_failed = False
+                if locked.recipient_user_id is not None:
+                    pref = preference_for(
+                        db, locked.recipient_user_id, settings.notification_default_timezone
+                    )
+                    if pref.telegram_chat_id is None or not pref.telegram_opt_in:
+                        locked.status = DeliveryStatus.SKIPPED
+                        locked.failed_at = now
+                        locked.error_class = (
+                            "no_consent"
+                            if pref.telegram_chat_id is not None
+                            else "recipient_not_linked"
+                        )
+                        outcome = "skipped"
+                        skipped_or_failed = True
+                    else:
+                        chat_id = pref.telegram_chat_id
+                elif locked.external_recipient is not None:
+                    try:
+                        chat_id = int(locked.external_recipient)
+                    except ValueError:
+                        locked.status = DeliveryStatus.FAILED
+                        locked.failed_at = now
+                        locked.error_class = "invalid_recipient"
+                        outcome = "failed"
+                        skipped_or_failed = True
+
+                if chat_id is not None and not skipped_or_failed:
+                    msg_text = format_telegram_message(locked.title, locked.body)
+                    tg_res = telegram_send_message(settings, chat_id=chat_id, text=msg_text)
+                    locked.status = DeliveryStatus.ACCEPTED
+                    locked.accepted_at = now
+                    locked.provider_message_id = tg_res.provider_message_id
+                    provider_msg_id = tg_res.provider_message_id
+                    outcome = "accepted"
+
+        elif channel == "email":
+            if not settings.smtp_host.strip():
+                locked.status = DeliveryStatus.SKIPPED
+                locked.failed_at = now
+                locked.error_class = CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+                outcome = "skipped"
+            else:
+                to_email: str | None = None
+                skipped_or_failed = False
+                if locked.recipient_user_id is not None:
+                    pref = preference_for(
+                        db, locked.recipient_user_id, settings.notification_default_timezone
+                    )
+                    if not pref.email_address or not pref.email_opt_in:
+                        locked.status = DeliveryStatus.SKIPPED
+                        locked.failed_at = now
+                        locked.error_class = (
+                            "no_consent" if pref.email_address else "recipient_not_configured"
+                        )
+                        outcome = "skipped"
+                        skipped_or_failed = True
+                    else:
+                        to_email = pref.email_address
+                elif locked.external_recipient is not None:
+                    to_email = locked.external_recipient
+
+                if to_email is not None and not skipped_or_failed:
+                    smtp_res = smtp_send_email(
+                        settings,
+                        to_email=to_email,
+                        subject=locked.title,
+                        body=locked.body or locked.title,
+                    )
+                    locked.status = DeliveryStatus.ACCEPTED
+                    locked.accepted_at = now
+                    locked.provider_message_id = smtp_res.provider_message_id
+                    provider_msg_id = smtp_res.provider_message_id
+                    outcome = "accepted"
         else:
-            # Channels reserved for phase 9: never a fake accepted/delivered.
             locked.status = DeliveryStatus.SKIPPED
             locked.failed_at = now
             locked.error_class = CHANNEL_NOT_CONFIGURED_ERROR_CLASS
             outcome = "skipped"
+
         locked.attempts += 1
         locked.next_attempt_at = None
         locked.lease_expires_at = None
@@ -226,19 +336,135 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
                 finished_at=now,
                 outcome=outcome,
                 error_class=locked.error_class,
-                provider_message_id=locked.provider_message_id,
+                error_code=locked.error_code,
+                provider_message_id=provider_msg_id,
             )
         )
         db.commit()
         return locked.status.value
-    except Exception:
+
+    except TelegramRateLimitError as exc:
         db.rollback()
-        logger.warning("outbox row %s failed (attempt %s)", locked.id, locked.attempts + 1)
-        return _record_failure(db, locked, settings=settings, now=now)
+        logger.warning(
+            "Telegram rate limit for row %s (retry_after=%s)", locked.id, exc.retry_after
+        )
+        return _reschedule_rate_limited(db, locked, retry_after=exc.retry_after, now=now)
+    except (
+        TelegramBlockedError,
+        TelegramPermanentError,
+        SmtpAuthError,
+        SmtpRecipientError,
+        SmtpHeaderInjectionError,
+    ) as exc:
+        db.rollback()
+        error_cls = getattr(exc, "error_class", "permanent_error")
+        error_cd = getattr(exc, "error_code", None)
+        logger.warning("Permanent delivery failure for outbox row %s: %s", locked.id, error_cls)
+        return _record_terminal_failure(
+            db, locked, error_class=error_cls, error_code=error_cd, now=now
+        )
+    except (
+        TelegramTemporaryError,
+        SmtpTemporaryError,
+        SmtpTimeoutError,
+        SmtpConnectionError,
+    ) as exc:
+        db.rollback()
+        error_cls = getattr(exc, "error_class", "temporary_error")
+        error_cd = getattr(exc, "error_code", None)
+        logger.warning("Temporary delivery error for outbox row %s: %s", locked.id, error_cls)
+        return _record_failure(
+            db, locked, settings=settings, error_class=error_cls, error_code=error_cd, now=now
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.warning(
+            "Unexpected exception delivering outbox row %s (attempt %s): %s",
+            locked.id,
+            locked.attempts + 1,
+            exc,
+        )
+        return _record_failure(db, locked, settings=settings, error_class="unknown", now=now)
+
+
+def _reschedule_rate_limited(
+    db: Session, row: NotificationOutbox, *, retry_after: int, now: datetime
+) -> str:
+    """Handle rate limit with explicit retry_after postponement."""
+    row = db.execute(
+        select(NotificationOutbox)
+        .where(NotificationOutbox.id == row.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    row.attempts += 1
+    row.status = DeliveryStatus.QUEUED
+    row.started_at = None
+    row.lease_expires_at = None
+    row.next_attempt_at = now + timedelta(seconds=retry_after)
+    row.error_class = "rate_limited"
+    row.error_code = "429"
+    db.add(
+        NotificationDeliveryAttempt(
+            outbox_id=row.id,
+            attempt_no=row.attempts,
+            started_at=row.started_at or now,
+            finished_at=now,
+            outcome="failed",
+            error_class="rate_limited",
+            error_code="429",
+        )
+    )
+    db.commit()
+    return "queued"
+
+
+def _record_terminal_failure(
+    db: Session,
+    row: NotificationOutbox,
+    *,
+    error_class: str,
+    error_code: str | None,
+    now: datetime,
+) -> str:
+    """Record permanent failure immediately without further retries."""
+    row = db.execute(
+        select(NotificationOutbox)
+        .where(NotificationOutbox.id == row.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    row.attempts += 1
+    row.status = DeliveryStatus.FAILED
+    row.failed_at = now
+    row.next_attempt_at = None
+    row.lease_expires_at = None
+    row.error_class = error_class
+    row.error_code = error_code
+    db.add(
+        NotificationDeliveryAttempt(
+            outbox_id=row.id,
+            attempt_no=row.attempts,
+            started_at=row.started_at or now,
+            finished_at=now,
+            outcome="failed",
+            error_class=error_class,
+            error_code=error_code,
+        )
+    )
+    _alert_pilot_on_terminal_failure(db, row=row, now=now)
+    db.commit()
+    return row.status.value
 
 
 def _record_failure(
-    db: Session, row: NotificationOutbox, *, settings: Settings, now: datetime
+    db: Session,
+    row: NotificationOutbox,
+    *,
+    settings: Settings,
+    error_class: str = "unknown",
+    error_code: str | None = None,
+    now: datetime,
 ) -> str:
     """Bounded exponential backoff; terminal failure alerts the pilot."""
     row = db.execute(
@@ -250,6 +476,21 @@ def _record_failure(
     row.attempts += 1
     attempt_no = row.attempts
     row.lease_expires_at = None
+    row.error_class = error_class
+    row.error_code = error_code
+    if attempt_no < settings.worker_max_attempts:
+        row.status = DeliveryStatus.QUEUED
+        row.started_at = None
+        backoff = min(
+            settings.worker_backoff_cap_s,
+            settings.worker_backoff_base_s * (2 ** (attempt_no - 1)),
+        )
+        row.next_attempt_at = now + timedelta(seconds=backoff)
+    else:
+        row.status = DeliveryStatus.FAILED
+        row.failed_at = now
+        row.next_attempt_at = None
+        _alert_pilot_on_terminal_failure(db, row=row, now=now)
     db.add(
         NotificationDeliveryAttempt(
             outbox_id=row.id,
@@ -257,23 +498,10 @@ def _record_failure(
             started_at=row.started_at or now,
             finished_at=now,
             outcome="failed",
-            error_class=row.error_class or "unknown",
-            error_code=row.error_code,
+            error_class=error_class,
+            error_code=error_code,
         )
     )
-    if attempt_no < settings.worker_max_attempts:
-        backoff = min(
-            settings.worker_backoff_cap_s,
-            settings.worker_backoff_base_s * (2 ** (attempt_no - 1)),
-        )
-        row.status = DeliveryStatus.QUEUED
-        row.started_at = None
-        row.next_attempt_at = now + timedelta(seconds=backoff)
-    else:
-        row.status = DeliveryStatus.FAILED
-        row.failed_at = now
-        row.next_attempt_at = None
-        _alert_pilot_on_terminal_failure(db, row=row, now=now)
     db.commit()
     return row.status.value
 

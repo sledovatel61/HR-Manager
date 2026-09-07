@@ -1,17 +1,23 @@
-/** «Настройки уведомлений»: timezone, quiet hours, workdays, types.
-
- * Quiet hours accept a midnight-crossing interval (e.g. 21:00–08:00);
- * the backend evaluates them in the user's IANA timezone and handles
- * DST. Type toggles decide which logical notifications may be delivered.
+/** «Настройки уведомлений»: timezone, quiet hours, workdays, types,
+ * Telegram Bot linking, and universal email notifications (Phase 9).
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { getPreferences, listTimezones, savePreferences } from "../../api";
+import {
+  confirmTelegramLink,
+  getPreferences,
+  initiateTelegramLink,
+  listTimezones,
+  savePreferences,
+  unlinkTelegram,
+} from "../../api";
 import { Button } from "../../design-system/components/Button";
+import { ConfirmDialog } from "../../design-system/components/ConfirmDialog";
 import { Field, SelectInput, TextInput } from "../../design-system/components/Field";
+import { Modal } from "../../design-system/components/Modal";
 import { ErrorState, SkeletonRows } from "../../design-system/components/StateViews";
 import { useToast } from "../../design-system/components/ToastContext";
-import type { NotificationPreferences } from "../../types";
+import type { NotificationPreferences, TelegramLinkInitiateOut } from "../../types";
 import "./notifications.css";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -36,6 +42,21 @@ const WEEKDAYS: Array<[number, string]> = [
   [7, "Вс"],
 ];
 
+function formatDate(val: string | null | undefined): string {
+  if (!val) return "";
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(val));
+  } catch {
+    return val;
+  }
+}
+
 export function PreferencesPage() {
   const { pushToast } = useToast();
   const [preferences, setPreferences] = useState<NotificationPreferences | null>(null);
@@ -43,6 +64,16 @@ export function PreferencesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Telegram link modal state
+  const [linkModalOpen, setLinkModalOpen] = useState(false);
+  const [linkData, setLinkData] = useState<TelegramLinkInitiateOut | null>(null);
+  const [initiatingLink, setInitiatingLink] = useState(false);
+  const [manualChatId, setManualChatId] = useState("");
+  const [confirmingLink, setConfirmingLink] = useState(false);
+
+  // Telegram unlink dialog state
+  const [unlinkDialogOpen, setUnlinkDialogOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -93,6 +124,9 @@ export function PreferencesPage() {
         workdays: preferences.workdays,
         enabled_types: preferences.enabled_types,
         enabled_channels: preferences.enabled_channels,
+        email_address: preferences.email_address,
+        email_opt_in: preferences.email_opt_in,
+        telegram_opt_in: preferences.telegram_opt_in,
       });
       setPreferences(saved);
       pushToast("success", "Настройки сохранены.");
@@ -103,11 +137,83 @@ export function PreferencesPage() {
     }
   }, [preferences, pushToast]);
 
+  const handleStartTelegramLink = useCallback(async () => {
+    setInitiatingLink(true);
+    try {
+      const res = await initiateTelegramLink();
+      setLinkData(res);
+      setManualChatId("");
+      setLinkModalOpen(true);
+    } catch (caught) {
+      pushToast(
+        "danger",
+        caught instanceof Error ? caught.message : "Не удалось начать привязку Telegram."
+      );
+    } finally {
+      setInitiatingLink(false);
+    }
+  }, [pushToast]);
+
+  const handleConfirmTelegramLink = useCallback(async () => {
+    if (!linkData || !manualChatId.trim()) {
+      pushToast("info", "Укажите числовой Chat ID для ручного подтверждения.");
+      return;
+    }
+    const chatIdNum = parseInt(manualChatId.trim(), 10);
+    if (isNaN(chatIdNum) || chatIdNum <= 0) {
+      pushToast("danger", "Некорректный числовой Chat ID.");
+      return;
+    }
+    setConfirmingLink(true);
+    try {
+      await confirmTelegramLink({
+        token: linkData.token,
+        chat_id: chatIdNum,
+      });
+      pushToast("success", "Telegram успешно привязан!");
+      setLinkModalOpen(false);
+      setLinkData(null);
+      await load();
+    } catch (caught) {
+      pushToast(
+        "danger",
+        caught instanceof Error ? caught.message : "Ошибка подтверждения привязки."
+      );
+    } finally {
+      setConfirmingLink(false);
+    }
+  }, [linkData, manualChatId, load, pushToast]);
+
+  const handleUnlinkTelegram = useCallback(async () => {
+    try {
+      await unlinkTelegram();
+      pushToast("success", "Telegram успешно отвязан.");
+      setUnlinkDialogOpen(false);
+      await load();
+    } catch (caught) {
+      pushToast(
+        "danger",
+        caught instanceof Error ? caught.message : "Не удалось отвязать Telegram."
+      );
+    }
+  }, [load, pushToast]);
+
+  const copyDeepLink = useCallback(() => {
+    if (linkData?.deep_link) {
+      void navigator.clipboard.writeText(linkData.deep_link);
+      pushToast("info", "Ссылка скопирована в буфер обмена.");
+    }
+  }, [linkData, pushToast]);
+
   if (loading) return <SkeletonRows rows={4} columns={3} />;
   if (error || !preferences) return <ErrorState onRetry={() => void load()} />;
 
+  const isTelegramLinked = Boolean(preferences.telegram_chat_id);
+  const isEmailActive = Boolean(preferences.email_address && preferences.email_opt_in);
+
   return (
     <div className="notif-page" aria-live="polite">
+      {/* 1. Timezone & Quiet Hours */}
       <div className="pref-card">
         <h3 className="notif-card-title">Время и тихие часы</h3>
         <div className="pref-grid">
@@ -144,7 +250,10 @@ export function PreferencesPage() {
               />
             )}
           </Field>
-          <Field label="Тихие часы: конец (местное время)" hint="Например, 21:00–08:00 — интервал через полночь.">
+          <Field
+            label="Тихие часы: конец (местное время)"
+            hint="Например, 21:00–08:00 — интервал через полночь."
+          >
             {(id, describedBy) => (
               <TextInput
                 id={id}
@@ -160,6 +269,7 @@ export function PreferencesPage() {
         </div>
       </div>
 
+      {/* 2. Workdays */}
       <div className="pref-card">
         <h3 className="notif-card-title">Рабочие дни</h3>
         <p className="notif-card-body">
@@ -180,6 +290,7 @@ export function PreferencesPage() {
         </div>
       </div>
 
+      {/* 3. Notification Types */}
       <div className="pref-card">
         <h3 className="notif-card-title">Какие уведомления получать</h3>
         <div className="type-toggles">
@@ -197,23 +308,153 @@ export function PreferencesPage() {
         </div>
       </div>
 
+      {/* 4. Communication Channels and Consent */}
       <div className="pref-card">
-        <h3 className="notif-card-title">Каналы доставки</h3>
+        <h3 className="notif-card-title">Каналы доставки и согласие</h3>
         <p className="notif-card-body">
-          Внутренние уведомления работают всегда. Telegram и email появятся на следующем этапе —
-          сейчас они честно показываются как «не настроено».
+          Доставка осуществляется только по активным каналам с явно подтверждённым согласием.
         </p>
-        <div className="channel-row">
-          <span>Внутренние уведомления</span>
-          <span className="status-pill ok">работает</span>
+
+        {/* In-App */}
+        <div className="integration-channel-box">
+          <div className="integration-header">
+            <div className="integration-title-wrap">
+              <h4 className="integration-title">Уведомления в интерфейсе</h4>
+            </div>
+            <span className="status-pill ok">работает</span>
+          </div>
+          <div className="integration-content">
+            <span>Центр уведомлений в веб-интерфейсе системы. Включен по умолчанию.</span>
+          </div>
         </div>
-        <div className="channel-row">
-          <span>Telegram</span>
-          <span className="status-pill neutral">не настроено</span>
+
+        {/* Telegram */}
+        <div className="integration-channel-box">
+          <div className="integration-header">
+            <div className="integration-title-wrap">
+              <h4 className="integration-title">Telegram</h4>
+            </div>
+            {isTelegramLinked ? (
+              preferences.telegram_opt_in ? (
+                <span className="status-pill ok">подключен</span>
+              ) : (
+                <span className="status-pill warn">отозван</span>
+              )
+            ) : (
+              <span className="status-pill neutral">не привязан</span>
+            )}
+          </div>
+
+          <div className="integration-content">
+            {isTelegramLinked ? (
+              <>
+                <div>
+                  {preferences.telegram_username ? (
+                    <span>Привязанный аккаунт: <strong>@{preferences.telegram_username}</strong></span>
+                  ) : (
+                    <span>Telegram привязан (ID: {preferences.telegram_chat_id})</span>
+                  )}
+                </div>
+                {preferences.telegram_consent_at && (
+                  <div className="consent-meta-info">
+                    Согласие выдано: {formatDate(preferences.telegram_consent_at)}
+                  </div>
+                )}
+                <label className="consent-checkbox-row">
+                  <input
+                    type="checkbox"
+                    data-testid="telegram-optin-toggle"
+                    checked={Boolean(preferences.telegram_opt_in)}
+                    onChange={(e) =>
+                      setPreferences({ ...preferences, telegram_opt_in: e.target.checked })
+                    }
+                  />
+                  <span>Получать уведомления в Telegram</span>
+                </label>
+                <div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    data-testid="unlink-telegram-btn"
+                    onClick={() => setUnlinkDialogOpen(true)}
+                  >
+                    Отвязать Telegram
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="notif-card-body">
+                  Привяжите ваш Telegram-аккаунт для мгновенного получения уведомлений о событиях и
+                  напоминаниях.
+                </p>
+                <div>
+                  <Button
+                    variant="secondary"
+                    data-testid="link-telegram-btn"
+                    loading={initiatingLink}
+                    onClick={() => void handleStartTelegramLink()}
+                  >
+                    Привязать Telegram
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
-        <div className="channel-row">
-          <span>Email</span>
-          <span className="status-pill neutral">не настроено</span>
+
+        {/* Email */}
+        <div className="integration-channel-box">
+          <div className="integration-header">
+            <div className="integration-title-wrap">
+              <h4 className="integration-title">Электронная почта (Email)</h4>
+            </div>
+            {isEmailActive ? (
+              <span className="status-pill ok">подключен</span>
+            ) : preferences.email_address ? (
+              <span className="status-pill warn">отозван</span>
+            ) : (
+              <span className="status-pill neutral">не настроен</span>
+            )}
+          </div>
+
+          <div className="integration-content">
+            <Field label="Email для уведомлений" hint="Рабочий адрес электронной почты.">
+              {(id, describedBy) => (
+                <TextInput
+                  id={id}
+                  data-testid="email-address-input"
+                  aria-describedby={describedBy}
+                  type="email"
+                  placeholder="name@company.com"
+                  value={preferences.email_address ?? ""}
+                  onChange={(event) =>
+                    setPreferences({ ...preferences, email_address: event.target.value })
+                  }
+                />
+              )}
+            </Field>
+
+            <label className="consent-checkbox-row">
+              <input
+                type="checkbox"
+                data-testid="email-consent-toggle"
+                checked={Boolean(preferences.email_opt_in)}
+                onChange={(e) =>
+                  setPreferences({ ...preferences, email_opt_in: e.target.checked })
+                }
+              />
+              <span>
+                Даю согласие на получение рабочих уведомлений на указанный адрес электронной почты
+              </span>
+            </label>
+
+            {preferences.email_consent_at && preferences.email_opt_in && (
+              <div className="consent-meta-info">
+                Согласие предоставлено: {formatDate(preferences.email_consent_at)}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -222,6 +463,91 @@ export function PreferencesPage() {
           Сохранить настройки
         </Button>
       </div>
+
+      {/* Telegram Link Modal */}
+      <Modal
+        open={linkModalOpen}
+        title="Привязка Telegram"
+        onClose={() => setLinkModalOpen(false)}
+        footer={
+          <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+            <Button variant="ghost" onClick={() => setLinkModalOpen(false)}>
+              Отмена
+            </Button>
+            <Button
+              variant="primary"
+              loading={confirmingLink}
+              onClick={() => void handleConfirmTelegramLink()}
+            >
+              Подтвердить привязку
+            </Button>
+          </div>
+        }
+      >
+        {linkData && (
+          <div className="link-token-card">
+            <p style={{ margin: 0 }}>
+              <strong>Способ 1 (быстрый):</strong> Нажмите кнопку ниже или откройте ссылку в Telegram
+              и нажмите <em>Запустить / Start</em>:
+            </p>
+
+            {linkData.deep_link && (
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <a
+                  href={linkData.deep_link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="button secondary"
+                  style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+                >
+                  Открыть в Telegram
+                </a>
+                <Button variant="ghost" size="sm" onClick={copyDeepLink}>
+                  Копировать ссылку
+                </Button>
+              </div>
+            )}
+
+            <div className="deep-link-box">
+              <span>{linkData.deep_link ?? `Команда: /start ${linkData.token}`}</span>
+            </div>
+
+            <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "8px 0" }} />
+
+            <p style={{ margin: 0 }}>
+              <strong>Способ 2 (ручной ввод):</strong> Отправьте боту команду{" "}
+              <code>/start {linkData.token}</code> и введите ваш Telegram Chat ID ниже для проверки:
+            </p>
+
+            <Field label="Ваш числовой Chat ID">
+              {(id) => (
+                <TextInput
+                  id={id}
+                  type="text"
+                  placeholder="Например: 123456789"
+                  value={manualChatId}
+                  onChange={(e) => setManualChatId(e.target.value)}
+                />
+              )}
+            </Field>
+
+            <div className="consent-meta-info">
+              Код привязки одноразовый и действует до: {formatDate(linkData.expires_at)}.
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Telegram Unlink Confirmation */}
+      <ConfirmDialog
+        open={unlinkDialogOpen}
+        title="Отвязать Telegram?"
+        description="Вы уверены, что хотите отвязать Telegram от вашей учётной записи? Согласие на получение уведомлений будет отозвано, и отправка сообщений в Telegram прекратится."
+        confirmLabel="Да, отвязать"
+        danger
+        onCancel={() => setUnlinkDialogOpen(false)}
+        onConfirm={() => void handleUnlinkTelegram()}
+      />
     </div>
   );
 }

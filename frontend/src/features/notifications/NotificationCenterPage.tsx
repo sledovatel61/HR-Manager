@@ -296,6 +296,9 @@ export function NotificationCenterPage({ onOpenCandidate }: { onOpenCandidate: (
                 {delivery.info.channel})
               </p>
               <p>Попыток: {delivery.info.attempts}</p>
+              {delivery.info.provider_message_id && (
+                <p>ID сообщения провайдера (Message-ID): {delivery.info.provider_message_id}</p>
+              )}
               {delivery.info.scheduled_at && (
                 <p>Запланировано: {formatFull(delivery.info.scheduled_at)}</p>
               )}
@@ -304,6 +307,9 @@ export function NotificationCenterPage({ onOpenCandidate }: { onOpenCandidate: (
                   Фактически разрешено к отправке:{" "}
                   {formatFull(delivery.info.scheduled_at_effective)}
                 </p>
+              )}
+              {delivery.info.accepted_at && (
+                <p>Принято провайдером: {formatFull(delivery.info.accepted_at)}</p>
               )}
               {delivery.info.delivered_at && (
                 <p>Доставлено: {formatFull(delivery.info.delivered_at)}</p>

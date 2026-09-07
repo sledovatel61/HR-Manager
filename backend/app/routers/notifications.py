@@ -239,12 +239,15 @@ def notification_delivery(
         scheduled_at=outbox.scheduled_at,
         scheduled_at_effective=outbox.scheduled_at_effective,
         queued_at=outbox.queued_at,
+        accepted_at=outbox.accepted_at,
         delivered_at=outbox.delivered_at,
         failed_at=outbox.failed_at,
         cancelled_at=outbox.cancelled_at,
         attempts=outbox.attempts,
         next_attempt_at=outbox.next_attempt_at,
         error_class=outbox.error_class,
+        error_code=outbox.error_code,
+        provider_message_id=outbox.provider_message_id,
         attempts_history=[
             DeliveryAttemptOut(
                 attempt_no=attempt.attempt_no,
@@ -253,6 +256,7 @@ def notification_delivery(
                 outcome=attempt.outcome.value,
                 error_code=attempt.error_code,
                 error_class=attempt.error_class,
+                provider_message_id=attempt.provider_message_id,
             )
             for attempt in outbox.attempts_history
         ],
@@ -293,12 +297,15 @@ def list_deliveries(
                 scheduled_at=row.scheduled_at,
                 scheduled_at_effective=row.scheduled_at_effective,
                 queued_at=row.queued_at,
+                accepted_at=row.accepted_at,
                 delivered_at=row.delivered_at,
                 failed_at=row.failed_at,
                 cancelled_at=row.cancelled_at,
                 attempts=row.attempts,
                 next_attempt_at=row.next_attempt_at,
                 error_class=row.error_class,
+                error_code=row.error_code,
+                provider_message_id=row.provider_message_id,
                 attempts_history=[],
             )
             for row in rows
