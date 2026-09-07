@@ -239,12 +239,15 @@ def notification_delivery(
         scheduled_at=outbox.scheduled_at,
         scheduled_at_effective=outbox.scheduled_at_effective,
         queued_at=outbox.queued_at,
+        accepted_at=outbox.accepted_at,
         delivered_at=outbox.delivered_at,
         failed_at=outbox.failed_at,
         cancelled_at=outbox.cancelled_at,
         attempts=outbox.attempts,
         next_attempt_at=outbox.next_attempt_at,
+        error_code=outbox.error_code,
         error_class=outbox.error_class,
+        provider_message_id=outbox.provider_message_id,
         attempts_history=[
             DeliveryAttemptOut(
                 attempt_no=attempt.attempt_no,
@@ -253,6 +256,7 @@ def notification_delivery(
                 outcome=attempt.outcome.value,
                 error_code=attempt.error_code,
                 error_class=attempt.error_class,
+                provider_message_id=attempt.provider_message_id,
             )
             for attempt in outbox.attempts_history
         ],
@@ -293,12 +297,15 @@ def list_deliveries(
                 scheduled_at=row.scheduled_at,
                 scheduled_at_effective=row.scheduled_at_effective,
                 queued_at=row.queued_at,
+                accepted_at=row.accepted_at,
                 delivered_at=row.delivered_at,
                 failed_at=row.failed_at,
                 cancelled_at=row.cancelled_at,
                 attempts=row.attempts,
                 next_attempt_at=row.next_attempt_at,
+                error_code=row.error_code,
                 error_class=row.error_class,
+                provider_message_id=row.provider_message_id,
                 attempts_history=[],
             )
             for row in rows
@@ -306,6 +313,63 @@ def list_deliveries(
         total=int(total),
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get(
+    "/deliveries/{outbox_id}",
+    response_model=DeliveryInfoOut,
+    summary="One own delivery with its attempts",
+)
+def delivery_detail(
+    outbox_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> DeliveryInfoOut:
+    """One own outbox job incl. append-only attempts (phase 9).
+
+    External (email/telegram) rows have no ``notifications`` row, so the
+    per-notification endpoint cannot show them — this is their history.
+    Foreign ids (and verification rows owned by nobody) are 404.
+    """
+    try:
+        uid = UUID(outbox_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Отправка не найдена."
+        ) from None
+    outbox = db.get(NotificationOutbox, uid)
+    if outbox is None or outbox.recipient_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Отправка не найдена.")
+    return DeliveryInfoOut(
+        id=outbox.id,
+        channel=outbox.channel.value,
+        status=outbox.status.value,
+        notification_type=outbox.notification_type.value,
+        scheduled_at=outbox.scheduled_at,
+        scheduled_at_effective=outbox.scheduled_at_effective,
+        queued_at=outbox.queued_at,
+        accepted_at=outbox.accepted_at,
+        delivered_at=outbox.delivered_at,
+        failed_at=outbox.failed_at,
+        cancelled_at=outbox.cancelled_at,
+        attempts=outbox.attempts,
+        next_attempt_at=outbox.next_attempt_at,
+        error_code=outbox.error_code,
+        error_class=outbox.error_class,
+        provider_message_id=outbox.provider_message_id,
+        attempts_history=[
+            DeliveryAttemptOut(
+                attempt_no=attempt.attempt_no,
+                started_at=attempt.started_at,
+                finished_at=attempt.finished_at,
+                outcome=attempt.outcome.value,
+                error_code=attempt.error_code,
+                error_class=attempt.error_class,
+                provider_message_id=attempt.provider_message_id,
+            )
+            for attempt in outbox.attempts_history
+        ],
     )
 
 

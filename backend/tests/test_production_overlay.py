@@ -383,3 +383,87 @@ def test_backup_scheduler_line_endings_protected() -> None:
     raw = (SCRIPTS_DIR / "backup_scheduler.sh").read_bytes()
     assert b"\r" not in raw
     assert raw.startswith(b"#!/usr/bin/env bash")
+
+
+def test_dev_compose_external_channels_use_local_sink_only(
+    dev_compose: dict[str, Any],
+) -> None:
+    """Phase 9: dev backend/worker send mail only to local Mailpit; the bot
+    stays disabled (a real token is never baked into dev Compose)."""
+    assert "mailpit" in dev_compose["services"]
+    for name in ("backend", "worker"):
+        env = dev_compose["services"][name]["environment"]
+        assert env["TELEGRAM_ENABLED"] == "false"
+        assert env["SMTP_ENABLED"] == "true"
+        assert env["SMTP_HOST"] == "mailpit"
+        assert env["SMTP_PORT"] == "1025"
+        assert env["SMTP_ENCRYPTION"] == "none"
+    bindings = dev_compose["services"]["mailpit"]["ports"]
+    assert bindings == ["127.0.0.1:8025:8025"]
+
+
+def test_prod_overlay_disables_external_channels_by_default(
+    prod_overlay: dict[str, Any],
+) -> None:
+    """Phase 9: production enables no channel unless the operator opts in;
+    secrets have empty (not dev) defaults."""
+    for name in ("backend", "worker"):
+        env = prod_overlay["services"][name]["environment"]
+        assert env["TELEGRAM_ENABLED"] == "${TELEGRAM_ENABLED:-false}"
+        assert env["SMTP_ENABLED"] == "${SMTP_ENABLED:-false}"
+        assert env["TELEGRAM_BOT_TOKEN"] == "${TELEGRAM_BOT_TOKEN:-}"
+        assert env["SMTP_PASSWORD"] == "${SMTP_PASSWORD:-}"
+        assert env["SMTP_ENCRYPTION"] == "${SMTP_ENCRYPTION:-starttls}"
+    assert prod_overlay["services"]["mailpit"]["ports"] == []
+
+
+def test_check_env_rejects_broken_channel_config() -> None:
+    """Phase 9: the preflight fails fast on enabled-but-incomplete channels
+    and on plaintext SMTP in production."""
+    import os
+    import subprocess
+
+    base = {
+        "APP_ENV": "production",
+        "SECRET_KEY": "x" * 32,
+        "POSTGRES_PASSWORD": "strong-ci-pass-123",
+        "BOOTSTRAP_ADMIN_PASSWORD": "strong-ci-pass-123",
+    }
+
+    def run(extra: dict[str, str]) -> int:
+        env = {**os.environ, **base, **extra}
+        proc = subprocess.run(
+            ["bash", str(REPO_ROOT / "infra" / "scripts" / "check_env.sh")],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return proc.returncode
+
+    assert run({}) == 0  # channels disabled: nothing to check
+    assert run({"TELEGRAM_ENABLED": "true"}) != 0
+    assert run({"SMTP_ENABLED": "true"}) != 0
+    assert (
+        run(
+            {
+                "SMTP_ENABLED": "true",
+                "SMTP_HOST": "mail.example.com",
+                "SMTP_FROM_ADDRESS": "noreply@example.com",
+                "SMTP_ENCRYPTION": "none",
+            }
+        )
+        != 0
+    )
+    assert (
+        run(
+            {
+                "TELEGRAM_ENABLED": "true",
+                "TELEGRAM_BOT_TOKEN": "t",
+                "TELEGRAM_BOT_USERNAME": "b",
+                "SMTP_ENABLED": "true",
+                "SMTP_HOST": "mail.example.com",
+                "SMTP_FROM_ADDRESS": "noreply@example.com",
+            }
+        )
+        == 0
+    )

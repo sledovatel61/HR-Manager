@@ -200,20 +200,16 @@ export function PreferencesPage() {
       <div className="pref-card">
         <h3 className="notif-card-title">Каналы доставки</h3>
         <p className="notif-card-body">
-          Внутренние уведомления работают всегда. Telegram и email появятся на следующем этапе —
-          сейчас они честно показываются как «не настроено».
+          Внутренние уведомления работают всегда. Telegram и email привязываются отдельно — только
+          после вашей привязки и явного согласия.
         </p>
         <div className="channel-row">
           <span>Внутренние уведомления</span>
           <span className="status-pill ok">работает</span>
         </div>
         <div className="channel-row">
-          <span>Telegram</span>
-          <span className="status-pill neutral">не настроено</span>
-        </div>
-        <div className="channel-row">
-          <span>Email</span>
-          <span className="status-pill neutral">не настроено</span>
+          <span>Telegram и email</span>
+          <a href="#/integrations">настроить в разделе «Интеграции»</a>
         </div>
       </div>
 

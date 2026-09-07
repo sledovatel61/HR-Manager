@@ -349,3 +349,60 @@ def test_backup_trigger_rejects_duplicate_request_id(
         headers={"X-CSRF-Token": csrf},
     )
     assert second.status_code == 409
+
+
+def test_queue_diagnostics_carry_no_message_content(
+    client: TestClient, db_session: Session
+) -> None:
+    """The diagnostics payload is counts/statuses/heartbeats only: titles,
+    bodies and recipients stored on the rows never appear in it."""
+    from uuid import uuid4
+
+    from app.models import (
+        DeliveryChannel,
+        DeliveryStatus,
+        NotificationOutbox,
+        NotificationSource,
+        NotificationType,
+    )
+
+    admin = make_user(db_session, username="ops-admin", role=UserRole.ADMIN)
+    db_session.add(
+        NotificationOutbox(
+            recipient_user_id=admin.id,
+            channel=DeliveryChannel.TELEGRAM,
+            notification_type=NotificationType.SYSTEM_ALERT,
+            source=NotificationSource.SYSTEM,
+            title="MARKER-TITLE-pii-probe",
+            body="MARKER-BODY-pii-probe",
+            status=DeliveryStatus.QUEUED,
+            queued_at=NOW,
+            scheduled_at=NOW,
+            idempotency_key=f"system_alert:probe:{uuid4().hex}",
+        )
+    )
+    db_session.add(
+        NotificationOutbox(
+            recipient_user_id=None,
+            external_recipient="probe-victim@example.test",
+            channel=DeliveryChannel.EMAIL,
+            notification_type=NotificationType.SYSTEM_ALERT,
+            source=NotificationSource.SYSTEM,
+            title="t",
+            body="b",
+            template="email_verification",
+            template_version=1,
+            status=DeliveryStatus.QUEUED,
+            queued_at=NOW,
+            scheduled_at=NOW,
+            idempotency_key=f"system_alert:probe-ext:{uuid4().hex}",
+        )
+    )
+    db_session.commit()
+    _login(client, "ops-admin")
+    response = client.get("/admin/ops/notifications/queue")
+    assert response.status_code == 200, response.text
+    assert response.json()["counts"].get("queued", 0) >= 2
+    assert "MARKER-TITLE-pii-probe" not in response.text
+    assert "MARKER-BODY-pii-probe" not in response.text
+    assert "probe-victim@example.test" not in response.text

@@ -563,8 +563,8 @@ production запрещён (`migrate.sh` его не имеет).
 - Все изменения схемы — только через Alembic; ревизии пишутся вручную
   (metadata-модели появятся вместе с бизнес-сущностями).
 - Каждая миграция должна быть idempotent и reversible, где это возможно.
-- Головная ревизия — `0008` (уведомления и событие-cancelled; аналитика —
-  `0006`, события — `0005`).
+- Головная ревизия — `0009` (внешние каналы; уведомления — `0007`/`0008`;
+  аналитика — `0006`, события — `0005`).
   `alembic upgrade/downgrade/upgrade` и повторное применение
   (`upgrade head` дважды) покрыты интеграционными тестами.
 - Применение в dev/staging: автоматически при старте backend-контейнера.
@@ -696,3 +696,110 @@ production запрещён (`migrate.sh` его не имеет).
 - PII/секреты: нет в логах, метриках и диагностике (диагностика очереди —
   только счётчики/статусы).
 - Спам: dedupe-ключи событий + «один экземпляр напоминания на срабатывание».
+
+## Telegram и email (этап 9)
+
+### Границы этапа
+
+- Реальные адаптеры Telegram Bot API (`app/telegram.py`, stdlib urllib) и
+  SMTP (`app/smtp.py`, stdlib smtplib) поверх принятого outbox/worker этапа
+  8. Новых очередей/брокеров нет; in-app поведение не меняется.
+- Внешние каналы **optional и opt-in**: без валидной привязки +
+  подтверждённого согласия fan-out создаёт только in-app строку; для
+  существующих пользователей ничего не включается молча.
+- `accepted` = провайдер принял сообщение в работу. Это не `delivered`
+  (канал in_app: создано внутреннее уведомление) и не «прочитано».
+  Адаптеры никогда не выставляют `delivered`; UI честно показывает разницу.
+
+### Модель данных (миграция 0009)
+
+- `telegram_links` — привязка 1:1 (PK = user_id): только numeric `chat_id`
+  (username не хранится и не используется как идентификатор), `linked_at`,
+  `revoked_at` (soft-revoke с аудитом).
+- `telegram_link_tokens` — одноразовые expiring токены: хранится только
+  SHA-256-хэш (сырой токен — 32 байта `secrets.token_bytes`, показан один
+  раз в deep link), TTL, `consumed_at` + `consumed_by_chat_id` (single-use
+  через атомарный `UPDATE … WHERE consumed_at IS NULL`), старые токены
+  пользователя суперседятся.
+- `telegram_start_events` — идемпотентный журнал обработанных `/start`
+  (UNIQUE(update_id), TTL-чистка); `telegram_poll_state` — синглтон offset
+  `getUpdates` (монотонный, без отката).
+- `user_emails` — адрес 1:1 (PK = user_id): `email` + `verified_at`;
+  `pending_email` + хэш токена подтверждения, TTL, счётчик попыток
+  (bounded, anti-bruteforce), `requested_at`.
+- `notification_preferences` += `telegram_opt_in/email_opt_in`,
+  `telegram_consent_at/email_consent_at`, `consent_source`,
+  `consent_policy_version` (`phase9-v1`).
+- `notification_outbox`: `recipient_user_id` nullable +
+  `external_recipient` (только для верификационных писем — адрес,
+  введённый владельцем; произвольные получатели из payload запрещены).
+- Секреты (токен бота, SMTP-пароль) — только env; в БД/миграциях их нет.
+
+### Linking flow (Telegram)
+
+1. `POST /integrations/telegram/link-code` (CSRF, rate-limit) → deep link
+   `t.me/<bot>?start=<raw>` + `expires_at`. Сырой токен в БД не хранится.
+2. Пользователь открывает бота и жмёт Start (добровольное действие).
+3. `POST /integrations/telegram/confirm` опрашивает `getUpdates` с
+   сохранённым offset, матчит `/start <raw>` по хэшу, проверяет владельца
+   токена (IDOR: чужой токен — 409, без утечки), атомарно consume-ит токен
+   и создаёт/обновляет привязку. Гонка двух confirm — ровно один 200.
+4. Отвязка `POST /integrations/telegram/unlink` (soft-revoke + audit);
+   повторная привязка разрешена. Блокировка бота пользователем
+   (`chat not found`/`bot was blocked`) → авто-отзыв привязки без chat id
+   в аудите.
+
+### SMTP
+
+- Режимы `none|starttls|tls` (production: `none` запрещён preflight +
+  guard), таймауты, лимит размера, username/secret только env.
+- `POST /admin/integrations/smtp/check` — живая проверка без отправки;
+  `POST /admin/integrations/smtp/test-send` — явный тест на собственный
+  подтверждённый адрес админа (admin-only, CSRF, audit, rate-limit).
+- Русские subject/display name через RFC 2047; CR/LF → 422 (header
+  injection невозможен); коды ошибок — фиксированные токены
+  (`smtp_535`, `smtp_tls`, …), текст сервера в БД/логи не попадает.
+
+### Worker (расширение контракта этапа 8)
+
+- External-строка: фаза A (короткая транзакция: re-lock, re-validate
+  привязки/конфига/согласия, продление lease) → фаза B (сеть БЕЗ открытой
+  транзакции, bounded таймауты) → фаза C (короткая транзакция: re-lock,
+  атомарная финализация). Admin-cancel, выигравший гонку, не
+  перезаписывается.
+- Single-flight параллельных worker-ов: PostgreSQL advisory lock на ключ
+  строки на все три фазы (пинованное соединение сессии; смерть worker-а
+  отпускает lock через разрыв соединения; lease recovery — backstop).
+  SQLite-юниты lock пропускают (однопоточны).
+- Telegram `429` → `next_attempt_at = now + retry_after` (capped);
+  временные/постоянные/отозванные классы различаются; bounded retry, затем
+  `failed` + системный алерт пилоту. Provider message id сохраняется
+  только если провайдер его вернул.
+- FK/CHECK/schema/network ошибки никогда не маскируются под duplicate или
+  `skipped`: `IntegrityError` вне точного duplicate-ключа пробрасывается.
+
+### API/UI и безопасность
+
+- `GET /integrations/status` (маскированные идентификаторы, честные
+  состояния `not_configured|pending|works|temporarily_unavailable|revoked`),
+  consent endpoints (timestamp/источник/версия политики, audit),
+  email set/confirm/remove (подтверждение токеном из письма, bounded
+  попытки), admin checks/test (без секретов в ответах).
+- `GET /notifications/deliveries` + `/deliveries/{outbox_id}` — история
+  отправок только своя (чужое — 404), включая provider id внешних строк.
+- UI «Интеграции» (русский): wizard привязки, формы email, тумблеры
+  consent, admin-проверки, дисклеймер accepted≠delivered≠read;
+  loading/error/retry, клавиатурная доступность через design-system.
+- Rate-limit per user+action на linking/verification/test; токен бота,
+  chat id, тексты сообщений и адреса — вне логов (тесты `caplog`);
+  audit: link/unlink/consent/test-send/retry/cancel/config-check.
+
+### Инфраструктура
+
+- Dev Compose: сервис `mailpit` (127.0.0.1:8025 UI, SMTP :1025 без auth/TLS)
+  как явный локальный sink; backend+worker указывают на него. Telegram в
+  dev выключен (нужен реальный токен).
+- Prod overlay: все `TELEGRAM_*`/`SMTP_*` из окружения, disabled by
+  default; `check_env.sh` фейлит incomplete-enabled и `SMTP_ENCRYPTION=none`.
+- Backup/retention: новые таблицы покрываются существующим PostgreSQL
+  backup без изменений формата (credential metadata = только хэши/маски).

@@ -43,6 +43,27 @@ services:
       # Reported by /ops/status; the deploy pipeline injects the full SHA of
       # the release commit so operators can map a running container to code.
       RELEASE_SHA: ${RELEASE_SHA:-}
+      # External channels (phase 9): disabled unless explicitly enabled.
+      # Secrets only from the environment; the backend validates enabled
+      # channels at startup and refuses to start incomplete.
+      TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_API_BASE_URL: ${TELEGRAM_API_BASE_URL:-https://api.telegram.org}
+      TELEGRAM_TIMEOUT_S: ${TELEGRAM_TIMEOUT_S:-10}
+      TELEGRAM_LINK_TTL_MINUTES: ${TELEGRAM_LINK_TTL_MINUTES:-15}
+      SMTP_ENABLED: ${SMTP_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-starttls}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-HR Manager}
+      SMTP_TIMEOUT_S: ${SMTP_TIMEOUT_S:-15}
+      EMAIL_VERIFICATION_TTL_HOURS: ${EMAIL_VERIFICATION_TTL_HOURS:-24}
+      INTEGRATION_RATE_LIMIT: ${INTEGRATION_RATE_LIMIT:-10}
+      INTEGRATION_RATE_WINDOW_S: ${INTEGRATION_RATE_WINDOW_S:-300}
     ports: !reset []
     # Production never auto-migrates at container start: migrations run as a
     # separate one-shot job (infra/scripts/migrate.sh) BEFORE the traffic is
@@ -51,6 +72,12 @@ services:
 
   frontend:
     image: hr-manager-frontend:${RELEASE_TAG:-local}
+    ports: !reset []
+
+  # Local SMTP sink: dev/test only. Unreachable in production (no published
+  # ports); the backend dials SMTP_HOST from the environment instead.
+  # Operators may additionally pass `--scale mailpit=0` to `up`.
+  mailpit:
     ports: !reset []
 
   # Notification delivery worker: the same release-tagged backend image,
@@ -69,6 +96,25 @@ services:
       WORKER_POLL_INTERVAL_S: ${WORKER_POLL_INTERVAL_S:-2}
       WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-120}
       WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-5}
+      # Same external-channel vision as the backend (phase 9).
+      TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_API_BASE_URL: ${TELEGRAM_API_BASE_URL:-https://api.telegram.org}
+      TELEGRAM_TIMEOUT_S: ${TELEGRAM_TIMEOUT_S:-10}
+      TELEGRAM_LINK_TTL_MINUTES: ${TELEGRAM_LINK_TTL_MINUTES:-15}
+      SMTP_ENABLED: ${SMTP_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-starttls}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-HR Manager}
+      SMTP_TIMEOUT_S: ${SMTP_TIMEOUT_S:-15}
+      EMAIL_VERIFICATION_TTL_HOURS: ${EMAIL_VERIFICATION_TTL_HOURS:-24}
+      INTEGRATION_RATE_LIMIT: ${INTEGRATION_RATE_LIMIT:-10}
+      INTEGRATION_RATE_WINDOW_S: ${INTEGRATION_RATE_WINDOW_S:-300}
       TZ: UTC
     ports: !reset []
 

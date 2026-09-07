@@ -50,6 +50,20 @@ Environment variables
                            migrations (defaults to the backend source root)
 ``BACKUP_HEALTH_TIMEOUT_S`` how long the drill waits for ``/health`` to turn
                            200 on the restored database (default 90)
+``TELEGRAM_ENABLED``       enable the Telegram Bot API channel (default false)
+``TELEGRAM_BOT_TOKEN``     bot token, secret, required when enabled
+``TELEGRAM_BOT_USERNAME``  public bot username for t.me deep links
+``TELEGRAM_API_BASE_URL``  Bot API base URL (default https://api.telegram.org)
+``TELEGRAM_TIMEOUT_S``     HTTP timeout for Bot API calls (default 10)
+``TELEGRAM_LINK_TTL_MINUTES``  linking-token lifetime (default 15)
+``SMTP_ENABLED``           enable the SMTP channel (default false)
+``SMTP_HOST``/``SMTP_PORT``/``SMTP_ENCRYPTION`` (none|starttls|tls)
+``SMTP_USERNAME``/``SMTP_PASSWORD``  auth pair (password is a secret)
+``SMTP_FROM_ADDRESS``/``SMTP_FROM_NAME``  envelope sender identity
+``SMTP_TIMEOUT_S``         socket timeout for SMTP (default 10)
+``SMTP_MAX_MESSAGE_BYTES`` rendered message size cap (default 524288)
+``EMAIL_VERIFICATION_TTL_HOURS``  address-confirmation lifetime (default 24)
+``INTEGRATION_RATE_LIMIT``/``INTEGRATION_RATE_WINDOW_S``  anti-spam
 """
 
 from functools import lru_cache
@@ -95,6 +109,28 @@ DEFAULT_WORKDAYS = "1,2,3,4,5"  # ISO weekdays, Monday = 1
 # Approaching-event offsets (hours before starts_at) per event type.
 DEFAULT_INTERVIEW_APPROACH_HOURS = "24,1"
 DEFAULT_CALL_APPROACH_HOURS = "1"
+
+# External channels (phase 9). Both channels are OPTIONAL: the application
+# keeps working with in-app notifications only. Secrets (bot token, SMTP
+# password) arrive exclusively via environment/secret storage and are never
+# written to git, the database, logs, metrics or API responses.
+DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
+DEFAULT_TELEGRAM_TIMEOUT_S = 10.0
+DEFAULT_TELEGRAM_LINK_TTL_MINUTES = 15
+# Telegram Bot API rejects text longer than 4096 UTF-16 code units; the
+# adapter truncates before sending and never splits one notification into
+# several messages.
+TELEGRAM_MAX_MESSAGE_CHARS = 4096
+# Upper bound for a single Telegram API response body kept in memory.
+TELEGRAM_MAX_RESPONSE_BYTES = 65_536
+DEFAULT_SMTP_PORT = 587
+DEFAULT_SMTP_TIMEOUT_S = 10.0
+# Upper bound for one rendered email message (headers + body).
+DEFAULT_SMTP_MAX_MESSAGE_BYTES = 524_288
+DEFAULT_EMAIL_VERIFICATION_TTL_HOURS = 24
+# Current version of the channel-consent terms. Stored with every opt-in so a
+# future policy change can ask users to re-confirm explicitly.
+CONSENT_POLICY_VERSION = "phase9-v1"
 
 
 class Settings(BaseSettings):
@@ -193,6 +229,44 @@ class Settings(BaseSettings):
         default=10.0, validation_alias="WORKER_HEARTBEAT_INTERVAL_S"
     )
     worker_stale_after_s: float = Field(default=45.0, validation_alias="WORKER_STALE_AFTER_S")
+
+    # External channels (phase 9): Telegram Bot API and universal SMTP.
+    # Disabled by default; enabling requires explicit configuration.
+    telegram_enabled: bool = Field(default=False, validation_alias="TELEGRAM_ENABLED")
+    telegram_bot_token: str = Field(default="", validation_alias="TELEGRAM_BOT_TOKEN")
+    telegram_bot_username: str = Field(default="", validation_alias="TELEGRAM_BOT_USERNAME")
+    telegram_api_base_url: str = Field(
+        default=DEFAULT_TELEGRAM_API_BASE_URL, validation_alias="TELEGRAM_API_BASE_URL"
+    )
+    telegram_timeout_s: float = Field(
+        default=DEFAULT_TELEGRAM_TIMEOUT_S, validation_alias="TELEGRAM_TIMEOUT_S"
+    )
+    telegram_link_ttl_minutes: int = Field(
+        default=DEFAULT_TELEGRAM_LINK_TTL_MINUTES, validation_alias="TELEGRAM_LINK_TTL_MINUTES"
+    )
+    smtp_enabled: bool = Field(default=False, validation_alias="SMTP_ENABLED")
+    smtp_host: str = Field(default="", validation_alias="SMTP_HOST")
+    smtp_port: int = Field(default=DEFAULT_SMTP_PORT, validation_alias="SMTP_PORT")
+    smtp_encryption: Literal["none", "starttls", "tls"] = Field(
+        default="starttls", validation_alias="SMTP_ENCRYPTION"
+    )
+    smtp_username: str = Field(default="", validation_alias="SMTP_USERNAME")
+    smtp_password: str = Field(default="", validation_alias="SMTP_PASSWORD")
+    smtp_from_address: str = Field(default="", validation_alias="SMTP_FROM_ADDRESS")
+    smtp_from_name: str = Field(default="HR Manager", validation_alias="SMTP_FROM_NAME")
+    smtp_timeout_s: float = Field(default=DEFAULT_SMTP_TIMEOUT_S, validation_alias="SMTP_TIMEOUT_S")
+    smtp_max_message_bytes: int = Field(
+        default=DEFAULT_SMTP_MAX_MESSAGE_BYTES, validation_alias="SMTP_MAX_MESSAGE_BYTES"
+    )
+    email_verification_ttl_hours: int = Field(
+        default=DEFAULT_EMAIL_VERIFICATION_TTL_HOURS,
+        validation_alias="EMAIL_VERIFICATION_TTL_HOURS",
+    )
+    # Anti-spam for linking/verification/test endpoints (per user, per action).
+    integration_rate_limit: int = Field(default=10, validation_alias="INTEGRATION_RATE_LIMIT")
+    integration_rate_window_s: int = Field(
+        default=300, validation_alias="INTEGRATION_RATE_WINDOW_S"
+    )
 
     @property
     def is_production(self) -> bool:
@@ -303,6 +377,43 @@ class Settings(BaseSettings):
         if self.worker_batch_size < 1:
             problems.append("WORKER_BATCH_SIZE must be at least 1")
 
+        # External channels (phase 9). Misconfiguration must fail fast; the
+        # messages below never echo secret values.
+        if self.telegram_enabled:
+            if not self.telegram_bot_token:
+                problems.append("TELEGRAM_BOT_TOKEN is required when TELEGRAM_ENABLED=true")
+            if not self.telegram_bot_username:
+                problems.append("TELEGRAM_BOT_USERNAME is required when TELEGRAM_ENABLED=true")
+        if self.telegram_api_base_url and not _is_http_base_url(self.telegram_api_base_url):
+            problems.append("TELEGRAM_API_BASE_URL must be an http(s) base URL without a path")
+        if self.is_production and self.telegram_api_base_url.startswith("http://"):
+            problems.append("TELEGRAM_API_BASE_URL must use https in production")
+        if self.telegram_timeout_s <= 0 or self.telegram_timeout_s > 120:
+            problems.append("TELEGRAM_TIMEOUT_S must be within (0, 120]")
+        if self.telegram_link_ttl_minutes < 1 or self.telegram_link_ttl_minutes > 24 * 60:
+            problems.append("TELEGRAM_LINK_TTL_MINUTES must be within [1, 1440]")
+        if self.smtp_enabled:
+            if not self.smtp_host:
+                problems.append("SMTP_HOST is required when SMTP_ENABLED=true")
+            if not self.smtp_from_address or not _looks_like_email(self.smtp_from_address):
+                problems.append(
+                    "SMTP_FROM_ADDRESS must be a valid email address when SMTP_ENABLED=true"
+                )
+        if self.smtp_port < 1 or self.smtp_port > 65535:
+            problems.append("SMTP_PORT must be within [1, 65535]")
+        if self.smtp_from_address and not _looks_like_email(self.smtp_from_address):
+            problems.append("SMTP_FROM_ADDRESS must be a valid email address")
+        if self.smtp_timeout_s <= 0 or self.smtp_timeout_s > 120:
+            problems.append("SMTP_TIMEOUT_S must be within (0, 120]")
+        if self.smtp_max_message_bytes < 4096:
+            problems.append("SMTP_MAX_MESSAGE_BYTES must be at least 4096")
+        if self.email_verification_ttl_hours < 1 or self.email_verification_ttl_hours > 72:
+            problems.append("EMAIL_VERIFICATION_TTL_HOURS must be within [1, 72]")
+        if self.integration_rate_limit < 1:
+            problems.append("INTEGRATION_RATE_LIMIT must be at least 1")
+        if self.integration_rate_window_s < 1:
+            problems.append("INTEGRATION_RATE_WINDOW_S must be at least 1")
+
         if problems:
             raise ValueError(
                 f"invalid configuration for environment '{self.environment}': "
@@ -350,6 +461,32 @@ def _is_hour_list(value: str) -> bool:
     except ValueError:
         return False
     return all(hour >= 0 for hour in hours)
+
+
+def _is_http_base_url(value: str) -> bool:
+    """True for ``http(s)://host[:port]`` without path, query or fragment."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(value.strip())
+    except ValueError:
+        return False
+    return (
+        parts.scheme in ("http", "https")
+        and bool(parts.hostname)
+        and not (parts.path.strip("/") or parts.query or parts.fragment)
+    )
+
+
+def _looks_like_email(value: str) -> bool:
+    """Cheap config-time email shape check (no DNS, no delivery promise)."""
+    from email.utils import parseaddr
+
+    _, address = parseaddr(value.strip())
+    if "@" not in address or any(ch.isspace() or ch in "\r\n" for ch in address):
+        return False
+    local, _, domain = address.partition("@")
+    return bool(local) and "." in domain and not domain.startswith(".")
 
 
 @lru_cache

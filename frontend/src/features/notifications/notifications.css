@@ -260,7 +260,7 @@
 
 .toggle-chip[aria-pressed="true"] {
   background: rgba(96, 165, 250, 0.16);
-  border-color: var(--accent);
+  border-color: var(--accent-default);
 }
 
 /* --- Admin queue ------------------------------------------------------------- */
@@ -323,4 +323,60 @@
     top: 70px;
     width: auto;
   }
+}
+
+/* --- Phase 9: integrations ------------------------------------------------ */
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+}
+
+.link-code-block {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: rgba(147, 163, 189, 0.06);
+}
+
+.deep-link {
+  display: inline-block;
+  margin: 4px 0 8px;
+  font-weight: 600;
+  color: var(--accent-default);
+}
+
+.email-form {
+  margin-top: 12px;
+  display: grid;
+  gap: 4px;
+  max-width: 420px;
+}
+
+.consent-check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(147, 163, 189, 0.06);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.consent-check input {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }

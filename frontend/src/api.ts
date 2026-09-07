@@ -1,5 +1,15 @@
 import type {
   AccessGrant,
+  AdminChannels,
+  ChannelCheckResult,
+  ChannelTestResult,
+  ConsentResult,
+  EmailConfirmResult,
+  EmailSetResult,
+  IntegrationStatus,
+  TelegramChannelStatus,
+  TelegramConfirmResult,
+  TelegramLinkCode,
   AnalyticsFunnelReport,
   DeliveryInfo,
   NotificationListPayload,
@@ -608,4 +618,80 @@ export async function revokePilotAccess(userId: string, reason: string): Promise
 
 export async function fetchQueueDiagnostics(): Promise<QueueDiagnostics> {
   return request<QueueDiagnostics>("/admin/ops/notifications/queue");
+}
+
+// --- Phase 9: external integrations (Telegram/SMTP) ---------------------------
+
+export async function getIntegrationStatus(): Promise<IntegrationStatus> {
+  return request<IntegrationStatus>("/integrations/status");
+}
+
+export async function createTelegramLinkCode(): Promise<TelegramLinkCode> {
+  return request<TelegramLinkCode>("/integrations/telegram/link-code", { method: "POST" });
+}
+
+export async function confirmTelegramLink(): Promise<TelegramConfirmResult> {
+  return request<TelegramConfirmResult>("/integrations/telegram/confirm", { method: "POST" });
+}
+
+export async function unlinkTelegram(): Promise<TelegramChannelStatus> {
+  return request<TelegramChannelStatus>("/integrations/telegram/unlink", { method: "POST" });
+}
+
+export async function updateTelegramConsent(
+  optIn: boolean,
+  consentGranted: boolean,
+): Promise<ConsentResult> {
+  return request<ConsentResult>("/integrations/telegram/consent", {
+    method: "PUT",
+    body: { opt_in: optIn, consent_granted: consentGranted },
+  });
+}
+
+export async function queueTelegramTest(): Promise<ChannelTestResult> {
+  return request<ChannelTestResult>("/integrations/telegram/test", { method: "POST" });
+}
+
+export async function setNotificationEmail(email: string): Promise<EmailSetResult> {
+  return request<EmailSetResult>("/integrations/email", {
+    method: "PUT",
+    body: { email },
+  });
+}
+
+export async function confirmNotificationEmail(token: string): Promise<EmailConfirmResult> {
+  return request<EmailConfirmResult>("/integrations/email/confirm", {
+    method: "POST",
+    body: { token },
+  });
+}
+
+export async function removeNotificationEmail(): Promise<void> {
+  return request<void>("/integrations/email", { method: "DELETE" });
+}
+
+export async function updateEmailConsent(
+  optIn: boolean,
+  consentGranted: boolean,
+): Promise<ConsentResult> {
+  return request<ConsentResult>("/integrations/email/consent", {
+    method: "PUT",
+    body: { opt_in: optIn, consent_granted: consentGranted },
+  });
+}
+
+export async function fetchAdminChannels(): Promise<AdminChannels> {
+  return request<AdminChannels>("/admin/integrations/channels");
+}
+
+export async function checkTelegramConfig(): Promise<ChannelCheckResult> {
+  return request<ChannelCheckResult>("/admin/integrations/telegram/check", { method: "POST" });
+}
+
+export async function checkSmtpConfig(): Promise<ChannelCheckResult> {
+  return request<ChannelCheckResult>("/admin/integrations/smtp/check", { method: "POST" });
+}
+
+export async function queueAdminSmtpTest(): Promise<ChannelTestResult> {
+  return request<ChannelTestResult>("/admin/integrations/smtp/test-send", { method: "POST" });
 }

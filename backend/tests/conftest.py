@@ -65,10 +65,13 @@ def _clean_login_limiter() -> Iterator[None]:
     test_auth.py and applies the same isolation to the whole suite.
     """
     from app.routers.auth import reset_login_limiter
+    from app.routers.integrations import reset_integration_limiters
 
     reset_login_limiter()
+    reset_integration_limiters()
     yield
     reset_login_limiter()
+    reset_integration_limiters()
 
 
 @pytest.fixture()
