@@ -721,7 +721,9 @@ def transfer_candidate(
     db.flush()  # transfer.id for the notification dedupe key
     # Phase 8: the handover notification joins the SAME transaction — a
     # crash can never lose it.
-    transfer_notification(db, transfer=transfer, new_owner=new_owner)
+    transfer_notification(
+        db, transfer=transfer, new_owner=new_owner, settings=request.app.state.settings
+    )
 
     # The transfer is an analytics fact; the new owner is the responsible HR
     # at fact time (later transfers never rewrite earlier facts).

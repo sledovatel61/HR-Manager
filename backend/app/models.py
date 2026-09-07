@@ -20,6 +20,7 @@ from enum import StrEnum
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
     Enum,
@@ -138,6 +139,21 @@ class AuditAction(StrEnum):
     PILOT_USER_CREATED = "pilot_user_created"
     PILOT_ACCESS_GRANTED = "pilot_access_granted"
     PILOT_ACCESS_REVOKED = "pilot_access_revoked"
+    # Phase 9: external channels (Telegram/SMTP), consent and bindings.
+    TELEGRAM_LINK_STARTED = "telegram_link_started"
+    TELEGRAM_LINK_CONFIRMED = "telegram_link_confirmed"
+    TELEGRAM_LINK_CONFLICT = "telegram_link_conflict"
+    TELEGRAM_UNLINKED = "telegram_unlinked"
+    TELEGRAM_CONSENT_UPDATED = "telegram_consent_updated"
+    TELEGRAM_CHECKED = "telegram_checked"
+    TELEGRAM_TEST_QUEUED = "telegram_test_queued"
+    CHANNEL_AUTO_REVOKED = "channel_auto_revoked"
+    EMAIL_ADDRESS_SET = "email_address_set"
+    EMAIL_VERIFIED = "email_verified"
+    EMAIL_REMOVED = "email_removed"
+    EMAIL_CONSENT_UPDATED = "email_consent_updated"
+    SMTP_CHECKED = "smtp_checked"
+    SMTP_TEST_QUEUED = "smtp_test_queued"
 
 
 class CandidateStage(StrEnum):
@@ -1091,7 +1107,13 @@ _GRANT_SCOPES = [member.value for member in AccessGrantScope]
 class NotificationPreference(Base):
     """Per-user notification settings (timezone, quiet hours, workdays,
     enabled types/channels). A missing row means system defaults; the row
-    is created lazily on first read/write by the owning user."""
+    is created lazily on first read/write by the owning user.
+
+    Phase 9 adds explicit per-channel consent: an external channel delivers
+    only when its ``*_opt_in`` flag is true AND a valid binding (Telegram
+    chat_id / verified email) exists AND the global configuration is
+    enabled. Existing users keep ``opt_in=false`` (never enabled silently).
+    """
 
     __tablename__ = "notification_preferences"
     __table_args__ = (
@@ -1120,6 +1142,21 @@ class NotificationPreference(Base):
     workdays: Mapped[list] = mapped_column(JSON, nullable=False)
     enabled_types: Mapped[list] = mapped_column(JSON, nullable=False)
     enabled_channels: Mapped[list] = mapped_column(JSON, nullable=False)
+    # Explicit consent for external channels (phase 9). A channel activates
+    # ONLY when both ``*_opt_in`` and ``*_consent_granted`` are explicitly
+    # true (the consent API requires both flags to agree); timestamp, source
+    # (e.g. "web-ui") and terms version are recorded with every change.
+    # ``None``/missing is never consent (fail-closed).
+    telegram_opt_in: Mapped[bool] = mapped_column(default=False, nullable=False)
+    telegram_consent_granted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    telegram_consent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    telegram_consent_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    telegram_consent_policy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    email_opt_in: Mapped[bool] = mapped_column(default=False, nullable=False)
+    email_consent_granted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    email_consent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    email_consent_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    email_consent_policy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
@@ -1548,3 +1585,142 @@ class AccessGrant(Base):
     @property
     def granted_by_username(self) -> str | None:
         return self.granted_by.username if self.granted_by is not None else None
+
+
+# --- Phase 9: Telegram and email channel bindings -----------------------------
+
+
+class TelegramLink(Base):
+    """One user's Telegram binding. The recipient identifier is the numeric
+    ``chat_id`` — never a username. ``revoked_at`` marks an explicit unlink
+    (or an automatic revoke after Telegram reported «blocked»); re-linking
+    clears it and replaces ``chat_id``. Delivery statistics carry safe
+    error classes only (no message text, no provider payloads).
+
+    An active ``chat_id`` is globally unique (partial unique index over
+    non-revoked rows): one Telegram chat can never serve two active users,
+    so a binding can never be silently taken over. Relinking to a chat
+    held by another active user fails closed (the holder must unlink
+    first); same-user relink is always allowed.
+    """
+
+    __tablename__ = "telegram_links"
+    __table_args__ = (
+        Index(
+            "uq_telegram_links_chat_id_active",
+            "chat_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL AND chat_id IS NOT NULL"),
+            sqlite_where=text("revoked_at IS NULL AND chat_id IS NOT NULL"),
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    linked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    last_error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    user: Mapped[User] = relationship()
+
+    @property
+    def is_linked(self) -> bool:
+        """A binding that may receive messages right now."""
+        return self.chat_id is not None and self.revoked_at is None
+
+
+class TelegramLinkToken(Base):
+    """One-shot expiring linking token. Only the SHA-256 hash is stored —
+    the raw value is shown to the owning user once at creation. A token is
+    consumed exactly once (atomic compare-and-set on ``consumed_at``); a
+    newer token supersedes older unconsumed ones of the same user."""
+
+    __tablename__ = "telegram_link_tokens"
+    __table_args__ = (
+        Index("ix_telegram_link_tokens_user_id", "user_id"),
+        Index("ix_telegram_link_tokens_expires_at", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    consume_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    user: Mapped[User] = relationship()
+
+
+class TelegramStartEvent(Base):
+    """Observed ``/start <token>`` events from the bot's getUpdates inbox.
+
+    The confirm endpoint scans getUpdates once per attempt; every ``/start``
+    payload seen is recorded here (token hash → chat_id) and the shared
+    poll offset advances past the scanned updates, so concurrent confirms
+    of different users never lose each other's events. Rows are pruned
+    opportunistically (linking tokens live minutes, not days)."""
+
+    __tablename__ = "telegram_start_events"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+
+
+class TelegramPollState(Base):
+    """Singleton row (id=1) with the getUpdates offset of the bot inbox."""
+
+    __tablename__ = "telegram_poll_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_update_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class UserEmail(Base):
+    """One user's email address for the SMTP channel. Only a *verified*
+    address may receive notifications: setting an address creates a pending
+    value plus a one-shot verification token delivered to that mailbox;
+    confirming the token promotes it to ``email``. Delivery statistics
+    carry safe error classes only."""
+
+    __tablename__ = "user_emails"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    pending_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    verification_token_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True
+    )
+    verification_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    verification_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    last_error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    user: Mapped[User] = relationship()
+
+    @property
+    def is_verified(self) -> bool:
+        return self.email is not None and self.verified_at is not None

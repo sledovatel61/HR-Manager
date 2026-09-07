@@ -858,10 +858,16 @@ class DeliveryAttemptOut(BaseModel):
     outcome: str
     error_code: str | None = None
     error_class: str | None = None
+    provider_message_id: str | None = None
 
 
 class DeliveryInfoOut(BaseModel):
-    """Delivery history of one outbox job (own notifications only)."""
+    """Delivery history of one outbox job (own notifications only).
+
+    ``provider_message_id`` is exposed only in the owner's own scope (and
+    never in admin queue counters). ``accepted`` means the provider took
+    the message — it is not «delivered» and not «read by a human».
+    """
 
     id: UUID
     channel: str
@@ -870,12 +876,15 @@ class DeliveryInfoOut(BaseModel):
     scheduled_at: datetime | None = None
     scheduled_at_effective: datetime | None = None
     queued_at: datetime
+    accepted_at: datetime | None = None
     delivered_at: datetime | None = None
     failed_at: datetime | None = None
     cancelled_at: datetime | None = None
     attempts: int
     next_attempt_at: datetime | None = None
+    error_code: str | None = None
     error_class: str | None = None
+    provider_message_id: str | None = None
     attempts_history: list[DeliveryAttemptOut] = []
 
 
@@ -1067,3 +1076,149 @@ class SetupStateOut(BaseModel):
     preferences_initialized: bool
     worker_alive: bool
     channels: dict[str, str]
+
+
+# --- Phase 9: Telegram/SMTP integrations, bindings, consent -------------------
+
+
+ChannelState = Literal["not_configured", "pending", "works", "temporarily_unavailable", "revoked"]
+
+
+class TelegramStatusOut(BaseModel):
+    """Own Telegram binding state (no secrets, masked identifiers)."""
+
+    state: ChannelState
+    configured: bool
+    linked: bool
+    masked_chat_id: str | None = None
+    pending_confirmation: bool = False
+    opt_in: bool = False
+    consent_at: datetime | None = None
+    linked_at: datetime | None = None
+
+
+class EmailStatusOut(BaseModel):
+    """Own email channel state (no secrets, masked addresses)."""
+
+    state: ChannelState
+    configured: bool
+    verified: bool
+    address_masked: str | None = None
+    pending_email_masked: str | None = None
+    pending_confirmation: bool = False
+    opt_in: bool = False
+    consent_at: datetime | None = None
+
+
+class IntegrationStatusOut(BaseModel):
+    """Combined own-channels status for the integrations screen."""
+
+    telegram: TelegramStatusOut
+    email: EmailStatusOut
+
+
+class TelegramLinkOut(BaseModel):
+    """One-shot linking token rendered as a bot deep link (shown once)."""
+
+    deep_link: str
+    expires_at: datetime
+
+
+class TelegramConfirmOut(BaseModel):
+    """Result of a linking-confirm attempt."""
+
+    linked: bool
+    state: ChannelState
+
+
+class ConsentUpdate(BaseModel):
+    """Explicit opt-in/opt-out for one external channel.
+
+    Contract (fail-closed): BOTH flags are required and MUST agree.
+    Activation needs ``opt_in=true`` together with an explicit
+    ``consent_granted=true``; anything else is a 422 with no state
+    change. Deactivation (``false``/``false``) is always honored and
+    stops new sends; re-enabling needs a fresh explicit grant.
+    """
+
+    opt_in: bool
+    consent_granted: bool
+
+
+class ConsentOut(BaseModel):
+    """Stored consent (timestamp, source and terms version are audited)."""
+
+    channel: str
+    opt_in: bool
+    consent_granted: bool
+    consent_at: datetime | None = None
+    policy_version: str | None = None
+
+
+class EmailSetRequest(BaseModel):
+    """Set (or change) the own notification email address."""
+
+    email: EmailStr = Field(max_length=254)
+
+
+class EmailSetOut(BaseModel):
+    """Pending verification state (the token travels only via email)."""
+
+    pending_email_masked: str
+    expires_at: datetime
+    verification_queued: bool
+
+
+class EmailConfirmRequest(BaseModel):
+    """Confirm the pending address with the token from the letter."""
+
+    token: str = Field(min_length=8, max_length=128)
+
+
+class EmailConfirmOut(BaseModel):
+    """Result of an address-confirm attempt."""
+
+    verified: bool
+    address_masked: str
+
+
+class AdminTelegramInfo(BaseModel):
+    """Global Telegram configuration state (admin only, no secrets)."""
+
+    enabled: bool
+    configured: bool
+    bot_username: str | None = None
+
+
+class AdminSmtpInfo(BaseModel):
+    """Global SMTP configuration state (admin only, no secrets)."""
+
+    enabled: bool
+    configured: bool
+    host: str | None = None
+    port: int | None = None
+    encryption: str | None = None
+    from_address: str | None = None
+
+
+class AdminChannelsOut(BaseModel):
+    """Global channels overview for administrators (no secrets)."""
+
+    telegram: AdminTelegramInfo
+    smtp: AdminSmtpInfo
+
+
+class ChannelCheckOut(BaseModel):
+    """Result of a live configuration check (no message is sent)."""
+
+    ok: bool
+    detail: str
+    error_class: str | None = None
+    bot_username: str | None = None
+
+
+class ChannelTestOut(BaseModel):
+    """An explicitly queued test message (delivery stays async/honest)."""
+
+    outbox_id: UUID
+    status: str

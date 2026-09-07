@@ -581,6 +581,7 @@ def update_event(
                 recipient=new_assignee,
                 type_=NotificationType.EVENT_CANCELLED,
                 initiator_user_id=user.id,
+                settings=request.app.state.settings,
             )
         elif new_status == EventStatus.COMPLETED:
             pass  # nothing to plan — completion cancels the stale plan only
@@ -592,6 +593,7 @@ def update_event(
                     recipient=new_assignee,
                     type_=NotificationType.EVENT_RESCHEDULED,
                     initiator_user_id=user.id,
+                    settings=request.app.state.settings,
                 )
             if new_status == EventStatus.SCHEDULED:
                 # (Re)plan approaching/overdue/assigned for the new schedule.
