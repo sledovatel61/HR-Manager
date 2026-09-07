@@ -43,10 +43,14 @@ run_backup_with_retry() {
   local request_id="${BACKUP_REQUEST_ID_PREFIX:-sched}-$(date -u +%Y%m%dT%H%M%SZ)"
   while :; do
     attempt=$((attempt + 1))
+    # Capture the command status in an else branch. With `set -e`, placing
+    # `code=$?` after a failed `if` compound command can lose the backup CLI's
+    # non-zero status and make the scheduler report a failed run as successful.
     if python -m app.cli backup-now --as-scheduler --reason "$REASON" --request-id "$request_id"; then
       return 0
+    else
+      code=$?
     fi
-    code=$?
     if [ "$attempt" -ge "$RETRY_ATTEMPTS" ]; then
       log "backup failed after ${attempt} attempt(s), last exit code ${code}; giving up"
       return "$code"

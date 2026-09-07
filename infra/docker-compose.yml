@@ -110,7 +110,11 @@ services:
       BACKUP_MIN_FREE_MB: "512"
       TZ: UTC
     depends_on:
-      db:
+      # The backup CLI records audit/state data before invoking pg_dump. Wait
+      # for the backend migration command to finish and its healthcheck to
+      # pass, otherwise a fresh database can make the backup start while the
+      # schema is still being created.
+      backend:
         condition: service_healthy
     volumes:
       - backups:/var/backups/hr-manager
