@@ -17,12 +17,14 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.main import create_app
 from app.models import (
+    AuditAction,
+    AuditEvent,
     DeliveryChannel,
     DeliveryStatus,
     NotificationDeliveryAttempt,
@@ -30,6 +32,7 @@ from app.models import (
     NotificationPreference,
     NotificationType,
     TelegramLink,
+    TelegramLinkToken,
     User,
     UserEmail,
     UserRole,
@@ -641,3 +644,93 @@ def test_fan_out_on_postgres_creates_all_channels(
         settings=channel_settings,
     )
     assert all(r is None for r in again)
+
+
+def test_same_chat_confirm_race_exactly_one_winner(
+    channel_client: TestClient, pg_db: Session, telegram_stub: TelegramStub
+) -> None:
+    """Two accounts racing to bind the SAME Telegram chat on PostgreSQL:
+    exactly one confirm wins (200), the loser fails closed (409) without
+    taking the chat over, and the loser's token stays active for a retry
+    (the holder may unlink first)."""
+    from urllib.parse import parse_qs, urlparse
+
+    app = channel_client.app
+    make_user(pg_db, username="pg-chat-a", role=UserRole.HR)
+    make_user(pg_db, username="pg-chat-b", role=UserRole.HR)
+
+    def provision(username: str) -> tuple[dict[str, str], str, str]:
+        # A dedicated client per user: sessions must not overwrite each other.
+        with TestClient(app) as login_client:
+            csrf = _login(login_client, username)
+            deep_link = login_client.post(
+                "/integrations/telegram/link-code", headers={"X-CSRF-Token": csrf}
+            ).json()["deep_link"]
+            raw = parse_qs(urlparse(deep_link).query)["start"][0]
+            return dict(login_client.cookies), csrf, raw
+
+    cookies_a, csrf_a, raw_a = provision("pg-chat-a")
+    cookies_b, csrf_b, raw_b = provision("pg-chat-b")
+    script = [
+        (
+            200,
+            {
+                "ok": True,
+                "result": [
+                    {
+                        "update_id": 9301,
+                        "message": {"chat": {"id": 424242}, "text": f"/start {raw_a}"},
+                    },
+                    {
+                        "update_id": 9302,
+                        "message": {"chat": {"id": 424242}, "text": f"/start {raw_b}"},
+                    },
+                ],
+            },
+        )
+    ] * 4
+    telegram_stub.script("getUpdates", script)
+    sessions = [(cookies_a, csrf_a), (cookies_b, csrf_b)]
+    results: list[int] = []
+
+    def confirm_once(index: int) -> None:
+        cookies, csrf = sessions[index]
+        with TestClient(app) as thread_client:
+            thread_client.cookies.update(cookies)
+            response = thread_client.post(
+                "/integrations/telegram/confirm",
+                headers={"X-CSRF-Token": csrf},
+            )
+            results.append(response.status_code)
+
+    threads = [threading.Thread(target=confirm_once, args=(i,)) for i in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert sorted(results) == [200, 409]
+
+    pg_db.expire_all()
+    holders = (
+        pg_db.execute(
+            select(TelegramLink).where(
+                TelegramLink.chat_id == 424242, TelegramLink.revoked_at.is_(None)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(holders) == 1  # the unique index held: no double binding
+    tokens = pg_db.execute(select(TelegramLinkToken)).scalars().all()
+    assert len(tokens) == 2
+    consumed = sorted(t.consumed_at is not None for t in tokens)
+    assert consumed == [False, True]  # loser retries with the same code
+    conflicts = (
+        pg_db.execute(
+            select(AuditEvent).where(AuditEvent.action == AuditAction.TELEGRAM_LINK_CONFLICT)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(conflicts) == 1
+    assert "424242" not in (conflicts[0].details or "")

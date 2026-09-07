@@ -727,3 +727,84 @@ def test_link_code_rate_limit(limited_client: TestClient, db_session: Session) -
     third = limited_client.post("/integrations/telegram/link-code", headers={"X-CSRF-Token": csrf})
     assert third.status_code == 429
     assert "Retry-After" in third.headers
+
+
+def test_confirm_foreign_chat_conflict_is_fail_closed(
+    channel_client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chat bound to another account can never be taken over: 409, the
+    holder keeps the binding, the token stays active, and the conflict is
+    audited without any chat identifier."""
+    from app.models import TelegramStartEvent
+
+    owner = make_user(db_session, username="owner", role=UserRole.HR)
+    make_user(db_session, username="intruder", role=UserRole.HR)
+    db_session.add(
+        TelegramLink(
+            user_id=owner.id,
+            chat_id=555001,
+            linked_at=datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC),
+        )
+    )
+    db_session.commit()
+    csrf = _login(channel_client, "intruder")
+    raw = _raw_token_from_link(
+        channel_client.post(
+            "/integrations/telegram/link-code", headers={"X-CSRF-Token": csrf}
+        ).json()["deep_link"]
+    )
+
+    def fake_poll(config, *, offset):  # type: ignore[no-untyped-def]
+        # The holder's chat pressed /start with the intruder's code.
+        return TelegramUpdatesResult(
+            ok=True,
+            updates=(TelegramStartUpdate(update_id=71, chat_id=555001, token=raw),),
+            max_update_id=71,
+        )
+
+    monkeypatch.setattr(integrations_module, "_poll_starts_impl", fake_poll)
+    response = channel_client.post("/integrations/telegram/confirm", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 409, response.text
+    assert "555001" not in response.text  # the foreign chat id never leaks
+
+    db_session.expire_all()
+    by_chat = (
+        db_session.execute(select(TelegramLink).where(TelegramLink.chat_id == 555001))
+        .scalars()
+        .all()
+    )
+    assert [link.user_id for link in by_chat] == [owner.id]  # holder unchanged
+    token = db_session.execute(select(TelegramLinkToken)).scalar_one()
+    assert token.consumed_at is None  # retry stays possible after unlink
+    assert db_session.execute(select(TelegramStartEvent)).scalars().all() == []
+    conflict = (
+        db_session.execute(
+            select(AuditEvent).where(AuditEvent.action == AuditAction.TELEGRAM_LINK_CONFLICT)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(conflict) == 1
+    assert "555001" not in (conflict[0].details or "")
+
+
+def test_confirm_inactive_user_cannot_confirm(
+    channel_client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deactivated account is rejected with 401 on the confirm path even
+    with a live session and a live token (dependency gates the handler)."""
+    user = make_user(db_session, username="leaver", role=UserRole.HR)
+    csrf = _login(channel_client, "leaver")
+    channel_client.post("/integrations/telegram/link-code", headers={"X-CSRF-Token": csrf})
+
+    def fake_poll(config, *, offset):  # type: ignore[no-untyped-def]
+        raise AssertionError("poll must not run for an inactive user")
+
+    monkeypatch.setattr(integrations_module, "_poll_starts_impl", fake_poll)
+    user.is_active = False
+    db_session.commit()
+    response = channel_client.post("/integrations/telegram/confirm", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 401
+    assert db_session.execute(select(TelegramLink)).scalars().all() == []
+    token = db_session.execute(select(TelegramLinkToken)).scalar_one()
+    assert token.consumed_at is None
