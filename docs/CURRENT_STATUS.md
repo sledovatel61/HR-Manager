@@ -1,12 +1,14 @@
 # Текущее состояние и handoff
 
-Актуально после **Phase 8 — фундамент уведомлений и пилотный режим**
-(реализация на ветке `arena/01a060e3-hr-manager`, PR #10; merge в `main` —
-действие владельца). Предыдущий принятый этап — **Phase 7 — backup,
-deployment и release**. Этот файл
-— первая точка входа для нового агента. Готовый текст для вставки в новый чат
-находится в `prompts/PHASE_8_START_PROMPT.md`, а полное техническое задание —
-в `prompts/PHASE_8_PROMPT.md`.
+> Phase 8 принята и влита в `main` на SHA `2cb6ab63f1276f259146d477cd1cc98462f066ec`. Для следующего этапа использовать `prompts/PHASE_9_PROMPT.md`.
+
+Актуально после **Phase 8 — фундамент уведомлений и пилотный режим**.
+Phase 8 принята после независимого review и влита в `main` с fast-forward до
+SHA `2cb6ab63f1276f259146d477cd1cc98462f066ec` (PR #10). Предыдущий принятый
+этап — **Phase 7 — backup, deployment и release**. Этот файл — первая точка
+входа для нового агента. Полное техническое задание Phase 8 находится в
+`prompts/PHASE_8_PROMPT.md`, а стартовый промпт следующего этапа — в
+`prompts/PHASE_9_PROMPT.md`.
 
 ## Что принято
 
@@ -32,9 +34,10 @@ deployment и release**. Этот файл
 Подробный технический отчёт и результаты проверок Phase 7:
 `docs/phase-7-report-agent2.md`.
 
-## Phase 8 — выполнено, ожидает merge
+## Phase 8 — принято
 
-Ветка `arena/01a060e3-hr-manager` (head см. в отчёте), PR #10. Что вошло:
+Ветка `arena/01a060e3-hr-manager`, PR #10, final SHA
+`2cb6ab63f1276f259146d477cd1cc98462f066ec`. Что вошло:
 
 1. внутренний notification center и личные напоминания без моков;
 2. transactional outbox на PostgreSQL + отдельный worker (SKIP LOCKED,
@@ -65,9 +68,18 @@ SMTP/Telegram-отправки, Redis/RabbitMQ, сообщения кандид�
 + инструкция переноса в `review-artifacts/README.md`. Семантика
 `?`-охран `compose.prod.yml` намеренно не ослабляется.
 
+## Phase 9 — подготовлено к разработке
+
+Полное задание находится в `prompts/PHASE_9_PROMPT.md`. Этап должен начать
+coding-agent строго от актуального `origin/main`, выполнить обязательный аудит
+Phase 8 и создать отдельную ветку `arena/phase-9-telegram-email`. Scope Phase 9:
+реальные Telegram Bot API и SMTP-адаптеры через существующий PostgreSQL outbox,
+без фиктивной доставки, с одноразовой привязкой Telegram, consent, таймаутами,
+retry/backoff, безопасными секретами, RBAC/CSRF/IDOR-защитой и русскоязычным UI.
+
 ## Как начать в новом чате
 
-Скопировать в новый чат содержимое `prompts/PHASE_8_START_PROMPT.md`. Ниже
+Скопировать в новый чат содержимое `prompts/PHASE_9_PROMPT.md`. Ниже
 приведены те же ключевые команды синхронизации для быстрой проверки.
 
 Перед изменениями агент должен:
@@ -82,9 +94,9 @@ git rev-parse HEAD
 
 Затем прочитать `agents.md`, `PRODUCT_SPEC.md`, `ROADMAP.md`, `README.md`,
 `docs/ARCHITECTURE.md`, этот handoff, отчёты этапов и полностью
-`prompts/PHASE_8_PROMPT.md`; изучить текущие RBAC, события, audit, миграции,
-Compose и UI-колокольчик; выполнить baseline; создать ветку
-`arena/phase-8-notifications`. Не менять `main` напрямую.
+`prompts/PHASE_9_PROMPT.md`; изучить текущие RBAC, события, audit, миграции,
+Compose, outbox/worker и UI; выполнить baseline; создать ветку
+`arena/phase-9-telegram-email`. Не менять `main` напрямую.
 
 Минимальный baseline (с учётом доступности Docker/PostgreSQL):
 
