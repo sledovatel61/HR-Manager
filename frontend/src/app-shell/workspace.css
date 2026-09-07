@@ -97,6 +97,16 @@
   color: var(--text-primary);
 }
 
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.topbar-bell-wrap {
+  position: relative;
+}
+
 .topbar-user {
   display: flex;
   align-items: center;

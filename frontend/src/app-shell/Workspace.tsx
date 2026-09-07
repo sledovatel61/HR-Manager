@@ -6,6 +6,12 @@ import CandidatesListPage from "../features/candidates/CandidatesListPage";
 import KanbanPage from "../features/candidates/KanbanPage";
 import CalendarPage from "../features/calendar/CalendarPage";
 import AnalyticsPage from "../features/analytics/AnalyticsPage";
+import { NotificationBell } from "../features/notifications/NotificationBell";
+import { NotificationCenterPage } from "../features/notifications/NotificationCenterPage";
+import { RemindersPage } from "../features/notifications/RemindersPage";
+import { PreferencesPage } from "../features/notifications/PreferencesPage";
+import { AdminQueuePage } from "../features/notifications/AdminQueuePage";
+import { SetupWizard } from "../features/notifications/SetupWizard";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
 import "./workspace.css";
 
@@ -21,14 +27,22 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   kanban: { label: "Kanban", icon: "kanban" },
   deleted: { label: "Удалённые", icon: "trash" },
   analytics: { label: "Аналитика", icon: "bar-chart" },
+  notifications: { label: "Уведомления", icon: "bell" },
+  reminders: { label: "Напоминания", icon: "clock" },
+  preferences: { label: "Настройки уведомлений", icon: "settings" },
+  admin: { label: "Администрирование", icon: "shield" },
 };
 
 function sectionsForRole(role: UserRole): WorkspaceSection[] {
   // Analytics is a team-level report: manager/admin only (HR gets 403 from
-  // the API and never sees the navigation item).
+  // the API and never sees the navigation item). The notification center,
+  // reminders and preferences are available to every role; the admin
+  // screen (queue diagnostics + pilot setup) is admin-only. The backend
+  // re-checks every right regardless of the navigation.
+  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences"];
   return role === "hr"
-    ? ["queue", "calendar", "kanban", "deleted"]
-    : ["candidates", "calendar", "kanban", "deleted", "analytics"];
+    ? ["queue", "calendar", "kanban", "deleted", ...personal]
+    : ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "admin"];
 }
 
 function initialsOf(fullName: string, username: string): string {
@@ -48,6 +62,10 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
 
   // A 401 from any API call means the session is gone: return to login.
   useEffect(() => onUnauthorized(onLoggedOut), [onLoggedOut]);
+
+  // First-login setup wizard (timezone + quiet hours quick-set). Shown
+  // once; safe to skip and to resume later from the preferences section.
+  const [setupDone, setSetupDone] = useState(false);
 
   const handleLogout = async () => {
     try {
@@ -95,7 +113,9 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
       <div className="workspace-main">
         <header className="topbar">
           <h1 className="topbar-title">{SECTION_META[section].label}</h1>
-          <div className="topbar-user">
+          <div className="topbar-right">
+            <NotificationBell onOpenCandidate={openCandidate} />
+            <div className="topbar-user">
             <span className="topbar-avatar" aria-hidden="true">
               {initialsOf(user.full_name, user.username)}
             </span>
@@ -107,6 +127,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
               <Icon name="log-out" size={15} />
               Выйти
             </button>
+            </div>
           </div>
         </header>
 
@@ -116,7 +137,19 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           )}
           {section === "kanban" && <KanbanPage user={user} />}
           {section === "analytics" && <AnalyticsPage user={user} />}
-          {section !== "calendar" && section !== "kanban" && section !== "analytics" && (
+          {section === "notifications" && (
+            <NotificationCenterPage onOpenCandidate={openCandidate} />
+          )}
+          {section === "reminders" && <RemindersPage user={user} />}
+          {section === "preferences" && <PreferencesPage />}
+          {section === "admin" && <AdminQueuePage />}
+          {section !== "calendar" &&
+            section !== "kanban" &&
+            section !== "analytics" &&
+            section !== "notifications" &&
+            section !== "reminders" &&
+            section !== "preferences" &&
+            section !== "admin" && (
             <CandidatesListPage
               key={section}
               user={user}
@@ -126,6 +159,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             />
           )}
         </main>
+        {!setupDone && <SetupWizard onDone={() => setSetupDone(true)} />}
       </div>
     </div>
   );

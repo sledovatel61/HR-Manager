@@ -532,3 +532,132 @@ export const KPI_DEFINITIONS: Record<keyof AnalyticsKpis, string> = {
   terminated:
     "Уникальные кандидаты с зарегистрированным увольнением (дата + причина) в периоде. Статус «Уволен» без даты не учитывается.",
 };
+
+// --- Phase 8: notifications, reminders, preferences, pilot setup -------------
+
+export type NotificationPriority = "low" | "normal" | "high";
+export type NotificationSource = "system" | "rule" | "reminder" | "manual";
+
+/** One in-app notification (GET /notifications). */
+export interface AppNotification {
+  id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  priority: NotificationPriority;
+  source: NotificationSource;
+  object_type: string | null;
+  object_id: string | null;
+  created_at: string;
+  read_at: string | null;
+  dismissed_at: string | null;
+}
+
+export interface NotificationListPayload {
+  items: AppNotification[];
+  total: number;
+  limit: number;
+  offset: number;
+  unread_count: number;
+}
+
+export interface NotificationResolve {
+  allowed: boolean;
+  object_type: string | null;
+  object_id: string | null;
+}
+
+export interface DeliveryAttempt {
+  attempt_no: number;
+  started_at: string;
+  finished_at: string;
+  outcome: string;
+  error_code: string | null;
+  error_class: string | null;
+}
+
+export interface DeliveryInfo {
+  id: string;
+  channel: string;
+  status: string;
+  notification_type: string;
+  scheduled_at: string | null;
+  scheduled_at_effective: string | null;
+  queued_at: string;
+  delivered_at: string | null;
+  failed_at: string | null;
+  cancelled_at: string | null;
+  attempts: number;
+  next_attempt_at: string | null;
+  error_class: string | null;
+  attempts_history: DeliveryAttempt[];
+}
+
+export type ReminderRecurrence = "none" | "daily" | "workdays" | "weekly";
+export type ReminderStatus = "active" | "completed" | "cancelled";
+export type ReminderImportance = "low" | "normal" | "high";
+
+export interface Reminder {
+  id: string;
+  owner_user_id: string;
+  owner_username: string;
+  assignee_user_id: string;
+  assignee_username: string;
+  title: string;
+  note: string | null;
+  candidate_id: string | null;
+  event_id: string | null;
+  due_at: string;
+  timezone: string;
+  importance: ReminderImportance;
+  recurrence: ReminderRecurrence;
+  status: ReminderStatus;
+  completed_at: string | null;
+  occurrence: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReminderListPayload {
+  items: Reminder[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface NotificationPreferences {
+  timezone: string;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  workdays: number[];
+  enabled_types: string[];
+  enabled_channels: string[];
+  initialized: boolean;
+}
+
+export interface QueueDiagnostics {
+  counts: Record<string, number>;
+  oldest_queued_at: string | null;
+  stuck_sending: number;
+  worker: { alive: boolean; last_seen_at?: string; processed_total?: number; failed_total?: number };
+}
+
+export interface SetupState {
+  pilot_exists: boolean;
+  pilot_grant_active: boolean;
+  preferences_initialized: boolean;
+  worker_alive: boolean;
+  channels: Record<string, string>;
+}
+
+export interface AccessGrant {
+  id: string;
+  user_id: string;
+  username: string;
+  scope: string;
+  granted_by_username: string | null;
+  granted_at: string;
+  revoked_at: string | null;
+  revoke_reason: string | null;
+}

@@ -1,0 +1,18 @@
+--- .github/workflows/ci.yml	2026-09-07 05:54:13.619094561 +0000
++++ review-artifacts/ci.agent-2.phase8.yml	2026-09-07 06:24:02.951310244 +0000
+@@ -234,6 +234,15 @@
+ 
+       - name: Validate HTTPS proxy overlay configuration
+         run: |
++          # The production overlay interpolates ${SECRET_KEY:?}, ${POSTGRES_PASSWORD:?}
++          # and ${BOOTSTRAP_ADMIN_PASSWORD:?}: they are required to RENDER the
++          # configuration at all (each CI step is an isolated shell, so the
++          # exports from the "Validate production overlay" step do not carry
++          # over). Provide strong ephemeral values, exactly like that step.
++          export APP_ENV=production
++          export SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
++          export POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
++          export BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+           export SERVER_NAME=hr-manager.example.com
+           export TLS_CERT_DIR=/tmp/hr-manager-tls
+           docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml \
