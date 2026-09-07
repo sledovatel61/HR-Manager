@@ -2,9 +2,10 @@
 
 - **Ветка:** `arena/01a060e3-hr-manager`
 - **Baseline SHA (origin/main на старте):** `d18ec9efc7973d8c86c9ecedf0d3e2f122c7ad2b`
-- **Final SHA:** `e175ab46cc9b6215a69d07e4b4cfca13c2b2bd92`
+- **Final SHA:** `07177c854716ee1ea8b2518ea0bac140680d9651`
 - **PR:** https://github.com/sledovatel61/HR-Manager/pull/10
-- **CI:** run 34090710477 (PR #10, head e175ab4); run 34089737761 (первый пуш bcb4176)
+- **CI:** run 34090710477 (PR #10, head e175ab4) и последующие rerun-ы на каждый пуш;
+  run 34089737761 (первый пуш bcb4176)
 
 ## Резюме
 
