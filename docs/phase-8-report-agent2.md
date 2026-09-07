@@ -4,11 +4,14 @@
 - **Baseline SHA (origin/main на старте):** `d18ec9efc7973d8c86c9ecedf0d3e2f122c7ad2b`
 - **Final SHA (реализация):** `bb1dfaa54ecc31e4d5ccdb6914ecca1df628e1d5`
   (верхний коммит ветки — docs-фикс с этим же SHA внутри отчёта)
-- **Fix SHA (ответ на ревью оркестратора, текущий tip):**
-  `4b1c8c5` (коммит «fix(phase8): address review blockers on notifications
-  foundation» поверх `b0c4ab3`)
+- **Fix SHA (ответ на ревью оркестратора):** `4b1c8c5` (коммит
+  «fix(phase8): address review blockers on notifications foundation»
+  поверх `b0c4ab3`)
+- **Final tip SHA (все проверки на этот tip):** `8c5ab96` (docs-обновление
+  этого отчёта поверх `4b1c8c5`; кода не трогает)
 - **PR:** https://github.com/sledovatel61/HR-Manager/pull/10
-- **CI:** run 34096234548 (PR #10, head 4b1c8c5) — прогон fix-tip;
+- **CI:** run 34096641739 (PR #10, head 8c5ab96) — прогон финального tip;
+  run 34096234548 (head 4b1c8c5) — прогон fix-коммита;
   run 34090939408 (head bb1dfaa) — прогон реализации;
   run 34091223809 (head b0c4ab3) — прогон, отклонённый ревью;
   run 34089737761 (первый пуш bcb4176), run 34090710477 (e175ab4) — промежуточные
@@ -182,8 +185,11 @@ run 34096234548 (head 4b1c8c5):
   т. к. идут после упавшего шага). Подпись падения идентична прогону
   b0c4ab3 — баг не в ветке, перенос патча за владельцем.
 
-CI run 34090939408 (head bb1dfaa, реализация): Backend ✓, Frontend ✓,
-Integration ✓, stack — то же единственное ✗. Run 34091223809 (b0c4ab3,
+Финальный tip `8c5ab96` (docs-обновление поверх `4b1c8c5`, кода не
+трогает) перепрогнан CI run 34096641739 — та же подпись: **Backend ✓,
+Frontend ✓, Integration (PostgreSQL) ✓**, stack — все шаги ✓ кроме
+«Validate HTTPS proxy overlay configuration» (шаг владельца). CI
+run 34090939408 (head bb1dfaa, реализация) и run 34091223809 (b0c4ab3,
 отклонён ревью) — та же подпись.
 
 ## Security/PII review
