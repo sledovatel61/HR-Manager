@@ -253,7 +253,7 @@ def _make_external_row(
         db.add(row)
         db.flush()
     else:
-        row = schedule(
+        scheduled = schedule(
             db,
             recipient_user_id=user.id,
             channel=DeliveryChannel.TELEGRAM,
@@ -262,7 +262,8 @@ def _make_external_row(
             dedupe_key=f"ext:{uuid4().hex}",
             scheduled_at=NOW,
         )
-        assert row is not None
+        assert scheduled is not None
+        row = scheduled
     row.status = DeliveryStatus.ACCEPTED
     row.accepted_at = NOW
     row.provider_message_id = "4242"
