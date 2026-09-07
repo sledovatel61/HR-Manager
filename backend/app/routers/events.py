@@ -41,8 +41,14 @@ from app.models import (
     EventHistoryKind,
     EventStatus,
     EventType,
+    NotificationType,
     User,
     UserRole,
+)
+from app.notification_service import (
+    cancel_pending_for_object,
+    plan_event_notifications,
+    plan_event_state_notification,
 )
 from app.schemas import (
     EventCreate,
@@ -350,6 +356,15 @@ def create_event(
         status_new=EventStatus.SCHEDULED.value,
     )
     db.add(history)
+    # Phase 8: the event's notification plan joins the SAME transaction —
+    # a crash can never lose the assigned/approaching/overdue notices.
+    plan_event_notifications(
+        db,
+        event=event,
+        author=user,
+        assignee=assignee,
+        settings=request.app.state.settings,
+    )
     _audit_event(
         db,
         request,
@@ -418,10 +433,10 @@ def update_event(
                 "Обновите данные и повторите."
             ),
         )
-    if locked.status == EventStatus.COMPLETED:
+    if locked.status in (EventStatus.COMPLETED, EventStatus.CANCELLED):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Завершённое событие нельзя изменять.",
+            detail="Завершённое или отменённое событие нельзя изменять.",
         )
 
     changed_fields: list[str] = []
@@ -498,7 +513,10 @@ def update_event(
         )
 
     # --- Derive the single business-history kind and audit action ---
-    if new_status == EventStatus.COMPLETED and locked.status != EventStatus.COMPLETED:
+    if new_status == EventStatus.CANCELLED and locked.status != EventStatus.CANCELLED:
+        kind = EventHistoryKind.CANCELLED
+        audit_action = AuditAction.EVENT_CANCELLED
+    elif new_status == EventStatus.COMPLETED and locked.status != EventStatus.COMPLETED:
         kind = EventHistoryKind.COMPLETED
         audit_action = AuditAction.EVENT_COMPLETED
     elif new_status == EventStatus.POSTPONED and locked.status != EventStatus.POSTPONED:
@@ -532,6 +550,7 @@ def update_event(
         note_changed="note" in changed_fields,
     )
 
+    old_status = locked.status
     locked.status = new_status
     locked.starts_at = new_starts
     locked.ends_at = new_ends
@@ -540,8 +559,49 @@ def update_event(
     locked.note = new_note
     locked.assignee_user_id = new_assignee.id
     locked.completed_at = utc_now() if new_status == EventStatus.COMPLETED else None
+    locked.cancelled_at = utc_now() if new_status == EventStatus.CANCELLED else None
     locked.version = locked.version + 1
     locked.updated_at = utc_now()
+
+    # Phase 8 notification plan (same transaction as the mutation).
+    became_cancelled = new_status == EventStatus.CANCELLED and old_status != EventStatus.CANCELLED
+    became_postponed = new_status == EventStatus.POSTPONED and old_status != EventStatus.POSTPONED
+    if (
+        became_cancelled
+        or new_status == EventStatus.COMPLETED
+        or "starts_at" in changed_fields
+        or became_postponed
+        or "assignee_user_id" in changed_fields
+    ):
+        cancel_pending_for_object(db, object_type="event", object_id=locked.id)
+        if became_cancelled:
+            plan_event_state_notification(
+                db,
+                event=locked,
+                recipient=new_assignee,
+                type_=NotificationType.EVENT_CANCELLED,
+                initiator_user_id=user.id,
+            )
+        elif new_status == EventStatus.COMPLETED:
+            pass  # nothing to plan — completion cancels the stale plan only
+        else:
+            if "starts_at" in changed_fields or became_postponed:
+                plan_event_state_notification(
+                    db,
+                    event=locked,
+                    recipient=new_assignee,
+                    type_=NotificationType.EVENT_RESCHEDULED,
+                    initiator_user_id=user.id,
+                )
+            if new_status == EventStatus.SCHEDULED:
+                # (Re)plan approaching/overdue/assigned for the new schedule.
+                plan_event_notifications(
+                    db,
+                    event=locked,
+                    author=user,
+                    assignee=new_assignee,
+                    settings=request.app.state.settings,
+                )
 
     # Completing an event is an analytics fact (same single transaction).
     if new_status == EventStatus.COMPLETED:

@@ -28,6 +28,7 @@ import shutil
 import threading
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -41,7 +42,7 @@ from app.backup import freshness_ok, load_state
 from app.backup_runner import RunnerConfig, run_backup, run_restore_drill
 from app.db import SessionLocal, get_db, probe_database
 from app.deps import require_roles
-from app.models import AuditAction, User, UserRole
+from app.models import AuditAction, NotificationOutbox, User, UserRole
 from app.schemas import (
     DatabaseHealth,
     OpsBackupHealthResponse,
@@ -52,6 +53,9 @@ from app.schemas import (
     OpsMigrationSignal,
     OpsReleaseRecordRequest,
     OpsStatusResponse,
+    OutboxActionOut,
+    OutboxRetryRequest,
+    QueueDiagnosticsOut,
 )
 from app.utils import utc_now
 
@@ -129,8 +133,11 @@ def _migration_signals(engine: object) -> OpsMigrationSignal:
 
 
 @router.get("/ops/status", response_model=OpsStatusResponse, summary="Ops status (no PII)")
-def ops_status(request: Request, response: Response) -> OpsStatusResponse:
-    """Operational status: database, migrations, backup freshness, release."""
+def ops_status(
+    request: Request, response: Response, db: Session = Depends(get_db)
+) -> OpsStatusResponse:
+    """Operational status: database, migrations, backup freshness, release,
+    and the phase-8 notification queue/worker signal."""
     settings = request.app.state.settings
     engine = request.app.state.engine
     probe = probe_database(engine)
@@ -150,6 +157,7 @@ def ops_status(request: Request, response: Response) -> OpsStatusResponse:
         ),
         migrations=_migration_signals(engine),
         backup=_backup_signals(settings),
+        notifications=_notifications_signal(db, utc_now()),
     )
 
 
@@ -371,3 +379,171 @@ def list_backups(
         "last_drill": state.last_drill,
         "recent": [record.__dict__ for record in state.recent],
     }
+
+
+# --- Phase 8: notification queue administration -------------------------------
+
+
+def _notifications_signal(db: Session, now: datetime) -> dict | None:
+    """Queue/worker signal for /ops/status. Degrades to None when the
+    phase-8 tables are unavailable; never returns PII."""
+    try:
+        from app.worker import queue_counts
+
+        return queue_counts(db, now=now)
+    except Exception:
+        return None
+
+
+def _get_outbox_row(db: Session, outbox_id: str) -> NotificationOutbox:
+    """Resolve an outbox row by id (404 for junk/foreign ids)."""
+
+    try:
+        uid = uuid.UUID(outbox_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Задание очереди не найдено."
+        ) from None
+    row = db.get(NotificationOutbox, uid)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Задание очереди не найдено."
+        )
+    return row
+
+
+@router.get(
+    "/admin/ops/notifications/queue",
+    response_model=QueueDiagnosticsOut,
+    summary="Notification queue diagnostics (admin, no PII)",
+)
+def notification_queue_diagnostics(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(_admin_only),
+) -> QueueDiagnosticsOut:
+    """Counts and statuses only: no titles, bodies, recipients or payloads."""
+    from app.worker import queue_counts
+
+    record_event(
+        db,
+        AuditAction.QUEUE_DIAGNOSTICS_VIEWED,
+        actor=admin,
+        details="notification queue diagnostics",
+        commit=False,
+    )
+    data = queue_counts(db, now=utc_now())
+    db.commit()
+    return QueueDiagnosticsOut(
+        counts=data["counts"],
+        oldest_queued_at=data["oldest_queued_at"],
+        stuck_sending=data["stuck_sending"],
+        worker=data["worker"],
+    )
+
+
+@router.post(
+    "/admin/ops/notifications/{outbox_id}/retry",
+    response_model=OutboxActionOut,
+    summary="Retry a failed/skipped/cancelled job (admin, audited)",
+)
+def retry_notification(
+    outbox_id: str,
+    payload: OutboxRetryRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(_admin_only),
+) -> OutboxActionOut:
+    """A retry never edits the old record: it creates a NEW outbox row with
+    the same snapshot (the immutable attempt history stays intact)."""
+    from app.models import DeliveryStatus
+
+    old = _get_outbox_row(db, outbox_id)
+    if old.status not in (
+        DeliveryStatus.FAILED,
+        DeliveryStatus.SKIPPED,
+        DeliveryStatus.CANCELLED,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Повторить можно только неудачное, пропущенное или отменённое задание.",
+        )
+    new_row = NotificationOutbox(
+        recipient_user_id=old.recipient_user_id,
+        external_recipient=old.external_recipient,
+        channel=old.channel,
+        notification_type=old.notification_type,
+        source=old.source,
+        title=old.title,
+        body=old.body,
+        template=old.template,
+        template_version=old.template_version,
+        initiator_user_id=admin.id,
+        object_type=old.object_type,
+        object_id=old.object_id,
+        scheduled_at=utc_now(),
+        queued_at=utc_now(),
+        status=DeliveryStatus.QUEUED,
+        idempotency_key=f"{old.idempotency_key}:retry:{uuid.uuid4().hex[:12]}",
+        consent_snapshot=old.consent_snapshot,
+        quiet_hours_bypassed=payload.bypass_quiet_hours,
+    )
+    db.add(new_row)
+    record_event(
+        db,
+        AuditAction.NOTIFICATION_RETRY,
+        actor=admin,
+        details=f"outbox={old.id} bypass_quiet_hours={payload.bypass_quiet_hours}",
+        commit=False,
+    )
+    if payload.bypass_quiet_hours:
+        record_event(
+            db,
+            AuditAction.NOTIFICATION_URGENT_OVERRIDE,
+            actor=admin,
+            details=f"outbox={old.id} manual send confirmed outside quiet hours",
+            commit=False,
+        )
+    db.commit()
+    db.refresh(new_row)
+    return OutboxActionOut(id=new_row.id, status=new_row.status.value)
+
+
+@router.post(
+    "/admin/ops/notifications/{outbox_id}/cancel",
+    response_model=OutboxActionOut,
+    summary="Cancel a queued job (admin, audited)",
+)
+def cancel_notification(
+    outbox_id: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(_admin_only),
+) -> OutboxActionOut:
+    """Best-effort cancel of a queued/sending job. Delivered jobs cannot be
+    un-delivered — 409, no history is edited."""
+    from app.models import DeliveryStatus
+
+    row = _get_outbox_row(db, outbox_id)
+    if row.status in (DeliveryStatus.DELIVERED, DeliveryStatus.ACCEPTED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Доставленное задание отменить нельзя (история неизменяема).",
+        )
+    if row.status in (DeliveryStatus.FAILED, DeliveryStatus.SKIPPED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Задание уже завершено; для повторной отправки используйте retry.",
+        )
+    row.status = DeliveryStatus.CANCELLED
+    row.cancelled_at = utc_now()
+    row.next_attempt_at = None
+    row.lease_expires_at = None
+    record_event(
+        db,
+        AuditAction.NOTIFICATION_CANCEL,
+        actor=admin,
+        details=f"outbox={row.id}",
+        commit=False,
+    )
+    db.commit()
+    db.refresh(row)
+    return OutboxActionOut(id=row.id, status=row.status.value)

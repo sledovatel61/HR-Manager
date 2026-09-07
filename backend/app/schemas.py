@@ -518,6 +518,7 @@ class EventOut(BaseModel):
     ends_at: datetime | None = None
     remind_at: datetime | None = None
     completed_at: datetime | None = None
+    cancelled_at: datetime | None = None
     author_user_id: UUID
     author_username: str
     assignee_user_id: UUID
@@ -757,6 +758,9 @@ class OpsStatusResponse(BaseModel):
     database: DatabaseHealth
     migrations: OpsMigrationSignal
     backup: OpsBackupSignal
+    # Phase 8: notification queue/worker signal (counts + worker liveness
+    # only — no titles, bodies or recipient data).
+    notifications: dict | None = None
 
 
 class OpsBackupHealthResponse(BaseModel):
@@ -796,3 +800,270 @@ class OpsReleaseRecordRequest(BaseModel):
     sha: str = Field(min_length=7, max_length=64)
     status: Literal["deployed", "rolled_back", "failed"] = "deployed"
     details: str | None = Field(default=None, max_length=500)
+
+
+# --- Phase 8: notifications, reminders, preferences, pilot setup -------------
+
+
+class NotificationOut(BaseModel):
+    """Public in-app notification (own rows only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    type: str
+    title: str
+    body: str | None = None
+    priority: str
+    source: str
+    object_type: str | None = None
+    object_id: UUID | None = None
+    created_at: datetime
+    read_at: datetime | None = None
+    dismissed_at: datetime | None = None
+
+
+class NotificationList(BaseModel):
+    """Paginated notification list with the live unread counter."""
+
+    items: list[NotificationOut]
+    total: int
+    limit: int
+    offset: int
+    unread_count: int
+
+
+class NotificationIdsRequest(BaseModel):
+    """Bulk mark-read/dismiss payload (server-enforced limit)."""
+
+    ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class NotificationResolveOut(BaseModel):
+    """Result of re-checking access to a notification's linked object."""
+
+    allowed: bool
+    object_type: str | None = None
+    object_id: UUID | None = None
+
+
+class DeliveryAttemptOut(BaseModel):
+    """One immutable attempt record."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    attempt_no: int
+    started_at: datetime
+    finished_at: datetime
+    outcome: str
+    error_code: str | None = None
+    error_class: str | None = None
+
+
+class DeliveryInfoOut(BaseModel):
+    """Delivery history of one outbox job (own notifications only)."""
+
+    id: UUID
+    channel: str
+    status: str
+    notification_type: str
+    scheduled_at: datetime | None = None
+    scheduled_at_effective: datetime | None = None
+    queued_at: datetime
+    delivered_at: datetime | None = None
+    failed_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    attempts: int
+    next_attempt_at: datetime | None = None
+    error_class: str | None = None
+    attempts_history: list[DeliveryAttemptOut] = []
+
+
+class DeliveryListOut(BaseModel):
+    """Paginated own delivery history."""
+
+    items: list[DeliveryInfoOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class ReminderCreate(BaseModel):
+    """Create a personal reminder."""
+
+    title: str = Field(min_length=1, max_length=200)
+    note: str | None = Field(default=None, max_length=2000)
+    candidate_id: UUID | None = None
+    event_id: UUID | None = None
+    due_at: datetime
+    timezone: str = Field(min_length=1, max_length=64)
+    importance: Literal["low", "normal", "high"] = "normal"
+    recurrence: Literal["none", "daily", "workdays", "weekly"] = "none"
+    assignee_user_id: UUID | None = None
+
+    @field_validator("due_at")
+    @classmethod
+    def _due_at_utc(cls, value: datetime) -> datetime:
+        return _as_utc(value)
+
+
+class ReminderUpdate(BaseModel):
+    """Partial update; explicit null clears nullable fields."""
+
+    expected_version: int = Field(ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    note: str | None = Field(default=None, max_length=2000)
+    candidate_id: UUID | None = None
+    event_id: UUID | None = None
+    due_at: datetime | None = None
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
+    importance: Literal["low", "normal", "high"] | None = None
+    recurrence: Literal["none", "daily", "workdays", "weekly"] | None = None
+    assignee_user_id: UUID | None = None
+
+    @field_validator("due_at")
+    @classmethod
+    def _due_at_utc(cls, value: datetime | None) -> datetime | None:
+        return _as_utc(value) if value is not None else None
+
+
+class ReminderOut(BaseModel):
+    """Public reminder representation."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    owner_user_id: UUID
+    owner_username: str
+    assignee_user_id: UUID
+    assignee_username: str
+    title: str
+    note: str | None = None
+    candidate_id: UUID | None = None
+    event_id: UUID | None = None
+    due_at: datetime
+    timezone: str
+    importance: str
+    recurrence: str
+    status: str
+    completed_at: datetime | None = None
+    occurrence: int
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReminderList(BaseModel):
+    """Paginated reminder list."""
+
+    items: list[ReminderOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class PreferenceUpdate(BaseModel):
+    """Own notification preferences."""
+
+    timezone: str = Field(min_length=1, max_length=64)
+    quiet_hours_start: str = Field(pattern=r"^[0-9]{2}:[0-9]{2}$")
+    quiet_hours_end: str = Field(pattern=r"^[0-9]{2}:[0-9]{2}$")
+    workdays: list[int] = Field(min_length=1, max_length=7)
+    enabled_types: list[str] = Field(min_length=0, max_length=32)
+    enabled_channels: list[str] = Field(min_length=0, max_length=8)
+
+
+class PreferenceOut(BaseModel):
+    """Current preferences (system defaults when never initialized)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    timezone: str
+    quiet_hours_start: str
+    quiet_hours_end: str
+    workdays: list[int]
+    enabled_types: list[str]
+    enabled_channels: list[str]
+    initialized: bool
+
+
+class TimezonesOut(BaseModel):
+    """IANA timezones offered by the settings screen (curated list)."""
+
+    timezones: list[str]
+
+
+class QueueDiagnosticsOut(BaseModel):
+    """Admin queue diagnostics: counts and statuses only — no PII."""
+
+    counts: dict[str, int]
+    oldest_queued_at: datetime | None = None
+    stuck_sending: int
+    worker: dict
+
+
+class OutboxActionOut(BaseModel):
+    """Result of an admin retry/cancel on one outbox row."""
+
+    id: UUID
+    status: str
+
+
+class OutboxRetryRequest(BaseModel):
+    """Admin retry; ``bypass_quiet_hours`` requires the urgent override."""
+
+    bypass_quiet_hours: bool = False
+
+
+class PilotCreateRequest(BaseModel):
+    """Create the pilot account (setup wizard; admin only)."""
+
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=12, max_length=128)
+    full_name: str = Field(default="", max_length=200)
+
+
+class PilotCreateOut(BaseModel):
+    """Pilot creation result — no password is ever returned."""
+
+    user_id: UUID
+    username: str
+
+
+class AccessGrantOut(BaseModel):
+    """An explicit access grant (pilot designation)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    user_id: UUID
+    username: str
+    scope: str
+    granted_by_username: str | None = None
+    granted_at: datetime
+    revoked_at: datetime | None = None
+    revoke_reason: str | None = None
+
+
+class AccessGrantList(BaseModel):
+    """All grants (history, including revoked)."""
+
+    items: list[AccessGrantOut]
+
+
+class AccessGrantRequest(BaseModel):
+    """Grant or revoke pilot access."""
+
+    user_id: UUID
+    revoke: bool = False
+    revoke_reason: str | None = Field(default=None, max_length=500)
+
+
+class SetupStateOut(BaseModel):
+    """Honest setup status: what works, what is not configured."""
+
+    pilot_exists: bool
+    pilot_grant_active: bool
+    preferences_initialized: bool
+    worker_alive: bool
+    channels: dict[str, str]

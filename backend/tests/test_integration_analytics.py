@@ -41,7 +41,6 @@ from app.models import (
     CandidateInteraction,
     CandidateSource,
     CandidateTransfer,
-    Event,
     EventStatus,
     EventType,
     UserRole,
@@ -268,21 +267,30 @@ def test_migration_backfills_facts_from_history(
         )
         pg_db.add(transfer)
 
-        event = Event(
-            candidate_id=candidate.id,
-            author_user_id=hr1.id,
-            assignee_user_id=hr2.id,
-            type=EventType.INTERVIEW,
-            title="Интервью",
-            status=EventStatus.COMPLETED,
-            starts_at=t0 + timedelta(hours=3),
-            ends_at=None,
-            remind_at=None,
-            completed_at=t0 + timedelta(hours=4),
-            created_at=t0 + timedelta(hours=2, minutes=30),
-            version=1,
+        # The event is planted on the 0005 schema, which predates the
+        # phase-8 `cancelled_at` column — insert it with raw SQL matching
+        # the 0005 row shape (the ORM model already carries the new column).
+        pg_db.execute(
+            text(
+                "INSERT INTO events (id, candidate_id, author_user_id, assignee_user_id,"
+                " type, title, note, status, starts_at, ends_at, remind_at,"
+                " completed_at, version, created_at, updated_at)"
+                " VALUES (gen_random_uuid(), :candidate_id, :author, :assignee,"
+                " :type, :title, NULL, :status, :starts_at, NULL, NULL,"
+                " :completed_at, 1, :created_at, :created_at)"
+            ),
+            {
+                "candidate_id": candidate.id,
+                "author": hr1.id,
+                "assignee": hr2.id,
+                "type": EventType.INTERVIEW.value,
+                "title": "Интервью",
+                "status": EventStatus.COMPLETED.value,
+                "starts_at": t0 + timedelta(hours=3),
+                "completed_at": t0 + timedelta(hours=4),
+                "created_at": t0 + timedelta(hours=2, minutes=30),
+            },
         )
-        pg_db.add(event)
 
         # Historical stage transitions live only in the audit log.
         pg_db.add(
