@@ -234,3 +234,30 @@ def test_check_connection_ok_and_failure() -> None:
     assert ok.ok and ok.bot_username == "hr_test_bot"
     bad = check_connection(CONFIG, http_post=fake_bad)
     assert not bad.ok and bad.error_class == "telegram_unauthorized"
+
+
+def test_transport_crash_logs_type_and_request_id_not_token_url(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unexpected transport crash logs only its type + request_id: the
+    exception message may echo the token-bearing request URL."""
+
+    def boom(url: str, payload: dict, timeout: float) -> tuple[int, bytes]:
+        raise RuntimeError(f"boom while posting {url} chat=1122334455")
+
+    with caplog.at_level(logging.WARNING, logger="app.telegram"):
+        result = send_message(
+            CONFIG,
+            chat_id=1122334455,
+            title="T",
+            body="secret-body",
+            http_post=boom,
+            request_id="req-789",
+        )
+    assert result.outcome == "temp_error"
+    assert result.error_class == "telegram_network"
+    assert "type=RuntimeError" in caplog.text
+    assert "request_id=req-789" in caplog.text
+    assert "TEST-TOKEN-must-never-appear-in-logs" not in caplog.text
+    assert "1122334455" not in caplog.text
+    assert "secret-body" not in caplog.text

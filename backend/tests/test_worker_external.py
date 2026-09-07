@@ -687,3 +687,73 @@ def test_worker_skips_forged_external_rows_without_network(
     )
     db_session.refresh(wrong_template)
     assert wrong_template.error_class == "recipient_missing"
+
+
+def test_process_row_crash_records_internal_error_not_stale_provider_class(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An infrastructure crash inside process_row is recorded as
+    ``internal_error`` — never under the stale provider verdict of a
+    previous attempt — and the log carries only the exception type."""
+    import logging
+
+    from app.worker import process_row
+
+    user = make_user(db_session, username="crash-victim", role=UserRole.HR)
+    row = schedule(
+        db_session,
+        recipient_user_id=user.id,
+        channel=DeliveryChannel.IN_APP,
+        type_=NotificationType.SYSTEM_ALERT,
+        title="t",
+        body="b",
+        dedupe_key=f"crash:{uuid4().hex}",
+        scheduled_at=NOW,
+    )
+    assert row is not None
+    row.status = DeliveryStatus.SENDING
+    row.started_at = NOW
+    row.lease_expires_at = NOW + timedelta(minutes=2)
+    row.error_class = "telegram_rate_limited"  # stale verdict of attempt 1
+    row.error_code = "retry_after"
+    db_session.commit()
+
+    def boom(*args: object, **kwargs: object) -> bool:
+        raise RuntimeError("boom-secret-row-data-must-never-appear-in-logs")
+
+    monkeypatch.setattr(worker_module, "deliver_in_app", boom)
+    with caplog.at_level(logging.WARNING, logger="app.worker"):
+        assert process_row(db_session, row, settings=_settings(), now=NOW) == "queued"
+    db_session.refresh(row)
+    assert row.error_class == "internal_error"
+    assert row.error_code is None
+    attempts = _attempts(db_session, row)
+    assert len(attempts) == 1
+    assert attempts[0].outcome.value == "failed"
+    assert attempts[0].error_class == "internal_error"
+    assert "type=RuntimeError" in caplog.text
+    assert "boom-secret-row-data-must-never-appear-in-logs" not in caplog.text
+
+
+def test_phase_b_crash_logs_type_not_recipient(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A transport crash between the adapters and the worker logs the type
+    + outbox correlation id only — never recipient data from the message."""
+    import logging
+
+    user = _user_with_telegram(db_session, "tg-boom")
+    row = _claimed(db_session, user, DeliveryChannel.TELEGRAM)
+
+    def boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("boom chat=secret-chat title=secret-title")
+
+    monkeypatch.setattr(worker_module, "_send_telegram_impl", boom)
+    with caplog.at_level(logging.WARNING, logger="app.worker"):
+        assert process_external_row(db_session, row.id, settings=_settings(), now=NOW) == "queued"
+    db_session.refresh(row)
+    assert row.error_class == "transport_error"
+    assert f"request_id={row.id}" in caplog.text
+    assert "type=RuntimeError" in caplog.text
+    assert "secret-chat" not in caplog.text
+    assert "secret-title" not in caplog.text

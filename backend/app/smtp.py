@@ -257,6 +257,7 @@ def send_email(
     subject: str,
     text_body: str,
     factory: _SmtpFactory | None = None,
+    request_id: str | None = None,
 ) -> SmtpSendResult:
     """Send one message (bounded, classified).
 
@@ -266,31 +267,31 @@ def send_email(
     whose ``send_message`` returns only refused recipients).
     """
     active = factory or DEFAULT_FACTORY
+    ctx = f" request_id={request_id}" if request_id else ""
     try:
         message = render_message(
             config, to_address=to_address, subject=subject, text_body=text_body
         )
     except ValueError as exc:
-        logger.warning("smtp message rejected: %s", exc)
+        # Class/code only: exception text echoes the offending mailbox.
         detail = str(exc)
         if "размер" in detail:
-            return SmtpSendResult(
-                outcome="perm_error", error_code="too_large", error_class=MESSAGE_TOO_LARGE
-            )
-        return SmtpSendResult(
-            outcome="perm_error", error_code="invalid", error_class=INVALID_ADDRESS
-        )
+            code, error_class = "too_large", MESSAGE_TOO_LARGE
+        else:
+            code, error_class = "invalid", INVALID_ADDRESS
+        logger.warning("smtp message rejected code=%s class=%s%s", code, error_class, ctx)
+        return SmtpSendResult(outcome="perm_error", error_code=code, error_class=error_class)
     try:
         client = _connect(config, factory=active)
     except Exception as exc:
         outcome, code, error_class = _classify_smtp_exception(exc)
-        logger.warning("smtp connect/login failed class=%s", error_class)
+        logger.warning("smtp connect/login failed class=%s%s", error_class, ctx)
         return SmtpSendResult(outcome=outcome, error_code=code, error_class=error_class)
     try:
         refused = client.send_message(message)
     except Exception as exc:
         outcome, code, error_class = _classify_smtp_exception(exc)
-        logger.warning("smtp send failed class=%s", error_class)
+        logger.warning("smtp send failed class=%s%s", error_class, ctx)
         with contextlib.suppress(Exception):
             client.quit()
         return SmtpSendResult(outcome=outcome, error_code=code, error_class=error_class)
@@ -299,8 +300,9 @@ def send_email(
     if refused:
         # smtplib reports per-recipient refusals instead of raising when at
         # least one recipient was accepted; with a single recipient any
-        # refusal is a permanent failure.
-        logger.warning("smtp recipient refused")
+        # refusal is a permanent failure. The refused addresses are never
+        # logged (smtplib echoes them in the dict).
+        logger.warning("smtp recipient refused%s", ctx)
         return SmtpSendResult(
             outcome="perm_error", error_code="smtp_refused", error_class=RECIPIENT_REFUSED
         )
