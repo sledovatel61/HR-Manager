@@ -596,3 +596,94 @@ def test_fan_out_ignores_enabled_channels_without_grant(db_session: Session) -> 
     )
     assert len(rows) == 1  # in-app only
     assert rows[0] is not None and rows[0].channel == DeliveryChannel.IN_APP
+
+
+@pytest.mark.parametrize(
+    "channel,template,external",
+    [
+        (DeliveryChannel.EMAIL, "channel_test", "x@example.com"),
+        (DeliveryChannel.EMAIL, None, "x@example.com"),
+        (DeliveryChannel.TELEGRAM, EMAIL_VERIFICATION_TEMPLATE, "x@example.com"),
+        (DeliveryChannel.EMAIL, EMAIL_VERIFICATION_TEMPLATE, "not-an-email"),
+        (DeliveryChannel.EMAIL, EMAIL_VERIFICATION_TEMPLATE, "a@b\nBcc: evil@x.test"),
+    ],
+)
+def test_schedule_rejects_external_recipient_misuse(
+    db_session: Session,
+    channel: DeliveryChannel,
+    template: str | None,
+    external: str,
+) -> None:
+    """external_recipient bypasses binding/consent lookups, so schedule()
+    only accepts it for the email verification letter with a valid
+    mailbox — anything else raises and queues nothing."""
+    from app.models import NotificationSource
+
+    with pytest.raises(ValueError, match="external_recipient"):
+        schedule(
+            db_session,
+            recipient_user_id=None,
+            external_recipient=external,
+            channel=channel,
+            type_=NotificationType.SYSTEM_ALERT,
+            source=NotificationSource.SYSTEM,
+            title="t",
+            body="b",
+            dedupe_key=f"ext-misuse:{uuid4().hex}",
+            scheduled_at=NOW,
+            template=template,
+            template_version=1,
+        )
+    assert db_session.execute(select(NotificationOutbox)).scalars().all() == []
+
+
+def test_worker_skips_forged_external_rows_without_network(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows forged past schedule() (bad mailbox; external on a foreign
+    template) skip at send time: the sender is never called."""
+
+    def fake_send(*args: object, **kwargs: object) -> object:
+        raise AssertionError("sender must not be called for forged external rows")
+
+    monkeypatch.setattr(worker_module, "_send_email_impl", fake_send)
+
+    from app.models import NotificationSource
+
+    def forged(template: str | None, external: str) -> NotificationOutbox:
+        row = NotificationOutbox(
+            recipient_user_id=None,
+            external_recipient=external,
+            channel=DeliveryChannel.EMAIL,
+            notification_type=NotificationType.SYSTEM_ALERT,
+            source=NotificationSource.SYSTEM,
+            title="t",
+            body="b",
+            template=template,
+            template_version=1,
+            scheduled_at=NOW,
+            queued_at=NOW,
+            status=DeliveryStatus.SENDING,
+            started_at=NOW,
+            lease_expires_at=NOW + timedelta(minutes=2),
+            idempotency_key=f"system_alert:forged:{uuid4().hex}",
+        )
+        db_session.add(row)
+        db_session.commit()
+        db_session.refresh(row)
+        return row
+
+    bad_mailbox = forged(EMAIL_VERIFICATION_TEMPLATE, "not-an-email")
+    assert (
+        process_external_row(db_session, bad_mailbox.id, settings=_settings(), now=NOW) == "skipped"
+    )
+    db_session.refresh(bad_mailbox)
+    assert bad_mailbox.error_class == "recipient_unavailable"
+
+    wrong_template = forged("channel_test", "x@example.com")
+    assert (
+        process_external_row(db_session, wrong_template.id, settings=_settings(), now=NOW)
+        == "skipped"
+    )
+    db_session.refresh(wrong_template)
+    assert wrong_template.error_class == "recipient_missing"
