@@ -2,10 +2,11 @@
 
 - **Ветка:** `arena/01a060e3-hr-manager`
 - **Baseline SHA (origin/main на старте):** `d18ec9efc7973d8c86c9ecedf0d3e2f122c7ad2b`
-- **Final SHA:** `07177c854716ee1ea8b2518ea0bac140680d9651`
+- **Final SHA (реализация):** `bb1dfaa54ecc31e4d5ccdb6914ecca1df628e1d5`
+  (верхний коммит ветки — docs-фикс с этим же SHA внутри отчёта)
 - **PR:** https://github.com/sledovatel61/HR-Manager/pull/10
-- **CI:** run 34090710477 (PR #10, head e175ab4) и последующие rerun-ы на каждый пуш;
-  run 34089737761 (первый пуш bcb4176)
+- **CI:** run 34090939408 (PR #10, head bb1dfaa) — финальный полный прогон;
+  run 34089737761 (первый пуш bcb4176), run 34090710477 (e175ab4) — промежуточные
 
 ## Резюме
 
@@ -137,16 +138,19 @@ cd backend && pytest tests/test_production_overlay.py -q   # 23 passed
 # PyYAML(!reset)-разбор dev/prod/proxy — валиден; git diff --check — чисто
 ```
 
-CI (GitHub Actions, Linux/Python 3.12/PG 16):
+CI (GitHub Actions, Linux/Python 3.12/PG 16), финальный прогон
+run 34090939408 (head bb1dfaa):
 
-- run 34089737761 (bcb4176) и 34090710477 (e175ab4): **Backend checks** ✓
-  (ruff/format/mypy/pytest + preflight), **Frontend checks** ✓ (lint/
-  typecheck/test/build/audit), **Backend integration tests (PostgreSQL)** ✓
-  (весь integration-сьют включая новые 7), **Compose stack smoke**:
-  ✓ validate dev config, ✓ validate production overlay, ✓ полный запуск
-  стека с worker-ом (`up --build --wait` — worker поднялся здоровым по
-  `worker-check`), ✓ `/health` 200, ✗ «Validate HTTPS proxy overlay
-  configuration» (шаг владельца — см. «Ограничения»).
+- **Backend checks** ✓ (ruff/format/mypy/pytest 342 теста + preflight);
+- **Frontend checks** ✓ (lint/typecheck/test/build/npm audit);
+- **Backend integration tests (PostgreSQL)** ✓ (весь сьют, включая 7
+  новых интеграционных тестов worker-а);
+- **Compose stack smoke** — все шаги ✓ (validate dev config, validate
+  production overlay, полный `up --build --wait`: worker поднялся
+  здоровым по `worker-check`, `/health` 200), кроме ✗
+  «Validate HTTPS proxy overlay configuration» — шаг владельца, см.
+  «Ограничения» (шаг «Verify the backup service produced an encrypted
+  backup» при этом не запускается, т. к. идёт после упавшего шага).
 
 ## Security/PII review
 
