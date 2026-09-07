@@ -232,17 +232,37 @@ def _make_external_row(
     from uuid import uuid4
 
     user = make_user(db, username=username, role=UserRole.HR)
-    row = schedule(
-        db,
-        recipient_user_id=None if recipient_none else user.id,
-        external_recipient="pending@example.com" if recipient_none else None,
-        channel=DeliveryChannel.TELEGRAM,
-        type_=NotificationType.SYSTEM_ALERT,
-        title="Внешнее",
-        dedupe_key=f"ext:{uuid4().hex}",
-        scheduled_at=NOW,
-    )
-    assert row is not None
+    if recipient_none:
+        # An unowned row (the verification-letter shape): built directly —
+        # schedule() only issues external rows for the email verification
+        # letter, and this fixture needs an unowned row for the 404 path.
+        row = NotificationOutbox(
+            recipient_user_id=None,
+            external_recipient="pending@example.com",
+            channel=DeliveryChannel.EMAIL,
+            notification_type=NotificationType.SYSTEM_ALERT,
+            source=NotificationSource.SYSTEM,
+            title="Внешнее",
+            template="email_verification",
+            template_version=1,
+            status=DeliveryStatus.QUEUED,
+            queued_at=NOW,
+            scheduled_at=NOW,
+            idempotency_key=f"system_alert:ext:{uuid4().hex}",
+        )
+        db.add(row)
+        db.flush()
+    else:
+        row = schedule(
+            db,
+            recipient_user_id=user.id,
+            channel=DeliveryChannel.TELEGRAM,
+            type_=NotificationType.SYSTEM_ALERT,
+            title="Внешнее",
+            dedupe_key=f"ext:{uuid4().hex}",
+            scheduled_at=NOW,
+        )
+        assert row is not None
     row.status = DeliveryStatus.ACCEPTED
     row.accepted_at = NOW
     row.provider_message_id = "4242"
