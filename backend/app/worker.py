@@ -60,6 +60,7 @@ from app.notification_service import (
     CONSENT_EXEMPT_TEMPLATES,
     EMAIL_VERIFICATION_TEMPLATE,
     deliver_in_app,
+    has_channel_consent,
     preference_for,
     schedule_fan_out,
     schedule_notification_row,
@@ -330,7 +331,7 @@ def _resolve_external_target(
             return None, BINDING_REVOKED_ERROR_CLASS
         if not consent_exempt:
             preference = db.get(NotificationPreference, user_id)
-            if preference is None or not preference.telegram_opt_in:
+            if not has_channel_consent(preference, DeliveryChannel.TELEGRAM):
                 return None, CONSENT_MISSING_ERROR_CLASS
         return (
             _ExternalTarget(
@@ -366,7 +367,7 @@ def _resolve_external_target(
             return None, ADDRESS_UNVERIFIED_ERROR_CLASS
         if not consent_exempt:
             preference = db.get(NotificationPreference, user_id)
-            if preference is None or not preference.email_opt_in:
+            if not has_channel_consent(preference, DeliveryChannel.EMAIL):
                 return None, CONSENT_MISSING_ERROR_CLASS
         return (
             _ExternalTarget(

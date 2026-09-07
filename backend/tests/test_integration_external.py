@@ -272,6 +272,7 @@ def _link_telegram(db: Session, username: str, chat_id: int = 777000111) -> User
             enabled_types=["system_alert"],
             enabled_channels=["in_app", "telegram"],
             telegram_opt_in=True,
+            telegram_consent_granted=True,
             telegram_consent_at=NOW,
             telegram_consent_source="web-ui",
             telegram_consent_policy_version="phase9-v1",
@@ -294,6 +295,7 @@ def _verify_email(db: Session, username: str, address: str = "hr@example.com") -
             enabled_types=["system_alert"],
             enabled_channels=["in_app", "email"],
             email_opt_in=True,
+            email_consent_granted=True,
             email_consent_at=NOW,
             email_consent_source="web-ui",
             email_consent_policy_version="phase9-v1",
@@ -614,7 +616,7 @@ def test_fan_out_on_postgres_creates_all_channels(
     pg_db.execute(
         _update(NotificationPreference)
         .where(NotificationPreference.user_id == user.id)
-        .values(email_opt_in=True)
+        .values(email_opt_in=True, email_consent_granted=True)
     )
     pg_db.commit()
     rows = schedule_fan_out(

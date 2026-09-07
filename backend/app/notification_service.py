@@ -291,6 +291,28 @@ def schedule_notification_row(
 # --- External channels (phase 9): fan-out over the same outbox -----------------
 
 
+def has_channel_consent(
+    preference: NotificationPreference | None, channel: DeliveryChannel
+) -> bool:
+    """True only for an explicit, complete grant (fail-closed).
+
+    Activation requires BOTH ``*_opt_in`` and ``*_consent_granted`` to be
+    explicitly true — a missing row, a ``None``/false flag, or a bare
+    ``enabled_channels`` entry never activates a channel. The explicit
+    ``is True`` comparisons stay fail-closed even for transient (never
+    flushed) preference objects whose column defaults did not apply yet.
+    """
+    if preference is None:
+        return False
+    if channel == DeliveryChannel.TELEGRAM:
+        return bool(
+            preference.telegram_opt_in is True and preference.telegram_consent_granted is True
+        )
+    if channel == DeliveryChannel.EMAIL:
+        return bool(preference.email_opt_in is True and preference.email_consent_granted is True)
+    return False
+
+
 def external_channels_for(
     db: Session, *, user_id: UUID, settings: Settings
 ) -> list[DeliveryChannel]:
@@ -306,8 +328,8 @@ def external_channels_for(
     from app.telegram import config_from_settings as telegram_config_from_settings
 
     preference = db.get(NotificationPreference, user_id)
-    telegram_consent = bool(preference is not None and preference.telegram_opt_in)
-    email_consent = bool(preference is not None and preference.email_opt_in)
+    telegram_consent = has_channel_consent(preference, DeliveryChannel.TELEGRAM)
+    email_consent = has_channel_consent(preference, DeliveryChannel.EMAIL)
     channels: list[DeliveryChannel] = []
     if telegram_consent and telegram_config_from_settings(settings).is_configured:
         link = db.get(TelegramLink, user_id)
