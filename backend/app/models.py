@@ -20,6 +20,7 @@ from enum import StrEnum
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
     Enum,
@@ -1140,13 +1141,18 @@ class NotificationPreference(Base):
     workdays: Mapped[list] = mapped_column(JSON, nullable=False)
     enabled_types: Mapped[list] = mapped_column(JSON, nullable=False)
     enabled_channels: Mapped[list] = mapped_column(JSON, nullable=False)
-    # Explicit consent for external channels (phase 9). Timestamp, source
+    # Explicit consent for external channels (phase 9). A channel activates
+    # ONLY when both ``*_opt_in`` and ``*_consent_granted`` are explicitly
+    # true (the consent API requires both flags to agree); timestamp, source
     # (e.g. "web-ui") and terms version are recorded with every change.
+    # ``None``/missing is never consent (fail-closed).
     telegram_opt_in: Mapped[bool] = mapped_column(default=False, nullable=False)
+    telegram_consent_granted: Mapped[bool] = mapped_column(default=False, nullable=False)
     telegram_consent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     telegram_consent_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     telegram_consent_policy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     email_opt_in: Mapped[bool] = mapped_column(default=False, nullable=False)
+    email_consent_granted: Mapped[bool] = mapped_column(default=False, nullable=False)
     email_consent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     email_consent_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     email_consent_policy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -1588,14 +1594,30 @@ class TelegramLink(Base):
     ``chat_id`` — never a username. ``revoked_at`` marks an explicit unlink
     (or an automatic revoke after Telegram reported «blocked»); re-linking
     clears it and replaces ``chat_id``. Delivery statistics carry safe
-    error classes only (no message text, no provider payloads)."""
+    error classes only (no message text, no provider payloads).
+
+    An active ``chat_id`` is globally unique (partial unique index over
+    non-revoked rows): one Telegram chat can never serve two active users,
+    so a binding can never be silently taken over. Relinking to a chat
+    held by another active user fails closed (the holder must unlink
+    first); same-user relink is always allowed.
+    """
 
     __tablename__ = "telegram_links"
+    __table_args__ = (
+        Index(
+            "uq_telegram_links_chat_id_active",
+            "chat_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL AND chat_id IS NOT NULL"),
+            sqlite_where=text("revoked_at IS NULL AND chat_id IS NOT NULL"),
+        ),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
-    chat_id: Mapped[int | None] = mapped_column(nullable=True)
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     linked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     revoke_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -1652,7 +1674,7 @@ class TelegramStartEvent(Base):
     __tablename__ = "telegram_start_events"
 
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    chat_id: Mapped[int] = mapped_column(nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
 
 
@@ -1662,7 +1684,7 @@ class TelegramPollState(Base):
     __tablename__ = "telegram_poll_state"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    last_update_id: Mapped[int | None] = mapped_column(nullable=True)
+    last_update_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
     )

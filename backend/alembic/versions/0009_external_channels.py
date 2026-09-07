@@ -13,9 +13,12 @@ real delivery channels. This revision:
 * ``user_emails`` — verified + pending addresses with a one-shot
   verification token hash and PII-free delivery stats;
 * ``notification_preferences`` — explicit per-channel consent
-  (``telegram_opt_in`` / ``email_opt_in`` plus timestamp, source and terms
-  version). Existing rows keep ``opt_in=false``: external channels are
-  never enabled silently.
+  (``telegram_opt_in`` / ``email_opt_in`` plus a separate explicit
+  ``*_consent_granted`` grant, timestamp, source and terms version).
+  Existing rows keep ``opt_in=false``/``granted=false``: external channels
+  are never enabled silently, and ``None``/missing is never consent.
+* a partial unique index keeps one active ``chat_id`` bound to at most
+  one non-revoked user (silent binding takeover is impossible).
 
 Reversible: downgrade drops the new tables/columns. No secrets are stored
 (bot token and SMTP password arrive only via environment/secret storage).
@@ -60,6 +63,16 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+    )
+    # One active chat_id per user at most (revoked history rows keep their
+    # chat_id for display and stay outside the constraint).
+    op.create_index(
+        "uq_telegram_links_chat_id_active",
+        "telegram_links",
+        ["chat_id"],
+        unique=True,
+        postgresql_where=sa.text("revoked_at IS NULL AND chat_id IS NOT NULL"),
+        sqlite_where=sa.text("revoked_at IS NULL AND chat_id IS NOT NULL"),
     )
 
     op.create_table(
@@ -145,6 +158,10 @@ def upgrade() -> None:
     )
     op.add_column(
         "notification_preferences",
+        sa.Column("telegram_consent_granted", sa.Boolean(), nullable=False, server_default="false"),
+    )
+    op.add_column(
+        "notification_preferences",
         sa.Column("telegram_consent_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.add_column(
@@ -158,6 +175,10 @@ def upgrade() -> None:
     op.add_column(
         "notification_preferences",
         sa.Column("email_opt_in", sa.Boolean(), nullable=False, server_default="false"),
+    )
+    op.add_column(
+        "notification_preferences",
+        sa.Column("email_consent_granted", sa.Boolean(), nullable=False, server_default="false"),
     )
     op.add_column(
         "notification_preferences",
@@ -177,10 +198,12 @@ def downgrade() -> None:
     op.drop_column("notification_preferences", "email_consent_policy_version")
     op.drop_column("notification_preferences", "email_consent_source")
     op.drop_column("notification_preferences", "email_consent_at")
+    op.drop_column("notification_preferences", "email_consent_granted")
     op.drop_column("notification_preferences", "email_opt_in")
     op.drop_column("notification_preferences", "telegram_consent_policy_version")
     op.drop_column("notification_preferences", "telegram_consent_source")
     op.drop_column("notification_preferences", "telegram_consent_at")
+    op.drop_column("notification_preferences", "telegram_consent_granted")
     op.drop_column("notification_preferences", "telegram_opt_in")
     op.drop_table("user_emails")
     op.drop_table("telegram_poll_state")
@@ -188,4 +211,5 @@ def downgrade() -> None:
     op.drop_index("ix_telegram_link_tokens_expires_at", table_name="telegram_link_tokens")
     op.drop_index("ix_telegram_link_tokens_user_id", table_name="telegram_link_tokens")
     op.drop_table("telegram_link_tokens")
+    op.drop_index("uq_telegram_links_chat_id_active", table_name="telegram_links")
     op.drop_table("telegram_links")
