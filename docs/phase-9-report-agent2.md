@@ -22,6 +22,160 @@
   backend/integration/frontend — pass, stack — та же сигнатура
   (всё зелёное до шага владельца включительно «/health 200»).
   Плюс этот docs-коммит поверх (tip ветки = верхний из них).
+- **Доработка (ревью, 8 пунктов):** база `a0973fd`, code-final SHA
+  `366e95f26ccaba7a39494a3ec6697f7662aa7ab7` (9 коммитов: 8 rework +
+  1 type-fix, только эта ветка, без кода агента №1); tip ветки =
+  docs-коммит с разделом «Доработка» поверх. Rework CI:
+  run 34130007674 (head `7b53e22`): Backend integration tests —
+  success, Frontend checks — success, Backend checks — failure
+  ТОЛЬКО на шаге Mypy (1 ошибка типов в тестовой фикстуре,
+  исправлена коммитом `366e95f`); stack-job — skipped (зависит от
+  backend). Новый run на head `366e95f` на момент отчёта выполняется.
+  `.github/workflows` не тронут, merge в `main` не делался.
+
+## Доработка по ревью (agent-2, 8 пунктов ревьюера)
+
+База — `a0973fd` (docs-tip реализации выше). Всё сделано 8 коммитами
+в этой же ветке поверх, без переписывания Phase 9 и без переноса кода
+агента №1: его ветка (`arena/01a07b9b-hr-manager`) осмотрена только
+чтением (`git show FETCH_HEAD`) — его webhook с сравнением секрета
+через `!=` не копировался; у нас polling-only by design, что теперь
+зафиксировано 404-тестом на `/integrations/telegram/webhook`.
+
+Коммиты (все — поверх `a0973fd`, в прямом порядке):
+
+| # | SHA | Содержание |
+|---|---|---|
+| 1 | `cebe8791f6f31f8dcc1743f56c7642a81b3f5900` | `consent_granted`-колонки, partial unique index активного `chat_id`, BigInteger, `has_channel_consent()` в fan-out и worker |
+| 2 | `234ae22c8b5b456e337c31a627dcb4e237dda7cf` | Строгий consent-контракт (strict-equality 422), worker-гейты, UI-чекбокс согласия |
+| 3 | `f5a0f1f0988eae02a2a6aeb7528e9fdcf378e595` | Linking: explicit ownership, fail-closed 409 чужого чата, race backstop |
+| 4 | `f2f2ff3607a8f746e7dbc16068b782834c367c47` | Test-send: получатели серверные, RBAC+CSRF+rate-limit тесты |
+| 5 | `6553a77537913e93dc424be452d55fcdd9579985` | `external_recipient`: контракт queue-time + revalidation в worker |
+| 6 | `af39cfa6534384f61f2bb806d5142c36c615a4c0` | Worker-честность и гигиена логов: `internal_error`, `request_id`, без PII исключений |
+| 7 | `d7932286706dfe18c94aaad71447600bd2601e67` | Polling-закрытие: 503/404/409 доказательства, diagnostics без PII |
+| 8 | `7b53e2249bb281540c1abcad81dbb69296f836ba` | Фикстура: unowned delivery-строка строится напрямую, не через `schedule()` |
+| 9 | `366e95f26ccaba7a39494a3ec6697f7662aa7ab7` | Type-fix: узкий temporary в фикстуре (зелёный mypy `--no-incremental`) |
+
+Покрытие пунктов ревьюера:
+
+1. **Webhook закрыт по умолчанию** — webhook-получателя нет by design
+   (только исходящий polling через `getUpdates`); пустой/выключенный
+   конфиг даёт 503 до любых мутаций (`link-code`, `confirm`,
+   `telegram/test`, `set_email`, admin checks); секреты сравниваются
+   только через `secrets.compare_digest` по хэшам (email-код) или
+   поиском по хэшу (link-токены) — plaintext-сравнений нет. Тесты:
+   503 без сайд-эффектов, webhook-путь 404 для GET и POST, чужой
+   токен в инбоксе → 409 с гидом + токен активен + offset продвинут.
+2. **Запрет silent consent** — контракт `ConsentUpdate{opt_in,
+   consent_granted}`: оба обязательны, несовпадение →
+   422 до любых мутаций (и без audit-строки); новые колонки
+   `telegram/email_consent_granted` (NOT NULL, default false);
+   гейт везде — `opt_in is True and consent_granted is True` через
+   `has_channel_consent()` (fan-out, worker, status/confirm/unlink);
+   `consent_at`/source/version ставятся при каждом решении.
+   UI: кнопка включения заблокирована, пока не отмечен явный
+   чекбокс согласия; выключение — без чекбокса (безопасное
+   направление). Тесты: reject missing/contradictory grant,
+   opt-out/re-enable, opt_in без гранта → skip без сети,
+   no-resend после opt-out, fan-out игнорирует `enabled_channels`
+   без гранта.
+3. **Test-send только себе** — оба endpoint'а не принимают получателя
+   вообще; цель выводится сервером (свой привязанный чат / свой
+   подтверждённый адрес). Тесты: подделанные `recipient` в body
+   игнорируются (`external_recipient` остаётся NULL), admin endpoint —
+   403 для не-админа и без CSRF, 429 + Retry-After при исчерпании
+   бюджета, на всех reject-путях очередь пуста.
+4. **Нет PII/секретов в логах/audit/diagnostics** — crash-логи
+   адаптеров и worker'а несут только тип исключения (`exc_info` и
+   `str(exc)` удалены: сообщения/трейсбэки могут эхать адрес,
+   URL с токеном бота или данные строки); SMTP/Telegram warnings —
+   код/класс + `request_id` (id outbox-строки); diagnostics —
+   счётчики/статусы/heartbeat (доказано маркерными строками).
+   Аудит конфликтов и тестов — без идентификаторов чатов/адресов.
+5. **Linking** — explicit `token.user_id != user.id` → 403 до
+   polling/мутаций; чужой активный чат → 409 + audit
+   `TELEGRAM_LINK_CONFLICT` (без chat id), холдер не тронут,
+   start-event удалён, токен активен (повтор тем же кодом после
+   отвязки); DB-уровень — partial unique index
+   `uq_telegram_links_chat_id_active` + конвертация duplicate-key
+   `IntegrityError` в тот же 409 (backstop same-chat гонки);
+   inactive → 401 на confirm (зависимость гейтит хендлер).
+   Тесты: fail-closed unit, inactive 401, PG two-thread race
+   «один чат — два аккаунта» → ровно один 200, одна активная
+   привязка, токен проигравшего активен, один audit (5/5 стабильно).
+6. **`external_recipient` не обходит consent/authorization** —
+   `schedule()` принимает его ТОЛЬКО для verification-письма
+   (EMAIL + `email_verification` + валидный mailbox), иначе
+   ValueError и ничего не queued; worker перепроверяет адрес в
+   момент отправки (кованые строки → skip без сети);
+   не-верификационные шаблоны всегда резолвят получателя из
+   собственной подтверждённой привязки и игнорируют stored
+   external. Тесты: misuse-матрица `schedule()` + forged rows
+   с взрывающимся sender-double.
+7. **Worker-контракт** — accepted/delivered/lease/retry/cancel-wins
+   сохранены; новое: инфраструктурный краш `process_row` пишется
+   как `internal_error` (стирает stale provider-вердикт прошлой
+   попытки, включая `error_code`), в лог — только тип; phase-B
+   backstop — `transport_error` + bounded retry (лимит попыток;
+   бесконечных loop'ов нет), в лог — тип + `request_id`.
+   External-строки никогда не `delivered`. Тесты: stale-класс
+   заменён, секреты сообщений отсутствуют в `caplog`, корреляция
+   по `request_id` присутствует.
+8. **Миграция 0009** — правки: индекс активного `chat_id`,
+   2 `consent_granted`-колонки, downgrade в обратном порядке;
+   модели `chat_id`/`last_update_id` Integer→BigInteger (миграция
+   уже была BigInteger). Верификация на реальном PG (pgserver):
+   upgrade head → downgrade 0008 (таблицы 0009 исчезли, users целы)
+   → re-upgrade head (`current = 0009 (head)`); индекс эффективен
+   (`WHERE revoked_at IS NULL AND chat_id IS NOT NULL`, дубликат
+   активного чата отклонён `IntegrityError`); `chat_id` — bigint;
+   гранты — boolean default false; hash-only токены, каналы
+   выключены по умолчанию, секретов в миграции нет.
+
+Инварианты безопасности (все зафиксированы тестами):
+
+- без пары `opt_in=true + consent_granted=true` внешняя отправка
+  невозможна ни планированием, ни worker'ом, ни relink'ом;
+- один активный Telegram-чат — один пользователь (индекс + 409);
+- тестовая отправка не принимает получателя от клиента;
+- `external_recipient` существует только внутри verification-письма;
+- в логах/audit/diagnostics/API-ответах нет токенов, паролей,
+  chat id, адресов и текстов сообщений (только маски/классы/коды);
+- `accepted ≠ delivered ≠ read`; infra-ошибки не маскируются под
+  provider (`internal_error`/`transport_error`, bounded retry).
+
+Числа доработки (песочница, локальный прогон):
+
+```bash
+# backend: ruff check . / ruff format --check . (из backend/) — чисто, 82 файла
+# mypy app tests — чисто, 72 файла
+pytest -m "not integration" -q   # 403 passed, 76 deselected (было 376/75; +27)
+TEST_DATABASE_URL=... pytest -m integration -q
+  # 64 passed, 11 skipped (нет pg_dump в песочнице), 403 deselected;
+  # +1 новый тест (same-chat race, файл 11→12);
+  # 1 env-only фейл test_health_degrades_against_stopped_postgresql:
+  # его URL-regex не матчит socket-DSN песочницы (доказано отдельно),
+  # на TCP-DSN CI сработает как раньше (этот тест в CI зелёный)
+# frontend: eslint чисто, tsc -b чисто, vitest 117 passed, vite build ✓
+# docker compose config — не запускался (нет Docker в песочнице;
+#   compose-файлы доработкой не тронуты); YAML-валидация — за CI stack-job
+# git diff --check — чисто
+```
+
+Ограничения rework-CI: run 34130007674 (head `7b53e22`, до type-fix)
+дал integration+frontend success и единственное падение — шаг Mypy
+в Backend checks (моя ошибка в тестовой фикстуре; локальный
+инкрементальный `mypy` её скрыл, `--no-incremental` поймал;
+исправлено в `366e95f`, локально `mypy app tests --no-incremental`
+чисто). Новый run на head `366e95f` на момент отчёта выполняется —
+заявлять его зелёным рано. Ожидаемая итоговая сигнатура — как у всех
+голов этой ветки: backend/integration/frontend success +
+предсуществующее падение stack-job на шаге владельца «Validate HTTPS
+proxy overlay configuration» (нет экспортов секретов во fresh shell;
+чинить `.github/workflows/ci.yml` из этой среды запрещено сервером —
+нет `workflows` permission; фикс — 3 export'а владельца).
+В тестах доработки — только doubles/стабы, без реальных чатов,
+SMTP-учёток и PII.
 
 ## Резюме
 
