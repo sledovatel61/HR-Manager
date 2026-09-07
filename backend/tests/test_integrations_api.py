@@ -696,6 +696,7 @@ def test_mutations_require_csrf(channel_client: TestClient, db_session: Session)
     _login(channel_client, "hr1")
     # No X-CSRF-Token header although the session cookie is present.
     assert channel_client.post("/integrations/telegram/link-code").status_code == 403
+    assert channel_client.post("/integrations/telegram/test").status_code == 403
     assert (
         channel_client.put("/integrations/telegram/consent", json={"opt_in": True}).status_code
         == 403
@@ -808,3 +809,98 @@ def test_confirm_inactive_user_cannot_confirm(
     assert db_session.execute(select(TelegramLink)).scalars().all() == []
     token = db_session.execute(select(TelegramLinkToken)).scalar_one()
     assert token.consumed_at is None
+
+
+def test_test_send_recipient_is_server_derived_client_cannot_steer(
+    channel_client: TestClient, db_session: Session
+) -> None:
+    """Test sends take no recipient: a smuggled ``recipient`` in the body is
+    ignored and the row still targets the caller's own binding."""
+    user = make_user(db_session, username="hr1", role=UserRole.HR)
+    admin = make_user(db_session, username="admin1", role=UserRole.ADMIN)
+    db_session.add(TelegramLink(user_id=user.id, chat_id=123, linked_at=datetime.now(UTC)))
+    db_session.add(
+        UserEmail(user_id=admin.id, email="admin@example.com", verified_at=datetime.now(UTC))
+    )
+    db_session.commit()
+    csrf = _login(channel_client, "hr1")
+    response = channel_client.post(
+        "/integrations/telegram/test",
+        json={"recipient_chat_id": 999999, "chat_id": 999999},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 200, response.text
+    row = db_session.get(NotificationOutbox, UUID(response.json()["outbox_id"]))
+    assert row is not None
+    assert row.recipient_user_id == user.id
+    assert row.channel == DeliveryChannel.TELEGRAM
+    assert row.external_recipient is None
+
+    csrf_admin = _login(channel_client, "admin1")
+    forged = channel_client.post(
+        "/admin/integrations/smtp/test-send",
+        json={"recipient": "evil@example.com"},
+        headers={"X-CSRF-Token": csrf_admin},
+    )
+    assert forged.status_code == 200, forged.text
+    admin_row = db_session.get(NotificationOutbox, UUID(forged.json()["outbox_id"]))
+    assert admin_row is not None
+    assert admin_row.recipient_user_id == admin.id
+    assert admin_row.channel == DeliveryChannel.EMAIL
+    assert admin_row.external_recipient is None
+
+
+def test_admin_test_send_rbac_csrf_and_auth(
+    channel_client: TestClient, db_session: Session
+) -> None:
+    """The SMTP test-send is admin-only (403 otherwise), needs CSRF, and
+    queues nothing on any rejected path."""
+    make_user(db_session, username="hr1", role=UserRole.HR)
+    admin = make_user(db_session, username="admin1", role=UserRole.ADMIN)
+    db_session.add(
+        UserEmail(user_id=admin.id, email="admin@example.com", verified_at=datetime.now(UTC))
+    )
+    db_session.commit()
+    csrf_hr = _login(channel_client, "hr1")
+    csrf_admin = _login(channel_client, "admin1")
+
+    assert (
+        channel_client.post(
+            "/admin/integrations/smtp/test-send", headers={"X-CSRF-Token": csrf_hr}
+        ).status_code
+        == 403
+    )
+    # Admin session cookie present but the CSRF header missing.
+    assert channel_client.post("/admin/integrations/smtp/test-send").status_code == 403
+    assert db_session.execute(select(NotificationOutbox)).scalars().all() == []
+
+    ok = channel_client.post(
+        "/admin/integrations/smtp/test-send", headers={"X-CSRF-Token": csrf_admin}
+    )
+    assert ok.status_code == 200, ok.text
+
+
+def test_telegram_test_rate_limit(limited_client: TestClient, db_session: Session) -> None:
+    """The per-user test-send budget applies (429 + Retry-After) and the
+    rejected attempt queues nothing."""
+    user = make_user(db_session, username="hr1", role=UserRole.HR)
+    db_session.add(TelegramLink(user_id=user.id, chat_id=123, linked_at=datetime.now(UTC)))
+    db_session.commit()
+    csrf = _login(limited_client, "hr1")
+    assert (
+        limited_client.post(
+            "/integrations/telegram/test", headers={"X-CSRF-Token": csrf}
+        ).status_code
+        == 200
+    )
+    assert (
+        limited_client.post(
+            "/integrations/telegram/test", headers={"X-CSRF-Token": csrf}
+        ).status_code
+        == 200
+    )
+    third = limited_client.post("/integrations/telegram/test", headers={"X-CSRF-Token": csrf})
+    assert third.status_code == 429
+    assert "Retry-After" in third.headers
+    rows = db_session.execute(select(NotificationOutbox)).scalars().all()
+    assert len(rows) == 2
