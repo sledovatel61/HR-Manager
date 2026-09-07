@@ -7,7 +7,18 @@
   outbox/worker»; поверх идёт только docs-коммит с этим отчётом —
   tip ветки = верхний из них)
 - **PR:** https://github.com/sledovatel61/HR-Manager/pull/12
-- **CI:** ожидается прогон для exact final SHA (см. checks PR #12)
+- **Fix SHA (ruff format):** `2796550` («fix(phase9): format migration
+  0009» — CI проверяет `ruff format --check .` из `backend/`, а не
+  только `app tests`)
+- **Fix SHA (mailpit tag):** `2904662` («fix(phase9): pin existing
+  mailpit image tag v1.31» — апстрим не публикует тег `v1`, только
+  `latest`/`vX.Y.Z`/`vX.Y`; проверено по build-docker.yml апстрима)
+- **CI:** run 34123075933 (head `2904662`): Backend checks — pass
+  (1m41s), Backend integration tests — pass (1m43s), Frontend checks —
+  pass (48s); stack-job зелёный вплоть до шага владельца «Validate
+  HTTPS proxy overlay configuration» — то же предсуществующее падение,
+  что и на принятом tip Phase 8 (см. «Ограничения»). Плюс docs-коммиты
+  отчёта поверх (tip ветки = верхний из них).
 
 ## Резюме
 
@@ -175,8 +186,19 @@ Telegram-чаты, реальные SMTP-учётные данные и реал
 
 ## Ограничения и известные риски
 
-- `stack` CI-job (dev/prod/proxy Compose + Mailpit образ `axllent/mailpit:v1.31`
-  с Docker Hub) подтвердится только прогоном CI для final SHA.
+- `stack` CI-job: dev/prod Compose-валидации, сборка и запуск всего стека
+  (включая Mailpit `axllent/mailpit:v1.31`) и `/health` 200 — зелёные;
+  job останавливается на шаге владельца «Validate HTTPS proxy overlay
+  configuration», как и на принятом tip Phase 8 (run 34096234548).
+  Причина предсуществующая и не связана с Phase 9: шаг не экспортирует
+  `SECRET_KEY`/`POSTGRES_PASSWORD`/`BOOTSTRAP_ADMIN_PASSWORD`, а каждый
+  step — fresh shell, поэтому `config` с `${VAR:?}` падает до проверок.
+  Фикс тривиален (3 export по образцу соседнего шага), но применить его
+  из этой среды невозможно: push workflow-файлов отклонён сервером —
+  `refusing to allow a GitHub App to create or update workflow ...
+  without 'workflows' permission` (ограничение задокументировано в
+  `docs/ARCHITECTURE.md` ещё с этапа 1; по той же причине шаг не чинил
+  и Phase 8). Владельцу достаточно добавить 3 строки в `ci.yml`.
 - STARTTLS-live покрыт fake-based unit-тестами и общим кодовым путём;
   интеграционный SMTP-stub — plaintext (как Mailpit); ручная проверка
   против реального провайдера не выполнялась (запрещена ТЗ в тестах).
