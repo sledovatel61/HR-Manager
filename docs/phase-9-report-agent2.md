@@ -33,6 +33,58 @@
   backend). Новый run на head `366e95f` на момент отчёта выполняется.
   `.github/workflows` не тронут, merge в `main` не делался.
 
+## Final polish (проверка exact tip + проба workflow-разрешения)
+
+Исходный tip: `7e055a76c67e2ecb0197155116d65579c1234bad` (docs-коммит
+с разделом «Доработка»; код замер на `366e95f`). Новых code/workflow
+коммитов нет: фикс proxy-overlay step был подготовлен строго по
+промпту (4 export'а in-step тестовых значений, проверки HTTPS-443 и
+no-dev-credentials без изменений), закоммичен локально и отправлен —
+сервер отклонил push: `refusing to allow a GitHub App to create or
+update workflow '.github/workflows/ci.yml' without 'workflows'
+permission`. Коммит отброшен (`reset --hard` на `7e055a7`),
+`.github/workflows/ci.yml` в ветке не изменён. Exact final code SHA —
+`7e055a76c67e2ecb0197155116d65579c1234bad`; tip ветки = docs-коммит
+с этим разделом поверх (SHA — в PR-комментарии и логе ветки).
+
+CI по final SHA: run 34130235760 (head `7e055a7`): Backend checks —
+success, Backend integration tests (PostgreSQL) — success, Frontend
+checks — success, Compose stack — failure только на предсуществующем
+шаге владельца «Validate HTTPS proxy overlay configuration»
+(дефект: fresh shell без экспортов `APP_ENV`/`SECRET_KEY`/
+`POSTGRES_PASSWORD`/`BOOTSTRAP_ADMIN_PASSWORD` падает на `${VAR:?}`
+до проверок; воспроизводится на всех head'ах ветки и на tip Phase 8).
+Полным CI green это не называется. Функциональный код Phase 9 не
+переписывался, контракт приложения не менялся.
+
+Локальные проверки final SHA (песочница, этот прогон):
+
+- `ruff check .` / `ruff format --check .` (из `backend/`) — чисто;
+- `mypy app tests --no-incremental` — чисто, 72 файла;
+- `pytest -m "not integration"` — 403 passed, 76 deselected;
+- `pytest -m integration` (real PG через pgserver) — 64 passed,
+  11 skipped (нет pg_dump/pg_restore в песочнице), 1 env-only фейл
+  `test_health_degrades_against_stopped_postgresql` (его URL-regex
+  не матчит socket-DSN песочницы; в CI на TCP-DSN этот тест зелёный,
+  что подтверждает success integration-job в run 34130235760);
+- frontend: `npm run lint` / `typecheck` чисто, `vitest` 117 passed
+  (17 файлов), `vite build` OK;
+- `alembic upgrade head` → `downgrade 0008` → `upgrade head` на чистой
+  PG: OK (`current = 0009 (head)`), индекс/колонки/bigint/отклонение
+  дубликата активного чата подтверждены;
+- `docker compose config` — не запускался (нет Docker в песочнице;
+  compose-файлы не тронуты);
+- `git diff --check fc33d9d..HEAD` — чисто, trailing whitespace нет.
+
+Инварианты перепроверены чтением кода и покрыты тестами из разделов
+выше: strict consent-пара, polling-only без webhook, уникальный
+активный `chat_id`, hash-only single-use токены с TTL, fail-closed
+на чужой токен/чат, test-send только себе, `external_recipient`
+только для verification, send-time revalidation в worker,
+`accepted ≠ delivered`, cancel-wins/advisory/lease/bounded-retry/
+append-only attempts, отсутствие секретов и PII в логах/audit/
+diagnostics.
+
 ## Доработка по ревью (agent-2, 8 пунктов ревьюера)
 
 База — `a0973fd` (docs-tip реализации выше). Всё сделано 8 коммитами
