@@ -175,7 +175,7 @@ Telegram-чаты, реальные SMTP-учётные данные и реал
 
 ## Ограничения и известные риски
 
-- `stack` CI-job (dev/prod/proxy Compose + Mailpit образ `axllent/mailpit:v1`
+- `stack` CI-job (dev/prod/proxy Compose + Mailpit образ `axllent/mailpit:v1.31`
   с Docker Hub) подтвердится только прогоном CI для final SHA.
 - STARTTLS-live покрыт fake-based unit-тестами и общим кодовым путём;
   интеграционный SMTP-stub — plaintext (как Mailpit); ручная проверка
