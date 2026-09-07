@@ -6,8 +6,8 @@
   (коммит «feat(phase9): real Telegram Bot API and SMTP channels over
   outbox/worker»; поверх идёт только docs-коммит с этим отчётом —
   tip ветки = верхний из них)
-- **PR:** будет указан после открытия (ветка → `main`)
-- **CI:** ожидается прогон для exact final SHA после пуша
+- **PR:** https://github.com/sledovatel61/HR-Manager/pull/12
+- **CI:** ожидается прогон для exact final SHA (см. checks PR #12)
 
 ## Резюме
 
