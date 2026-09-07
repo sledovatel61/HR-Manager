@@ -172,7 +172,7 @@ services:
   # http://127.0.0.1:8025 shows the captured mail; nothing ever leaves
   # the machine.
   mailpit:
-    image: axllent/mailpit:v1
+    image: axllent/mailpit:v1.31
     ports:
       - "127.0.0.1:8025:8025"
     # No healthcheck: SMTP is dialed lazily per send, nothing needs Mailpit
