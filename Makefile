@@ -1,10 +1,16 @@
-.PHONY: help up down logs ps backend-test backend-lint backend-typecheck frontend-test frontend-lint frontend-typecheck frontend-build check prod-preflight backup-now backup-check backup-drill prod-migrate prod-deploy
+.PHONY: help up down logs ps worker-logs worker-status backend-test backend-lint backend-typecheck frontend-test frontend-lint frontend-typecheck frontend-build check prod-preflight backup-now backup-check backup-drill prod-migrate prod-deploy
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-up: ## Build and start the full stack (PostgreSQL + backend + frontend)
+up: ## Build and start the full stack (PostgreSQL + backend + frontend + worker)
 	docker compose -f infra/docker-compose.yml up --build -d
+
+worker-logs: ## Follow the notification worker logs
+	docker compose -f infra/docker-compose.yml logs -f worker
+
+worker-status: ## Show the notification worker health
+	docker compose -f infra/docker-compose.yml exec -T worker python -m app.cli worker-check
 
 down: ## Stop and remove the stack (data volume is preserved)
 	docker compose -f infra/docker-compose.yml down
