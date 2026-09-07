@@ -118,6 +118,9 @@ def test_backup_service_present_in_dev_and_prod(
     assert dev_backup["environment"]["BACKUP_ENC_KEY"] == DEV_BACKUP_KEY
     assert dev_backup["environment"]["APP_ENV"] == "development"
     assert "/var/backups/hr-manager" in str(dev_backup["volumes"])
+    # Startup backup writes audit rows, so a fresh stack must finish backend
+    # migrations before BACKUP_ON_START can invoke the backup CLI.
+    assert dev_backup["depends_on"]["backend"]["condition"] == "service_healthy"
     # The scheduler healthcheck must not depend on a backup existing.
     assert "backup-scheduler-ready" in str(dev_backup["healthcheck"])
     assert "backups" in dev_compose["volumes"]
@@ -294,6 +297,9 @@ def test_scheduler_script_is_utc_and_retries() -> None:
     assert "date -u" in text
     assert "RETRY_ATTEMPTS" in text
     assert "BACKOFF_SECONDS" in text
+    # Preserve the failed CLI status inside the `if` else branch. Reading $?
+    # after the compound command would turn a failed startup backup into 0.
+    assert "else\n      code=$?" in text
     assert "backup-drill" in text
     assert "backup-check" in text
 
