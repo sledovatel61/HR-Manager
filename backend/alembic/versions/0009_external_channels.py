@@ -79,12 +79,8 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.UniqueConstraint("token_hash", name="uq_telegram_link_tokens_token_hash"),
     )
-    op.create_index(
-        "ix_telegram_link_tokens_user_id", "telegram_link_tokens", ["user_id"]
-    )
-    op.create_index(
-        "ix_telegram_link_tokens_expires_at", "telegram_link_tokens", ["expires_at"]
-    )
+    op.create_index("ix_telegram_link_tokens_user_id", "telegram_link_tokens", ["user_id"])
+    op.create_index("ix_telegram_link_tokens_expires_at", "telegram_link_tokens", ["expires_at"])
 
     op.create_table(
         "telegram_start_events",
