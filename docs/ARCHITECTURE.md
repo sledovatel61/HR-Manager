@@ -803,3 +803,136 @@ production запрещён (`migrate.sh` его не имеет).
   default; `check_env.sh` фейлит incomplete-enabled и `SMTP_ENCRYPTION=none`.
 - Backup/retention: новые таблицы покрываются существующим PostgreSQL
   backup без изменений формата (credential metadata = только хэши/маски).
+
+## Списки документов и правила автоматизации (этап 11)
+
+### Границы этапа
+
+- Только «версионируемый список требуемых документов → снимок у кандидата
+  → запрос/напоминание о реально недостающих» и **ограниченный** конструктор
+  личных правил из закрытых словарей. Универсальный rule engine, произвольный
+  код/SQL, загрузка файлов, входящая почта, новая очередь/broker/микросервис —
+  вне scope (и не появились).
+- Сообщения — только уже существующие Phase 10 типы `document_request` и
+  `document_reminder` через тот же PostgreSQL outbox/worker; recipient,
+  текст и канал по-прежнему вычисляет сервер.
+
+### Модель данных (миграция 0012, обратимая)
+
+- `document_lists` — заголовок списка со стабильным id, областью
+  (`scope_position`, `scope_stage`) и optimistic `version`.
+- `document_list_versions` — цепочка версий: `status draft|published|archived`,
+  `row_version`, `published_by/at`, `archived_at`. Инварианты БД:
+  `UNIQUE(list_id, version_number)` и **partial unique**
+  `uq_document_list_versions_one_published` (`WHERE status='published'`) —
+  «не более одной опубликованной версии» гарантирует PostgreSQL, не код.
+- `document_list_items` — элементы версии (`item_key`, `name`, `explanation`,
+  `is_required`, `sort_order`; `UNIQUE(version_id, sort_order)`). Элементы
+  опубликованной/архивной версии неизменяемы (API редактирует только draft).
+- `candidate_document_assignments` — применение **точной версии** к
+  кандидату (`version_id` RESTRICT, `version_number`, `list_name_snapshot`,
+  кто/правило/когда, `replaced_at/by`); partial unique
+  `uq_candidate_document_assignments_current` (`WHERE replaced_at IS NULL`) —
+  один текущий список у кандидата. Замена закрывает старую запись, никогда не
+  удаляет.
+- `candidate_document_items` — снимок элементов (`name_snapshot`,
+  `explanation_snapshot`, `is_required`, `sort_order`, `status
+  missing|received`, `version`, `changed_by_user_id`, `changed_at`). Последующая
+  публикация новой версии списка снимок не меняет.
+- `automation_rules` — личные правила (`owner_user_id`, `trigger_type`,
+  `trigger_params`, `conditions`, `action_type`, `action_params` — JSON,
+  проверенный закрытыми pydantic-схемами, `is_enabled`, `version`,
+  `deleted_at` soft delete).
+- `automation_rule_executions` — **неизменяемая** история срабатываний:
+  `rule_id`/`rule_version`, `trigger_object_type/id/version`, `candidate_id`,
+  `action_type`, `outcome queued|applied|skipped|failed`, `outcome_class`,
+  `dedupe_key`, `outbox_ids`, `list_id/list_version_id`, `executed_at`;
+  `UNIQUE(rule_id, dedupe_key)` — durable dedupe одного бизнес-события. Ни
+  текста сообщения, ни контактов, ни имён — только идентификаторы.
+- `notification_outbox.object_snapshot` (JSON) — PII-free снимок
+  `{list_id, version_id, version_number, item_keys}` для send-time
+  revalidation документных сообщений.
+
+### Публикация и конкурентность
+
+- Publish: `SELECT … FOR UPDATE` заголовка списка + draft, сравнение
+  `expected_row_version`, архивирование прежней published и переключение в
+  одной транзакции; параллельная публикация двух черновиков/двух запросов
+  → ровно один 200, остальные 409 (partial unique index — последний барьер;
+  `IntegrityError` по нему переводится в 409, любой другой — пробрасывается).
+- Создание версии: не более одного draft на список (409), номер — под
+  блокировкой заголовка; `UNIQUE(list_id, version_number)` — барьер.
+- Отметка `received/missing`: блокировка строки снимка + `expected_version`;
+  расхождение → 409 с русским текстом; успех → `version += 1`, `changed_by`,
+  `changed_at`, аудит без PII.
+- Переходы этапа кандидата сериализованы `SELECT … FOR UPDATE` в
+  `update_candidate` (конкурентные переходы → правило выполняется один раз).
+
+### Доступ
+
+- HR — только свои кандидаты (чужие → 404, не 403: без утечки существования);
+  manager — все; admin — только с пилотным grant (иначе 403); soft-deleted
+  кандидат исключён из применения списков, отметок, сообщений и правил.
+  Управление списками (создание/версии/публикация) — только admin;
+  `GET /document-lists/published` доступен всем ролям (нужен для применения и
+  параметров правил, без drafts/истории).
+
+### Документные сообщения
+
+- `POST /candidates/{id}/documents/messages {message_type, channel?,
+  idempotency_key}` — клиент не передаёт ни текст, ни адрес, ни названия
+  документов: сервер рендерит только **сейчас недостающие** элементы
+  применённой версии (обязательные и необязательные, в стабильном порядке),
+  ставит в outbox с `object_type="document_assignment"`, `object_version` и
+  `object_snapshot` item_keys. Ничего не хватает → 409.
+- Worker перед provider call (`revalidate_document_message`): кандидат жив,
+  снимок не заменён (`assignment_replaced`), перечисленные документы всё ещё
+  missing (`documents_complete` → skip), канал по-прежнему разрешён
+  согласиями; текст пересобирается из актуального состояния, так что уже
+  полученные позиции не уходят.
+
+### Правила
+
+- Словари закрыты (`GET /automation-rules/vocabulary`): триггеры
+  `stage_entered{stage}` и `documents_missing_due{days_after 1..30}`; условия
+  `stage`, `list_id`, `has_missing_required`, `channel email|telegram`;
+  действия `apply_document_list{list_id}`, `send_document_request{channel?}`,
+  `send_document_reminder{channel?, delay_days 0..30}`; матрица
+  `ALLOWED_TRIGGER_ACTIONS` (для `documents_missing_due` — только reminder).
+  Лишние ключи/значения → 422 (`extra="forbid"`).
+- `stage_entered` выполняется синхронно внутри `update_candidate` в **той же
+  транзакции**, что и переход этапа (outbox-строки правила коммитятся вместе
+  с переходом или не коммитятся вовсе — transactional outbox), но каждое
+  правило изолировано своим savepoint: исключение внутри правила откатывает
+  только его savepoint, записывается в историю как
+  `failed/internal_error:<ExcType>` и никогда не ломает основную
+  HTTP-операцию. Dedupe-ключ `stage:{candidate}:{stage}:{transition_at}`.
+- `documents_missing_due` сканируется worker-ом (`scan_due_rules`) раз в
+  локальный день владельца: dedupe `due:{assignment}:{days}:{local_day}`.
+- Owner scope проверяется при каждом срабатывании (`candidate_in_scope`):
+  деактивация владельца → `owner_inactive`, потеря grant/владения →
+  `out_of_scope`. Отложенные задания правила содержат `rule_id` и
+  `initiator_user_id`; worker перед отправкой повторно проверяет, что правило
+  включено, не удалено и владелец активен (`rule_inactive`).
+- Quiet-hours/workdays/timezone применяются **по настройкам владельца
+  правила**, флаг bypass правилам недоступен.
+- Disable/update/delete отменяют ещё не начатые outbox-задания правила
+  (cancel-wins: строка в `sending` дорабатывается по обычной схеме
+  re-lock/финализация). Удаление — soft (`deleted_at`), история срабатываний
+  остаётся неизменной (никакого cascade).
+
+### Frontend
+
+- Админ-экран «Списки документов» (`#/document-lists`): список/детали,
+  версии с бейджами статуса, редактор черновика (до 20 элементов, ключ из
+  названия транслитерацией), publish/archive через подтверждение, header с
+  областью применения; 409 → явное состояние «Данные устарели» с
+  перезагрузкой; 403 → `PermissionDeniedState`.
+- Вкладка «Документы» в карточке кандидата: применение/замена списка
+  (подтверждение), чекбоксы `получен/не получен` с `expected_version`,
+  кто/когда отметил, запрос/напоминание с client `idempotency_key`
+  (`crypto.randomUUID`) без текста; read-only для удалённого кандидата.
+- «Мои правила» (`#/rules`, все роли): конструктор только из словаря
+  сервера, русские описания триггера/условий/действия, включение/выключение
+  с версией, редактирование, удаление с подтверждением, последние
+  срабатывания с русскими классами исхода; loading/empty/error/retry/403/409.
