@@ -7,7 +7,7 @@ or a password hash.
 
 import re
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, ValidationInfo, field_validator
@@ -1389,3 +1389,314 @@ class CandidateMessageCancelOut(BaseModel):
 
     id: UUID
     status: str
+
+
+# --- Phase 11: document lists, candidate documents and automation rules -------
+
+
+DOCUMENT_LIST_STATUSES = Literal["draft", "published", "archived"]
+DOCUMENT_ITEM_STATUSES = Literal["missing", "received"]
+RULE_TRIGGER_TYPES = Literal["stage_transition", "document_reminder_schedule"]
+RULE_ACTION_TYPES = Literal[
+    "apply_document_list", "send_document_request", "send_document_reminder"
+]
+RULE_CONDITION_TYPES = Literal["stage", "has_missing_required", "channel"]
+
+
+class DocumentListItemIn(BaseModel):
+    """One item in a document list version."""
+
+    item_key: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=300)
+    explanation: str | None = Field(default=None, max_length=2000)
+    is_required: bool = True
+    sort_order: int = Field(default=0, ge=0)
+
+
+class DocumentListCreate(BaseModel):
+    """Create a new document list with its first draft version."""
+
+    stable_key: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    scope: str = Field(default="", max_length=200)
+    items: list[DocumentListItemIn] = Field(default_factory=list)
+
+    @field_validator("stable_key")
+    @classmethod
+    def _key_valid(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Ключ списка обязателен.")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Название списка обязательно.")
+        return v
+
+
+class DocumentListItemOut(BaseModel):
+    """One item in a version."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    item_key: str
+    name: str
+    explanation: str | None = None
+    is_required: bool
+    sort_order: int
+
+
+class DocumentListVersionOut(BaseModel):
+    """A version of a document list."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    list_id: UUID
+    version_number: int
+    status: str
+    published_at: datetime | None = None
+    archived_at: datetime | None = None
+    published_by_username: str | None = None
+    items: list[DocumentListItemOut] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentListOut(BaseModel):
+    """A document list with its versions."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    stable_key: str
+    name: str
+    description: str
+    scope: str
+    created_by_username: str
+    latest_published_version: DocumentListVersionOut | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentListSummary(BaseModel):
+    """Brief representation of a document list for list views."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    stable_key: str
+    name: str
+    scope: str
+    status: str  # latest version status
+    version_count: int
+    created_at: datetime
+
+
+class DocumentListSummaryList(BaseModel):
+    """Paginated list of document lists."""
+
+    items: list[DocumentListSummary]
+    total: int
+    limit: int
+    offset: int
+
+
+class DocumentListVersionCreate(BaseModel):
+    """Create a new draft version (copies items from the previous version)."""
+
+    pass  # No input needed; items are copied from the previous version.
+
+
+class DocumentListItemUpdate(BaseModel):
+    """Update an item in a DRAFT version."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=300)
+    explanation: str | None = None
+    is_required: bool | None = None
+    sort_order: int | None = None
+
+
+class DocumentListVersionItemCreate(BaseModel):
+    """Add an item to a DRAFT version."""
+
+    item_key: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=300)
+    explanation: str | None = Field(default=None, max_length=2000)
+    is_required: bool = True
+    sort_order: int = Field(default=0, ge=0)
+
+
+class CandidateDocumentAssignmentOut(BaseModel):
+    """A candidate's document list assignment."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    candidate_id: UUID
+    version_id: UUID
+    list_name: str
+    list_stable_key: str
+    version_number: int
+    assigned_by_username: str | None = None
+    assigned_at: datetime
+    replaced_at: datetime | None = None
+
+
+class CandidateDocumentItemOut(BaseModel):
+    """One document item for a candidate."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    item_key: str
+    name_snapshot: str
+    is_required: bool
+    status: str
+    changed_by_username: str | None = None
+    changed_at: datetime | None = None
+    version: int
+
+
+class CandidateDocumentItemsOut(BaseModel):
+    """All document items for a candidate's active assignment."""
+
+    assignment: CandidateDocumentAssignmentOut
+    items: list[CandidateDocumentItemOut]
+    missing_required_count: int
+
+
+class CandidateDocumentItemUpdate(BaseModel):
+    """Update a candidate document item status (requires expected_version)."""
+
+    expected_version: int = Field(ge=1)
+    status: DOCUMENT_ITEM_STATUSES
+
+
+class CandidateDocumentApplyRequest(BaseModel):
+    """Apply a published document list version to a candidate."""
+
+    list_id: UUID
+
+
+class CandidateMissingDocument(BaseModel):
+    """A missing required document for API consumers."""
+
+    item_key: str
+    name: str
+
+
+class AutomationRuleTriggerIn(BaseModel):
+    """Trigger parameters for rule creation/update."""
+
+    type: RULE_TRIGGER_TYPES
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class AutomationRuleConditionIn(BaseModel):
+    """Condition parameters (optional)."""
+
+    type: RULE_CONDITION_TYPES
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class AutomationRuleActionIn(BaseModel):
+    """Action parameters."""
+
+    type: RULE_ACTION_TYPES
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class AutomationRuleCreate(BaseModel):
+    """Create an automation rule."""
+
+    name: str = Field(min_length=1, max_length=200)
+    trigger: AutomationRuleTriggerIn
+    condition: AutomationRuleConditionIn | None = None
+    action: AutomationRuleActionIn
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Название правила обязательно.")
+        return v
+
+
+class AutomationRuleUpdate(BaseModel):
+    """Update an automation rule (all fields optional)."""
+
+    expected_version: int = Field(ge=1)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    trigger: AutomationRuleTriggerIn | None = None
+    condition: AutomationRuleConditionIn | None = None
+    action: AutomationRuleActionIn | None = None
+
+
+class AutomationRuleToggle(BaseModel):
+    """Enable/disable an automation rule."""
+
+    expected_version: int = Field(ge=1)
+    is_enabled: bool
+
+
+class AutomationRuleOut(BaseModel):
+    """Public representation of an automation rule."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    owner_user_id: UUID
+    owner_username: str
+    name: str
+    is_enabled: bool
+    trigger_type: str
+    trigger_params: dict[str, Any]
+    condition_type: str | None = None
+    condition_params: dict[str, Any] | None = None
+    action_type: str
+    action_params: dict[str, Any]
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AutomationRuleList(BaseModel):
+    """Paginated list of automation rules."""
+
+    items: list[AutomationRuleOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class AutomationRuleExecutionOut(BaseModel):
+    """One immutable rule execution record."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    rule_id: UUID
+    rule_version: int
+    trigger_object_id: UUID | None = None
+    candidate_id: UUID | None = None
+    action_type: str
+    outcome: str
+    dedupe_key: str | None = None
+    executed_at: datetime
+
+
+class AutomationRuleExecutionList(BaseModel):
+    """Paginated rule execution history."""
+
+    items: list[AutomationRuleExecutionOut]
+    total: int
+    limit: int
+    offset: int
