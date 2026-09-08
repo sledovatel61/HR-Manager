@@ -1,6 +1,17 @@
 import type {
   AccessGrant,
   AdminChannels,
+  CandidateChannels,
+  CandidateEmailConfirmation,
+  CandidateChannelName,
+  CandidateConsent,
+  CandidateMessageList,
+  CandidateMessagePreview,
+  CandidateMessagePreviewInput,
+  CandidateMessageSendInput,
+  CandidateMessageSendResult,
+  CandidateTelegramConfirm,
+  CandidateTelegramInvite,
   ChannelCheckResult,
   ChannelTestResult,
   ConsentResult,
@@ -694,4 +705,96 @@ export async function checkSmtpConfig(): Promise<ChannelCheckResult> {
 
 export async function queueAdminSmtpTest(): Promise<ChannelTestResult> {
   return request<ChannelTestResult>("/admin/integrations/smtp/test-send", { method: "POST" });
+}
+
+// --- Phase 10: one-way candidate messages --------------------------------------
+
+export async function initiateCandidateEmailConfirmation(
+  candidateId: string,
+): Promise<CandidateEmailConfirmation> {
+  return request<CandidateEmailConfirmation>(
+    `/candidates/${candidateId}/channels/email/confirmation`,
+    { method: "POST" },
+  );
+}
+
+export async function getCandidateChannels(candidateId: string): Promise<CandidateChannels> {
+  return request<CandidateChannels>(`/candidates/${candidateId}/channels`);
+}
+
+export async function updateCandidateChannelConsent(
+  candidateId: string,
+  channel: CandidateChannelName,
+  granted: boolean,
+): Promise<CandidateConsent> {
+  return request<CandidateConsent>(`/candidates/${candidateId}/channels/${channel}/consent`, {
+    method: "POST",
+    body: { granted },
+  });
+}
+
+export async function createCandidateTelegramInvite(
+  candidateId: string,
+): Promise<CandidateTelegramInvite> {
+  return request<CandidateTelegramInvite>(`/candidates/${candidateId}/channels/telegram/invite`, {
+    method: "POST",
+  });
+}
+
+export async function confirmCandidateTelegram(
+  candidateId: string,
+): Promise<CandidateTelegramConfirm> {
+  return request<CandidateTelegramConfirm>(
+    `/candidates/${candidateId}/channels/telegram/confirm`,
+    { method: "POST" },
+  );
+}
+
+export async function unlinkCandidateTelegram(
+  candidateId: string,
+): Promise<CandidateTelegramConfirm> {
+  return request<CandidateTelegramConfirm>(
+    `/candidates/${candidateId}/channels/telegram/unlink`,
+    { method: "POST" },
+  );
+}
+
+export async function listCandidateMessages(
+  candidateId: string,
+  limit = 20,
+  offset = 0,
+): Promise<CandidateMessageList> {
+  return request<CandidateMessageList>(
+    `/candidates/${candidateId}/messages?limit=${limit}&offset=${offset}`,
+  );
+}
+
+export async function previewCandidateMessage(
+  candidateId: string,
+  input: CandidateMessagePreviewInput,
+): Promise<CandidateMessagePreview> {
+  return request<CandidateMessagePreview>(`/candidates/${candidateId}/messages/preview`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function sendCandidateMessage(
+  candidateId: string,
+  input: CandidateMessageSendInput,
+): Promise<CandidateMessageSendResult> {
+  return request<CandidateMessageSendResult>(`/candidates/${candidateId}/messages/send`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function cancelCandidateMessage(
+  candidateId: string,
+  messageId: string,
+): Promise<{ id: string; status: string }> {
+  return request<{ id: string; status: string }>(
+    `/candidates/${candidateId}/messages/${messageId}/cancel`,
+    { method: "POST" },
+  );
 }

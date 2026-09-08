@@ -116,6 +116,35 @@ def format_local(when_utc: datetime, timezone: str) -> str:
     return local.strftime("%d.%m.%Y %H:%M")
 
 
+def candidate_send_lock_key(candidate_id: UUID) -> str:
+    """The advisory-lock key coordinating candidate mutations with sends."""
+    return f"candidate-send:{candidate_id}"
+
+
+def lock_candidate_for_mutation(db: Session, candidate_id: UUID) -> None:
+    """Serialize a candidate-scoped mutation with in-flight worker sends.
+
+    PostgreSQL only (a no-op on SQLite, whose tests are single-threaded):
+    takes a transaction-scoped advisory lock on the candidate. The worker
+    holds the same key (session-level) from its send-time re-validation
+    until the provider call finishes, so a consent revocation, an email
+    re-confirmation or a token re-issuance can never commit between the
+    worker's checks and the provider call — it either completes before
+    them (and the row is skipped) or waits until the in-flight send is
+    done. No deadlock is possible: mutation endpoints take only this
+    lock, the worker takes it before the outbox row lock.
+    """
+    from sqlalchemy import text as sa_text
+
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    db.execute(
+        sa_text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": candidate_send_lock_key(candidate_id)},
+    )
+
+
 def preference_for(db: Session, user_id: UUID, settings_timezone: str) -> NotificationPreference:
     """Load the user's preferences, or a synthetic row with system defaults.
 
@@ -144,6 +173,7 @@ def schedule(
     *,
     recipient_user_id: UUID | None,
     external_recipient: str | None = None,
+    recipient_candidate_id: UUID | None = None,
     channel: DeliveryChannel = DeliveryChannel.IN_APP,
     type_: NotificationType,
     source: NotificationSource = NotificationSource.SYSTEM,
@@ -159,6 +189,7 @@ def schedule(
     initiator_user_id: UUID | None = None,
     consent_snapshot: dict | None = None,
     quiet_hours_bypassed: bool = False,
+    object_version: int | None = None,
 ) -> NotificationOutbox | None:
     """Insert one outbox row (transactional, deduplicated).
 
@@ -177,11 +208,25 @@ def schedule(
       mailbox — anything else raises ValueError and queues nothing. All
       other templates resolve the recipient from the user's own verified
       binding at send time and ignore any stored external value.
+    * ``recipient_candidate_id`` (phase 10) addresses a one-way candidate
+      message; the concrete email/chat is resolved by the worker from the
+      candidate's consented channel state at send time. It is mutually
+      exclusive with both user and external recipients.
     """
-    if recipient_user_id is None and external_recipient is None:
-        raise ValueError("either recipient_user_id or external_recipient is required")
-    if recipient_user_id is not None and external_recipient is not None:
-        raise ValueError("recipient_user_id and external_recipient are mutually exclusive")
+    recipient_count = sum(
+        1
+        for value in (recipient_user_id, external_recipient, recipient_candidate_id)
+        if value is not None
+    )
+    if recipient_count == 0:
+        raise ValueError(
+            "either recipient_user_id, external_recipient or recipient_candidate_id is required"
+        )
+    if recipient_count > 1:
+        raise ValueError(
+            "recipient_user_id, external_recipient and recipient_candidate_id "
+            "are mutually exclusive"
+        )
     if external_recipient is not None:
         from app.smtp import validate_mailbox
 
@@ -192,6 +237,7 @@ def schedule(
     row = NotificationOutbox(
         recipient_user_id=recipient_user_id,
         external_recipient=external_recipient,
+        recipient_candidate_id=recipient_candidate_id,
         channel=channel,
         notification_type=type_,
         source=source,
@@ -202,6 +248,7 @@ def schedule(
         initiator_user_id=initiator_user_id,
         object_type=object_type,
         object_id=object_id,
+        object_version=object_version,
         scheduled_at=scheduled_at,
         queued_at=utc_now(),
         status=DeliveryStatus.QUEUED,
@@ -236,6 +283,29 @@ def cancel_pending_for_object(
     )
     cancelled = result.rowcount if result.rowcount is not None else 0  # type: ignore[attr-defined]
     return cancelled
+
+
+def cancel_pending_candidate_channel_messages(
+    db: Session, *, candidate_id: UUID, channel: DeliveryChannel, now: datetime | None = None
+) -> int:
+    """Cancel not-yet-claimed candidate messages of one channel.
+
+    Called when a candidate's consent for the channel is revoked (or the
+    Telegram binding unlinked): pending jobs of that channel must never
+    fire. Rows already ``sending`` finish with their own outcome (the
+    worker re-validates consent in every phase anyway). Returns the count.
+    """
+    now = now or utc_now()
+    result = db.execute(
+        update(NotificationOutbox)
+        .where(
+            NotificationOutbox.recipient_candidate_id == candidate_id,
+            NotificationOutbox.channel == channel,
+            NotificationOutbox.status == DeliveryStatus.QUEUED,
+        )
+        .values(status=DeliveryStatus.CANCELLED, cancelled_at=now)
+    )
+    return result.rowcount if result.rowcount is not None else 0  # type: ignore[attr-defined]
 
 
 def deliver_in_app(db: Session, outbox: NotificationOutbox, *, now: datetime | None = None) -> bool:

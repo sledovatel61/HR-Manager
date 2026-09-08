@@ -32,18 +32,25 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, select, text
+from sqlalchemy import Connection, func, select, text
 from sqlalchemy.orm import Session
 
 from app.audit import record_event
+from app.candidate_messages import CONFIRM_URL_PLACEHOLDER, email_confirm_url
 from app.config import Settings
 from app.db import build_engine
 from app.models import (
     AccessGrant,
     AccessGrantScope,
     AuditAction,
+    Candidate,
+    CandidateChannelConsent,
+    CandidateEmailConfirmToken,
+    CandidateTelegramLink,
     DeliveryChannel,
     DeliveryStatus,
+    Event,
+    EventStatus,
     NotificationDeliveryAttempt,
     NotificationOutbox,
     NotificationPreference,
@@ -59,6 +66,7 @@ from app.models import (
 from app.notification_service import (
     CONSENT_EXEMPT_TEMPLATES,
     EMAIL_VERIFICATION_TEMPLATE,
+    candidate_send_lock_key,
     deliver_in_app,
     has_channel_consent,
     preference_for,
@@ -68,7 +76,7 @@ from app.notification_service import (
 from app.quiet_hours import effective_send_time, next_occurrence
 from app.smtp import SmtpConfig, SmtpSendResult
 from app.telegram import REVOKING_ERROR_CLASSES, TelegramConfig, TelegramSendResult
-from app.utils import utc_now
+from app.utils import ensure_aware, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +88,21 @@ CONSENT_MISSING_ERROR_CLASS = "consent_missing"
 ADDRESS_UNVERIFIED_ERROR_CLASS = "address_unverified"
 RECIPIENT_UNAVAILABLE_ERROR_CLASS = "recipient_unavailable"
 RECIPIENT_MISSING_ERROR_CLASS = "recipient_missing"
+# Phase 10 (candidate rows).
+CANDIDATE_UNAVAILABLE_ERROR_CLASS = "candidate_unavailable"
+EVENT_STALE_ERROR_CLASS = "event_stale"
+ADDRESS_CHANGED_ERROR_CLASS = "address_changed"
+TOKEN_INACTIVE_ERROR_CLASS = "token_inactive"
+
+# Candidate message types whose linked event must still be fresh at send
+# time (see _candidate_event_is_stale).
+_CANDIDATE_EVENT_FRESH_TYPES = frozenset(
+    {
+        NotificationType.CANDIDATE_INTERVIEW_SCHEDULED,
+        NotificationType.CANDIDATE_INTERVIEW_REMINDER,
+        NotificationType.CANDIDATE_INTERVIEW_RESCHEDULED,
+    }
+)
 
 # Test hooks: module-level sender callables. Unit tests monkeypatch these;
 # integration tests point Settings at stub servers and use the real ones.
@@ -259,12 +282,18 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
     try:
         if (
             not locked.quiet_hours_bypassed
-            and locked.recipient_user_id is not None
             and locked.scheduled_at is not None
+            and (locked.recipient_user_id is not None or locked.recipient_candidate_id is not None)
         ):
-            preference = preference_for(
-                db, locked.recipient_user_id, settings.notification_default_timezone
-            )
+            if locked.recipient_user_id is not None:
+                preference = preference_for(
+                    db, locked.recipient_user_id, settings.notification_default_timezone
+                )
+            else:
+                # Phase 10: candidates have no personal preferences; the
+                # system-wide quiet hours/timezone apply (external messages
+                # are not sent at night by default, PRODUCT_SPEC §8).
+                preference = _candidate_quiet_preference(settings)
             effective = effective_send_time(locked.scheduled_at, preference=preference, now_utc=now)
             if effective > now:
                 # Inside quiet hours: postpone to the first allowed minute.
@@ -319,6 +348,172 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
         return _record_failure(db, locked, settings=settings, now=now, error_class="internal_error")
 
 
+def _candidate_quiet_preference(settings: Settings) -> NotificationPreference:
+    """Synthetic quiet-hours schedule for candidate messages (phase 10).
+
+    Candidates have no preference row of their own; the system defaults
+    apply (timezone + quiet hours + workdays from the settings).
+    """
+    return NotificationPreference(
+        user_id=uuid.UUID(int=0),  # synthetic, never flushed
+        timezone=settings.notification_default_timezone,
+        quiet_hours_start=settings.notification_quiet_hours_start,
+        quiet_hours_end=settings.notification_quiet_hours_end,
+        workdays=[int(day) for day in settings.notification_workdays.split(",")],
+        enabled_types=[member.value for member in NotificationType],
+        enabled_channels=[DeliveryChannel.IN_APP.value],
+    )
+
+
+def _candidate_event_is_stale(db: Session, locked: NotificationOutbox, *, now: datetime) -> bool:
+    """True when the interview this message is about is no longer fresh.
+
+    The reminder/scheduled/rescheduled letters must not leave after the
+    interview was moved, cancelled, completed or already began: the event
+    is re-read and re-checked right before the provider call (the stale
+    plan is normally cancelled by the mutation itself — this is the
+    send-time backstop for races and legacy rows).
+    """
+    if locked.notification_type not in _CANDIDATE_EVENT_FRESH_TYPES:
+        return False
+    if locked.object_type != "event" or locked.object_id is None:
+        return False
+    event = db.get(Event, locked.object_id)
+    if event is None:
+        return True
+    if event.status != EventStatus.SCHEDULED:
+        return True
+    if locked.object_version is not None and event.version != locked.object_version:
+        # The interview mutated after this text was rendered (reschedule,
+        # cancel, complete — every mutation bumps the optimistic version):
+        # the rendered date/time may no longer be true.
+        return True
+    return ensure_aware(event.starts_at) <= now
+
+
+def _resolve_candidate_target(
+    db: Session, locked: NotificationOutbox, *, settings: Settings
+) -> tuple[_ExternalTarget | None, str | None]:
+    """Resolve a phase-10 candidate row (fail-closed at send time).
+
+    The recipient is derived exclusively from server-side state: the
+    candidate's own consent record, their card address (for email — the
+    consent is pinned to its normalized value) or their Telegram binding.
+    A stale event, revoked consent, changed address, deleted candidate or
+    missing binding skips the row without any network call.
+    """
+    from app.smtp import config_from_settings as smtp_config_from_settings
+    from app.telegram import config_from_settings as telegram_config_from_settings
+
+    now = utc_now()
+    candidate_id = locked.recipient_candidate_id
+    assert candidate_id is not None
+    candidate = db.get(Candidate, candidate_id)
+    if candidate is None or candidate.deleted_at is not None:
+        return None, CANDIDATE_UNAVAILABLE_ERROR_CLASS
+
+    if locked.notification_type == NotificationType.CANDIDATE_EMAIL_CONFIRM:
+        # The double opt-in letter itself: the only candidate email that is
+        # delivered WITHOUT a granted consent (delivering it is the purpose
+        # of the flow). The link must still be alive and bound to the exact
+        # card address it was issued for — otherwise nothing is sent.
+        from app.smtp import config_from_settings as smtp_config_from_settings
+        from app.utils import normalize_email
+
+        if locked.channel != DeliveryChannel.EMAIL:
+            return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+        if not smtp_config_from_settings(settings).is_configured:
+            return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+        if not candidate.email:
+            return None, BINDING_MISSING_ERROR_CLASS
+        if locked.object_type != "candidate_email_token" or locked.object_id is None:
+            return None, TOKEN_INACTIVE_ERROR_CLASS
+        token = db.get(CandidateEmailConfirmToken, locked.object_id)
+        if token is None or token.candidate_id != candidate_id:
+            return None, TOKEN_INACTIVE_ERROR_CLASS
+        if token.consumed_at is not None or token.expires_at <= now:
+            return None, TOKEN_INACTIVE_ERROR_CLASS
+        if token.email_normalized != normalize_email(candidate.email):
+            # The card address changed after the letter was rendered: the
+            # link confirms a different mailbox — never deliver it.
+            return None, ADDRESS_CHANGED_ERROR_CLASS
+        base_url = settings.candidate_email_confirm_base_url.strip()
+        if not base_url:
+            return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+        body = locked.body or ""
+        if CONFIRM_URL_PLACEHOLDER not in body:
+            # A confirm letter without the placeholder is malformed (forged
+            # or drifted): fail-closed, nothing is mailed.
+            return None, TOKEN_INACTIVE_ERROR_CLASS
+        # The link is built IN MEMORY here (HMAC of the server secret and
+        # the token row id): the stored body keeps the placeholder, so no
+        # persisted field ever contains a working confirmation link.
+        body = body.replace(CONFIRM_URL_PLACEHOLDER, email_confirm_url(token.id, settings))
+        return (
+            _ExternalTarget(
+                channel=DeliveryChannel.EMAIL,
+                email=candidate.email,
+                title=locked.title,
+                body=body,
+            ),
+            None,
+        )
+
+    if _candidate_event_is_stale(db, locked, now=now):
+        return None, EVENT_STALE_ERROR_CLASS
+
+    if locked.channel == DeliveryChannel.TELEGRAM:
+        if not telegram_config_from_settings(settings).is_configured:
+            return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+        link = db.get(CandidateTelegramLink, candidate_id)
+        if link is None or link.chat_id is None:
+            return None, BINDING_MISSING_ERROR_CLASS
+        if link.revoked_at is not None:
+            return None, BINDING_REVOKED_ERROR_CLASS
+        consent = db.get(CandidateChannelConsent, (candidate_id, DeliveryChannel.TELEGRAM.value))
+        if consent is None or not consent.granted:
+            return None, CONSENT_MISSING_ERROR_CLASS
+        return (
+            _ExternalTarget(
+                channel=DeliveryChannel.TELEGRAM,
+                chat_id=link.chat_id,
+                title=locked.title,
+                body=locked.body,
+            ),
+            None,
+        )
+
+    if locked.channel == DeliveryChannel.EMAIL:
+        if not smtp_config_from_settings(settings).is_configured:
+            return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+        if not candidate.email:
+            return None, BINDING_MISSING_ERROR_CLASS
+        consent = db.get(CandidateChannelConsent, (candidate_id, DeliveryChannel.EMAIL.value))
+        if consent is None or not consent.granted:
+            return None, CONSENT_MISSING_ERROR_CLASS
+        from app.utils import normalize_email
+
+        if consent.source != "email_confirm":
+            # Granted without the candidate's own confirmation click
+            # (legacy/manual recording): double opt-in is not satisfied.
+            return None, CONSENT_MISSING_ERROR_CLASS
+        if consent.email_normalized != normalize_email(candidate.email):
+            # The address changed after the consent was recorded: the
+            # consent does not cover the new address — fail closed.
+            return None, ADDRESS_CHANGED_ERROR_CLASS
+        return (
+            _ExternalTarget(
+                channel=DeliveryChannel.EMAIL,
+                email=candidate.email,
+                title=locked.title,
+                body=locked.body,
+            ),
+            None,
+        )
+
+    return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+
+
 def _resolve_external_target(
     db: Session, locked: NotificationOutbox, *, settings: Settings
 ) -> tuple[_ExternalTarget | None, str | None]:
@@ -327,9 +522,14 @@ def _resolve_external_target(
     Returns (target, None) when the message may be sent, else (None,
     skip_error_class). Consent, bindings and the global configuration are
     re-validated here at send time (scheduling-time checks are advisory).
+    Phase-10 candidate rows are resolved from the candidate's own state
+    (see :func:`_resolve_candidate_target`).
     """
     from app.smtp import config_from_settings as smtp_config_from_settings
     from app.telegram import config_from_settings as telegram_config_from_settings
+
+    if locked.recipient_candidate_id is not None:
+        return _resolve_candidate_target(db, locked, settings=settings)
 
     channel = locked.channel
     template = locked.template
@@ -407,11 +607,26 @@ def _resolve_external_target(
     return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
 
 
-def _note_external_success(db: Session, user_id: UUID | None, channel: DeliveryChannel) -> None:
+def _note_external_success(
+    db: Session,
+    user_id: UUID | None,
+    channel: DeliveryChannel,
+    *,
+    candidate_id: UUID | None = None,
+) -> None:
     """Record a successful provider handoff on the binding (PII-free)."""
+    now = utc_now()
+    if candidate_id is not None:
+        # Phase 10: the candidate's own binding.
+        if channel == DeliveryChannel.TELEGRAM:
+            candidate_link = db.get(CandidateTelegramLink, candidate_id)
+            if candidate_link is not None:
+                candidate_link.last_sent_at = now
+                candidate_link.last_error_class = None
+                candidate_link.last_error_at = None
+        return
     if user_id is None:
         return
-    now = utc_now()
     if channel == DeliveryChannel.TELEGRAM:
         link = db.get(TelegramLink, user_id)
         if link is not None:
@@ -427,12 +642,26 @@ def _note_external_success(db: Session, user_id: UUID | None, channel: DeliveryC
 
 
 def _note_external_error(
-    db: Session, user_id: UUID | None, channel: DeliveryChannel, error_class: str
+    db: Session,
+    user_id: UUID | None,
+    channel: DeliveryChannel,
+    error_class: str,
+    *,
+    candidate_id: UUID | None = None,
 ) -> None:
     """Record a delivery failure class on the binding (PII-free)."""
+    now = utc_now()
+    if candidate_id is not None:
+        # Phase 10: the candidate's own binding (email has no separate
+        # candidate binding — the state derives from the consent/card).
+        if channel == DeliveryChannel.TELEGRAM:
+            candidate_link = db.get(CandidateTelegramLink, candidate_id)
+            if candidate_link is not None:
+                candidate_link.last_error_class = error_class
+                candidate_link.last_error_at = now
+        return
     if user_id is None:
         return
-    now = utc_now()
     if channel == DeliveryChannel.TELEGRAM:
         link = db.get(TelegramLink, user_id)
         if link is not None:
@@ -445,43 +674,93 @@ def _note_external_error(
             address.last_error_at = now
 
 
-def _advisory_send_lock_held(db: Session, outbox_id: object) -> bool:
-    """Best-effort cross-process single-flight for one external send.
+@dataclass(frozen=True)
+class _SendLocks:
+    """Advisory locks of one external send, held on a dedicated connection.
 
-    PostgreSQL only: ``pg_try_advisory_lock`` on a per-row key, held on the
-    session's connection from phase A through phase C (released in the
-    ``finally`` of :func:`process_external_row`; a crashed worker's death
-    releases it server-side via the dropped connection). Without it two
-    workers could pass the phase-A check together and send twice — the
-    check and the finalize are split by the network call. Returns False
-    when another worker already sends this row (the caller backs off and
-    the lease keeps the row safe). Other dialects (SQLite unit tests) run
-    single-threaded and skip the lock.
+    Row key (``outbox-send:<id>``): best-effort single-flight so parallel
+    workers never send the same row twice — one that finds it busy backs
+    off with ``sending`` (the lease keeps the row safe).
+
+    Candidate key (``candidate-send:<id>``): the SAME key the mutation
+    endpoints take transactionally, so a consent revocation, an email
+    (re-)confirmation or a token re-issuance can never commit between
+    this worker's re-validation and the provider call — it either
+    completes before them (the row is then skipped) or waits until the
+    in-flight send is done.
+
+    Both live on ONE connection checked out for the whole span: a
+    session-level advisory lock taken on the ORM session's connection
+    would leak to the pool at the phase-A commit (the session releases
+    its connection there) and could then be re-acquired re-entrantly by
+    a mutation running on the recycled connection — a dedicated
+    connection cannot be handed out to anyone else while the send is in
+    flight, and a crashed worker's death releases the locks server-side
+    via the dropped connection. Mutations take only the candidate key
+    (transaction-scoped, on their own request connection), so no
+    deadlock cycle can form.
+    """
+
+    connection: Connection
+    outbox_id: object
+    candidate_id: UUID | None
+
+
+def _acquire_send_locks(
+    db: Session, outbox_id: object, candidate_id: UUID | None
+) -> tuple[_SendLocks | None, bool]:
+    """Take the send locks; returns (locks-or-None, busy).
+
+    ``busy`` is True only on PostgreSQL when another worker already
+    sends this row. Other dialects (SQLite unit tests) run
+    single-threaded and skip locking entirely.
     """
     bind = db.get_bind()
     if bind is None or bind.dialect.name != "postgresql":
-        return True
-    # Pin one pooled connection to this session: advisory locks are
-    # per-connection, so phases A and C must share it across the network
-    # call (released back to the pool when the caller closes the session).
-    db.connection()
-    key = f"outbox-send:{outbox_id}"
-    held = db.execute(
-        text("SELECT pg_try_advisory_lock(hashtext(:key))"), {"key": key}
-    ).scalar_one()
-    return bool(held)
-
-
-def _advisory_send_lock_release(db: Session, outbox_id: object) -> None:
-    bind = db.get_bind()
-    if bind is None or bind.dialect.name != "postgresql":
-        return
-    key = f"outbox-send:{outbox_id}"
+        return None, False
+    engine = bind.engine if isinstance(bind, Connection) else bind
+    connection = engine.connect()
     try:
-        db.execute(text("SELECT pg_advisory_unlock(hashtext(:key))"), {"key": key})
-        db.commit()
+        held = connection.execute(
+            text("SELECT pg_try_advisory_lock(hashtext(:key))"),
+            {"key": f"outbox-send:{outbox_id}"},
+        ).scalar_one()
+        if not bool(held):
+            connection.close()
+            return None, True
+        if candidate_id is not None:
+            connection.execute(
+                text("SELECT pg_advisory_lock(hashtext(:key))"),
+                {"key": candidate_send_lock_key(candidate_id)},
+            )
     except Exception:
-        db.rollback()
+        connection.close()
+        raise
+    return (
+        _SendLocks(connection=connection, outbox_id=outbox_id, candidate_id=candidate_id),
+        False,
+    )
+
+
+def _release_send_locks(locks: _SendLocks | None) -> None:
+    """Drop both locks (closing the connection frees them regardless)."""
+    if locks is None:
+        return
+    try:
+        locks.connection.rollback()
+        locks.connection.execute(
+            text("SELECT pg_advisory_unlock(hashtext(:key))"),
+            {"key": f"outbox-send:{locks.outbox_id}"},
+        )
+        if locks.candidate_id is not None:
+            locks.connection.execute(
+                text("SELECT pg_advisory_unlock(hashtext(:key))"),
+                {"key": candidate_send_lock_key(locks.candidate_id)},
+            )
+    except Exception:
+        logger.warning("send lock release failed (closing drops the locks anyway)")
+    finally:
+        locks.connection.close()
 
 
 def process_external_row(
@@ -490,31 +769,91 @@ def process_external_row(
     """Deliver one claimed email/telegram row with real provider I/O.
 
     Three phases: (A) short transaction — re-lock, re-validate, extend the
-    lease, then commit to release the lock; (B) provider call with NO open
-    transaction; (C) short transaction — re-lock and finalize atomically
-    (an admin cancel racing the send wins: its status is left untouched).
+    lease, then commit to release the lock; (B0) a second, lock-free
+    re-validation IMMEDIATELY before the network call; (C) short
+    transaction — re-lock and finalize atomically (an admin cancel racing
+    the send wins: its status is left untouched).
 
-    A PostgreSQL advisory lock spans all three phases so parallel workers
-    can never send the same row twice (a worker that finds the lock busy
-    backs off with ``sending`` — the lease keeps the row safe).
+    Two PostgreSQL advisory locks span all three phases: a per-row one so
+    parallel workers can never send the same row twice, and a
+    per-candidate one (the SAME key the mutation endpoints take) so a
+    consent revocation, an email (re-)confirmation or a token re-issuance
+    cannot commit between the re-validation and the provider call. Exact
+    revocation model, honestly stated:
+
+    * a revocation that completes before the re-validation STOPS the send
+      (the row is skipped, fail-closed);
+    * a revocation that arrives while the provider call is already in
+      flight WAITS (advisory lock) and takes effect right after it — the
+      one message already handed to SMTP/Telegram cannot be unsent, and
+      every other pending row of the channel is cancelled;
+    * mutations NOT serialized by the candidate lock (a card email
+      change, candidate deletion, event changes) are re-checked by the
+      B0 pass, leaving only the unavoidable check-then-call micro-window
+      of any external provider.
 
     Provider ``accepted`` is stored as ``accepted`` with the provider
     message id only when the provider returned one — never ``delivered``,
     never «read». Returns the final status value.
     """
-    if not _advisory_send_lock_held(db, outbox_id):
+    candidate_id = db.execute(
+        select(NotificationOutbox.recipient_candidate_id).where(NotificationOutbox.id == outbox_id)
+    ).scalar_one_or_none()
+    locks, busy = _acquire_send_locks(db, outbox_id, candidate_id)
+    if busy:
         db.rollback()
         return DeliveryStatus.SENDING.value
     try:
         return _process_external_row_locked(db, outbox_id, settings=settings, now=now)
     finally:
-        _advisory_send_lock_release(db, outbox_id)
+        _release_send_locks(locks)
+
+
+def _finalize_external_skip(
+    db: Session, outbox_id: object, skip_class: str, *, now: datetime
+) -> str:
+    """Atomically mark a claimed row skipped (fail-closed, no network).
+
+    Re-locks the row: when an admin cancel/retry raced us and won, its
+    decision stands. Usable both under the phase-A row lock and after its
+    commit (the phase-B0 re-validation).
+    """
+    row = db.execute(
+        select(NotificationOutbox)
+        .where(NotificationOutbox.id == outbox_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    if row.status != DeliveryStatus.SENDING:
+        db.rollback()
+        return row.status.value
+    # The lease CHECK requires status/lease consistency at every flush, so
+    # the terminal state is assigned BEFORE any helper query runs (helper
+    # queries trigger autoflush).
+    row.status = DeliveryStatus.SKIPPED
+    row.failed_at = now
+    row.error_class = skip_class
+    row.attempts += 1
+    row.next_attempt_at = None
+    row.lease_expires_at = None
+    db.add(
+        NotificationDeliveryAttempt(
+            outbox_id=row.id,
+            attempt_no=row.attempts,
+            started_at=row.started_at or now,
+            finished_at=now,
+            outcome="skipped",
+            error_class=skip_class,
+        )
+    )
+    db.commit()
+    return row.status.value
 
 
 def _process_external_row_locked(
     db: Session, outbox_id: object, *, settings: Settings, now: datetime
 ) -> str:
-    """Phases A/B/C of external delivery (the advisory lock is held)."""
+    """Phases A/B0/B/C of external delivery (the advisory locks are held)."""
     from app.smtp import config_from_settings as smtp_config_from_settings
     from app.telegram import config_from_settings as telegram_config_from_settings
 
@@ -531,31 +870,26 @@ def _process_external_row_locked(
     target, skip_class = _resolve_external_target(db, locked, settings=settings)
     if target is None or skip_class is not None:
         assert skip_class is not None
-        locked.status = DeliveryStatus.SKIPPED
-        locked.failed_at = now
-        locked.error_class = skip_class
-        locked.attempts += 1
-        locked.next_attempt_at = None
-        locked.lease_expires_at = None
-        db.add(
-            NotificationDeliveryAttempt(
-                outbox_id=locked.id,
-                attempt_no=locked.attempts,
-                started_at=locked.started_at or now,
-                finished_at=now,
-                outcome="skipped",
-                error_class=skip_class,
-            )
-        )
-        db.commit()
-        return locked.status.value
-    channel = target.channel
+        return _finalize_external_skip(db, outbox_id, skip_class, now=now)
     recipient_user_id = locked.recipient_user_id
-    channel_value = channel.value
+    recipient_candidate_id = locked.recipient_candidate_id
     # Fresh lease covering the bounded provider call (recovery re-queues on
     # crash exactly like for in-app rows).
     locked.lease_expires_at = now + timedelta(seconds=settings.worker_lease_seconds)
     db.commit()
+
+    # Phase B0: the last-stop re-validation, immediately before the network
+    # call. Consent/token mutations serialized by the candidate advisory
+    # lock can no longer land here; for the others (a card email change,
+    # candidate deletion, event changes) this narrows the unavoidable
+    # check-then-call window to the call itself. A fresh snapshot also
+    # re-substitutes the confirmation link of a double opt-in letter.
+    target, skip_class = _resolve_external_target(db, locked, settings=settings)
+    if target is None or skip_class is not None:
+        assert skip_class is not None
+        return _finalize_external_skip(db, outbox_id, skip_class, now=now)
+    channel = target.channel
+    channel_value = channel.value
 
     # Phase B: provider I/O with no open transaction.
     outcome: str
@@ -637,7 +971,7 @@ def _process_external_row_locked(
                 provider_message_id=provider_message_id,
             )
         )
-        _note_external_success(db, recipient_user_id, channel)
+        _note_external_success(db, recipient_user_id, channel, candidate_id=recipient_candidate_id)
         db.commit()
         return final.status.value
 
@@ -670,13 +1004,20 @@ def _process_external_row_locked(
             error_class=error_class or "unknown",
         )
     )
-    _note_external_error(db, recipient_user_id, channel, final.error_class)
+    _note_external_error(
+        db, recipient_user_id, channel, final.error_class, candidate_id=recipient_candidate_id
+    )
     if (
         outcome == "perm_error"
         and channel == DeliveryChannel.TELEGRAM
         and (error_class or "") in REVOKING_ERROR_CLASSES
     ):
-        _auto_revoke_telegram(db, user_id=recipient_user_id, error_class=final.error_class)
+        if recipient_candidate_id is not None:
+            _auto_revoke_candidate_telegram(
+                db, candidate_id=recipient_candidate_id, error_class=final.error_class
+            )
+        else:
+            _auto_revoke_telegram(db, user_id=recipient_user_id, error_class=final.error_class)
     if terminally_failed:
         _alert_pilot_on_terminal_failure(db, row=final, now=now)
     db.commit()
@@ -698,6 +1039,25 @@ def _auto_revoke_telegram(db: Session, *, user_id: UUID | None, error_class: str
         AuditAction.CHANNEL_AUTO_REVOKED,
         subject=user_id,
         details=f"channel=telegram reason=auto_blocked class={error_class}",
+        commit=False,
+    )
+
+
+def _auto_revoke_candidate_telegram(db: Session, *, candidate_id: UUID, error_class: str) -> None:
+    """Revoke a candidate's Telegram binding the provider proved dead
+    (blocked/chat gone/deactivated), with an audit record. Re-inviting
+    stays available. The recorded consent is left as-is: the binding is
+    the missing piece, and an HR-recorded refusal must not be erased."""
+    link = db.get(CandidateTelegramLink, candidate_id)
+    if link is None or link.revoked_at is not None:
+        return
+    link.revoked_at = utc_now()
+    link.revoke_reason = "auto_blocked"
+    record_event(
+        db,
+        AuditAction.CHANNEL_AUTO_REVOKED,
+        candidate_id=candidate_id,
+        details=f"channel=candidate_telegram reason=auto_blocked class={error_class}",
         commit=False,
     )
 

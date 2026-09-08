@@ -750,3 +750,125 @@ export interface ChannelTestResult {
   outbox_id: string;
   status: string;
 }
+
+// --- Phase 10: one-way candidate messages --------------------------------------
+
+export type CandidateChannelState =
+  | "not_connected"
+  | "pending"
+  | "allowed"
+  | "forbidden"
+  | "temporarily_unavailable";
+
+export type CandidateChannelName = "email" | "telegram";
+
+export interface CandidateConsent {
+  channel: string;
+  granted: boolean;
+  granted_at: string | null;
+  source: string | null;
+  policy_version: string | null;
+}
+
+export interface CandidateChannelStatus {
+  channel: CandidateChannelName;
+  state: CandidateChannelState;
+  configured: boolean;
+  target_masked: string | null;
+  has_target: boolean;
+  invite_active: boolean;
+  consent: CandidateConsent | null;
+}
+
+export interface CandidateChannels {
+  email: CandidateChannelStatus;
+  telegram: CandidateChannelStatus;
+  allowed_channels: CandidateChannelName[];
+}
+
+export interface CandidateTelegramInvite {
+  deep_link: string;
+  expires_at: string;
+}
+
+export interface CandidateTelegramConfirm {
+  linked: boolean;
+  state: CandidateChannelState;
+}
+
+export type CandidateMessageType =
+  | "interview_scheduled"
+  | "interview_reminder"
+  | "interview_rescheduled"
+  | "interview_cancelled"
+  | "document_request"
+  | "document_reminder";
+
+/** History-only kind: the double opt-in letter itself. It can never be
+ * composed manually — the confirmation link is never rendered for the HR. */
+export type CandidateHistoryOnlyMessageType = "candidate_email_confirm";
+
+export interface CandidateMessageSendInput {
+  message_type: CandidateMessageType;
+  event_id?: string;
+  documents?: string[];
+  channel?: CandidateChannelName;
+  /** Client-generated, stable across retries of the same operation. */
+  idempotency_key: string;
+}
+
+/** Preview shares the closed vocabulary but owns no idempotency key:
+ * nothing is queued, so there is nothing to deduplicate. */
+export type CandidateMessagePreviewInput = Omit<CandidateMessageSendInput, "idempotency_key">;
+
+export interface CandidateMessagePreview {
+  title: string;
+  body: string;
+  channels: CandidateChannelName[];
+}
+
+/** One immutable history entry. `accepted` means the provider took the
+ * message — never «delivered», never «read». */
+export interface CandidateMessage {
+  id: string;
+  message_type: CandidateMessageType | CandidateHistoryOnlyMessageType;
+  channel: CandidateChannelName;
+  status: string;
+  source: string;
+  title: string;
+  body: string | null;
+  event_id: string | null;
+  initiator_user_id: string | null;
+  initiator_username: string | null;
+  scheduled_at: string | null;
+  scheduled_at_effective: string | null;
+  queued_at: string;
+  accepted_at: string | null;
+  delivered_at: string | null;
+  failed_at: string | null;
+  cancelled_at: string | null;
+  attempts: number;
+  next_attempt_at: string | null;
+  error_code: string | null;
+  error_class: string | null;
+  provider_message_id: string | null;
+}
+
+export interface CandidateMessageList {
+  items: CandidateMessage[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CandidateMessageSendResult {
+  messages: CandidateMessage[];
+  channels: CandidateChannelName[];
+}
+
+/** Initiation of the candidate's email double opt-in letter. */
+export interface CandidateEmailConfirmation {
+  queued: boolean;
+  email_masked: string;
+  expires_at: string;
+}

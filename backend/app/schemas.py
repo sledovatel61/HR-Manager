@@ -1222,3 +1222,170 @@ class ChannelTestOut(BaseModel):
 
     outbox_id: UUID
     status: str
+
+
+# --- Phase 10: one-way candidate communications ---------------------------------
+
+
+class CandidateConsentUpdate(BaseModel):
+    """Record or revoke a candidate's consent for one channel.
+
+    The decision is recorded by the HR (source ``hr_recorded``); for
+    Telegram the candidate's own voluntary /start records it with source
+    ``telegram_start``. Revocation immediately stops pending sends of the
+    channel and requires a fresh explicit decision to re-enable.
+    """
+
+    granted: bool
+
+
+class CandidateConsentOut(BaseModel):
+    """The stored per-channel consent decision (no PII beyond the mask)."""
+
+    channel: str
+    granted: bool
+    granted_at: datetime | None = None
+    source: str | None = None
+    policy_version: str | None = None
+
+
+class CandidateChannelStateOut(BaseModel):
+    """State of one candidate channel: not_connected | pending | allowed |
+    forbidden | temporarily_unavailable."""
+
+    channel: str
+    state: str
+    configured: bool
+    # Masked target (e.g. «i***@example.com», «••••1234») — never the exact
+    # address/chat id, which lives only in the candidate card / binding.
+    target_masked: str | None = None
+    has_target: bool = False
+    invite_active: bool = False
+    consent: CandidateConsentOut | None = None
+
+
+class CandidateChannelsOut(BaseModel):
+    """Both channels of one candidate plus the send-eligible list."""
+
+    email: CandidateChannelStateOut
+    telegram: CandidateChannelStateOut
+    allowed_channels: list[str]
+
+
+class CandidateTelegramInviteOut(BaseModel):
+    """A one-shot invitation deep link (shown once, hash-only storage)."""
+
+    deep_link: str
+    expires_at: datetime
+
+
+class CandidateTelegramConfirmOut(BaseModel):
+    """Result of an invitation confirmation attempt."""
+
+    linked: bool
+    state: str
+
+
+class CandidateMessageSendRequest(BaseModel):
+    """Manual one-way message request (server renders the exact text).
+
+    ``event_id`` is required for the interview types (the interview the
+    message is about — its data is read server-side only); ``documents``
+    is required for the document types. The channel (when given) must be
+    allowed for the candidate. The client generates ``idempotency_key``
+    when the operation starts and reuses it on retries: the same key with
+    the same payload replays the original response, a different payload
+    is refused. No recipient, text or chat id is ever accepted.
+    """
+
+    message_type: str
+    event_id: UUID | None = None
+    documents: list[str] | None = None
+    channel: str | None = None
+    idempotency_key: str = Field(min_length=8, max_length=255)
+
+
+class CandidateMessagePreviewRequest(BaseModel):
+    """Preview payload: the closed vocabulary only, nothing is queued.
+
+    Deliberately NOT a subclass of the send request — the idempotency key
+    belongs to mutating operations only.
+    """
+
+    message_type: str
+    event_id: UUID | None = None
+    documents: list[str] | None = None
+    channel: str | None = None
+
+
+class CandidateMessagePreviewOut(BaseModel):
+    """Rendered text plus the channels the message would go to."""
+
+    title: str
+    body: str
+    channels: list[str]
+
+
+class CandidateMessageOut(BaseModel):
+    """One immutable candidate message (history entry).
+
+    The exact text is part of the immutable history and is visible only to
+    users with candidate-message access. ``accepted`` means the provider
+    took the message — never «delivered», never «read».
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    message_type: str
+    channel: str
+    status: str
+    source: str
+    title: str
+    body: str | None = None
+    event_id: UUID | None = None
+    initiator_user_id: UUID | None = None
+    initiator_username: str | None = None
+    scheduled_at: datetime | None = None
+    scheduled_at_effective: datetime | None = None
+    queued_at: datetime
+    accepted_at: datetime | None = None
+    delivered_at: datetime | None = None
+    failed_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    attempts: int
+    next_attempt_at: datetime | None = None
+    error_code: str | None = None
+    error_class: str | None = None
+    provider_message_id: str | None = None
+
+
+class CandidateMessageListOut(BaseModel):
+    """Paginated candidate message history (newest first)."""
+
+    items: list[CandidateMessageOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class CandidateMessageSendOut(BaseModel):
+    """Queued rows of one manual send (one per channel)."""
+
+    messages: list[CandidateMessageOut]
+    channels: list[str]
+
+
+class CandidateEmailConfirmationOut(BaseModel):
+    """Result of initiating the candidate's email double opt-in letter."""
+
+    queued: bool
+    email_masked: str
+    expires_at: datetime
+
+
+class CandidateMessageCancelOut(BaseModel):
+    """Result of cancelling a pending message."""
+
+    id: UUID
+    status: str
