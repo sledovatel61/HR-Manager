@@ -12,6 +12,7 @@ export type IconName =
   | "command"
   | "close"
   | "chevron-down"
+  | "chevron-up"
   | "chevron-right"
   | "chevron-left"
   | "chevron-up-down"
@@ -63,6 +64,7 @@ const PATHS: Record<IconName, string> = {
     '<path d="M8 3a3 3 0 1 0 0 6h1V6a3 3 0 0 0-1-3Z"/><path d="M16 21a3 3 0 1 0 0-6h-1v3a3 3 0 0 0 1 3Z"/><path d="M8 21a3 3 0 1 0 0-6H6v3a3 3 0 0 0 2 3Z"/><path d="M16 3a3 3 0 1 0 0 6h2V6a3 3 0 0 0-2-3Z"/><path d="M9 9h6v6H9z"/>',
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   "chevron-down": '<path d="m6 9 6 6 6-6"/>',
+  "chevron-up": '<path d="m18 15-6-6-6 6"/>',
   "chevron-right": '<path d="m9 18 6-6-6-6"/>',
   "chevron-left": '<path d="m15 18-6-6 6-6"/>',
   "chevron-up-down": '<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>',
