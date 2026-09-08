@@ -227,7 +227,10 @@ def item_state(
     item.state, item.version = payload.state, item.version + 1
     item.changed_by, item.changed_at = user.id, utc_now()
     audit(
-        db, user, f"receipt set={snapshot.id} key={item.key} state={item.state} revision={item.version}", candidate
+        db,
+        user,
+        f"receipt set={snapshot.id} key={item.key} state={item.state} revision={item.version}",
+        candidate,
     )
     db.commit()
     return documents_out(db, candidate)
