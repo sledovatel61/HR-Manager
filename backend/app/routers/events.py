@@ -30,6 +30,10 @@ from sqlalchemy.orm import Session
 
 from app.analytics_ledger import record_fact
 from app.audit import record_event
+from app.candidate_messages import (
+    plan_candidate_interview_cancelled,
+    plan_candidate_interview_messages,
+)
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import (
@@ -365,6 +369,15 @@ def create_event(
         assignee=assignee,
         settings=request.app.state.settings,
     )
+    # Phase 10: the candidate's one-way messages (interview scheduled +
+    # reminder) join the same transaction; without a recorded channel
+    # consent nothing is queued (fail-closed, never silent).
+    plan_candidate_interview_messages(
+        db,
+        event=event,
+        candidate=candidate,
+        settings=request.app.state.settings,
+    )
     _audit_event(
         db,
         request,
@@ -583,6 +596,14 @@ def update_event(
                 initiator_user_id=user.id,
                 settings=request.app.state.settings,
             )
+            # Phase 10: tell the candidate the interview is off (the stale
+            # plan above already cancelled the old reminder).
+            plan_candidate_interview_cancelled(
+                db,
+                event=locked,
+                candidate=locked.candidate,
+                settings=request.app.state.settings,
+            )
         elif new_status == EventStatus.COMPLETED:
             pass  # nothing to plan — completion cancels the stale plan only
         else:
@@ -594,6 +615,14 @@ def update_event(
                     type_=NotificationType.EVENT_RESCHEDULED,
                     initiator_user_id=user.id,
                     settings=request.app.state.settings,
+                )
+                # Phase 10: «собеседование перенесено» + a fresh reminder.
+                plan_candidate_interview_messages(
+                    db,
+                    event=locked,
+                    candidate=locked.candidate,
+                    settings=request.app.state.settings,
+                    previous_starts_at=history.starts_at_old,
                 )
             if new_status == EventStatus.SCHEDULED:
                 # (Re)plan approaching/overdue/assigned for the new schedule.
