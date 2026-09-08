@@ -1,125 +1,85 @@
 # Текущее состояние и handoff
 
-> Фазы 0–9 приняты. Актуальный `main` — SHA `a747f35ab3e8fc0907190595684249933a413190`. Для следующего этапа использовать `prompts/PHASE_10_PROMPT.md`.
-
-Актуально после **Phase 9 — Telegram/email и исправление backup smoke**.
-Phase 8 принята после независимого review и влита в `main` с fast-forward до
-SHA `2cb6ab63f1276f259146d477cd1cc98462f066ec` (PR #10). Предыдущий принятый
-этап — **Phase 7 — backup, deployment и release**. Этот файл — первая точка
-входа для нового агента. Полное техническое задание Phase 8 находится в
-`prompts/PHASE_8_PROMPT.md`, а стартовый промпт следующего этапа — в
-`prompts/PHASE_9_PROMPT.md`.
+> Фазы 0–10 приняты. Актуальный `main` после merge PR #14 —
+> `7cebac27a89b7544ff4ff494f45eb906840d96e7`. Следующий этап — Phase 11;
+> использовать `prompts/PHASE_11_PROMPT.md`.
 
 ## Что принято
 
-- Этапы 0–6 продукта и подготовительная документация Phase 8 находятся в
-  `main`.
-- Phase 7 прошёл review и влит в `main` с сохранением истории ветки
-  `arena/phase-7-release`; финальный SHA реализации агента —
-  `8670195b9e1a0799c14cffaff687e9d84befa198`, исходный PR — #9.
-- Реализованы AES-256-GCM backup PostgreSQL, retention, integrity check и
-  restore drill в отдельной БД; ручной admin-trigger и audit; операционные
-  status/metrics endpoints; production Compose overlay, HTTPS reverse proxy,
-  preflight, блокируемые Alembic-миграции, deploy/smoke/rollback scripts.
-- `/health` намеренно остаётся чистым liveness/readiness endpoint с проверкой
-  БД. Backup freshness, restore drill, release SHA и метрики доступны через
-  `/ops/status`, `/ops/backup-health` и `/ops/metrics`.
-- Workflow Phase 7 перенесён из `review-artifacts` в исполняемые
-  `.github/workflows/ci.yml` и `.github/workflows/release.yml`. Для реального
-  production deploy владелец всё ещё должен настроить GitHub Secrets,
-  защищённые `release-*` tags и operator-owned host согласно
-  `docs/backup-and-restore.md`; наличие внешнего production-хоста, DNS и TLS
-  сертификата репозиторий не имитирует.
+- Фундамент продукта: FastAPI, SQLAlchemy 2, Alembic, PostgreSQL, React,
+  TypeScript, сессии/CSRF, RBAC, аудит, CI и Docker Compose.
+- Кандидаты, передача ответственности, Kanban и карточка, события и календарь,
+  воспроизводимая аналитика и CSV.
+- Эксплуатационный контур: шифрованные backup, restore drill, health/metrics,
+  production overlay, HTTPS proxy, deploy/rollback.
+- Phase 8: внутренние уведомления, личные напоминания, PostgreSQL
+  transactional outbox, отдельный worker, lease/retry/dedup, тихие часы,
+  рабочие дни и пилотный полный доступ.
+- Phase 9: реальные опциональные SMTP и Telegram, добровольная привязка,
+  диагностика каналов и безопасная тестовая отправка.
+- Phase 10: шесть типов односторонних русскоязычных сообщений кандидатам через
+  тот же outbox/worker, согласия по каналам, история точного текста,
+  server-owned recipient/content, cancel-wins и send-time revalidation.
 
-Подробный технический отчёт и результаты проверок Phase 7:
-`docs/phase-7-report-agent2.md`.
+Подробные отчёты находятся в `docs/phase-8-report-agent2.md`,
+`docs/phase-9-report-agent2.md`, `docs/phase-9-backup-smoke-report.md` и
+`docs/phase-10-report-agent2.md`.
 
-## Phase 8 — принято
+## Результат Phase 10
 
-Ветка `arena/01a060e3-hr-manager`, PR #10, final SHA
-`2cb6ab63f1276f259146d477cd1cc98462f066ec`. Что вошло:
+- PR: https://github.com/sledovatel61/HR-Manager/pull/14
+- Reviewed SHA: `4b44ff8bb446982aea4609e96bfa6819a8fe2331`
+- Merge commit в `main`: `7cebac27a89b7544ff4ff494f45eb906840d96e7`
+- Проверки reviewed SHA: Backend checks, PostgreSQL integration tests,
+  Frontend checks и Compose stack smoke — успешно.
+- Миграционный head: `0011`.
 
-1. внутренний notification center и личные напоминания без моков;
-2. transactional outbox на PostgreSQL + отдельный worker (SKIP LOCKED,
-   lease recovery, bounded backoff, dedup, неизменяемая история);
-3. тихие часы с пересечением полночи, DST/zoneinfo, рабочие дни,
-   исходное vs фактическое время планирования;
-4. один явно назначенный пилотный пользователь (admin + грант
-   `pilot_full_access`) с доказанным полным доступом, идемпотентный
-   мастер настройки, worker в dev/prod Compose;
-5. UI: колокольчик, центр уведомлений, напоминания, настройки,
-   админ-экран очереди, мастер первой настройки (всё на русском);
-6. миграции `0007`/`0008`, unit + PostgreSQL integration + frontend +
-   Compose overlay тесты, отчёт `docs/phase-8-report-agent2.md`.
+После review в Phase 10 добавлены настоящий email double opt-in (одноразовый
+HMAC-токен с TTL, в БД только хеш, raw token не персистится), атомарный one-shot
+claim и сериализация конкурентных подтверждений/инициаций, HTTP-idempotency
+ручной отправки, повторная проверка события и согласия непосредственно перед
+provider call, маскирование ссылки в истории и отсутствие секретов/PII в
+логах. `accepted` означает только техническое принятие провайдером, а не
+доставку или прочтение.
 
-Не подключались (зарезервированы за этапами 9–11): фиктивные
-SMTP/Telegram-отправки, Redis/RabbitMQ, сообщения кандидатам,
-универсальный rule engine, новые микросервисы. Каналы `email`/`telegram`
-в outbox-контракте зарезервированы и честно помечаются `skipped`.
+PR #13 с альтернативной реализацией закрыт как superseded by PR #14.
 
-## Известная проблема CI (переносится владельцем)
+## Ограничения локальной проверки merge
 
-В перенесённом владельцем `ci.yml` (коммит `784f388`) шаг
-`Validate HTTPS proxy overlay configuration` рендерит production-оверлей
-без обязательных `${SECRET_KEY:?}`/`${POSTGRES_PASSWORD:?}`/
-`${BOOTSTRAP_ADMIN_PASSWORD:?}` — шаг падает на любом PR (впервые
-зафиксировано на PR #10, run 34089737761; остальные шаги stack-job
-зелёные). Исправление — `review-artifacts/ci.agent-2.phase8.yml/.patch`
-+ инструкция переноса в `review-artifacts/README.md`. Семантика
-`?`-охран `compose.prod.yml` намеренно не ослабляется.
+- На Windows полный backend-прогон локально блокировался Unix-only импортом
+  `fcntl` в эксплуатационном коде.
+- Docker Desktop был недоступен, поэтому локальный PostgreSQL/Compose smoke не
+  выполнялся.
+- Эти ограничения не выдавались за успешные локальные проверки: соответствующие
+  Linux backend, PostgreSQL integration и Compose jobs прошли в GitHub CI на
+  reviewed SHA. Frontend checks также прошли в CI.
 
-## Phase 9 — принято
+## Следующая фаза
 
-Phase 9 реализована и принята в `main`. Финальный SHA реализации и backup smoke fix:
-`a747f35ab3e8fc0907190595684249933a413190`. CI run `34191549759` завершился
-успешно: backend, PostgreSQL integration, frontend и Compose stack smoke — зелёные.
+Строго по `ROADMAP.md` следующая работа — **Phase 11: списки документов и
+правила автоматизации**. Полный самодостаточный контракт находится в
+`prompts/PHASE_11_PROMPT.md`.
 
-В фазу вошли реальные Telegram Bot API и SMTP через существующий PostgreSQL outbox,
-одноразовая привязка Telegram, согласия каналов, безопасная тестовая отправка,
-retry/lease/idempotency и русскоязычный UI. Дополнительно устранена гонка запуска
-backup: backup ждёт healthy backend перед стартовой копией, а scheduler сохраняет
-правильный код ошибки CLI. Зашифрованный `.pgdump.enc` подтверждён локально и CI.
-Подробности: `docs/phase-9-report-agent2.md` и `docs/phase-9-backup-smoke-report.md`.
+Scope:
 
-## Phase 10 — сообщения кандидатам (выполнена; идёт доработка PR #14)
+1. версионируемые списки требуемых документов со статусами
+   `draft/published/archived` и областью применения;
+2. снимок применённой версии списка у кандидата и безопасный учёт
+   «получен/не получен» без загрузки файлов;
+3. запрос и напоминание только о реально недостающих документах через уже
+   разрешённые Phase 10 типы сообщений;
+4. отправка при выбранном переходе этапа и ограниченный конструктор личных
+   правил из закрытых триггеров/условий/действий;
+5. серверная область доступа, идемпотентность, аудит, quiet-hours,
+   согласия и send-time revalidation.
 
-Полное задание находится в `prompts/PHASE_10_PROMPT.md`, доработка — в
-`prompts/PHASE_10_PR14_REWORK_PROMPT.md`. Scope Phase 10: односторонние
-русскоязычные сообщения кандидатам о назначении, напоминании, переносе и
-отмене собеседований, а также запросы и напоминания о документах.
+Не входят: универсальный язык правил, произвольный код/SQL, двусторонний чат,
+входящая почта, загрузка файлов через каналы, OCR, SMS, маркетинговые рассылки,
+новая очередь или новый микросервис.
 
-Доработка PR #14 (по результатам ревью): настоящий email double opt-in
-(одноразовый токен с TTL, в БД только хеш, письмо через общий outbox,
-публичная ссылка подтверждения, отзыв fail-closed), идемпотентность HTTP
-retry по клиентскому `idempotency_key` (unique constraint + replay
-результата, 409 при другом payload, конкурентные запросы дают одну
-логическую отправку), сервер — единственный источник содержания (клиент не
-передаёт location/получателя/текст, событие перепроверяется на HTTP-этапе и
-перед provider call), честная история (русские статусы, инициатор, точный
-сохранённый текст, provider message ID), RBAC/CSRF/rate limiting на всех
-endpoint-ах, включая публичное подтверждение. Миграция `0011` (обратимая,
-PostgreSQL). Ответы, чат, входящая почта, загрузка документов через каналы,
-SMS и рекламные рассылки не входят.
+## Как начать
 
-Вторая итерация доработки (по независимой проверке): атомарный one-shot
-claim подтверждения (условный UPDATE, rowcount решает; PG race-тест двух
-параллельных кликов), сериализация инициации по candidate advisory lock +
-частичный unique index «не более одного активного токена» (PG race-тест
-двух параллельных инициаций), raw-токен нигде не персистится — это HMAC
-секрет-ключ+id строки, письмо хранит плейсхолдер, worker подставляет ссылку
-в памяти перед отправкой (скан всех текстовых колонок PG в тесте), история
-маскирует ссылку; worker держит оба advisory-лока (строка + кандидат) на
-выделенном соединении через provider call, consent/revoke/confirm/
-initiation сериализованы тем же ключом, повторная валидация непосредственно
-перед вызовом провайдера (модель отзыва задокументирована честно: до
-отправки — останавливает, во время — применяется сразу после).
-
-## Как начать в новом чате
-
-Скопировать в новый чат содержимое `prompts/PHASE_10_PROMPT.md`. Ниже
-приведены те же ключевые команды синхронизации для быстрой проверки.
-
-Перед изменениями агент должен:
+Новый агент должен скопировать целиком `prompts/PHASE_11_PROMPT.md`, затем:
 
 ```bash
 git fetch origin --prune
@@ -129,34 +89,10 @@ git status --short --branch
 git rev-parse HEAD
 ```
 
-Затем прочитать `agents.md`, `PRODUCT_SPEC.md`, `ROADMAP.md`, `README.md`,
-`docs/ARCHITECTURE.md`, этот handoff, отчёты этапов и полностью
-`prompts/PHASE_10_PROMPT.md`; изучить текущие RBAC, события, audit, миграции,
-Compose, outbox/worker, Telegram/email и UI; выполнить baseline; создать ветку
-`arena/phase-10-candidate-communications-<короткий-суффикс>`. Не менять `main` напрямую.
+Ожидаемая база — merge-коммит выше либо более новый `origin/main`, который
+агент обязан изучить. Работать нужно в новой ветке, не в `main`, и не выполнять
+merge самостоятельно.
 
-Минимальный baseline (с учётом доступности Docker/PostgreSQL):
-
-```bash
-cd backend
-ruff check .
-ruff format --check .
-mypy app tests
-pytest -m "not integration" -v
-
-cd ../frontend
-npm ci
-npm run lint
-npm run typecheck
-npm run test
-npm run build
-
-cd ..
-docker compose -f infra/docker-compose.yml config -q
-git diff --check
-```
-
-CI на `main` является окончательной проверкой Linux/PostgreSQL/Compose. Последний
-успешный CI — run `34191549759` для SHA `a747f35ab3e8fc0907190595684249933a413190`.
-Нельзя заявлять локально не выполненную проверку как успешную: причину недоступности
-нужно явно записать в отчёт и подтвердить соответствующим GitHub job.
+Минимальный baseline и финальный набор проверок приведены в phase-промпте.
+Непроведённую команду нельзя называть успешной: нужно записать точную причину и
+сослаться на соответствующий CI job для точного итогового SHA.
