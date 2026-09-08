@@ -5,6 +5,7 @@ import {
   confirmCandidateTelegram,
   createCandidateTelegramInvite,
   getCandidateChannels,
+  initiateCandidateEmailConfirmation,
   listCandidateMessages,
   listEvents,
   previewCandidateMessage,
@@ -14,7 +15,7 @@ import {
 } from "../../api";
 import { Button } from "../../design-system/components/Button";
 import { Badge } from "../../design-system/components/StatusChip";
-import { Field, SelectInput, TextInput } from "../../design-system/components/Field";
+import { Field, SelectInput } from "../../design-system/components/Field";
 import { SkeletonRows } from "../../design-system/components/StateViews";
 import { useToast } from "../../design-system/components/ToastContext";
 import {
@@ -28,6 +29,15 @@ import {
   type CandidateMessageType,
   type CandidateMessagePreview,
 } from "../../types";
+
+/** A client idempotency key: one per exact operation attempt. A retry of
+ * the same payload reuses it; any payload change starts a new operation. */
+function newIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `idem-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
 import { formatDateTime } from "./format";
 
 const MESSAGE_PAGE_SIZE = 20;
@@ -70,14 +80,18 @@ const STATE_LABELS: Record<CandidateChannelState, { label: string; tone: "neutra
 const MESSAGE_STATUS_LABELS: Record<string, { label: string; tone: "neutral" | "info" | "success" | "amber" | "danger" }> = {
   queued: { label: "В очереди", tone: "neutral" },
   sending: { label: "Отправляется", tone: "info" },
+  // Only the provider's technical acceptance — never «delivered»/«read».
   accepted: { label: "Принято провайдером", tone: "success" },
+  delivered: { label: "Доставлено (есть подтверждение)", tone: "success" },
   failed: { label: "Не отправлено", tone: "danger" },
   cancelled: { label: "Отменено", tone: "amber" },
+  skipped: { label: "Не отправлено (пропущено)", tone: "amber" },
 };
 
 const CONSENT_SOURCE_LABELS: Record<string, string> = {
   hr_recorded: "записал HR",
   telegram_start: "сам кандидат в Telegram",
+  email_confirm: "сам кандидат по ссылке из письма",
 };
 
 interface MessagesTabProps {
@@ -197,6 +211,16 @@ function ChannelCard({ candidate, channel, status, onChanged }: ChannelCardProps
       onChanged();
     });
 
+  const initiateEmailConfirmation = () =>
+    withBusy(async () => {
+      const result = await initiateCandidateEmailConfirmation(candidate.id);
+      pushToast(
+        "success",
+        `Письмо подтверждения отправлено на ${result.email_masked}. Канал включится после того, как кандидат перейдёт по ссылке.`
+      );
+      onChanged();
+    });
+
   const makeInvite = () =>
     withBusy(async () => {
       const result = await createCandidateTelegramInvite(candidate.id);
@@ -250,16 +274,35 @@ function ChannelCard({ candidate, channel, status, onChanged }: ChannelCardProps
         </p>
       )}
       <div className="channel-card-actions">
-        <Button
-          size="sm"
-          variant={status.consent?.granted ? "secondary" : "primary"}
-          disabled={busy}
-          onClick={() => void setConsent(!status.consent?.granted)}
-        >
-          {status.consent?.granted ? "Отозвать согласие" : "Записать согласие"}
-        </Button>
-        {channel === "telegram" && (
+        {channel === "email" ? (
           <>
+            {/* Double opt-in: only the candidate's own click on the mailed
+                link can enable the channel — the HR can only send the
+                letter and revoke. */}
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={busy || !status.has_target || status.state === "allowed"}
+              onClick={() => void initiateEmailConfirmation()}
+            >
+              Отправить письмо подтверждения
+            </Button>
+            {status.consent?.granted && (
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void setConsent(false)}>
+                Отозвать согласие
+              </Button>
+            )}
+          </>
+        ) : (
+          <>
+            <Button
+              size="sm"
+              variant={status.consent?.granted ? "secondary" : "primary"}
+              disabled={busy}
+              onClick={() => void setConsent(!status.consent?.granted)}
+            >
+              {status.consent?.granted ? "Отозвать согласие" : "Записать согласие"}
+            </Button>
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => void makeInvite()}>
               Приглашение
             </Button>
@@ -290,6 +333,12 @@ function ChannelCard({ candidate, channel, status, onChanged }: ChannelCardProps
       {channel === "telegram" && !invite && status.invite_active && (
         <p className="muted-text">Есть активное приглашение — создайте новое только при необходимости.</p>
       )}
+      {channel === "email" && status.invite_active && status.state !== "allowed" && (
+        <p className="muted-text">
+          Письмо подтверждения отправлено — канал включится, когда кандидат перейдёт по ссылке из
+          письма.
+        </p>
+      )}
     </div>
   );
 }
@@ -306,7 +355,6 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [eventId, setEventId] = useState("");
   const [documents, setDocuments] = useState("");
-  const [location, setLocation] = useState("");
   const [channelChoice, setChannelChoice] = useState<"" | CandidateChannelName>("");
   const [preview, setPreview] = useState<CandidateMessagePreview | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -344,11 +392,23 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
     [documents]
   );
 
+  // The idempotency key identifies the EXACT operation: it is regenerated
+  // whenever the payload changes and reused for retries of the same one.
+  const payloadSignature = [
+    messageType,
+    needsEvent ? eventId : "",
+    needsDocuments ? documentItems.join("\u0001") : "",
+    channelChoice,
+  ].join("\u0000");
+  const [idempotencyKey, setIdempotencyKey] = useState(() => newIdempotencyKey());
+  useEffect(() => {
+    setIdempotencyKey(newIdempotencyKey());
+  }, [payloadSignature]);
+
   const buildPayload = () => ({
     message_type: messageType,
     ...(needsEvent && eventId ? { event_id: eventId } : {}),
     ...(needsDocuments ? { documents: documentItems } : {}),
-    ...(location.trim() ? { location: location.trim() } : {}),
     ...(channelChoice ? { channel: channelChoice } : {}),
   });
 
@@ -380,14 +440,16 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
     setSendBusy(true);
     setError(null);
     try {
-      const result = await sendCandidateMessage(candidate.id, buildPayload());
+      const result = await sendCandidateMessage(candidate.id, {
+        ...buildPayload(),
+        idempotency_key: idempotencyKey,
+      });
       pushToast(
         "success",
         `Сообщение поставлено в очередь (${result.channels.map((c) => CHANNEL_LABELS[c]).join(", ")}).`
       );
       setPreview(null);
       setDocuments("");
-      setLocation("");
       onSent();
       // The history below listens for the same custom event.
       window.dispatchEvent(new CustomEvent("candidate-messages-changed", { detail: candidate.id }));
@@ -402,8 +464,9 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
     <section aria-label="Отправка сообщения">
       <h3 className="messages-section-title">Новое сообщение</h3>
       <p className="muted-text">
-        Текст формирует сервер; клиент не передаёт адрес, чат или готовый текст. «Принято
-        провайдером» — технический статус, он не означает прочтение.
+        Текст и данные собеседования формирует сервер из карточки и события; клиент не передаёт
+        адрес, чат или готовый текст. «Принято провайдером» — технический статус, он не означает
+        прочтение.
       </p>
       <div className="messages-compose">
         <Field label="Тип сообщения" required>
@@ -466,24 +529,6 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
                   setPreview(null);
                 }}
                 placeholder={"Паспорт РФ\nСНИЛС"}
-              />
-            )}
-          </Field>
-        )}
-
-        {needsEvent && (
-          <Field label="Место" hint="Необязательно: адрес или ссылка на встречу">
-            {(id, describedBy) => (
-              <TextInput
-                id={id}
-                aria-describedby={describedBy}
-                value={location}
-                maxLength={300}
-                onChange={(e) => {
-                  setLocation(e.target.value);
-                  setPreview(null);
-                }}
-                placeholder="Офис, пер. Ленина 1"
               />
             )}
           </Field>
@@ -646,6 +691,11 @@ function MessageHistory({ candidateId }: { candidateId: string }) {
                   <div className="message-item-meta">
                     {CHANNEL_LABELS[message.channel]} · {formatDateTime(message.queued_at)} ·{" "}
                     {message.attempts > 0 ? `попыток: ${message.attempts}` : "ещё не отправлялось"}
+                    {message.initiator_username
+                      ? ` · инициатор: ${message.initiator_username}`
+                      : message.source === "system"
+                        ? " · инициатор: система"
+                        : ""}
                   </div>
                   {message.body && <pre className="message-item-body">{message.body}</pre>}
                   {message.error_class && (

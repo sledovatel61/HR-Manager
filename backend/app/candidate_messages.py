@@ -67,7 +67,6 @@ INTERVIEW_MESSAGE_TYPES = frozenset(
 DOCUMENT_MESSAGE_TYPES = frozenset({"document_request", "document_reminder"})
 
 # Safe-substitution limits (server-side, before any template render).
-MAX_LOCATION_LENGTH = 300
 MAX_DOCUMENT_ITEMS = 20
 MAX_DOCUMENT_ITEM_LENGTH = 200
 MAX_BODY_LENGTH = 4000
@@ -145,29 +144,28 @@ def render_candidate_message(
     candidate: Candidate,
     starts_at_local: str | None = None,
     previous_starts_at_local: str | None = None,
-    location: str | None = None,
     documents: list[str] | None = None,
 ) -> RenderedMessage:
     """Render one of the six one-way message types (Russian, plain text).
 
     All substituted values pass through :func:`sanitize_inline`; the
     templates carry no markup, so the result is safe for both plain-text
-    channels (Telegram without parse_mode, SMTP text body).
+    channels (Telegram without parse_mode, SMTP text body). The interview
+    time (already localized by the caller) is the ONLY event-derived
+    value: the server renders from its own state, never from a client
+    payload. The events model carries no free-form location field, so the
+    templates deliberately have no «Место» line.
     """
     if message_type not in CANDIDATE_MESSAGE_TYPE_KEYS:
         raise ValueError(f"unknown candidate message type: {message_type!r}")
 
     greeting = _greeting(candidate)
     position_line = _position_line(candidate)
-    location_line = (
-        f"Место: {sanitize_inline(location, max_length=MAX_LOCATION_LENGTH)}." if location else ""
-    )
 
     if message_type == "interview_scheduled":
         body = (
             f"{greeting}\n\n"
             f"Ваше собеседование назначено на {starts_at_local}."
-            + (f"\n{location_line}" if location_line else "")
             + (f"\n{position_line}" if position_line else "")
             + "\n\nЕсли планы изменились, сообщите вашему HR-менеджеру."
         )
@@ -177,7 +175,6 @@ def render_candidate_message(
         body = (
             f"{greeting}\n\n"
             f"Напоминаем: ваше собеседование состоится {starts_at_local}."
-            + (f"\n{location_line}" if location_line else "")
             + (f"\n{position_line}" if position_line else "")
             + "\n\nЖдём вас!"
         )
@@ -188,7 +185,6 @@ def render_candidate_message(
             f"{greeting}\n\n"
             f"Ваше собеседование, запланированное на {previous_starts_at_local}, "
             f"перенесено на {starts_at_local}."
-            + (f"\n{location_line}" if location_line else "")
             + (f"\n{position_line}" if position_line else "")
             + "\n\nЕсли новое время не подходит, сообщите вашему HR-менеджеру."
         )
@@ -236,8 +232,12 @@ def candidate_consent(
 def _email_consent_is_current(
     consent: CandidateChannelConsent | None, candidate: Candidate
 ) -> bool:
-    """Email consent is pinned to the exact normalized address it covered."""
+    """A valid email consent: granted by the candidate's OWN confirmation
+    click (double opt-in) and pinned to the exact normalized address it
+    covered. An HR-recorded grant never unlocks regular messages."""
     if consent is None or not consent.granted:
+        return False
+    if consent.source != "email_confirm":
         return False
     if not candidate.email:
         return False
@@ -306,7 +306,8 @@ def candidate_channel_state(
         if consent is not None and not consent.granted:
             return CHANNEL_STATE_FORBIDDEN
         if not _email_consent_is_current(consent, candidate):
-            # Never recorded for this address, or the address changed.
+            # Not confirmed by the candidate for this address yet (or the
+            # address changed): waiting for the confirmation click.
             return CHANNEL_STATE_PENDING
         return CHANNEL_STATE_ALLOWED
 
@@ -356,8 +357,17 @@ def record_candidate_consent(
     source: str,
     commit: bool = True,
 ) -> CandidateChannelConsent:
-    """Upsert the per-channel consent decision (audited by the caller)."""
+    """Upsert the per-channel consent decision (audited by the caller).
+
+    Email may be GRANTED only by the candidate's own confirmation click
+    (``source='email_confirm'``) — an HR call can never unlock regular
+    email messages by itself (double opt-in). Revocation stays available
+    to the HR for both channels and is immediate/fail-closed.
+    """
     from app.notification_service import cancel_pending_candidate_channel_messages
+
+    if channel == DeliveryChannel.EMAIL and granted and source != "email_confirm":
+        raise ValueError("email consent may only be granted by the candidate's confirmation")
 
     consent = candidate_consent(db, candidate.id, channel)
     now = utc_now()
@@ -413,6 +423,7 @@ def queue_candidate_message(
     message_type_key: str,
     source: NotificationSource,
     event_id: UUID | None = None,
+    event_version: int | None = None,
     initiator_user_id: UUID | None = None,
     dedupe_key: str,
     scheduled_at: datetime | None = None,
@@ -420,8 +431,11 @@ def queue_candidate_message(
     """Queue one candidate message on one channel (transactional outbox).
 
     The recipient is the *candidate* — the concrete address/chat id is
-    resolved by the worker at send time. Returns the row or ``None`` when
-    the idempotency key already exists (duplicate business event).
+    resolved by the worker at send time. ``event_version`` snapshots the
+    interview's optimistic version: the worker refuses to send the row if
+    the event mutated after rendering (reschedule/cancel/complete).
+    Returns the row or ``None`` when the idempotency key already exists
+    (duplicate business event).
     """
     type_ = CANDIDATE_MESSAGE_TYPES[message_type_key]
     return schedule(
@@ -435,6 +449,7 @@ def queue_candidate_message(
         body=message.body[:MAX_BODY_LENGTH],
         object_type="event" if event_id is not None else None,
         object_id=event_id,
+        object_version=event_version if event_id is not None else None,
         dedupe_key=f"cand:{dedupe_key}:{channel.value}",
         scheduled_at=scheduled_at,
         template=f"candidate_{message_type_key}",
@@ -452,6 +467,7 @@ def queue_candidate_message_all_channels(
     message_type_key: str,
     source: NotificationSource,
     event_id: UUID | None = None,
+    event_version: int | None = None,
     initiator_user_id: UUID | None = None,
     dedupe_key: str,
     scheduled_at: datetime | None = None,
@@ -476,6 +492,7 @@ def queue_candidate_message_all_channels(
             message_type_key=message_type_key,
             source=source,
             event_id=event_id,
+            event_version=event_version,
             initiator_user_id=initiator_user_id,
             dedupe_key=dedupe_key,
             scheduled_at=scheduled_at,
@@ -541,6 +558,7 @@ def plan_candidate_interview_messages(
                 message_type_key="interview_scheduled",
                 source=NotificationSource.SYSTEM,
                 event_id=event.id,
+                event_version=event.version,
                 dedupe_key=f"{event.id}:{event.version}:scheduled",
                 scheduled_at=now,
                 settings=settings,
@@ -560,6 +578,7 @@ def plan_candidate_interview_messages(
                 message_type_key="interview_rescheduled",
                 source=NotificationSource.SYSTEM,
                 event_id=event.id,
+                event_version=event.version,
                 dedupe_key=f"{event.id}:{event.version}:rescheduled",
                 scheduled_at=now,
                 settings=settings,
@@ -579,12 +598,57 @@ def plan_candidate_interview_messages(
                 message_type_key="interview_reminder",
                 source=NotificationSource.SYSTEM,
                 event_id=event.id,
+                event_version=event.version,
                 dedupe_key=f"{event.id}:{event.version}:reminder:{offset_h}",
                 scheduled_at=at,
                 settings=settings,
             )
         )
     return rows
+
+
+def queue_candidate_email_confirm(
+    db: Session,
+    *,
+    candidate: Candidate,
+    token_id: UUID,
+    confirm_url: str,
+    expires_at: datetime,
+    initiator_user_id: UUID,
+) -> NotificationOutbox | None:
+    """Queue the double opt-in letter (the ONLY consent-free candidate email).
+
+    The exact text — including the one-time confirmation URL — is snapshotted
+    here; the worker re-validates the token, the card address and the
+    candidate state right before the provider call and skips dead links.
+    """
+    expires_local = expires_at.strftime("%d.%m.%Y %H:%M UTC")
+    body = (
+        f"Здравствуйте, {sanitize_inline(candidate.full_name, max_length=100)}!\n\n"
+        "При оформлении вашей кандидатуры был указан этот адрес электронной "
+        "почты. Чтобы мы могли присылать вам сообщения о собеседованиях и "
+        "документах, подтвердите согласие получать письма.\n\n"
+        f"Перейдите по ссылке: {sanitize_inline(confirm_url, max_length=500)}\n\n"
+        f"Ссылка действительна до {expires_local}. "
+        "Если вы не давали согласие, просто проигнорируйте это письмо."
+    )
+    return schedule(
+        db,
+        recipient_user_id=None,
+        recipient_candidate_id=candidate.id,
+        channel=DeliveryChannel.EMAIL,
+        type_=NotificationType.CANDIDATE_EMAIL_CONFIRM,
+        source=NotificationSource.SYSTEM,
+        title="Подтвердите согласие на сообщения по почте",
+        body=body[:MAX_BODY_LENGTH],
+        object_type="candidate_email_token",
+        object_id=token_id,
+        dedupe_key=f"email-confirm:{token_id}",
+        scheduled_at=utc_now(),
+        template="candidate_email_confirm",
+        template_version=1,
+        initiator_user_id=initiator_user_id,
+    )
 
 
 def plan_candidate_interview_cancelled(
@@ -608,6 +672,7 @@ def plan_candidate_interview_cancelled(
         message_type_key="interview_cancelled",
         source=NotificationSource.SYSTEM,
         event_id=event.id,
+        event_version=event.version,
         dedupe_key=f"{event.id}:{event.version}:cancelled",
         scheduled_at=utc_now(),
         settings=settings,

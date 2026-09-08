@@ -20,6 +20,7 @@ import os
 import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -86,6 +87,8 @@ def settings(integration_url: str, telegram_stub: TelegramStub, smtp_stub: SmtpS
             "SMTP_FROM_ADDRESS": "noreply@example.com",
             "SMTP_FROM_NAME": "HR Manager",
             "CANDIDATE_MESSAGE_RATE_LIMIT": "1000",
+            "CANDIDATE_EMAIL_CONFIRM_BASE_URL": "https://hr.example.test",
+            "PUBLIC_CONFIRM_RATE_LIMIT": "1000",
         }
     )
 
@@ -98,7 +101,8 @@ def client(pg_engine: Engine, settings: Settings) -> Iterator[TestClient]:
                 "TRUNCATE TABLE audit_log, event_history, events, candidate_transfers, "
                 "candidate_interactions, candidates, user_sessions, users, "
                 "candidate_telegram_links, candidate_telegram_link_tokens, "
-                "candidate_channel_consents, telegram_start_events, telegram_poll_state, "
+                "candidate_channel_consents, candidate_email_confirm_tokens, "
+                "candidate_message_requests, telegram_start_events, telegram_poll_state, "
                 "telegram_link_tokens, telegram_links, user_emails, "
                 "notification_delivery_attempts, notification_outbox, notifications, "
                 "notification_preferences, reminders, access_grants RESTART IDENTITY CASCADE"
@@ -127,7 +131,7 @@ def _seed_candidate_channels(
             channel="email",
             granted=True,
             granted_at=NOW,
-            source="hr_recorded",
+            source="email_confirm",
             policy_version="phase10-v1",
             email_normalized=normalize_email(email),
         )
@@ -190,7 +194,11 @@ def test_manual_send_end_to_end_both_channels(
     # Send: one row per allowed channel.
     send = client.post(
         f"/candidates/{candidate.id}/messages/send",
-        json={"message_type": "document_request", "documents": ["Паспорт РФ", "СНИЛС"]},
+        json={
+            "message_type": "document_request",
+            "documents": ["Паспорт РФ", "СНИЛС"],
+            "idempotency_key": "integ-manual-1",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert send.status_code == 201, send.text
@@ -325,7 +333,11 @@ def test_parallel_workers_deliver_once(
     csrf = _login(client, "hr1")
     send = client.post(
         f"/candidates/{candidate.id}/messages/send",
-        json={"message_type": "document_request", "documents": ["Паспорт"]},
+        json={
+            "message_type": "document_request",
+            "documents": ["Паспорт"],
+            "idempotency_key": "integ-race-1",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert send.status_code == 201
@@ -370,7 +382,11 @@ def test_consent_revoke_before_send_stops_message(
     csrf = _login(client, "hr1")
     send = client.post(
         f"/candidates/{candidate.id}/messages/send",
-        json={"message_type": "document_request", "documents": ["Паспорт"]},
+        json={
+            "message_type": "document_request",
+            "documents": ["Паспорт"],
+            "idempotency_key": "integ-revoke-1",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert send.status_code == 201
@@ -454,3 +470,134 @@ def test_telegram_invite_flow_against_real_poll(
         pg_db.execute(text("SELECT token_hash FROM candidate_telegram_link_tokens")).scalars().all()
     )
     assert stored_hashes == [hashlib.sha256(token_raw.encode()).hexdigest()]
+
+
+# --- Phase 10 rework: email double opt-in end-to-end, parallel idempotency --------
+
+
+def test_email_double_opt_in_end_to_end(
+    client: TestClient,
+    pg_db: Session,
+    settings: Settings,
+    smtp_stub: SmtpStub,
+) -> None:
+    """Initiation -> the letter through the real worker/SMTP stub -> the
+    candidate's click on the public link -> regular messages allowed."""
+    import email as email_lib
+    import email.policy
+    import re as re_lib
+
+    hr = make_user(pg_db, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(
+        pg_db, owner=hr, email="optin@example.com", full_name="Оптин Подтверждаев"
+    )
+    csrf = _login(client, "hr1")
+
+    # Before any consent: the channel is pending, sends are refused.
+    body = client.get(f"/candidates/{candidate.id}/channels").json()
+    assert body["email"]["state"] == "pending"
+    refused = client.post(
+        f"/candidates/{candidate.id}/messages/send",
+        json={
+            "message_type": "document_request",
+            "documents": ["Паспорт"],
+            "idempotency_key": "optin-refused-1",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert refused.status_code == 409
+
+    # HR initiates; the worker delivers the letter through the SMTP stub.
+    initiated = client.post(
+        f"/candidates/{candidate.id}/channels/email/confirmation",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert initiated.status_code == 201, initiated.text
+    assert initiated.json()["queued"] is True
+    rows = [
+        row
+        for row in _candidate_rows(pg_db, candidate.id)
+        if row.notification_type == NotificationType.CANDIDATE_EMAIL_CONFIRM
+    ]
+    assert len(rows) == 1
+    claimed = claim_batch(pg_db, now=utc_now(), batch_size=5, lease_seconds=120)
+    assert claimed
+    for row in claimed:
+        assert process_external_row(pg_db, row.id, settings=settings, now=utc_now()) == "accepted"
+    assert len(smtp_stub.data_blocks) == 1
+    parsed = email_lib.message_from_bytes(smtp_stub.data_blocks[0], policy=email_lib.policy.default)
+    assert parsed["To"] == "optin@example.com"
+    mail_body = parsed.get_body(preferencelist=("plain",))
+    assert mail_body is not None
+    link_match = re_lib.search(r"https://hr\.example\.test/[^\s]+", mail_body.get_content())
+    assert link_match is not None
+    confirm_link = link_match.group(0)
+    assert "token=" in confirm_link
+    # Only the hash lives in the DB.
+    from app.models import CandidateEmailConfirmToken as Token
+
+    tokens = pg_db.execute(select(Token)).scalars().all()
+    assert len(tokens) == 1
+    assert tokens[0].token_hash not in confirm_link
+
+    # The candidate clicks: the consent activates.
+    page = client.get(confirm_link)
+    assert page.status_code == 200
+    assert "подтверждено" in page.text
+    body = client.get(f"/candidates/{candidate.id}/channels").json()
+    assert body["email"]["state"] == "allowed"
+
+    # A regular message now queues and delivers.
+    send = client.post(
+        f"/candidates/{candidate.id}/messages/send",
+        json={
+            "message_type": "document_request",
+            "documents": ["Паспорт"],
+            "idempotency_key": "optin-send-1",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert send.status_code == 201, send.text
+    claimed = claim_batch(pg_db, now=utc_now(), batch_size=5, lease_seconds=120)
+    for row in claimed:
+        process_external_row(pg_db, row.id, settings=settings, now=utc_now())
+    assert len(smtp_stub.data_blocks) == 2  # the letter + the regular message
+
+    # The link is one-shot.
+    assert client.get(confirm_link).status_code == 410
+
+
+def test_parallel_identical_sends_produce_one_logical_send(
+    client: TestClient, pg_db: Session, settings: Settings
+) -> None:
+    """Two truly concurrent identical requests (real threads, real PG unique
+    index): exactly one outbox row per channel, identical responses."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    hr = make_user(pg_db, username="hr1", role=UserRole.HR)
+    candidate = _seed_candidate_channels(pg_db, hr, email="par@example.com")
+    csrf = _login(client, "hr1")
+    payload = {
+        "message_type": "document_request",
+        "documents": ["Паспорт"],
+        "idempotency_key": "parallel-key-1",
+    }
+    url = f"/candidates/{candidate.id}/messages/send"
+    headers = {"X-CSRF-Token": csrf}
+
+    barrier_start = __import__("threading").Barrier(2)
+
+    def fire() -> Any:
+        barrier_start.wait()
+        return client.post(url, json=payload, headers=headers)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(fire) for _ in range(2)]
+        responses = [future.result() for future in futures]
+
+    for response in responses:
+        assert response.status_code in (200, 201), response.text
+    ids = {message["id"] for r in responses for message in r.json()["messages"]}
+    assert len(ids) == 2  # one row per channel (email + telegram), not four
+    rows = _candidate_rows(pg_db, candidate.id)
+    assert len(rows) == 2

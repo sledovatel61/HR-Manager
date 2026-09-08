@@ -807,10 +807,15 @@ export type CandidateMessageType =
 export interface CandidateMessageSendInput {
   message_type: CandidateMessageType;
   event_id?: string;
-  location?: string;
   documents?: string[];
   channel?: CandidateChannelName;
+  /** Client-generated, stable across retries of the same operation. */
+  idempotency_key: string;
 }
+
+/** Preview shares the closed vocabulary but owns no idempotency key:
+ * nothing is queued, so there is nothing to deduplicate. */
+export type CandidateMessagePreviewInput = Omit<CandidateMessageSendInput, "idempotency_key">;
 
 export interface CandidateMessagePreview {
   title: string;
@@ -829,6 +834,8 @@ export interface CandidateMessage {
   title: string;
   body: string | null;
   event_id: string | null;
+  initiator_user_id: string | null;
+  initiator_username: string | null;
   scheduled_at: string | null;
   scheduled_at_effective: string | null;
   queued_at: string;
@@ -853,4 +860,11 @@ export interface CandidateMessageList {
 export interface CandidateMessageSendResult {
   messages: CandidateMessage[];
   channels: CandidateChannelName[];
+}
+
+/** Initiation of the candidate's email double opt-in letter. */
+export interface CandidateEmailConfirmation {
+  queued: boolean;
+  email_masked: string;
+  expires_at: string;
 }

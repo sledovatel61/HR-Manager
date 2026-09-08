@@ -161,6 +161,8 @@ class AuditAction(StrEnum):
     CANDIDATE_TELEGRAM_INVITE_CREATED = "candidate_telegram_invite_created"
     CANDIDATE_TELEGRAM_LINKED = "candidate_telegram_linked"
     CANDIDATE_TELEGRAM_UNLINKED = "candidate_telegram_unlinked"
+    CANDIDATE_EMAIL_CONFIRM_INITIATED = "candidate_email_confirm_initiated"
+    CANDIDATE_EMAIL_CONFIRMED = "candidate_email_confirmed"
 
 
 class CandidateStage(StrEnum):
@@ -1031,6 +1033,11 @@ class NotificationType(StrEnum):
     CANDIDATE_INTERVIEW_CANCELLED = "candidate_interview_cancelled"
     CANDIDATE_DOCUMENT_REQUEST = "candidate_document_request"
     CANDIDATE_DOCUMENT_REMINDER = "candidate_document_reminder"
+    # The double opt-in letter itself. It is the ONLY candidate email that
+    # is delivered without a granted email consent: delivering it is the
+    # purpose of the flow. The worker re-validates the token, the address
+    # and the candidate state right before the provider call.
+    CANDIDATE_EMAIL_CONFIRM = "candidate_email_confirm"
 
 
 class NotificationPriority(StrEnum):
@@ -1467,6 +1474,11 @@ class NotificationOutbox(Base):
     rule_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     object_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     object_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # Snapshot of the business object's optimistic version at queue time
+    # (phase 10: the interview's ``version``). The worker refuses to send
+    # a message whose object mutated afterwards — the rendered text may no
+    # longer be true.
+    object_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Original requested send time (UTC). Quiet hours never rewrite it:
     # the effective (shifted) time lives in scheduled_at_effective for audit.
     scheduled_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
@@ -1840,6 +1852,68 @@ class CandidateTelegramLinkToken(Base):
     consume_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class CandidateEmailConfirmToken(Base):
+    """One-shot expiring token of a candidate's email double opt-in.
+
+    HR initiates the letter; the raw token is rendered once into the
+    confirmation URL (stored only as a SHA-256 hash here) and mailed to
+    the candidate's card address through the outbox. Only the candidate's
+    own click on the link may grant the email consent; a newer initiation
+    supersedes older unconsumed tokens of the same candidate. The token is
+    bound to the normalized address it was issued for.
+    """
+
+    __tablename__ = "candidate_email_confirm_tokens"
+    __table_args__ = (
+        Index("ix_candidate_email_confirm_tokens_candidate_id", "candidate_id"),
+        Index("ix_candidate_email_confirm_tokens_expires_at", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    # The normalized card address this confirmation was issued for.
+    email_normalized: Mapped[str] = mapped_column(String(254), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    consume_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+
+class CandidateMessageRequest(Base):
+    """Idempotency record of one manual candidate-message HTTP request.
+
+    The client generates the key when the operation starts and reuses it
+    on retries. The key is bound to the acting user, the candidate and a
+    hash of the exact payload; a replay of the same key+payload returns
+    the stored original response without queueing anything again. Same
+    key with a different payload (or a different user) is refused.
+    """
+
+    __tablename__ = "candidate_message_requests"
+    __table_args__ = (
+        Index("ix_candidate_message_requests_user_id", "user_id"),
+        Index("ix_candidate_message_requests_candidate_id", "candidate_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    message_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    # SHA-256 of the canonical payload (user, candidate, type, event,
+    # documents, channel). The key itself is never logged or echoed.
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    response: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+
+
 class CandidateChannelConsent(Base):
     """A candidate's per-channel consent record (phase 10).
 
@@ -1865,7 +1939,7 @@ class CandidateChannelConsent(Base):
             name="ck_candidate_channel_consents_decision_complete",
         ),
         CheckConstraint(
-            "source IN ('hr_recorded', 'telegram_start')",
+            "source IN ('hr_recorded', 'telegram_start', 'email_confirm')",
             name="ck_candidate_channel_consents_source_valid",
         ),
         Index("ix_candidate_channel_consents_candidate_id", "candidate_id"),

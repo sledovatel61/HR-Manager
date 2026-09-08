@@ -24,9 +24,6 @@ from app.models import (
 )
 from app.utils import normalize_phone
 
-# Phase 10: server-side limits for safely substituted candidate-message parts.
-MAX_LOCATION_LENGTH = 300
-
 
 def _as_utc(value: datetime) -> datetime:
     """Canonical form of incoming timestamps: timezone-aware UTC.
@@ -1293,19 +1290,32 @@ class CandidateMessageSendRequest(BaseModel):
     """Manual one-way message request (server renders the exact text).
 
     ``event_id`` is required for the interview types (the interview the
-    message is about); ``documents`` is required for the document types.
-    The channel (when given) must be allowed for the candidate.
+    message is about — its data is read server-side only); ``documents``
+    is required for the document types. The channel (when given) must be
+    allowed for the candidate. The client generates ``idempotency_key``
+    when the operation starts and reuses it on retries: the same key with
+    the same payload replays the original response, a different payload
+    is refused. No recipient, text or chat id is ever accepted.
     """
 
     message_type: str
     event_id: UUID | None = None
-    location: str | None = Field(default=None, max_length=MAX_LOCATION_LENGTH)
     documents: list[str] | None = None
     channel: str | None = None
+    idempotency_key: str = Field(min_length=8, max_length=255)
 
 
-class CandidateMessagePreviewRequest(CandidateMessageSendRequest):
-    """Same payload, but nothing is queued — only the rendered text."""
+class CandidateMessagePreviewRequest(BaseModel):
+    """Preview payload: the closed vocabulary only, nothing is queued.
+
+    Deliberately NOT a subclass of the send request — the idempotency key
+    belongs to mutating operations only.
+    """
+
+    message_type: str
+    event_id: UUID | None = None
+    documents: list[str] | None = None
+    channel: str | None = None
 
 
 class CandidateMessagePreviewOut(BaseModel):
@@ -1334,6 +1344,8 @@ class CandidateMessageOut(BaseModel):
     title: str
     body: str | None = None
     event_id: UUID | None = None
+    initiator_user_id: UUID | None = None
+    initiator_username: str | None = None
     scheduled_at: datetime | None = None
     scheduled_at_effective: datetime | None = None
     queued_at: datetime
@@ -1362,6 +1374,14 @@ class CandidateMessageSendOut(BaseModel):
 
     messages: list[CandidateMessageOut]
     channels: list[str]
+
+
+class CandidateEmailConfirmationOut(BaseModel):
+    """Result of initiating the candidate's email double opt-in letter."""
+
+    queued: bool
+    email_masked: str
+    expires_at: datetime
 
 
 class CandidateMessageCancelOut(BaseModel):

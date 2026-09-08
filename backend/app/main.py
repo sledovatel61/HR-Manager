@@ -122,6 +122,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(candidates.router)
     app.include_router(events.router)
     app.include_router(candidate_messages.router)
+    app.include_router(candidate_messages.public_router)
     app.include_router(analytics.router)
     app.include_router(notifications.router)
     app.include_router(integrations.router)
