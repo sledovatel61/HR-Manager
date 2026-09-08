@@ -35,6 +35,7 @@ from app.routers import (
     reminders,
     setup,
     users,
+    document_rules,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(ops.router)
     app.include_router(auth.router)
     app.include_router(users.router)
+    app.include_router(document_rules.router)
     app.include_router(audit.router)
     app.include_router(candidates.router)
     app.include_router(events.router)

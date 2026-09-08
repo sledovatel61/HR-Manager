@@ -21,6 +21,7 @@ from sqlalchemy import engine_from_config, pool, text
 from alembic import context
 from app.config import get_settings
 from app.models import Base
+import app.document_rules  # register Phase 11 tables with metadata
 
 config = context.config
 
