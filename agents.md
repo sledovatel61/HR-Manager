@@ -63,14 +63,20 @@ HR Manager — многопользовательская внутренняя �
 
 ## Текущий статус и handoff
 
-- Фазы 0–9 приняты.
-- Последний опубликованный `main`: `a747f35ab3e8fc0907190595684249933a413190`.
-- Последняя проверка CI для этого SHA: run `34191549759`, все jobs завершились успешно.
-- Phase 9 включает Telegram/email-интеграции, согласия, outbox/worker routing и backup smoke fix.
-- Backup smoke fix: backup ждёт healthy backend перед стартовой копией; зашифрованный `.pgdump.enc` проверен локально и в CI.
-- Следующая работа: Phase 10 — односторонние русскоязычные сообщения кандидатам. Полное задание: `prompts/PHASE_10_PROMPT.md`.
-- В Phase 10 не входят ответы кандидатов, чат, входящая почта, загрузка документов через каналы, SMS и массовые рекламные рассылки.
-- Для Phase 10 требуется отдельный отчёт `docs/phase-10-report-<agent>.md` и handoff для следующей фазы.
+- Фазы 0–10 приняты.
+- Phase 10 прошла review в PR #14 и влита в `main` merge-коммитом
+  `7cebac27a89b7544ff4ff494f45eb906840d96e7` (reviewed SHA
+  `4b44ff8bb446982aea4609e96bfa6819a8fe2331`).
+- На reviewed SHA зелёные Backend checks, PostgreSQL integration, Frontend checks
+  и Compose stack smoke. Ограничения локальной Windows-проверки записаны в
+  `docs/CURRENT_STATUS.md`.
+- Следующая работа: Phase 11 — версионируемые списки документов, учёт
+  недостающих документов и ограниченные личные правила. Полное задание:
+  `prompts/PHASE_11_PROMPT.md`.
+- Phase 11 должна переиспользовать существующие outbox/worker, согласия,
+  quiet-hours и серверные шаблоны Phase 10; универсальный rule engine запрещён.
+- Для Phase 11 требуется отдельный отчёт `docs/phase-11-report-<agent>.md` и
+  handoff для следующей работы.
 
 ## Definition of Done
 

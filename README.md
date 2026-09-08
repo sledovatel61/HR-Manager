@@ -3,11 +3,11 @@
 Сетевая система для командного подбора персонала: несколько HR-менеджеров
 ведут кандидатов в единой PostgreSQL-базе, руководитель получает аналитику.
 
-**Статус: этап 7 (backup, deployment и release) завершён; следующий — этап 8
-(фундамент уведомлений и пилотный режим).** Актуальный handoff находится в
-[`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md), готовый промпт для нового
-чата — в [`prompts/PHASE_8_START_PROMPT.md`](prompts/PHASE_8_START_PROMPT.md),
-полное задание — в [`prompts/PHASE_8_PROMPT.md`](prompts/PHASE_8_PROMPT.md). Зашифрованные
+**Статус: этапы 0–10 завершены; следующий — этап 11 (списки документов и
+правила автоматизации).** Phase 10 принята в PR #14 и влита в `main` merge-коммитом
+`7cebac27a89b7544ff4ff494f45eb906840d96e7`. Актуальный handoff находится в
+[`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md), самодостаточное задание для
+нового агента — в [`prompts/PHASE_11_PROMPT.md`](prompts/PHASE_11_PROMPT.md). Зашифрованные
 backup (AES-256-GCM) с retention ≥ 7 дней и restore drill в отдельную БД,
 deploy-скрипт с автоматическим rollback, HTTPS reverse proxy и
 observability-сигналы — см. [`docs/backup-and-restore.md`](docs/backup-and-restore.md).
@@ -124,9 +124,9 @@ HR; исполнитель — только активный HR (HR назнач
 (отличается от «поле не передано»). Мутация события, строка бизнес-истории
 (`event_history`) и audit-событие фиксируются одной транзакцией; в аудите
 и логах нет PII, заголовков и заметок. Напоминания: хранение `remind_at`
-и серверная выдача ближайших/просроченных в workspace; внешняя доставка
-(email/push) не реализована — в архитектуре нет фоновых worker, доставка
-не имитируется (ограничение этапа, см. отчёт).
+и серверная выдача ближайших/просроченных в workspace. В этапах 8–10 поверх
+этого добавлены PostgreSQL outbox/worker, email/Telegram и безопасные
+односторонние сообщения кандидатам.
 
 ### Аналитика и отчёты (этап 6)
 
@@ -447,20 +447,22 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - В репозитории нет секретов и персональных данных; `.env`, дампы и backup
   игнорируются git'ом.
-- Пользователи, роли, сессии, аудит и управление доступами реализованы на
-  этапе 2 (см. раздел «Аутентификация и безопасность» выше). Функции
-  кандидатов (единая база, статусы, очередь) появятся на следующем этапе по
-  [`ROADMAP.md`](ROADMAP.md).
+- Пользователи, роли, сессии, аудит, кандидаты, события, аналитика,
+  эксплуатационный контур и коммуникации реализованы. Версионируемые списки
+  документов и ограниченные личные правила относятся к следующему этапу 11;
+  см. [`ROADMAP.md`](ROADMAP.md) и
+  [`prompts/PHASE_11_PROMPT.md`](prompts/PHASE_11_PROMPT.md).
 
 ## Документация
 
 - [`agents.md`](agents.md) — регламент для AI-агентов;
 - [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) — актуальное ТЗ;
 - [`ROADMAP.md`](ROADMAP.md) — этапы разработки;
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — решения этапа 1;
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — архитектурные решения и ограничения;
+- [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — актуальный handoff;
 - [`prompts/PHASE_1_PROMPT.md`](prompts/PHASE_1_PROMPT.md) — промпт этапа 1;
 - [`prompts/PHASE_2_PROMPT.md`](prompts/PHASE_2_PROMPT.md) — промпт этапа 2;
-- [`prompts/PHASE_3_PROMPT.md`](prompts/PHASE_3_PROMPT.md) — промпт следующего
-  этапа (единая база кандидатов);
+- [`prompts/PHASE_3_PROMPT.md`](prompts/PHASE_3_PROMPT.md) — исторический промпт базы кандидатов;
+- [`prompts/PHASE_11_PROMPT.md`](prompts/PHASE_11_PROMPT.md) — задание следующего этапа;
 - [`design/IMPLEMENTATION_GUIDE.md`](design/IMPLEMENTATION_GUIDE.md) — план
   переноса дизайна «Живая воронка» в production.
