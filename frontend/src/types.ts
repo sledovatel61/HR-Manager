@@ -290,13 +290,15 @@ export const EVENT_TYPE_LABELS: Record<CalendarEventType, string> = {
   reminder: "Напоминание",
 };
 
-/** Closed event-status vocabulary (backend EventStatus). */
-export type CalendarEventStatus = "scheduled" | "completed" | "postponed";
+/** Closed event-status vocabulary (backend EventStatus; phase 8 added
+ * `cancelled` as a documented extension of the phase-5 vocabulary). */
+export type CalendarEventStatus = "scheduled" | "completed" | "postponed" | "cancelled";
 
 export const EVENT_STATUS_LABELS: Record<CalendarEventStatus, string> = {
   scheduled: "Запланировано",
   completed: "Выполнено",
   postponed: "Отложено",
+  cancelled: "Отменено",
 };
 
 /** Immutable business-history kinds (backend EventHistoryKind). */
@@ -749,4 +751,188 @@ export interface ChannelCheckResult {
 export interface ChannelTestResult {
   outbox_id: string;
   status: string;
+}
+
+// --- Phase 10: candidate communications ---------------------------------------
+
+/** Channels a candidate can receive one-way messages on (backend closed set). */
+export type CandidateChannel = "email" | "telegram";
+
+export const CANDIDATE_CHANNEL_LABELS: Record<CandidateChannel, string> = {
+  email: "Email",
+  telegram: "Telegram",
+};
+
+/** Honest per-channel state (five states, backend contract). */
+export type CandidateChannelState =
+  | "not_connected"
+  | "pending_confirmation"
+  | "allowed"
+  | "denied"
+  | "temporarily_unavailable";
+
+/** PII-free reason of a non-usable channel (backend REASON_* values). */
+export type CandidateChannelReason =
+  | "no_address"
+  | "channel_not_configured"
+  | "temporary_error";
+
+export interface CandidateChannelStatus {
+  channel: CandidateChannel;
+  state: CandidateChannelState;
+  reason: CandidateChannelReason | null;
+  recipient_masked: string | null;
+  consent_at: string | null;
+  consent_source: string | null;
+  pending_expires_at: string | null;
+}
+
+export interface CandidateChannelsPayload {
+  channels: CandidateChannelStatus[];
+}
+
+/** POST email/consent-request (double-opt-in letter queued). */
+export interface CandidateConsentRequestResult {
+  message_id: string;
+  state: string;
+  expires_at: string;
+}
+
+/** POST telegram/link — the raw deep link is shown to the HR exactly once. */
+export interface CandidateTelegramLinkResult {
+  deep_link: string;
+  expires_at: string;
+  state: string;
+}
+
+/** POST telegram/confirm — state is relayed verbatim from the backend. */
+export interface CandidateTelegramConfirmResult {
+  state: string;
+  detail: string;
+}
+
+/** POST revoke. */
+export interface CandidateRevokeResult {
+  channel: CandidateChannel;
+  state: string;
+}
+
+/** The seven stored kinds (six business kinds + internal consent invite). */
+export type CandidateMessageType =
+  | "interview_scheduled"
+  | "interview_reminder"
+  | "interview_rescheduled"
+  | "interview_cancelled"
+  | "documents_request"
+  | "documents_reminder"
+  | "consent_invite";
+
+/** The six business kinds an HR may queue manually (consent_invite internal). */
+export type CandidateManualMessageType = Exclude<CandidateMessageType, "consent_invite">;
+
+export const CANDIDATE_MESSAGE_TYPE_LABELS: Record<CandidateMessageType, string> = {
+  interview_scheduled: "Собеседование назначено",
+  interview_reminder: "Напоминание о собеседовании",
+  interview_rescheduled: "Собеседование перенесено",
+  interview_cancelled: "Собеседование отменено",
+  documents_request: "Запрос документов",
+  documents_reminder: "Напоминание о документах",
+  consent_invite: "Письмо о согласии (служебное)",
+};
+
+export type CandidateMessageSource = "manual" | "event" | "rule" | "system";
+
+export const CANDIDATE_MESSAGE_SOURCE_LABELS: Record<CandidateMessageSource, string> = {
+  manual: "Вручную",
+  event: "Событие",
+  rule: "Правило",
+  system: "Система",
+};
+
+/**
+ * Delivery statuses of candidate messages. «accepted» is the technical
+ * provider acceptance only — it never claims delivery or reading.
+ */
+export type CandidateMessageStatus =
+  | "queued"
+  | "sending"
+  | "accepted"
+  | "delivered"
+  | "failed"
+  | "cancelled"
+  | "skipped";
+
+export const CANDIDATE_MESSAGE_STATUS_LABELS: Record<CandidateMessageStatus, string> = {
+  queued: "В очереди",
+  sending: "Отправляется",
+  accepted: "Принято провайдером",
+  delivered: "Доставлено",
+  failed: "Ошибка",
+  cancelled: "Отменено",
+  skipped: "Пропущено",
+};
+
+/** One immutable history row (backend CandidateMessageOut). */
+export interface CandidateMessage {
+  id: string;
+  channel: CandidateChannel;
+  message_type: CandidateMessageType;
+  source: CandidateMessageSource;
+  title: string;
+  body: string;
+  status: CandidateMessageStatus;
+  attempts: number;
+  event_id: string | null;
+  initiator_user_id: string | null;
+  scheduled_at: string;
+  scheduled_at_effective: string | null;
+  queued_at: string;
+  started_at: string | null;
+  accepted_at: string | null;
+  delivered_at: string | null;
+  failed_at: string | null;
+  cancelled_at: string | null;
+  error_class: string | null;
+  provider_message_id: string | null;
+  created_at: string;
+  updated_at: string;
+  /** PII-safe display form of the recipient, filled by the server. */
+  recipient_masked: string | null;
+}
+
+/** GET history payload. */
+export interface CandidateMessageListPayload {
+  items: CandidateMessage[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Manual-send request body. The recipient and the final text are always
+ * determined server-side — the UI never passes them. */
+export interface CandidateMessageSendInput {
+  message_type: CandidateMessageType;
+  channel: CandidateChannel;
+  event_id?: string | null;
+  documents?: string[];
+  confirm_quiet_hours?: boolean;
+  idempotency_key?: string | null;
+}
+
+/** Server-rendered preview of the exact text that will be queued. */
+export interface CandidateMessagePreview {
+  title: string;
+  body: string;
+  quiet_hours_now: boolean;
+  will_send: boolean;
+}
+
+export interface CandidateSendResult {
+  message: CandidateMessage;
+  duplicate: boolean;
+}
+
+export interface CandidateCancelResult {
+  message: CandidateMessage;
+  cancelled: boolean;
 }

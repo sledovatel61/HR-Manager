@@ -2,18 +2,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   DuplicateCandidateError,
+  cancelCandidateMessage,
+  confirmCandidateTelegram,
   createCandidate,
   createCandidateInteraction,
+  createCandidateTelegramLink,
   deleteCandidate,
+  fetchCandidateChannels,
   listCandidateInteractions,
+  listCandidateMessages,
   listCandidateTransfers,
   listCandidates,
   listHrUsers,
   login,
   logout,
   onUnauthorized,
+  previewCandidateMessage,
   readCsrfCookie,
+  requestCandidateEmailConsent,
   restoreCandidate,
+  revokeCandidateChannel,
+  sendCandidateMessage,
   transferCandidate,
 } from "./api";
 
@@ -239,5 +248,151 @@ describe("Phase 4 API surface", () => {
     unsubscribe();
     await expect(listCandidates({})).rejects.toBeInstanceOf(ApiError);
     expect(listener).toHaveBeenCalledTimes(1); // unsubscribed
+  });
+});
+
+// --- Phase 10: candidate communications ---------------------------------------
+
+const messageRow = {
+  id: "m-1",
+  channel: "email",
+  message_type: "documents_request",
+  source: "manual",
+  title: "Запрос документов",
+  body: "Здравствуйте!",
+  status: "queued",
+  attempts: 0,
+  event_id: null,
+  initiator_user_id: "u-1",
+  scheduled_at: "2026-09-08T10:00:00Z",
+  scheduled_at_effective: null,
+  queued_at: "2026-09-08T10:00:00Z",
+  started_at: null,
+  accepted_at: null,
+  delivered_at: null,
+  failed_at: null,
+  cancelled_at: null,
+  error_class: null,
+  provider_message_id: null,
+  created_at: "2026-09-08T10:00:00Z",
+  updated_at: "2026-09-08T10:00:00Z",
+  recipient_masked: "p***@example.com",
+};
+
+describe("Candidate communications API client", () => {
+  it("fetchCandidateChannels reads the per-channel state", async () => {
+    const fetchMock = stubFetch(Response.json({ channels: [] }, { status: 200 }));
+    await fetchCandidateChannels("c-1");
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      `${API_BASE}/candidates/c-1/communications/channels`
+    );
+  });
+
+  it("requestCandidateEmailConsent posts the double-opt-in request", async () => {
+    document.cookie = "hrm_csrf=tok; path=/";
+    const fetchMock = stubFetch(
+      Response.json(
+        { message_id: "m-1", state: "pending_confirmation", expires_at: "2026-09-11T10:00:00Z" },
+        { status: 202 }
+      )
+    );
+    const result = await requestCandidateEmailConsent("c-1");
+    expect(result.state).toBe("pending_confirmation");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe(`${API_BASE}/candidates/c-1/communications/email/consent-request`);
+    expect(init?.method).toBe("POST");
+    expect((init?.headers as Record<string, string>)["X-CSRF-Token"]).toBe("tok");
+  });
+
+  it("createCandidateTelegramLink and confirmCandidateTelegram use the link endpoints", async () => {
+    const linkFetch = stubFetch(
+      Response.json(
+        { deep_link: "https://t.me/bot?start=abc", expires_at: "2026-09-08T10:10:00Z", state: "pending_confirmation" },
+        { status: 201 }
+      )
+    );
+    const link = await createCandidateTelegramLink("c-1");
+    expect(link.deep_link).toContain("t.me");
+    expect(String(linkFetch.mock.calls[0][0])).toBe(
+      `${API_BASE}/candidates/c-1/communications/telegram/link`
+    );
+
+    const confirmFetch = stubFetch(
+      Response.json({ state: "allowed", detail: "Telegram-канал подключён." }, { status: 200 })
+    );
+    const result = await confirmCandidateTelegram("c-1");
+    expect(result.state).toBe("allowed");
+    expect(String(confirmFetch.mock.calls[0][0])).toBe(
+      `${API_BASE}/candidates/c-1/communications/telegram/confirm`
+    );
+  });
+
+  it("revokeCandidateChannel posts to the per-channel revoke endpoint", async () => {
+    const fetchMock = stubFetch(Response.json({ channel: "email", state: "denied" }));
+    const result = await revokeCandidateChannel("c-1", "email");
+    expect(result.state).toBe("denied");
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      `${API_BASE}/candidates/c-1/communications/email/revoke`
+    );
+  });
+
+  it("previewCandidateMessage posts the type/channel/event context only", async () => {
+    const fetchMock = stubFetch(
+      Response.json({ title: "Собеседование перенесено", body: "Текст", quiet_hours_now: false, will_send: true })
+    );
+    const result = await previewCandidateMessage("c-1", {
+      message_type: "interview_rescheduled",
+      channel: "email",
+      event_id: "ev-1",
+      confirm_quiet_hours: false,
+    });
+    expect(result.title).toBe("Собеседование перенесено");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe(`${API_BASE}/candidates/c-1/communications/preview`);
+    expect(JSON.parse(init?.body as string)).toEqual({
+      message_type: "interview_rescheduled",
+      channel: "email",
+      event_id: "ev-1",
+      confirm_quiet_hours: false,
+    });
+  });
+
+  it("sendCandidateMessage queues with an optional idempotency key", async () => {
+    const fetchMock = stubFetch(
+      Response.json({ message: messageRow, duplicate: false }, { status: 201 })
+    );
+    const result = await sendCandidateMessage("c-1", {
+      message_type: "documents_request",
+      channel: "email",
+      documents: ["Паспорт"],
+      idempotency_key: "uuid-1",
+    });
+    expect(result.duplicate).toBe(false);
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({
+      message_type: "documents_request",
+      channel: "email",
+      documents: ["Паспорт"],
+      idempotency_key: "uuid-1",
+    });
+  });
+
+  it("listCandidateMessages paginates the history endpoint", async () => {
+    const fetchMock = stubFetch(
+      Response.json({ items: [messageRow], total: 1, limit: 20, offset: 0 })
+    );
+    const page = await listCandidateMessages("c-1", 20, 0);
+    expect(page.items[0].recipient_masked).toBe("p***@example.com");
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      `${API_BASE}/candidates/c-1/communications/history?limit=20&offset=0`
+    );
+  });
+
+  it("cancelCandidateMessage posts to the message cancel endpoint", async () => {
+    const fetchMock = stubFetch(Response.json({ message: messageRow, cancelled: true }));
+    const result = await cancelCandidateMessage("c-1", "m-1");
+    expect(result.cancelled).toBe(true);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      `${API_BASE}/candidates/c-1/communications/m-1/cancel`
+    );
   });
 });

@@ -30,12 +30,18 @@ from sqlalchemy.orm import Session
 
 from app.analytics_ledger import record_fact
 from app.audit import record_event
+from app.candidate_communications import (
+    cancel_pending_candidate_messages,
+    schedule_candidate_event_message,
+)
+from app.config import Settings
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import (
     AnalyticsFactType,
     AuditAction,
     Candidate,
+    CandidateMessageType,
     Event,
     EventHistory,
     EventHistoryKind,
@@ -58,7 +64,7 @@ from app.schemas import (
     EventOut,
     EventUpdate,
 )
-from app.utils import client_ip, user_agent, utc_now
+from app.utils import client_ip, ensure_aware, user_agent, utc_now
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -68,6 +74,7 @@ _DEFAULT_LIST_LIMIT = 50
 _SAFE_FIELD_NAMES = {
     "title": "title",
     "note": "note",
+    "location": "location",
     "starts_at": "starts_at",
     "ends_at": "ends_at",
     "remind_at": "remind_at",
@@ -326,6 +333,7 @@ def create_event(
         type=payload.type,
         title=payload.title,
         note=payload.note,
+        location=payload.location,
         status=EventStatus.SCHEDULED,
         starts_at=payload.starts_at,
         ends_at=payload.ends_at,
@@ -365,6 +373,17 @@ def create_event(
         assignee=assignee,
         settings=request.app.state.settings,
     )
+    # Phase 10: interview candidates with an allowed channel learn about the
+    # new interview from the SAME transaction (auto-send by event rule).
+    if event.type == EventType.INTERVIEW:
+        _queue_interview_candidate_messages(
+            db,
+            event=event,
+            settings=request.app.state.settings,
+            initiator_user_id=user.id,
+            base_url=str(request.base_url),
+            created=True,
+        )
     _audit_event(
         db,
         request,
@@ -469,6 +488,8 @@ def update_event(
         )
     if "note" in fields_set and payload.note != locked.note:
         changed_fields.append("note")
+    if "location" in fields_set and payload.location != locked.location:
+        changed_fields.append("location")
     if "starts_at" in fields_set and payload.starts_at != locked.starts_at:
         changed_fields.append("starts_at")
     if "ends_at" in fields_set and payload.ends_at != locked.ends_at:
@@ -486,6 +507,7 @@ def update_event(
             changed_fields.append("remind_at")
         new_remind = None
     new_note = payload.note if "note" in fields_set else locked.note
+    new_location = payload.location if "location" in fields_set else locked.location
 
     # Assignee change (validated against the role model).
     new_assignee = locked.assignee
@@ -548,6 +570,7 @@ def update_event(
         assignee_user_id_new=new_assignee.id,
         title_changed="title" in changed_fields,
         note_changed="note" in changed_fields,
+        location_changed="location" in changed_fields,
     )
 
     old_status = locked.status
@@ -557,6 +580,7 @@ def update_event(
     locked.remind_at = new_remind
     locked.title = payload.title if payload.title is not None else locked.title
     locked.note = new_note
+    locked.location = new_location
     locked.assignee_user_id = new_assignee.id
     locked.completed_at = utc_now() if new_status == EventStatus.COMPLETED else None
     locked.cancelled_at = utc_now() if new_status == EventStatus.CANCELLED else None
@@ -604,6 +628,29 @@ def update_event(
                     assignee=new_assignee,
                     settings=request.app.state.settings,
                 )
+
+    # Phase 10: candidate interview letters follow the event's real plan.
+    # Only queued (not yet delivered) rows are cancelled — already sent
+    # history stays immutable. Each call runs inside the same transaction.
+    if locked.type == EventType.INTERVIEW and (
+        became_cancelled
+        or new_status == EventStatus.COMPLETED
+        or became_postponed
+        or "starts_at" in changed_fields
+        or "remind_at" in changed_fields
+    ):
+        _queue_interview_candidate_messages(
+            db,
+            event=locked,
+            settings=request.app.state.settings,
+            initiator_user_id=user.id,
+            base_url=str(request.base_url),
+            created=False,
+            cancelled=became_cancelled,
+            completed=new_status == EventStatus.COMPLETED,
+            rescheduled=(became_postponed or "starts_at" in changed_fields),
+            remind_changed="remind_at" in changed_fields,
+        )
 
     # Completing an event is an analytics fact (same single transaction).
     if new_status == EventStatus.COMPLETED:
@@ -670,3 +717,108 @@ def list_event_history(
         limit=limit,
         offset=offset,
     )
+
+
+def _queue_interview_candidate_messages(
+    db: Session,
+    *,
+    event: Event,
+    settings: Settings,
+    initiator_user_id: UUID,
+    base_url: str,
+    created: bool,
+    cancelled: bool = False,
+    completed: bool = False,
+    rescheduled: bool = False,
+    remind_changed: bool = False,
+) -> None:
+    """Queue automatic candidate letters for an interview event.
+
+    Runs inside the event's own transaction. A candidate only receives a
+    letter on channels currently allowed (consent + binding + provider
+    configured); when nothing is allowed the event proceeds normally and an
+    HR can always send manually from the candidate card later. Already sent
+    rows are never touched (immutable history); only ``queued`` rows of a
+    superseded plan are cancelled so no stale letter can arrive.
+    """
+    now = utc_now()
+    remind = event.remind_at
+    remind_future = remind is not None and ensure_aware(remind) > now
+    if created:
+        if remind_future:
+            schedule_candidate_event_message(
+                db,
+                event=event,
+                message_type=CandidateMessageType.INTERVIEW_REMINDER,
+                settings=settings,
+                initiator_user_id=initiator_user_id,
+                scheduled_at=remind,
+                base_url=base_url,
+                now=now,
+            )
+        schedule_candidate_event_message(
+            db,
+            event=event,
+            message_type=CandidateMessageType.INTERVIEW_SCHEDULED,
+            settings=settings,
+            initiator_user_id=initiator_user_id,
+            base_url=base_url,
+            now=now,
+        )
+        return
+
+    if cancelled or completed:
+        # No further letter can be useful; drop any still-queued rows.
+        cancel_pending_candidate_messages(db, event_id=event.id, now=now)
+        if cancelled:
+            schedule_candidate_event_message(
+                db,
+                event=event,
+                message_type=CandidateMessageType.INTERVIEW_CANCELLED,
+                settings=settings,
+                initiator_user_id=initiator_user_id,
+                base_url=base_url,
+                now=now,
+            )
+        return
+
+    # Reschedule / reminder change: supersede the stale plan first.
+    cancel_pending_candidate_messages(
+        db,
+        event_id=event.id,
+        message_type=CandidateMessageType.INTERVIEW_SCHEDULED,
+        now=now,
+    )
+    cancel_pending_candidate_messages(
+        db,
+        event_id=event.id,
+        message_type=CandidateMessageType.INTERVIEW_RESCHEDULED,
+        now=now,
+    )
+    cancel_pending_candidate_messages(
+        db,
+        event_id=event.id,
+        message_type=CandidateMessageType.INTERVIEW_REMINDER,
+        now=now,
+    )
+    if rescheduled:
+        schedule_candidate_event_message(
+            db,
+            event=event,
+            message_type=CandidateMessageType.INTERVIEW_RESCHEDULED,
+            settings=settings,
+            initiator_user_id=initiator_user_id,
+            base_url=base_url,
+            now=now,
+        )
+    if remind_future:
+        schedule_candidate_event_message(
+            db,
+            event=event,
+            message_type=CandidateMessageType.INTERVIEW_REMINDER,
+            settings=settings,
+            initiator_user_id=initiator_user_id,
+            scheduled_at=remind,
+            base_url=base_url,
+            now=now,
+        )

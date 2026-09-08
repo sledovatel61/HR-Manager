@@ -268,6 +268,24 @@ class Settings(BaseSettings):
         default=300, validation_alias="INTEGRATION_RATE_WINDOW_S"
     )
 
+    # Candidate communications (phase 10). Candidates have no personal
+    # preference rows: system defaults apply to candidate-facing sends.
+    # Token TTLs bound the double-opt-in email link and the Telegram link.
+    candidate_consent_token_ttl_hours: int = Field(
+        default=72, validation_alias="CANDIDATE_CONSENT_TOKEN_TTL_HOURS"
+    )
+    candidate_telegram_token_ttl_minutes: int = Field(
+        default=DEFAULT_TELEGRAM_LINK_TTL_MINUTES,
+        validation_alias="CANDIDATE_TELEGRAM_TOKEN_TTL_MINUTES",
+    )
+    # Manual candidate-message send budget (per HR user, sliding window).
+    candidate_message_rate_limit: int = Field(
+        default=30, validation_alias="CANDIDATE_MESSAGE_RATE_LIMIT"
+    )
+    candidate_message_rate_window_s: int = Field(
+        default=300, validation_alias="CANDIDATE_MESSAGE_RATE_WINDOW_S"
+    )
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"

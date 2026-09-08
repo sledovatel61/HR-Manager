@@ -24,6 +24,7 @@ from app.routers import (
     analytics,
     audit,
     auth,
+    candidate_communications,
     candidates,
     events,
     health,
@@ -119,6 +120,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(users.router)
     app.include_router(audit.router)
     app.include_router(candidates.router)
+    app.include_router(candidate_communications.router)
+    app.include_router(candidate_communications.public_router)
     app.include_router(events.router)
     app.include_router(analytics.router)
     app.include_router(notifications.router)

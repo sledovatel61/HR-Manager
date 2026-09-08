@@ -18,6 +18,15 @@ vi.mock("../../api", async (importOriginal) => {
     updateEvent: vi.fn(),
     listHrUsers: vi.fn(),
     listEventHistory: vi.fn(),
+    fetchCandidateChannels: vi.fn(),
+    listCandidateMessages: vi.fn(),
+    previewCandidateMessage: vi.fn(),
+    sendCandidateMessage: vi.fn(),
+    cancelCandidateMessage: vi.fn(),
+    requestCandidateEmailConsent: vi.fn(),
+    createCandidateTelegramLink: vi.fn(),
+    confirmCandidateTelegram: vi.fn(),
+    revokeCandidateChannel: vi.fn(),
   };
 });
 
@@ -72,6 +81,13 @@ beforeEach(() => {
   vi.mocked(api.listCandidateTransfers).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
   vi.mocked(api.listEvents).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
   vi.mocked(api.listEventHistory).mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
+  vi.mocked(api.fetchCandidateChannels).mockResolvedValue({ channels: [] });
+  vi.mocked(api.listCandidateMessages).mockResolvedValue({
+    items: [],
+    total: 0,
+    limit: 20,
+    offset: 0,
+  });
 });
 
 describe("CandidateDrawer", () => {
@@ -292,5 +308,41 @@ describe("CandidateDrawer events tab — «Показать ещё» accumulates
     );
     // Nothing left to load.
     expect(screen.queryByRole("button", { name: /Показать ещё/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("CandidateDrawer communications tab", () => {
+  it("opens the «Сообщения» tab and renders the channel/consent section", async () => {
+    vi.mocked(api.fetchCandidateChannels).mockResolvedValue({
+      channels: [
+        {
+          channel: "email",
+          state: "allowed",
+          reason: null,
+          recipient_masked: "p***@example.com",
+          consent_at: "2026-09-02T08:00:00Z",
+          consent_source: "candidate_email_link",
+          pending_expires_at: null,
+        },
+        {
+          channel: "telegram",
+          state: "not_connected",
+          reason: null,
+          recipient_masked: null,
+          consent_at: null,
+          consent_source: null,
+          pending_expires_at: null,
+        },
+      ],
+    });
+    renderDrawer();
+
+    await userEvent.click(await screen.findByRole("tab", { name: "Сообщения" }));
+
+    expect(await screen.findByText("Каналы и согласия")).toBeInTheDocument();
+    expect(api.fetchCandidateChannels).toHaveBeenCalledWith(CANDIDATE.id);
+    expect(await screen.findByText("Разрешён")).toBeInTheDocument();
+    // The composer is usable with a single allowed channel.
+    expect(screen.getByLabelText("Тип сообщения")).toHaveValue("documents_request");
   });
 });

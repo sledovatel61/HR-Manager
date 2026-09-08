@@ -154,6 +154,14 @@ class AuditAction(StrEnum):
     EMAIL_CONSENT_UPDATED = "email_consent_updated"
     SMTP_CHECKED = "smtp_checked"
     SMTP_TEST_QUEUED = "smtp_test_queued"
+    # Phase 10: candidate communications (consent, manual send, cancel).
+    # Values stay <= 32 chars to fit the existing audit_log VARCHAR(32).
+    CANDIDATE_CONSENT_REQUESTED = "candidate_consent_requested"
+    CANDIDATE_CONSENT_GRANTED = "candidate_consent_granted"
+    CANDIDATE_CONSENT_REVOKED = "candidate_consent_revoked"
+    CANDIDATE_MESSAGE_SENT = "candidate_message_sent"
+    CANDIDATE_MESSAGE_CANCELLED = "candidate_message_cancelled"
+    CANDIDATE_EVENT_MESSAGE_QUEUED = "candidate_message_event_queued"
 
 
 class CandidateStage(StrEnum):
@@ -660,6 +668,12 @@ class Event(Base):
             "length(trim(title)) > 0",
             name="ck_events_title_not_blank",
         ),
+        # Phase 10: an optional single-line venue shown to candidates in
+        # interview messages. Code validates no CR/LF/control characters.
+        CheckConstraint(
+            "location IS NULL OR length(location) BETWEEN 1 AND 200",
+            name="ck_events_location_len",
+        ),
         CheckConstraint(
             "ends_at IS NULL OR ends_at > starts_at",
             name="ck_events_ends_after_starts",
@@ -705,6 +719,9 @@ class Event(Base):
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optional single-line venue of a scheduled event (used by candidate
+    # interview messages in phase 10; never copied into history/audit).
+    location: Mapped[str | None] = mapped_column(String(200), nullable=True)
     status: Mapped[EventStatus] = mapped_column(
         Enum(
             EventStatus,
@@ -806,6 +823,7 @@ class EventHistory(Base):
     assignee_user_id_new: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     title_changed: Mapped[bool] = mapped_column(nullable=False, default=False)
     note_changed: Mapped[bool] = mapped_column(nullable=False, default=False)
+    location_changed: Mapped[bool] = mapped_column(nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -1724,3 +1742,375 @@ class UserEmail(Base):
     @property
     def is_verified(self) -> bool:
         return self.email is not None and self.verified_at is not None
+
+
+# --- Phase 10: candidate communications --------------------------------------
+#
+# One-way Russian operational messages to candidates (interview scheduled /
+# reminder / rescheduled / cancelled, document requests and reminders).
+# Candidates are NOT internal users: per-channel consent and bindings live
+# on the candidate; delivery reuses the phase-8/9 worker discipline
+# (transactional queue rows, append-only attempts, lease/retry, provider
+# "accepted" only) but never materializes into internal in-app notifications.
+# No secrets and no provider payloads are stored; chat ids and addresses are
+# never written to logs, audit or metrics.
+
+
+class CandidateMessageType(StrEnum):
+    """Closed vocabulary of candidate messages.
+
+    The six operational business types (phase 10 contract) plus internal
+    ``CONSENT_INVITE`` — the one-shot double-opt-in letter used to obtain
+    email consent (it is a real message to the candidate mailbox and lives
+    in the same immutable history, but is never offered for manual sending).
+    """
+
+    INTERVIEW_SCHEDULED = "interview_scheduled"
+    INTERVIEW_REMINDER = "interview_reminder"
+    INTERVIEW_RESCHEDULED = "interview_rescheduled"
+    INTERVIEW_CANCELLED = "interview_cancelled"
+    DOCUMENTS_REQUEST = "documents_request"
+    DOCUMENTS_REMINDER = "documents_reminder"
+    CONSENT_INVITE = "consent_invite"
+
+
+class CandidateMessageSource(StrEnum):
+    """Who produced the candidate message (mirrors NotificationSource)."""
+
+    MANUAL = "manual"
+    EVENT = "event"
+    RULE = "rule"  # reserved for the future rule engine (roadmap phase 11)
+    SYSTEM = "system"
+
+
+class CandidateChannelPurpose(StrEnum):
+    """Purpose of a one-shot candidate channel token.
+
+    Email unsubscribe uses a stateless HMAC-signed URL instead (no stored
+    secrets), so only the double-opt-in and the Telegram link tokens exist.
+    """
+
+    EMAIL_CONSENT = "email_consent"  # double-opt-in confirm link
+    TELEGRAM_LINK = "telegram_link"  # voluntary bot /start linking
+
+
+_CANDIDATE_MESSAGE_TYPES = [member.value for member in CandidateMessageType]
+_CANDIDATE_MESSAGE_SOURCES = [member.value for member in CandidateMessageSource]
+_CANDIDATE_CHANNEL_PURPOSES = [member.value for member in CandidateChannelPurpose]
+# Reuse the delivery vocabulary of the phase-8 outbox (a candidate message
+# never becomes "delivered": providers return only "accepted").
+_CANDIDATE_MESSAGE_STATUSES = [
+    "queued",
+    "sending",
+    "accepted",
+    "delivered",
+    "failed",
+    "cancelled",
+    "skipped",
+]
+
+
+class CandidateContactChannel(Base):
+    """Current per-candidate channel binding and consent state.
+
+    One row per (candidate, channel in email|telegram). ``consent_granted``
+    is the single source of truth for «the candidate agreed»; it is set only
+    through an audited flow (voluntary Telegram ``/start`` with a one-shot
+    token, or the double-opt-in email link, or an HR-recorded consent with
+    an explicit source label). ``revoked_at`` keeps the history of an
+    explicit opt-out visible as the «запрещён» UI state; re-consenting
+    clears it and records a fresh grant.
+    """
+
+    __tablename__ = "candidate_contact_channels"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('email', 'telegram')",
+            name="ck_candidate_contact_channels_channel_valid",
+        ),
+        CheckConstraint(
+            "(channel = 'email' AND email_address IS NOT NULL AND chat_id IS NULL) "
+            "OR (channel = 'telegram' AND chat_id IS NOT NULL AND email_address IS NULL) "
+            "OR (channel = 'telegram' AND chat_id IS NULL AND email_address IS NULL)",
+            name="ck_candidate_contact_channels_binding_shape",
+        ),
+        CheckConstraint(
+            "(consent_granted = false AND consent_at IS NULL) "
+            "OR (consent_granted = true AND consent_at IS NOT NULL)",
+            name="ck_candidate_contact_channels_consent_consistent",
+        ),
+        Index(
+            "uq_candidate_contact_channels_chat_id_active",
+            "chat_id",
+            unique=True,
+            postgresql_where=text("chat_id IS NOT NULL"),
+            sqlite_where=text("chat_id IS NOT NULL"),
+        ),
+    )
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), primary_key=True
+    )
+    channel: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # Server-side recipient snapshot at grant time. For email this is the
+    # address the candidate confirmed; for telegram — the numeric chat_id
+    # bound by the candidate's voluntary /start.
+    email_address: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    linked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    consent_granted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    consent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    consent_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    consent_policy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    last_error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    candidate: Mapped[Candidate] = relationship(foreign_keys=[candidate_id])
+
+    @property
+    def is_allowed(self) -> bool:
+        """Consent granted AND a valid binding exists (fail-closed)."""
+        if not self.consent_granted:
+            return False
+        if self.channel == "email":
+            return bool(self.email_address)
+        return self.chat_id is not None
+
+
+class CandidateChannelToken(Base):
+    """One-shot expiring token for candidate channel actions.
+
+    Only the SHA-256 hash is stored; the raw value is shown once (deep link
+    or confirmation email). Tokens are consumed atomically; a newer token
+    supersedes older unconsumed ones of the same candidate+channel+purpose
+    (they are marked consumed with ``consume_reason='superseded'``).
+    """
+
+    __tablename__ = "candidate_channel_tokens"
+    __table_args__ = (
+        CheckConstraint(
+            f"purpose IN ({_sql_list(_CANDIDATE_CHANNEL_PURPOSES)})",
+            name="ck_candidate_channel_tokens_purpose_valid",
+        ),
+        Index(
+            "ix_candidate_channel_tokens_lookup",
+            "candidate_id",
+            "channel",
+            "purpose",
+        ),
+        Index("ix_candidate_channel_tokens_expires_at", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    purpose: Mapped[CandidateChannelPurpose] = mapped_column(
+        Enum(
+            CandidateChannelPurpose,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    consume_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Telegram linking only: the chat that pressed /start with the token.
+    consume_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Email consent tokens snapshot the exact mailbox the invite went to, so
+    # a confirmation can never bind a different address than the candidate
+    # actually received the letter at.
+    email_address: Mapped[str | None] = mapped_column(String(254), nullable=True)
+
+
+class CandidateMessage(Base):
+    """A candidate-facing message: immutable content + delivery lifecycle.
+
+    The row is created inside the business transaction (transactional
+    outbox semantics). Content columns (candidate, channel, recipient
+    snapshot, type, exact title/body text, source, linked event, consent
+    snapshot) are never edited after creation — the delivery lifecycle
+    (status/attempts/timestamps/provider id/safe error) is advanced by the
+    worker, and every attempt is appended to ``candidate_message_attempts``.
+    This row IS the immutable delivery history shown in the candidate card.
+    """
+
+    __tablename__ = "candidate_messages"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('email', 'telegram')",
+            name="ck_candidate_messages_channel_valid",
+        ),
+        CheckConstraint(
+            f"message_type IN ({_sql_list(_CANDIDATE_MESSAGE_TYPES)})",
+            name="ck_candidate_messages_type_valid",
+        ),
+        CheckConstraint(
+            f"source IN ({_sql_list(_CANDIDATE_MESSAGE_SOURCES)})",
+            name="ck_candidate_messages_source_valid",
+        ),
+        CheckConstraint(
+            f"status IN ({_sql_list(_CANDIDATE_MESSAGE_STATUSES)})",
+            name="ck_candidate_messages_status_valid",
+        ),
+        CheckConstraint(
+            "length(trim(title)) > 0",
+            name="ck_candidate_messages_title_not_blank",
+        ),
+        CheckConstraint(
+            "length(trim(body)) > 0",
+            name="ck_candidate_messages_body_not_blank",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_candidate_messages_attempts_nonnegative"),
+        CheckConstraint(
+            "(channel = 'email' AND recipient_email IS NOT NULL AND recipient_chat_id IS NULL) "
+            "OR (channel = 'telegram' AND recipient_chat_id IS NOT NULL "
+            "AND recipient_email IS NULL)",
+            name="ck_candidate_messages_recipient_shape",
+        ),
+        CheckConstraint(
+            "(status = 'sending' AND lease_expires_at IS NOT NULL) "
+            "OR (status <> 'sending' AND lease_expires_at IS NULL)",
+            name="ck_candidate_messages_lease_consistent",
+        ),
+        Index(
+            "ix_candidate_messages_candidate_created",
+            "candidate_id",
+            "created_at",
+        ),
+        Index(
+            "ix_candidate_messages_queued_due",
+            "status",
+            "scheduled_at",
+            postgresql_where=text("status = 'queued'"),
+        ),
+        Index(
+            "ix_candidate_messages_sending_lease",
+            "status",
+            "lease_expires_at",
+            postgresql_where=text("status = 'sending'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    message_type: Mapped[CandidateMessageType] = mapped_column(
+        Enum(
+            CandidateMessageType,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    source: Mapped[CandidateMessageSource] = mapped_column(
+        Enum(
+            CandidateMessageSource,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    # Server-defined recipient snapshot (the consent-time address / the
+    # voluntarily bound chat). Never taken from a client payload.
+    recipient_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    recipient_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Exact subject/title and the full message text (immutable snapshot).
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    template_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    initiator_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # Optional link to the calendar event the message is about (server-side,
+    # resolved from the event the candidate is visible for).
+    event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("events.id", ondelete="SET NULL"), nullable=True
+    )
+    # Version of the linked event at queue time; the worker cancels a message
+    # whose event was rescheduled/cancelled after the row was queued (stale
+    # content must never reach a candidate).
+    event_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scheduled_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    scheduled_at_effective: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    queued_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    # Snapshot of the channel consent at scheduling time (no secrets).
+    consent_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # True when an HR explicitly confirmed an immediate manual send inside
+    # quiet hours (audited separately).
+    quiet_hours_bypassed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    candidate: Mapped[Candidate] = relationship(foreign_keys=[candidate_id])
+    event: Mapped[Event | None] = relationship(foreign_keys=[event_id])
+    initiator: Mapped[User | None] = relationship(foreign_keys=[initiator_user_id])
+    attempts_history: Mapped[list["CandidateMessageAttempt"]] = relationship(
+        back_populates="message",
+        cascade="all, delete-orphan",
+        order_by="CandidateMessageAttempt.attempt_no",
+    )
+
+
+class CandidateMessageAttempt(Base):
+    """Append-only attempt history of one candidate message delivery.
+
+    Rows are created once and never updated: the accepted record of what was
+    attempted, when, and with which provider result / safe error class.
+    """
+
+    __tablename__ = "candidate_message_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "message_id", "attempt_no", name="uq_candidate_message_attempts_message_attempt"
+        ),
+        CheckConstraint(
+            "attempt_no >= 1",
+            name="ck_candidate_message_attempts_no_positive",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidate_messages.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    message: Mapped[CandidateMessage] = relationship(back_populates="attempts_history")

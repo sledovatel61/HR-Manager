@@ -15,6 +15,8 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, ValidationInfo, fie
 from app.models import (
     AuditAction,
     CandidateInteractionType,
+    CandidateMessageSource,
+    CandidateMessageType,
     CandidateSource,
     CandidateStage,
     EventHistoryKind,
@@ -23,6 +25,14 @@ from app.models import (
     UserRole,
 )
 from app.utils import normalize_phone
+
+
+def _clean_location(value: str | None) -> str | None:
+    """Optional single-line venue: whitespace (incl. newlines) collapses."""
+    if value is None:
+        return None
+    cleaned = " ".join(value.split())
+    return cleaned or None
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -424,10 +434,16 @@ class EventCreate(BaseModel):
     type: EventType
     title: str = Field(min_length=1, max_length=200)
     note: str | None = Field(default=None, max_length=2000)
+    location: str | None = Field(default=None, max_length=200)
     starts_at: datetime
     ends_at: datetime | None = None
     remind_at: datetime | None = None
     assignee_user_id: UUID | None = None
+
+    @field_validator("location")
+    @classmethod
+    def _clean_location_field(cls, value: str | None) -> str | None:
+        return _clean_location(value)
 
     @field_validator("title")
     @classmethod
@@ -475,11 +491,17 @@ class EventUpdate(BaseModel):
     expected_version: int = Field(ge=1)
     title: str | None = Field(default=None, max_length=200)
     note: str | None = Field(default=None, max_length=2000)
+    location: str | None = Field(default=None, max_length=200)
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     remind_at: datetime | None = None
     status: EventStatus | None = None
     assignee_user_id: UUID | None = None
+
+    @field_validator("location")
+    @classmethod
+    def _clean_location_field(cls, value: str | None) -> str | None:
+        return _clean_location(value)
 
     @field_validator("title")
     @classmethod
@@ -513,6 +535,7 @@ class EventOut(BaseModel):
     type: EventType
     title: str
     note: str | None = None
+    location: str | None = None
     status: EventStatus
     starts_at: datetime
     ends_at: datetime | None = None
@@ -559,6 +582,7 @@ class EventHistoryOut(BaseModel):
     assignee_user_id_new: UUID | None = None
     title_changed: bool = False
     note_changed: bool = False
+    location_changed: bool = False
     created_at: datetime
 
 
@@ -1222,3 +1246,165 @@ class ChannelTestOut(BaseModel):
 
     outbox_id: UUID
     status: str
+
+
+# --- Candidate communications (phase 10) -------------------------------------
+
+_CANDIDATE_CHANNELS_LITERAL = Literal["email", "telegram"]
+_MANUAL_INTERVIEW_TYPES = (
+    CandidateMessageType.INTERVIEW_SCHEDULED,
+    CandidateMessageType.INTERVIEW_REMINDER,
+    CandidateMessageType.INTERVIEW_RESCHEDULED,
+    CandidateMessageType.INTERVIEW_CANCELLED,
+)
+_DOCS_TYPES = (
+    CandidateMessageType.DOCUMENTS_REQUEST,
+    CandidateMessageType.DOCUMENTS_REMINDER,
+)
+
+
+class CandidateChannelStatusOut(BaseModel):
+    """One channel's honest five-state report (phase 10 UI)."""
+
+    channel: _CANDIDATE_CHANNELS_LITERAL
+    state: Literal[
+        "not_connected",
+        "pending_confirmation",
+        "allowed",
+        "denied",
+        "temporarily_unavailable",
+    ]
+    reason: str | None = None
+    recipient_masked: str | None = None
+    consent_at: datetime | None = None
+    consent_source: str | None = None
+    pending_expires_at: datetime | None = None
+
+
+class CandidateChannelsOut(BaseModel):
+    channels: list[CandidateChannelStatusOut]
+
+
+class CandidateConsentRequestOut(BaseModel):
+    """Email double-opt-in letter queued (its own delivery is async)."""
+
+    message_id: UUID
+    state: str
+    expires_at: datetime
+
+
+class CandidateTelegramLinkOut(BaseModel):
+    """Voluntary linking deep link (raw token shown once)."""
+
+    deep_link: str
+    expires_at: datetime
+    state: str
+
+
+class CandidateTelegramConfirmOut(BaseModel):
+    state: str
+    detail: str
+
+
+class CandidateRevokeOut(BaseModel):
+    channel: _CANDIDATE_CHANNELS_LITERAL
+    state: str
+
+
+class CandidateMessageOut(BaseModel):
+    """One immutable history row shown in the candidate card."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    channel: _CANDIDATE_CHANNELS_LITERAL
+    message_type: CandidateMessageType
+    source: CandidateMessageSource
+    title: str
+    body: str
+    status: str
+    attempts: int = 0
+    event_id: UUID | None = None
+    initiator_user_id: UUID | None = None
+    scheduled_at: datetime
+    scheduled_at_effective: datetime | None = None
+    queued_at: datetime
+    started_at: datetime | None = None
+    accepted_at: datetime | None = None
+    delivered_at: datetime | None = None
+    failed_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    error_class: str | None = None
+    provider_message_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    # PII-safe display form of the recipient, filled by the API layer from
+    # the server-side recipient snapshot (never sent raw to the frontend).
+    recipient_masked: str | None = None
+
+
+class CandidateMessageList(BaseModel):
+    items: list[CandidateMessageOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class CandidateMessagePreviewRequest(BaseModel):
+    """Server-rendered preview before a manual send."""
+
+    message_type: CandidateMessageType
+    channel: _CANDIDATE_CHANNELS_LITERAL
+    event_id: UUID | None = None
+    documents: list[str] = Field(default_factory=list, max_length=30)
+    confirm_quiet_hours: bool = False
+
+    @field_validator("documents")
+    @classmethod
+    def _clean_documents(cls, values: list[str]) -> list[str]:
+        cleaned = [doc.strip() for doc in values]
+        cleaned = [doc for doc in cleaned if doc]
+        if any(len(doc) > 200 for doc in cleaned):
+            raise ValueError("Название документа не может быть длиннее 200 символов.")
+        return cleaned[:30]
+
+
+class CandidateMessagePreviewOut(BaseModel):
+    title: str
+    body: str
+    quiet_hours_now: bool = False
+    will_send: bool = True
+
+
+class CandidateMessageSendRequest(CandidateMessagePreviewRequest):
+    """Manual send: type/channel/content; recipient & text are server-side.
+
+    ``idempotency_key`` is an optional client-supplied UUID used to make
+    HTTP retries safe (a repeated identical request returns the already
+    queued message instead of creating a duplicate).
+    """
+
+    idempotency_key: str | None = Field(default=None, max_length=64)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def _clean_idempotency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class CandidateMessageSendOut(BaseModel):
+    message: CandidateMessageOut
+    duplicate: bool = False
+
+
+class CandidateMessageCancelOut(BaseModel):
+    message: CandidateMessageOut
+    cancelled: bool = False
+
+
+class PublicConsentOut(BaseModel):
+    ok: bool
+    message: str

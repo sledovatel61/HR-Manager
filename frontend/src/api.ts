@@ -27,10 +27,21 @@ import type {
   AuditEvent,
   CalendarEvent,
   Candidate,
+  CandidateCancelResult,
+  CandidateChannel,
+  CandidateChannelsPayload,
+  CandidateConsentRequestResult,
   CandidateCreateInput,
   CandidateInteraction,
   CandidateInteractionCreateInput,
   CandidateListQuery,
+  CandidateMessageListPayload,
+  CandidateMessagePreview,
+  CandidateMessageSendInput,
+  CandidateRevokeResult,
+  CandidateSendResult,
+  CandidateTelegramConfirmResult,
+  CandidateTelegramLinkResult,
   CandidateTransfer,
   CandidateTransferInput,
   CandidateTransferResult,
@@ -694,4 +705,98 @@ export async function checkSmtpConfig(): Promise<ChannelCheckResult> {
 
 export async function queueAdminSmtpTest(): Promise<ChannelTestResult> {
   return request<ChannelTestResult>("/admin/integrations/smtp/test-send", { method: "POST" });
+}
+
+// --- Phase 10: candidate communications ---------------------------------------
+
+/** GET per-channel consent state of a candidate (server-computed). */
+export async function fetchCandidateChannels(
+  candidateId: string
+): Promise<CandidateChannelsPayload> {
+  return request<CandidateChannelsPayload>(`/candidates/${candidateId}/communications/channels`);
+}
+
+/** Queue the double-opt-in consent letter to the candidate email. */
+export async function requestCandidateEmailConsent(
+  candidateId: string
+): Promise<CandidateConsentRequestResult> {
+  return request<CandidateConsentRequestResult>(
+    `/candidates/${candidateId}/communications/email/consent-request`,
+    { method: "POST" }
+  );
+}
+
+/** Issue a one-shot Telegram linking code (deep link shown once). */
+export async function createCandidateTelegramLink(
+  candidateId: string
+): Promise<CandidateTelegramLinkResult> {
+  return request<CandidateTelegramLinkResult>(
+    `/candidates/${candidateId}/communications/telegram/link`,
+    { method: "POST" }
+  );
+}
+
+/** Poll the bot once and bind the candidate chat on /start. */
+export async function confirmCandidateTelegram(
+  candidateId: string
+): Promise<CandidateTelegramConfirmResult> {
+  return request<CandidateTelegramConfirmResult>(
+    `/candidates/${candidateId}/communications/telegram/confirm`,
+    { method: "POST" }
+  );
+}
+
+/** Revoke consent for a channel and cancel its pending messages. */
+export async function revokeCandidateChannel(
+  candidateId: string,
+  channel: CandidateChannel
+): Promise<CandidateRevokeResult> {
+  return request<CandidateRevokeResult>(
+    `/candidates/${candidateId}/communications/${channel}/revoke`,
+    { method: "POST" }
+  );
+}
+
+/** Server-rendered preview of a manual message (nothing is queued). */
+export async function previewCandidateMessage(
+  candidateId: string,
+  input: CandidateMessageSendInput
+): Promise<CandidateMessagePreview> {
+  return request<CandidateMessagePreview>(`/candidates/${candidateId}/communications/preview`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** Queue a manual candidate message (async delivery by the worker). */
+export async function sendCandidateMessage(
+  candidateId: string,
+  input: CandidateMessageSendInput
+): Promise<CandidateSendResult> {
+  return request<CandidateSendResult>(`/candidates/${candidateId}/communications/send`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** Immutable message history of a candidate (newest first, paginated). */
+export async function listCandidateMessages(
+  candidateId: string,
+  limit = 20,
+  offset = 0
+): Promise<CandidateMessageListPayload> {
+  return request<CandidateMessageListPayload>(
+    `/candidates/${candidateId}/communications/history?limit=${limit}&offset=${offset}`
+  );
+}
+
+/** Cancel a queued candidate message. */
+export async function cancelCandidateMessage(
+  candidateId: string,
+  messageId: string
+): Promise<CandidateCancelResult> {
+  return request<CandidateCancelResult>(
+    `/candidates/${candidateId}/communications/${messageId}/cancel`,
+    { method: "POST" }
+  );
 }
