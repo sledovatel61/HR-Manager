@@ -1061,7 +1061,11 @@ class AccessGrantList(BaseModel):
 
 
 class AccessGrantRequest(BaseModel):
-    """Grant or revoke pilot access."""
+    """Grant or revoke explicitly confirmed access."""
+
+    scope: Literal["pilot_full_access", "document_lists_manage", "candidate_documents_all"] = (
+        "pilot_full_access"
+    )
 
     user_id: UUID
     revoke: bool = False
@@ -1287,6 +1291,8 @@ class CandidateTelegramConfirmOut(BaseModel):
 
 
 class CandidateMessageSendRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     """Manual one-way message request (server renders the exact text).
 
     ``event_id`` is required for the interview types (the interview the
@@ -1301,11 +1307,14 @@ class CandidateMessageSendRequest(BaseModel):
     message_type: str
     event_id: UUID | None = None
     documents: list[str] | None = None
+    document_set_id: UUID | None = None
     channel: str | None = None
     idempotency_key: str = Field(min_length=8, max_length=255)
 
 
 class CandidateMessagePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     """Preview payload: the closed vocabulary only, nothing is queued.
 
     Deliberately NOT a subclass of the send request — the idempotency key
@@ -1315,6 +1324,7 @@ class CandidateMessagePreviewRequest(BaseModel):
     message_type: str
     event_id: UUID | None = None
     documents: list[str] | None = None
+    document_set_id: UUID | None = None
     channel: str | None = None
 
 
@@ -1327,6 +1337,10 @@ class CandidateMessagePreviewOut(BaseModel):
 
 
 class CandidateMessageOut(BaseModel):
+    document_context: dict | None = None
+    rule_id: UUID | None = None
+    template_version: int | None = None
+
     """One immutable candidate message (history entry).
 
     The exact text is part of the immutable history and is visible only to

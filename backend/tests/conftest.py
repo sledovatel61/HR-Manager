@@ -303,3 +303,64 @@ def pg_db(pg_engine: Engine) -> Iterator[Session]:
 def user_id(user: User) -> UUID:
     """Typed helper for readability in tests."""
     return user.id
+
+
+def make_document_set(db: Session, candidate: Candidate, names: list[str]) -> str:
+    """Phase 11 fixture: persist server-owned content before sending a request."""
+    from sqlalchemy import select
+
+    from app.document_schemas import VersionOut
+    from app.documents import current_set
+    from app.models import (
+        CandidateDocumentItem,
+        CandidateDocumentSet,
+        DocumentList,
+        DocumentListVersion,
+    )
+
+    current = current_set(db, candidate.id)
+    if current and [i["name"] for i in current.snapshot["items"]] == names:
+        return str(current.id)
+    for old in db.scalars(
+        select(DocumentListVersion).where(
+            DocumentListVersion.state == "published", DocumentListVersion.stage == ""
+        )
+    ):
+        old.state = "archived"
+    db.flush()
+    parent = DocumentList(author_id=candidate.owner_user_id, stage="")
+    db.add(parent)
+    db.flush()
+    version = DocumentListVersion(
+        list_id=parent.id,
+        author_id=candidate.owner_user_id,
+        stage="",
+        number=1,
+        name="Документы",
+        description="",
+        state="published",
+        published_at=utc_now(),
+        items=[
+            {"key": f"item_{i}", "name": name, "explanation": "", "required": True}
+            for i, name in enumerate(names)
+        ],
+    )
+    db.add(version)
+    db.flush()
+    snapshot = CandidateDocumentSet(
+        candidate_id=candidate.id,
+        list_version_id=version.id,
+        revision=current.revision + 1 if current else 1,
+        snapshot=VersionOut.model_validate(version).model_dump(mode="json"),
+        author_id=candidate.owner_user_id,
+    )
+    db.add(snapshot)
+    db.flush()
+    for item in version.items:
+        db.add(
+            CandidateDocumentItem(
+                set_id=snapshot.id, key=item["key"], changed_by=candidate.owner_user_id
+            )
+        )
+    db.commit()
+    return str(snapshot.id)

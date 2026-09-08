@@ -178,7 +178,9 @@ def heartbeat(db: Session, *, worker_id: str, now: datetime) -> None:
     db.commit()
 
 
-def recover_stale_leases(db: Session, *, now: datetime, lease_seconds: int) -> int:
+def recover_stale_leases(
+    db: Session, *, now: datetime, lease_seconds: int, max_attempts: int = 5
+) -> int:
     """Return stuck ``sending`` rows to ``queued`` and record the crashed
     attempt in the append-only history. Returns the recovered count."""
     stale = (
@@ -190,6 +192,8 @@ def recover_stale_leases(db: Session, *, now: datetime, lease_seconds: int) -> i
             )
             .order_by(NotificationOutbox.lease_expires_at)
             .limit(1000)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
         )
         .scalars()
         .all()
@@ -206,10 +210,16 @@ def recover_stale_leases(db: Session, *, now: datetime, lease_seconds: int) -> i
                 error_class=LEASE_EXPIRED_ERROR_CLASS,
             )
         )
-        row.status = DeliveryStatus.QUEUED
+        row.status = DeliveryStatus.QUEUED if row.attempts < max_attempts else DeliveryStatus.FAILED
         row.started_at = None
         row.lease_expires_at = None
-        row.next_attempt_at = now
+        row.next_attempt_at = now if row.status == DeliveryStatus.QUEUED else None
+        if row.status == DeliveryStatus.FAILED:
+            row.failed_at = now
+            if row.object_type == "document_rule_job":
+                from app.document_rules import execution
+
+                execution(db, row, "failed")
     if stale:
         db.commit()
     return len(stale)
@@ -270,6 +280,10 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
     unexpected exceptions are converted to a bounded retry or terminal
     failure inside this function.
     """
+    if row.object_type == "document_rule_job":
+        from app.documents import advisory
+
+        advisory(db, f"document-rule:{row.rule_id}")
     locked = db.execute(
         select(NotificationOutbox)
         .where(NotificationOutbox.id == row.id)
@@ -281,7 +295,7 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
         return locked.status.value
     try:
         if (
-            not locked.quiet_hours_bypassed
+            (not locked.quiet_hours_bypassed or locked.rule_id is not None)
             and locked.scheduled_at is not None
             and (locked.recipient_user_id is not None or locked.recipient_candidate_id is not None)
         ):
@@ -293,8 +307,18 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
                 # Phase 10: candidates have no personal preferences; the
                 # system-wide quiet hours/timezone apply (external messages
                 # are not sent at night by default, PRODUCT_SPEC §8).
-                preference = _candidate_quiet_preference(settings)
+                if locked.rule_id and locked.initiator_user_id:
+                    preference = preference_for(
+                        db, locked.initiator_user_id, settings.notification_default_timezone
+                    )
+                else:
+                    preference = _candidate_quiet_preference(settings)
             effective = effective_send_time(locked.scheduled_at, preference=preference, now_utc=now)
+            if locked.document_context:
+                from app.documents import document_send_time
+
+                effective = document_send_time(db, locked, settings, now)
+
             if effective > now:
                 # Inside quiet hours: postpone to the first allowed minute.
                 # The original time stays in scheduled_at; the effective one
@@ -306,6 +330,10 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
                 locked.lease_expires_at = None
                 db.commit()
                 return "queued"
+        if locked.object_type == "document_rule_job":
+            from app.document_rules import perform_job
+
+            return perform_job(db, locked, settings=settings, now=now)
         if locked.channel == DeliveryChannel.IN_APP:
             deliver_in_app(db, locked, now=now)
             locked.status = DeliveryStatus.DELIVERED
@@ -459,6 +487,15 @@ def _resolve_candidate_target(
             None,
         )
 
+    if locked.notification_type in (
+        NotificationType.CANDIDATE_DOCUMENT_REQUEST,
+        NotificationType.CANDIDATE_DOCUMENT_REMINDER,
+    ):
+        from app.documents import revalidate_documents
+
+        reason = revalidate_documents(db, locked, candidate)
+        if reason:
+            return None, reason
     if _candidate_event_is_stale(db, locked, now=now):
         return None, EVENT_STALE_ERROR_CLASS
 
@@ -704,10 +741,11 @@ class _SendLocks:
     connection: Connection
     outbox_id: object
     candidate_id: UUID | None
+    rule_id: UUID | None = None
 
 
 def _acquire_send_locks(
-    db: Session, outbox_id: object, candidate_id: UUID | None
+    db: Session, outbox_id: object, candidate_id: UUID | None, rule_id: UUID | None = None
 ) -> tuple[_SendLocks | None, bool]:
     """Take the send locks; returns (locks-or-None, busy).
 
@@ -728,6 +766,10 @@ def _acquire_send_locks(
         if not bool(held):
             connection.close()
             return None, True
+        if rule_id is not None:
+            connection.execute(
+                text("SELECT pg_advisory_lock(hashtext(:key))"), {"key": f"document-rule:{rule_id}"}
+            )
         if candidate_id is not None:
             connection.execute(
                 text("SELECT pg_advisory_lock(hashtext(:key))"),
@@ -737,7 +779,9 @@ def _acquire_send_locks(
         connection.close()
         raise
     return (
-        _SendLocks(connection=connection, outbox_id=outbox_id, candidate_id=candidate_id),
+        _SendLocks(
+            connection=connection, outbox_id=outbox_id, candidate_id=candidate_id, rule_id=rule_id
+        ),
         False,
     )
 
@@ -752,6 +796,11 @@ def _release_send_locks(locks: _SendLocks | None) -> None:
             text("SELECT pg_advisory_unlock(hashtext(:key))"),
             {"key": f"outbox-send:{locks.outbox_id}"},
         )
+        if locks.rule_id is not None:
+            locks.connection.execute(
+                text("SELECT pg_advisory_unlock(hashtext(:key))"),
+                {"key": f"document-rule:{locks.rule_id}"},
+            )
         if locks.candidate_id is not None:
             locks.connection.execute(
                 text("SELECT pg_advisory_unlock(hashtext(:key))"),
@@ -799,7 +848,10 @@ def process_external_row(
     candidate_id = db.execute(
         select(NotificationOutbox.recipient_candidate_id).where(NotificationOutbox.id == outbox_id)
     ).scalar_one_or_none()
-    locks, busy = _acquire_send_locks(db, outbox_id, candidate_id)
+    rule_id = db.scalar(
+        select(NotificationOutbox.rule_id).where(NotificationOutbox.id == outbox_id)
+    )
+    locks, busy = _acquire_send_locks(db, outbox_id, candidate_id, rule_id)
     if busy:
         db.rollback()
         return DeliveryStatus.SENDING.value
@@ -878,6 +930,7 @@ def _process_external_row_locked(
     locked.lease_expires_at = now + timedelta(seconds=settings.worker_lease_seconds)
     db.commit()
 
+    db.expire_all()
     # Phase B0: the last-stop re-validation, immediately before the network
     # call. Consent/token mutations serialized by the candidate advisory
     # lock can no longer land here; for the others (a card email change,
@@ -888,8 +941,21 @@ def _process_external_row_locked(
     if target is None or skip_class is not None:
         assert skip_class is not None
         return _finalize_external_skip(db, outbox_id, skip_class, now=now)
+    if locked.rule_id and locked.document_context:
+        from app.documents import document_send_time
+
+        effective = document_send_time(db, locked, settings, now)
+        if effective > now:
+            locked.status = DeliveryStatus.QUEUED
+            locked.scheduled_at_effective = effective
+            locked.next_attempt_at = effective
+            locked.lease_expires_at = None
+            locked.started_at = None
+            db.commit()
+            return "queued"
     channel = target.channel
     channel_value = channel.value
+    db.commit()
 
     # Phase B: provider I/O with no open transaction.
     outcome: str
@@ -1090,6 +1156,9 @@ def _record_failure(
         .with_for_update()
         .execution_options(populate_existing=True)
     ).scalar_one()
+    if row.status != DeliveryStatus.SENDING:
+        db.rollback()
+        return row.status.value
     if error_class is not None:
         row.error_class = error_class
         row.error_code = None
@@ -1114,6 +1183,10 @@ def _record_failure(
         row.next_attempt_at = now + timedelta(seconds=backoff)
     else:
         row.status = DeliveryStatus.FAILED
+        if row.object_type == "document_rule_job":
+            from app.document_rules import execution
+
+            execution(db, row, "failed")
         row.failed_at = now
         row.next_attempt_at = None
         _alert_pilot_on_terminal_failure(db, row=row, now=now)
@@ -1284,12 +1357,22 @@ def run_worker(settings: Settings) -> None:
             with Session(engine) as db:
                 try:
                     heartbeat(db, worker_id=worker_id, now=now)
-                    recover_stale_leases(db, now=now, lease_seconds=settings.worker_lease_seconds)
+                    recover_stale_leases(
+                        db,
+                        now=now,
+                        lease_seconds=settings.worker_lease_seconds,
+                        max_attempts=settings.worker_max_attempts,
+                    )
                     claimed = claim_batch(
                         db,
                         now=now,
                         batch_size=settings.worker_batch_size,
                         lease_seconds=settings.worker_lease_seconds,
+                    )
+                    from app.document_rules import scan_document_rules
+
+                    scan_document_rules(
+                        db, settings=settings, now=now, batch_size=settings.worker_batch_size
                     )
                     scan_due_reminders(
                         db, settings=settings, now=now, batch_size=settings.worker_batch_size

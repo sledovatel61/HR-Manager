@@ -54,7 +54,13 @@ from app.models import (
     UserRole,
 )
 from app.utils import utc_now
-from tests.conftest import FIXTURE_PASSWORD, make_candidate, make_event, make_user
+from tests.conftest import (
+    FIXTURE_PASSWORD,
+    make_candidate,
+    make_document_set,
+    make_event,
+    make_user,
+)
 
 NOW = datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC)
 
@@ -349,7 +355,7 @@ def test_email_double_opt_in_flow_and_revocation(
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_request",
-            "documents": ["Паспорт"],
+            "document_set_id": make_document_set(db_session, candidate, ["Паспорт"]),
             "idempotency_key": "lifecycle-send-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -384,7 +390,7 @@ def test_email_double_opt_in_flow_and_revocation(
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_reminder",
-            "documents": ["Паспорт"],
+            "document_set_id": make_document_set(db_session, candidate, ["Паспорт"]),
             "idempotency_key": "lifecycle-send-2",
         },
         headers={"X-CSRF-Token": csrf},
@@ -568,7 +574,7 @@ def test_telegram_invite_confirm_unlink(
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_request",
-            "documents": ["Паспорт"],
+            "document_set_id": make_document_set(db_session, candidate, ["Паспорт"]),
             "idempotency_key": "tg-flow-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -676,7 +682,10 @@ def test_preview_renders_text_and_channels(
     csrf = _login(channels_app, "hr1")
     response = channels_app.post(
         f"/candidates/{candidate.id}/messages/preview",
-        json={"message_type": "document_request", "documents": ["Паспорт", "ИНН"]},
+        json={
+            "message_type": "document_request",
+            "document_set_id": make_document_set(db_session, candidate, ["Паспорт", "ИНН"]),
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 200
@@ -793,13 +802,24 @@ def test_send_refusals(channels_app: TestClient, db_session: Session, hr_user: U
     # The idempotency key is required and bounded.
     raw = channels_app.post(
         f"/candidates/{candidate.id}/messages/send",
-        json={"message_type": "document_request", "documents": ["Паспорт"]},
+        json={
+            "message_type": "document_request",
+            "document_set_id": make_document_set(db_session, candidate, ["Паспорт"]),
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert raw.status_code == 422
 
     # No channels allowed yet.
-    assert send({"message_type": "document_request", "documents": ["Паспорт"]}).status_code == 409
+    assert (
+        send(
+            {
+                "message_type": "document_request",
+                "document_set_id": make_document_set(db_session, candidate, ["Паспорт"]),
+            }
+        ).status_code
+        == 409
+    )
     _allow_email(db_session, candidate)
 
     # Interview types require an event of THIS candidate.
@@ -830,14 +850,22 @@ def test_send_refusals(channels_app: TestClient, db_session: Session, hr_user: U
     assert send({"message_type": "spam"}).status_code == 422
     assert (
         send(
-            {"message_type": "document_request", "documents": ["Паспорт"], "channel": "sms"}
+            {
+                "message_type": "document_request",
+                "document_set_id": make_document_set(db_session, candidate, ["Паспорт"]),
+                "channel": "sms",
+            }
         ).status_code
         == 422
     )
     # Telegram not allowed -> explicit channel choice refused.
     assert (
         send(
-            {"message_type": "document_request", "documents": ["Паспорт"], "channel": "telegram"}
+            {
+                "message_type": "document_request",
+                "document_set_id": make_document_set(db_session, candidate, ["Паспорт"]),
+                "channel": "telegram",
+            }
         ).status_code
         == 409
     )
@@ -864,7 +892,7 @@ def test_send_rate_limited(channels_app: TestClient, db_session: Session, hr_use
             f"/candidates/{candidate.id}/messages/send",
             json={
                 "message_type": "document_request",
-                "documents": [f"Документ {i}"],
+                "document_set_id": make_document_set(db_session, candidate, [f"Документ {i}"]),
                 "idempotency_key": f"rate-limit-{i}",
             },
             headers={"X-CSRF-Token": csrf},
@@ -883,7 +911,7 @@ def test_cancel_and_history(channels_app: TestClient, db_session: Session, hr_us
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_request",
-            "documents": ["Паспорт"],
+            "document_set_id": make_document_set(db_session, candidate, ["Паспорт"]),
             "idempotency_key": "history-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -930,7 +958,7 @@ def test_cancel_is_refused_for_sending_and_terminal_states(
             f"/candidates/{candidate.id}/messages/send",
             json={
                 "message_type": "document_reminder",
-                "documents": [f"Документ {i}"],
+                "document_set_id": make_document_set(db_session, candidate, [f"Документ {i}"]),
                 "idempotency_key": f"cancel-state-{i}",
             },
             headers={"X-CSRF-Token": csrf},
@@ -981,7 +1009,7 @@ def test_audit_rows_have_no_pii_or_text(
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_request",
-            "documents": ["Паспорт"],
+            "document_set_id": make_document_set(db_session, candidate, ["Паспорт"]),
             "idempotency_key": "audit-check-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -1012,7 +1040,7 @@ def test_no_message_text_or_targets_in_logs(
             f"/candidates/{candidate.id}/messages/send",
             json={
                 "message_type": "document_request",
-                "documents": ["Секретный документ"],
+                "document_set_id": make_document_set(db_session, candidate, ["Секретный документ"]),
                 "idempotency_key": "logs-check-1",
             },
             headers={"X-CSRF-Token": csrf},
@@ -1264,7 +1292,7 @@ def test_send_idempotency_replays_the_original_result(
     csrf = _login(channels_app, "hr1")
     payload = {
         "message_type": "document_request",
-        "documents": ["Паспорт"],
+        "document_set_id": make_document_set(db_session, candidate, ["Паспорт"]),
         "idempotency_key": "idem-key-1",
     }
 
@@ -1304,7 +1332,7 @@ def test_send_idempotency_replays_the_original_result(
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_request",
-            "documents": ["СНИЛС"],
+            "document_set_id": make_document_set(db_session, candidate, ["СНИЛС"]),
             "idempotency_key": "idem-key-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -1319,7 +1347,7 @@ def test_send_idempotency_replays_the_original_result(
         json=payload,
         headers={"X-CSRF-Token": csrf_mgr},
     )
-    assert other_user.status_code == 409
+    assert other_user.status_code == 404
 
     # The key is never echoed in user-facing messages or audit details.
     events = (
@@ -1342,6 +1370,10 @@ def test_send_idempotency_unique_race_replays_the_winner(
     candidate = make_candidate(db_session, owner=hr_user, email="conc@example.com")
     _allow_email(db_session, candidate)
     csrf = _login(channels_app, "hr1")
+
+    interview = make_event(
+        db_session, candidate=candidate, author=hr_user, assignee=hr_user, type_=EventType.INTERVIEW
+    )
 
     # The "winner" already committed: a stored response exists.
     winner_row_id = uuid4()
@@ -1381,13 +1413,13 @@ def test_send_idempotency_unique_race_replays_the_winner(
             idempotency_key="concurrent-key-1",
             user_id=hr_user.id,
             candidate_id=candidate.id,
-            message_type="document_request",
+            message_type="interview_scheduled",
             payload_hash=router_module._manual_payload_hash(
                 user_id=hr_user.id,
                 candidate_id=candidate.id,
-                message_type="document_request",
-                event_id=None,
-                documents=["Паспорт"],
+                message_type="interview_scheduled",
+                event_id=interview.id,
+                documents=[],
                 channel=None,
             ),
             response=stored_response,
@@ -1411,14 +1443,16 @@ def test_send_idempotency_unique_race_replays_the_winner(
     response = channels_app.post(
         f"/candidates/{candidate.id}/messages/send",
         json={
-            "message_type": "document_request",
-            "documents": ["Паспорт"],
+            "message_type": "interview_scheduled",
+            "event_id": str(interview.id),
             "idempotency_key": "concurrent-key-1",
         },
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code in (200, 201), response.text
-    assert response.json() == stored_response  # the winner's stored result
+    assert response.json() == router_module.CandidateMessageSendOut.model_validate(
+        stored_response
+    ).model_dump(mode="json")  # the winner's stored result
 
     rows = (
         db_session.execute(

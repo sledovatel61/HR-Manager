@@ -155,6 +155,10 @@ def _require_message_access(db: Session, user: User, candidate: Candidate) -> No
     Admin — NOT by role alone: only an explicit active pilot grant opens
     the candidate-communication scope (403 otherwise).
     """
+    from app.documents import has_grant
+
+    if has_grant(db, user, AccessGrantScope.CANDIDATE_DOCUMENTS_ALL):
+        return
     if user.role == UserRole.HR:
         if candidate.owner_user_id != user.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Кандидат не найден.")
@@ -446,6 +450,9 @@ def _to_message_out(
 ) -> CandidateMessageOut:
     return CandidateMessageOut(
         id=row.id,
+        document_context=row.document_context,
+        rule_id=row.rule_id,
+        template_version=row.template_version,
         message_type=row.notification_type.value,
         channel=row.channel.value,
         status=row.status.value,
@@ -1116,6 +1123,11 @@ def list_candidate_messages(
     """Immutable history of one-way messages (newest first, paginated)."""
     candidate = _accessible_candidate(db, candidate_id, user)
     filters = [NotificationOutbox.recipient_candidate_id == candidate.id]
+    from app.documents import can_access
+
+    if not can_access(db, user, candidate):
+        filters.append(NotificationOutbox.document_context.is_(None))
+
     total = db.execute(
         select(func.count()).select_from(NotificationOutbox).where(*filters)
     ).scalar_one()
@@ -1231,6 +1243,12 @@ def preview_candidate_message(
     """Render the exact text the candidate would receive (no queueing)."""
     candidate = _accessible_candidate(db, candidate_id, user)
     settings: Settings = request.app.state.settings
+    if payload.message_type in DOCUMENT_MESSAGE_TYPES:
+        from app.document_messages import document_message
+
+        result = document_message(db, candidate_id, user, payload, settings)
+        assert isinstance(result, CandidateMessagePreviewOut)
+        return result
     message_type, event, documents = _validate_send_payload(db, candidate, payload)
     message = _render_for(db, candidate, settings, message_type, event, documents)
     allowed = allowed_candidate_channels(db, candidate=candidate, settings=settings)
@@ -1276,6 +1294,12 @@ def send_candidate_message(
     candidate = _accessible_candidate(db, candidate_id, user)
     settings: Settings = request.app.state.settings
     _enforce_rate_limit("candidate-message-send", user, settings)
+    if payload.message_type in DOCUMENT_MESSAGE_TYPES:
+        from app.document_messages import document_message
+
+        result = document_message(db, candidate_id, user, payload, settings)
+        assert isinstance(result, CandidateMessageSendOut)
+        return result
     message_type, event, documents = _validate_send_payload(db, candidate, payload)
     channel = _channel_or_422(payload.channel)
 
@@ -1408,9 +1432,19 @@ def cancel_candidate_message(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Сообщение не найдено."
         ) from None
-    row = db.get(NotificationOutbox, parsed)
+    lock_candidate_for_mutation(db, candidate.id)
+    row = db.scalar(
+        select(NotificationOutbox)
+        .where(NotificationOutbox.id == parsed)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if row is None or row.recipient_candidate_id != candidate.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщение не найдено.")
+    if row.document_context:
+        from app.documents import candidate_for
+
+        candidate_for(db, candidate.id, user)
     if row.status != DeliveryStatus.QUEUED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

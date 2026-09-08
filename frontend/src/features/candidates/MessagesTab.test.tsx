@@ -173,7 +173,33 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getCandidateChannels).mockResolvedValue(CHANNELS);
   vi.mocked(api.listCandidateMessages).mockResolvedValue(MESSAGES);
-  vi.mocked(api.listEvents).mockResolvedValue({ items: [], total: 0, limit: 30, offset: 0 });
+    vi.mocked(api.listEvents).mockResolvedValue({
+      items: [
+        {
+          id: "99999999-9999-9999-9999-999999999999",
+          candidate_id: CANDIDATE.id,
+          candidate_full_name: CANDIDATE.full_name,
+          type: "interview",
+          title: "Первичное интервью",
+          note: null,
+          status: "scheduled",
+          starts_at: "2026-09-10T10:00:00Z",
+          ends_at: null,
+          remind_at: null,
+          completed_at: null,
+          author_user_id: HR.id,
+          author_username: "hr1",
+          assignee_user_id: HR.id,
+          assignee_username: "hr1",
+          version: 1,
+          created_at: "2026-09-01T10:00:00Z",
+          updated_at: "2026-09-01T10:00:00Z",
+        },
+      ],
+      total: 1,
+      limit: 30,
+      offset: 0,
+    });
 });
 
 describe("MessagesTab", () => {
@@ -270,7 +296,7 @@ describe("MessagesTab", () => {
     await waitFor(() => expect(api.confirmCandidateTelegram).toHaveBeenCalledWith(CANDIDATE.id));
   });
 
-  it("previews a document request without ever sending a recipient or text", async () => {
+  it("previews an interview without ever sending a recipient or text", async () => {
     const user = userEvent.setup();
     vi.mocked(api.previewCandidateMessage).mockResolvedValue({
       title: "Запрос документов",
@@ -284,8 +310,7 @@ describe("MessagesTab", () => {
     // document_request is the default type; documents are required first.
     expect(screen.getByRole("button", { name: /Предпросмотр/ })).toBeDisabled();
 
-    const documentsField = await screen.findByLabelText(/Документы/);
-    await user.type(documentsField, "Паспорт РФ{enter}СНИЛС");
+    await user.selectOptions(await screen.findByLabelText(/Собеседование/), "99999999-9999-9999-9999-999999999999");
 
     const previewButton = screen.getByRole("button", { name: /Предпросмотр/ });
     expect(previewButton).toBeEnabled();
@@ -294,8 +319,8 @@ describe("MessagesTab", () => {
     await waitFor(() => expect(api.previewCandidateMessage).toHaveBeenCalled());
     // The client passes only the closed vocabulary — no address, chat id or text.
     expect(api.previewCandidateMessage).toHaveBeenCalledWith(CANDIDATE.id, {
-      message_type: "document_request",
-      documents: ["Паспорт РФ", "СНИЛС"],
+      message_type: "interview_scheduled",
+      event_id: "99999999-9999-9999-9999-999999999999",
     });
     expect(await screen.findByText(/Уйдёт по каналам: Электронная почта/)).toBeInTheDocument();
   });
@@ -312,8 +337,7 @@ describe("MessagesTab", () => {
     renderTab();
     await screen.findByText("История отправок");
 
-    const documentsField = await screen.findByLabelText(/Документы/);
-    await user.type(documentsField, "Паспорт РФ");
+    await user.selectOptions(await screen.findByLabelText(/Собеседование/), "99999999-9999-9999-9999-999999999999");
 
     await user.click(screen.getByRole("button", { name: /^Отправить$/ }));
     expect(await screen.findByText("network error")).toBeInTheDocument();
@@ -324,8 +348,8 @@ describe("MessagesTab", () => {
     const secondPayload = vi.mocked(api.sendCandidateMessage).mock.calls[1][1];
     expect(firstId).toBe(CANDIDATE.id);
     expect(firstPayload).toMatchObject({
-      message_type: "document_request",
-      documents: ["Паспорт РФ"],
+      message_type: "interview_scheduled",
+      event_id: "99999999-9999-9999-9999-999999999999",
     });
     expect(typeof firstPayload.idempotency_key).toBe("string");
     expect(firstPayload.idempotency_key.length).toBeGreaterThanOrEqual(8);
@@ -334,13 +358,13 @@ describe("MessagesTab", () => {
 
     // The successful send clears the form; the next composition is a new
     // operation: a fresh key and still no location field.
-    await user.type(documentsField, "СНИЛС");
+    await user.selectOptions(screen.getByLabelText(/Тип сообщения/), "interview_cancelled");
     await user.click(screen.getByRole("button", { name: /^Отправить$/ }));
     await waitFor(() => expect(vi.mocked(api.sendCandidateMessage).mock.calls.length).toBe(3));
     const thirdPayload = vi.mocked(api.sendCandidateMessage).mock.calls[2][1];
     expect(thirdPayload).toMatchObject({
-      message_type: "document_request",
-      documents: ["СНИЛС"],
+      message_type: "interview_cancelled",
+      event_id: "99999999-9999-9999-9999-999999999999",
     });
     expect("location" in thirdPayload).toBe(false);
     expect(thirdPayload.idempotency_key).not.toBe(firstPayload.idempotency_key);
@@ -359,8 +383,7 @@ describe("MessagesTab", () => {
     renderTab();
     await screen.findByText("История отправок");
 
-    const documentsField = await screen.findByLabelText(/Документы/);
-    await user.type(documentsField, "Паспорт РФ");
+    await user.selectOptions(await screen.findByLabelText(/Собеседование/), "99999999-9999-9999-9999-999999999999");
 
     await user.click(screen.getByRole("button", { name: /^Отправить$/}));
 
