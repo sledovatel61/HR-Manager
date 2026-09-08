@@ -5,8 +5,10 @@
   использовать было нельзя; ветка создана от актуального `origin/main`)
 - **Baseline SHA (origin/main на старте):** `1a5d0291780a8e41964ff9e47de8e8f09983544f`
   («docs: prepare phase 11 handoff»)
-- **Final SHA:** см. раздел «PR и CI» в конце (заполняется после push)
-- **PR:** см. раздел «PR и CI»
+- **Code SHA:** `ace24f4343458b0dc1bfba7740811adf298e7122` (CI green,
+  run 34271173090); **final tip** — docs-only коммит поверх него (см.
+  раздел «PR и CI»)
+- **PR:** https://github.com/sledovatel61/HR-Manager/pull/19
 - **Миграционный head:** `0011` → **`0012`**
   (`0012_document_lists_and_automation_rules`)
 - **Merge в `main`:** не выполнялся (по правилам — владелец)
@@ -311,6 +313,17 @@ Python 3.12 (как в CI) локально установить не удало
 
 ## PR и CI
 
-- **PR:** _(заполняется после создания)_
-- **Final SHA:** _(заполняется после push)_
-- **CI:** _(ссылки на jobs backend / integration / frontend / stack на final SHA)_
+- **PR:** https://github.com/sledovatel61/HR-Manager/pull/19
+- **Code SHA (реализация + отчёт без этого раздела):**
+  `ace24f4343458b0dc1bfba7740811adf298e7122` — коммиты `ea04881`
+  (backend), `5565955` (frontend), `ace24f4` (docs).
+- **CI на `ace24f4`:** run 34271173090 — **success**, все четыре job:
+  - Backend checks — https://github.com/sledovatel61/HR-Manager/actions/runs/34271173090/job/102212846364
+  - Backend integration tests (PostgreSQL) — https://github.com/sledovatel61/HR-Manager/actions/runs/34271173090/job/102212846039
+  - Frontend checks — https://github.com/sledovatel61/HR-Manager/actions/runs/34271173090/job/102212846182
+  - Compose stack smoke test (dev + prod overlay) — https://github.com/sledovatel61/HR-Manager/actions/runs/34271173090/job/102213535785
+    (закрывает п. 17: `docker compose config`/`up` dev + prod overlay,
+    которые локально выполнить было нельзя)
+- **Final SHA (tip ветки):** docs-only коммит с этим разделом поверх
+  `ace24f4`; его CI-run и SHA указаны в комментарии к PR после завершения
+  проверок.
