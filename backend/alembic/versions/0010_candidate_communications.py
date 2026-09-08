@@ -190,9 +190,7 @@ def upgrade() -> None:
 
     op.create_table(
         "candidate_telegram_link_tokens",
-        sa.Column(
-            "id", _UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")
-        ),
+        sa.Column("id", _UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("candidate_id", _UUID, nullable=False),
         sa.Column("token_hash", sa.String(64), nullable=False),
         sa.Column(
