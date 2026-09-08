@@ -41,7 +41,7 @@ function newIdempotencyKey(): string {
 import { formatDateTime } from "./format";
 
 const MESSAGE_PAGE_SIZE = 20;
-const MAX_DOCUMENT_ITEMS = 20;
+
 
 const MESSAGE_TYPE_LABELS: Record<CandidateMessageType, string> = {
   interview_scheduled: "Собеседование назначено",
@@ -57,11 +57,6 @@ const INTERVIEW_TYPES: ReadonlySet<CandidateMessageType> = new Set([
   "interview_reminder",
   "interview_rescheduled",
   "interview_cancelled",
-]);
-
-const DOCUMENT_TYPES: ReadonlySet<CandidateMessageType> = new Set([
-  "document_request",
-  "document_reminder",
 ]);
 
 const CHANNEL_LABELS: Record<CandidateChannelName, string> = {
@@ -351,10 +346,9 @@ interface MessageComposerProps {
 
 function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
   const { pushToast } = useToast();
-  const [messageType, setMessageType] = useState<CandidateMessageType>("document_request");
+  const [messageType, setMessageType] = useState<CandidateMessageType>("interview_scheduled");
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [eventId, setEventId] = useState("");
-  const [documents, setDocuments] = useState("");
   const [channelChoice, setChannelChoice] = useState<"" | CandidateChannelName>("");
   const [preview, setPreview] = useState<CandidateMessagePreview | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -362,7 +356,6 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
   const [error, setError] = useState<string | null>(null);
 
   const needsEvent = INTERVIEW_TYPES.has(messageType);
-  const needsDocuments = DOCUMENT_TYPES.has(messageType);
 
   const loadEvents = useCallback(async () => {
     try {
@@ -383,21 +376,11 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
     void loadEvents();
   }, [loadEvents]);
 
-  const documentItems = useMemo(
-    () =>
-      documents
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0),
-    [documents]
-  );
-
   // The idempotency key identifies the EXACT operation: it is regenerated
   // whenever the payload changes and reused for retries of the same one.
   const payloadSignature = [
     messageType,
     needsEvent ? eventId : "",
-    needsDocuments ? documentItems.join("\u0001") : "",
     channelChoice,
   ].join("\u0000");
   const [idempotencyKey, setIdempotencyKey] = useState(() => newIdempotencyKey());
@@ -408,18 +391,14 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
   const buildPayload = () => ({
     message_type: messageType,
     ...(needsEvent && eventId ? { event_id: eventId } : {}),
-    ...(needsDocuments ? { documents: documentItems } : {}),
     ...(channelChoice ? { channel: channelChoice } : {}),
   });
 
   const validationError = useMemo(() => {
     if (needsEvent && !eventId) return "Выберите собеседование.";
-    if (needsDocuments && documentItems.length === 0) return "Перечислите хотя бы один документ.";
-    if (needsDocuments && documentItems.length > MAX_DOCUMENT_ITEMS)
-      return `Не больше ${MAX_DOCUMENT_ITEMS} пунктов.`;
     if (channelChoice && !allowed.includes(channelChoice)) return "Выбранный канал не разрешён.";
     return null;
-  }, [needsEvent, eventId, needsDocuments, documentItems, channelChoice, allowed]);
+  }, [needsEvent, eventId, channelChoice, allowed]);
 
   const runPreview = async () => {
     if (validationError || previewBusy) return;
@@ -449,7 +428,7 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
         `Сообщение поставлено в очередь (${result.channels.map((c) => CHANNEL_LABELS[c]).join(", ")}).`
       );
       setPreview(null);
-      setDocuments("");
+      setIdempotencyKey(newIdempotencyKey());
       onSent();
       // The history below listens for the same custom event.
       window.dispatchEvent(new CustomEvent("candidate-messages-changed", { detail: candidate.id }));
@@ -479,7 +458,7 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
                 setPreview(null);
               }}
             >
-              {(Object.keys(MESSAGE_TYPE_LABELS) as CandidateMessageType[]).map((type) => (
+              {(Object.keys(MESSAGE_TYPE_LABELS) as CandidateMessageType[]).filter(type => INTERVIEW_TYPES.has(type)).map((type) => (
                 <option key={type} value={type}>
                   {MESSAGE_TYPE_LABELS[type]}
                 </option>
@@ -511,28 +490,7 @@ function MessageComposer({ candidate, allowed, onSent }: MessageComposerProps) {
           </Field>
         )}
 
-        {needsDocuments && (
-          <Field
-            label="Документы"
-            hint="Каждый документ с новой строки, максимум 20 пунктов"
-            required
-          >
-            {(id, describedBy) => (
-              <textarea
-                id={id}
-                aria-describedby={describedBy}
-                className="documents-input"
-                rows={4}
-                value={documents}
-                onChange={(e) => {
-                  setDocuments(e.target.value);
-                  setPreview(null);
-                }}
-                placeholder={"Паспорт РФ\nСНИЛС"}
-              />
-            )}
-          </Field>
-        )}
+        <p>Запросы документов и напоминания создаются во вкладке «Документы» по точной версии списка.</p>
 
         <Field label="Канал" hint="«Все разрешённые» — по каждому каналу с действующим согласием">
           {(id, describedBy) => (
@@ -697,6 +655,11 @@ function MessageHistory({ candidateId }: { candidateId: string }) {
                         ? " · инициатор: система"
                         : ""}
                   </div>
+                  {message.document_context && <p className="message-item-meta">
+                    Список: {message.document_context.list_id} · версия {message.document_context.version_number}
+                    {message.rule_id && ` · правило ${message.rule_id}, версия ${message.document_context.rule_version}`}
+                    {message.template_version && ` · шаблон ${message.template_version}`}
+                  </p>}
                   {message.body && <pre className="message-item-body">{message.body}</pre>}
                   {message.error_class && (
                     <div className="message-item-error">Причина сбоя: {message.error_class}</div>

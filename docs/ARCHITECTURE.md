@@ -803,3 +803,30 @@ production запрещён (`migrate.sh` его не имеет).
   default; `check_env.sh` фейлит incomplete-enabled и `SMTP_ENCRYPTION=none`.
 - Backup/retention: новые таблицы покрываются существующим PostgreSQL
   backup без изменений формата (credential metadata = только хэши/маски).
+
+## Phase 11 — версионируемые документы и личные правила (реализация на review)
+
+Head схемы — `0012` поверх реального `0011`. Полный контракт, locking/failure
+model, scope decisions, API-совместимость, тесты и handoff:
+[`phase-11-report-arena.md`](phase-11-report-arena.md).
+
+Контент и candidate exact snapshots отделены от изменяемых receipt facts.
+Published scope уникален на PostgreSQL; публикация блокирует также пустую
+область. Immutable content/history дополнительно защищены PG triggers и FK
+RESTRICT. Мутации кандидата делят advisory key с внешней отправкой Phase 10.
+
+`analytics_facts` остаётся durable источником stage transitions, а
+`candidate_document_sets` — источником scheduled reminders. Anti-join scanner
+существующего worker создаёт internal jobs в существующем outbox. Discovery,
+execution, retry, disable и external sends привязаны к rule version; новая
+очередь/служба не вводится. Action + execution + enqueue коммитятся вместе.
+
+Новые явные grants: `document_lists_manage` и `candidate_documents_all`;
+пилот включает оба. Manager без подтверждённого документного grant не получает
+скрытый доступ ко всей базе через роль. История проверяет текущие права, а не
+прошлое членство кандидата в области.
+
+Документные сообщения принимают `document_set_id`, но не клиентские названия.
+Любая полученная после enqueue позиция делает весь immutable message stale
+(без перерендера сохранённого текста). Rule sends всегда соблюдают workdays и
+quiet hours владельца, включая B0; urgent override для них недопустим.

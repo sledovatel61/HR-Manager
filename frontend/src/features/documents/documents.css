@@ -1,0 +1,76 @@
+.documents-page {
+  padding: 24px;
+  max-width: 1100px;
+}
+.document-panel {
+  border: 1px solid var(--border-color, #dce1e5);
+  border-radius: 10px;
+  padding: 18px;
+  margin: 16px 0;
+  background: var(--surface, #fff);
+}
+.document-form {
+  display: grid;
+  gap: 14px;
+  max-width: 760px;
+}
+.document-form label {
+  display: grid;
+  gap: 6px;
+  font-weight: 500;
+}
+.document-form input,
+.document-form select,
+.document-form textarea {
+  border: 1px solid #aebbc2;
+  border-radius: 5px;
+  padding: 9px;
+  font: inherit;
+  color: inherit;
+  background: white;
+}
+.document-form label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+}
+.document-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+.documents-page button,
+.document-panel button {
+  padding: 8px 12px;
+  border: 1px solid #99aaa5;
+  border-radius: 6px;
+  background: #f4f8f6;
+  color: #194d3d;
+  cursor: pointer;
+  font: inherit;
+}
+.documents-page button:disabled,
+.document-panel button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.document-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 14px 0;
+}
+.document-table th,
+.document-table td {
+  padding: 10px;
+  border-bottom: 1px solid #dce1e5;
+  text-align: left;
+}
+.document-panel pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.document-panel :focus-visible,
+.documents-page :focus-visible {
+  outline: 3px solid #307cbe;
+  outline-offset: 3px;
+}

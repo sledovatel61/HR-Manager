@@ -812,6 +812,7 @@ export interface CandidateMessageSendInput {
   message_type: CandidateMessageType;
   event_id?: string;
   documents?: string[];
+  document_set_id?: string;
   channel?: CandidateChannelName;
   /** Client-generated, stable across retries of the same operation. */
   idempotency_key: string;
@@ -830,6 +831,9 @@ export interface CandidateMessagePreview {
 /** One immutable history entry. `accepted` means the provider took the
  * message — never «delivered», never «read». */
 export interface CandidateMessage {
+  document_context?: { list_id: string; version_id: string; version_number: number; rule_version: number | null } | null;
+  rule_id?: string | null;
+  template_version?: number | null;
   id: string;
   message_type: CandidateMessageType | CandidateHistoryOnlyMessageType;
   channel: CandidateChannelName;

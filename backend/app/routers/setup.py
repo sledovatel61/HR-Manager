@@ -177,7 +177,7 @@ def change_grant(
         active = db.execute(
             select(AccessGrant).where(
                 AccessGrant.user_id == user.id,
-                AccessGrant.scope == AccessGrantScope.PILOT_FULL_ACCESS,
+                AccessGrant.scope == AccessGrantScope(payload.scope),
                 AccessGrant.revoked_at.is_(None),
             )
         ).scalar_one_or_none()
@@ -192,7 +192,7 @@ def change_grant(
             AuditAction.PILOT_ACCESS_REVOKED,
             actor=admin,
             subject=user,
-            details="scope=pilot_full_access",
+            details=f"scope={payload.scope}",
             commit=False,
         )
         db.commit()
@@ -201,7 +201,7 @@ def change_grant(
     existing = db.execute(
         select(AccessGrant).where(
             AccessGrant.user_id == user.id,
-            AccessGrant.scope == AccessGrantScope.PILOT_FULL_ACCESS,
+            AccessGrant.scope == AccessGrantScope(payload.scope),
             AccessGrant.revoked_at.is_(None),
         )
     ).scalar_one_or_none()
@@ -209,7 +209,7 @@ def change_grant(
         return AccessGrantOut.model_validate(existing)
     grant = AccessGrant(
         user_id=user.id,
-        scope=AccessGrantScope.PILOT_FULL_ACCESS,
+        scope=AccessGrantScope(payload.scope),
         granted_by_user_id=admin.id,
         granted_at=utc_now(),
     )
@@ -219,7 +219,7 @@ def change_grant(
         AuditAction.PILOT_ACCESS_GRANTED,
         actor=admin,
         subject=user,
-        details="scope=pilot_full_access",
+        details=f"scope={payload.scope}",
         commit=False,
     )
     db.commit()
