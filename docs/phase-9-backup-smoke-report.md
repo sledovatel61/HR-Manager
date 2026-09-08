@@ -3,8 +3,8 @@
 ## 1. Exact baseline and final SHA
 
 - Baseline: `180d5dc5e99b96014f7f6f6e5100cb22c8e278af` (`main`, merge of Phase 9).
-- Final SHA: recorded after the fix commit.
-- CI failure under investigation: run `34134253554`, head `180d5dc5e99b96014f7f6f6e5100cb22c8e278af`.
+- Final SHA: `a747f35ab3e8fc0907190595684249933a413190`.
+- Historical failing CI: run `34134253554`, head `180d5dc5e99b96014f7f6f6e5100cb22c8e278af`.
 
 ## 2. Root cause
 
@@ -49,7 +49,8 @@ Backend test limitations:
 ## 6. CI run and final SHA
 
 - Failing historical run: `34134253554` at baseline `180d5dc5e99b96014f7f6f6e5100cb22c8e278af`.
-- A new CI run was not available from the local environment (`gh` CLI is not installed). The final commit SHA is recorded below after commit creation.
+- Successful final run: `34191549759` at SHA `a747f35ab3e8fc0907190595684249933a413190`.
+- All jobs passed: backend, PostgreSQL integration, frontend and Compose stack smoke.
 
 ## 7. Remaining limitations
 

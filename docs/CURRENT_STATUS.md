@@ -1,8 +1,8 @@
 # Текущее состояние и handoff
 
-> Phase 8 принята и влита в `main` на SHA `2cb6ab63f1276f259146d477cd1cc98462f066ec`. Для следующего этапа использовать `prompts/PHASE_9_PROMPT.md`.
+> Фазы 0–9 приняты. Актуальный `main` — SHA `a747f35ab3e8fc0907190595684249933a413190`. Для следующего этапа использовать `prompts/PHASE_10_PROMPT.md`.
 
-Актуально после **Phase 8 — фундамент уведомлений и пилотный режим**.
+Актуально после **Phase 9 — Telegram/email и исправление backup smoke**.
 Phase 8 принята после независимого review и влита в `main` с fast-forward до
 SHA `2cb6ab63f1276f259146d477cd1cc98462f066ec` (PR #10). Предыдущий принятый
 этап — **Phase 7 — backup, deployment и release**. Этот файл — первая точка
@@ -68,18 +68,32 @@ SMTP/Telegram-отправки, Redis/RabbitMQ, сообщения кандид�
 + инструкция переноса в `review-artifacts/README.md`. Семантика
 `?`-охран `compose.prod.yml` намеренно не ослабляется.
 
-## Phase 9 — подготовлено к разработке
+## Phase 9 — принято
 
-Полное задание находится в `prompts/PHASE_9_PROMPT.md`. Этап должен начать
-coding-agent строго от актуального `origin/main`, выполнить обязательный аудит
-Phase 8 и создать отдельную ветку `arena/phase-9-telegram-email`. Scope Phase 9:
-реальные Telegram Bot API и SMTP-адаптеры через существующий PostgreSQL outbox,
-без фиктивной доставки, с одноразовой привязкой Telegram, consent, таймаутами,
-retry/backoff, безопасными секретами, RBAC/CSRF/IDOR-защитой и русскоязычным UI.
+Phase 9 реализована и принята в `main`. Финальный SHA реализации и backup smoke fix:
+`a747f35ab3e8fc0907190595684249933a413190`. CI run `34191549759` завершился
+успешно: backend, PostgreSQL integration, frontend и Compose stack smoke — зелёные.
+
+В фазу вошли реальные Telegram Bot API и SMTP через существующий PostgreSQL outbox,
+одноразовая привязка Telegram, согласия каналов, безопасная тестовая отправка,
+retry/lease/idempotency и русскоязычный UI. Дополнительно устранена гонка запуска
+backup: backup ждёт healthy backend перед стартовой копией, а scheduler сохраняет
+правильный код ошибки CLI. Зашифрованный `.pgdump.enc` подтверждён локально и CI.
+Подробности: `docs/phase-9-report-agent2.md` и `docs/phase-9-backup-smoke-report.md`.
+
+## Phase 10 — следующая задача
+
+Полное задание находится в `prompts/PHASE_10_PROMPT.md`. Scope Phase 10:
+односторонние русскоязычные сообщения кандидатам о назначении, напоминании,
+переносе и отмене собеседований, а также запросы и напоминания о документах.
+Нужны безопасные согласия по каналам, отправка из карточки, предпросмотр,
+история, серверные права, идемпотентность и существующая очередь worker-а.
+Ответы, чат, входящая почта, загрузка документов через каналы, SMS и рекламные
+рассылки в Phase 10 не входят.
 
 ## Как начать в новом чате
 
-Скопировать в новый чат содержимое `prompts/PHASE_9_PROMPT.md`. Ниже
+Скопировать в новый чат содержимое `prompts/PHASE_10_PROMPT.md`. Ниже
 приведены те же ключевые команды синхронизации для быстрой проверки.
 
 Перед изменениями агент должен:
@@ -94,9 +108,9 @@ git rev-parse HEAD
 
 Затем прочитать `agents.md`, `PRODUCT_SPEC.md`, `ROADMAP.md`, `README.md`,
 `docs/ARCHITECTURE.md`, этот handoff, отчёты этапов и полностью
-`prompts/PHASE_9_PROMPT.md`; изучить текущие RBAC, события, audit, миграции,
-Compose, outbox/worker и UI; выполнить baseline; создать ветку
-`arena/phase-9-telegram-email`. Не менять `main` напрямую.
+`prompts/PHASE_10_PROMPT.md`; изучить текущие RBAC, события, audit, миграции,
+Compose, outbox/worker, Telegram/email и UI; выполнить baseline; создать ветку
+`arena/phase-10-candidate-communications-<короткий-суффикс>`. Не менять `main` напрямую.
 
 Минимальный baseline (с учётом доступности Docker/PostgreSQL):
 
@@ -119,6 +133,7 @@ docker compose -f infra/docker-compose.yml config -q
 git diff --check
 ```
 
-CI на `main` является окончательной проверкой Linux/PostgreSQL/Compose. Нельзя
-заявлять локально не выполненную проверку как успешную: причину недоступности
+CI на `main` является окончательной проверкой Linux/PostgreSQL/Compose. Последний
+успешный CI — run `34191549759` для SHA `a747f35ab3e8fc0907190595684249933a413190`.
+Нельзя заявлять локально не выполненную проверку как успешную: причину недоступности
 нужно явно записать в отчёт и подтвердить соответствующим GitHub job.
