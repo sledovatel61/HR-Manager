@@ -55,12 +55,17 @@ def has_grant(db: Session, user: User, scope: AccessGrantScope) -> bool:
 
 
 def can_manage(db: Session, user: User) -> bool:
+    user = db.get(User, user.id, populate_existing=True) or user
     return user.is_active and (
         user.role == UserRole.ADMIN or has_grant(db, user, AccessGrantScope.DOCUMENT_LISTS_MANAGE)
     )
 
 
 def can_access(db: Session, user: User | None, candidate: Candidate) -> bool:
+    # A request/job may have waited for a candidate advisory lock. Do not
+    # authorize it with a pre-lock identity-map copy of the owner's role.
+    if user is not None:
+        user = db.get(User, user.id, populate_existing=True)
     if user is None or not user.is_active or candidate.deleted_at is not None:
         return False
     if has_grant(db, user, AccessGrantScope.CANDIDATE_DOCUMENTS_ALL):

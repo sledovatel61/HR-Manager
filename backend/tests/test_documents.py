@@ -486,3 +486,20 @@ def test_openapi_and_closed_content(channels_app: TestClient, db_session: Sessio
         ).status_code
         == 404
     )
+
+
+def test_cached_owner_role_is_not_an_authorization_snapshot(
+    channels_app: TestClient, db_session: Session, unit_engine: Any
+) -> None:
+    from app.documents import can_access
+
+    hr, candidate, _, _, _ = setup_documents(channels_app, db_session)
+    assert can_access(db_session, hr, candidate)
+    # Simulates a role change while this request waits for a candidate lock.
+    with Session(unit_engine) as changed:
+        owner = changed.get(User, hr.id)
+        assert owner
+        owner.role = UserRole.ADMIN
+        changed.commit()
+    assert hr.role == UserRole.HR  # deliberately cached instance
+    assert not can_access(db_session, hr, candidate)  # fresh grant/role required
