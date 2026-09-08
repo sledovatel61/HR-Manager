@@ -12,6 +12,7 @@ import { RemindersPage } from "../features/notifications/RemindersPage";
 import { PreferencesPage } from "../features/notifications/PreferencesPage";
 import { IntegrationsPage } from "../features/notifications/IntegrationsPage";
 import { AdminQueuePage } from "../features/notifications/AdminQueuePage";
+import DocumentRulesPage from "../features/documents/DocumentRulesPage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
 import "./workspace.css";
@@ -33,6 +34,7 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   preferences: { label: "Настройки уведомлений", icon: "settings" },
   integrations: { label: "Интеграции", icon: "arrow-right-left" },
   admin: { label: "Администрирование", icon: "shield" },
+  documents: { label: "Документы и правила", icon: "table" },
 };
 
 function sectionsForRole(role: UserRole): WorkspaceSection[] {
@@ -41,7 +43,7 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   // reminders and preferences are available to every role; the admin
   // screen (queue diagnostics + pilot setup) is admin-only. The backend
   // re-checks every right regardless of the navigation.
-  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations"];
+  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations", "documents"];
   return role === "hr"
     ? ["queue", "calendar", "kanban", "deleted", ...personal]
     : ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "admin"];
@@ -146,6 +148,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           {section === "preferences" && <PreferencesPage />}
           {section === "integrations" && <IntegrationsPage user={user} />}
           {section === "admin" && <AdminQueuePage />}
+          {section === "documents" && <DocumentRulesPage />}
           {section !== "calendar" &&
             section !== "kanban" &&
             section !== "analytics" &&
