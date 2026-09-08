@@ -4,9 +4,20 @@
 - **Baseline SHA (origin/main на старте):** `531de19473a995244c03c17ea346e7a097c92c75`
 - **Final code SHA (реализация):** `941c0d3fdea8f33d6d416645a3ff243f6ae38c67`
   (коммит «feat(phase10): one-way candidate messages over the existing
-  outbox/worker»; поверх идёт docs-коммит с этим отчётом — tip ветки =
-  верхний из них, его SHA — в PR)
-- **PR:** см. ответ агента / PR-комментарий (ветка `arena/01a07f9a-hr-manager` → `main`)
+  outbox/worker»)
+- **Fix SHA (ruff format):** `378e6c115b062a08ae31cb91dc08481cfdf2ba75`
+  («fix(phase10): ruff-format migration 0010» — CI проверяет
+  `ruff format --check .` из всего `backend/`, а не только `app tests`;
+  изменение чисто форматирование одной строки миграции, миграционный
+  тест up/down/up после фикса — 2 passed)
+- **Итоговый tip ветки:** docs-коммит с этим отчётом поверх `378e6c1`
+  (SHA — в PR-комментарии)
+- **PR:** https://github.com/sledovatel61/HR-Manager/pull/14
+- **CI:** run 34199192386 (head `378e6c1`): Backend checks — pass
+  (1m48s), Backend integration tests (PostgreSQL) — pass (1m31s),
+  Frontend checks — pass (43s), Compose stack smoke test (dev + prod
+  overlay) — pass (1m47s), включая «Validate HTTPS proxy overlay
+  configuration». Полный CI green.
 - **Merge в `main`:** не выполнялся (по правилам — владелец)
 
 ## Что сделано
@@ -138,12 +149,9 @@ npm run build          → ok (dist собран)
 - Подключение Telegram требует ручного шага: HR создаёт приглашение,
   кандидат открывает ссылку и жмёт Start, затем HR подтверждает.
   Подтверждение опрашивает обновления бота тем же механизмом, что фаза 9.
-- Compose stack-job в CI имеет предсуществующее падение на шаге владельца
-  «Validate HTTPS proxy overlay configuration» (наследие фаз 8/9 —
-  свежий shell без экспортов переменных; воспроизводится на принятом
-  tip Phase 8/9). Функциональные backend/integration/frontend джобы
-  ожидаются зелёными; фактический статус run — в ответе агента после
-  завершения CI на итоговом SHA.
+- Compose stack-job на итоговом SHA прошёл полностью (run 34199192386),
+  включая «Validate HTTPS proxy overlay configuration» — предсуществующее
+  падение из отчётов фаз 8/9 на этом head не воспроизвелось.
 - `/start`-поллинг кандидатов и пользователей разделяет `telegram_poll_state`
   только для offset'ов; конфликтов chat_id (кандидат vs пользователь)
   обработан отказом подтверждения (409).
@@ -157,5 +165,6 @@ npm run build          → ok (dist собран)
   (закрытый словарь типов), `plan_candidate_interview_messages` (хуки
   событий в `routers/events.py`), `process_external_row` в `worker.py`
   (send-time перепроверки).
-- Для владельца: merge PR в `main` после проверки CI на итоговом SHA
-  (tip ветки = docs-коммит с этим отчётом поверх `941c0d3f`).
+- Для владельца: merge PR #14 в `main` после проверки CI (run 34199192386
+  на `378e6c1` — полный green; tip ветки = docs-коммит с этим отчётом
+  поверх).
