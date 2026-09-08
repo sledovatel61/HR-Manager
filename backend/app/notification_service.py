@@ -116,6 +116,35 @@ def format_local(when_utc: datetime, timezone: str) -> str:
     return local.strftime("%d.%m.%Y %H:%M")
 
 
+def candidate_send_lock_key(candidate_id: UUID) -> str:
+    """The advisory-lock key coordinating candidate mutations with sends."""
+    return f"candidate-send:{candidate_id}"
+
+
+def lock_candidate_for_mutation(db: Session, candidate_id: UUID) -> None:
+    """Serialize a candidate-scoped mutation with in-flight worker sends.
+
+    PostgreSQL only (a no-op on SQLite, whose tests are single-threaded):
+    takes a transaction-scoped advisory lock on the candidate. The worker
+    holds the same key (session-level) from its send-time re-validation
+    until the provider call finishes, so a consent revocation, an email
+    re-confirmation or a token re-issuance can never commit between the
+    worker's checks and the provider call — it either completes before
+    them (and the row is skipped) or waits until the in-flight send is
+    done. No deadlock is possible: mutation endpoints take only this
+    lock, the worker takes it before the outbox row lock.
+    """
+    from sqlalchemy import text as sa_text
+
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    db.execute(
+        sa_text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": candidate_send_lock_key(candidate_id)},
+    )
+
+
 def preference_for(db: Session, user_id: UUID, settings_timezone: str) -> NotificationPreference:
     """Load the user's preferences, or a synthetic row with system defaults.
 

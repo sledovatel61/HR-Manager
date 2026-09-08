@@ -32,10 +32,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, select, text
+from sqlalchemy import Connection, func, select, text
 from sqlalchemy.orm import Session
 
 from app.audit import record_event
+from app.candidate_messages import CONFIRM_URL_PLACEHOLDER, email_confirm_url
 from app.config import Settings
 from app.db import build_engine
 from app.models import (
@@ -65,6 +66,7 @@ from app.models import (
 from app.notification_service import (
     CONSENT_EXEMPT_TEMPLATES,
     EMAIL_VERIFICATION_TEMPLATE,
+    candidate_send_lock_key,
     deliver_in_app,
     has_channel_consent,
     preference_for,
@@ -435,12 +437,24 @@ def _resolve_candidate_target(
             # The card address changed after the letter was rendered: the
             # link confirms a different mailbox — never deliver it.
             return None, ADDRESS_CHANGED_ERROR_CLASS
+        base_url = settings.candidate_email_confirm_base_url.strip()
+        if not base_url:
+            return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+        body = locked.body or ""
+        if CONFIRM_URL_PLACEHOLDER not in body:
+            # A confirm letter without the placeholder is malformed (forged
+            # or drifted): fail-closed, nothing is mailed.
+            return None, TOKEN_INACTIVE_ERROR_CLASS
+        # The link is built IN MEMORY here (HMAC of the server secret and
+        # the token row id): the stored body keeps the placeholder, so no
+        # persisted field ever contains a working confirmation link.
+        body = body.replace(CONFIRM_URL_PLACEHOLDER, email_confirm_url(token.id, settings))
         return (
             _ExternalTarget(
                 channel=DeliveryChannel.EMAIL,
                 email=candidate.email,
                 title=locked.title,
-                body=locked.body,
+                body=body,
             ),
             None,
         )
@@ -660,43 +674,93 @@ def _note_external_error(
             address.last_error_at = now
 
 
-def _advisory_send_lock_held(db: Session, outbox_id: object) -> bool:
-    """Best-effort cross-process single-flight for one external send.
+@dataclass(frozen=True)
+class _SendLocks:
+    """Advisory locks of one external send, held on a dedicated connection.
 
-    PostgreSQL only: ``pg_try_advisory_lock`` on a per-row key, held on the
-    session's connection from phase A through phase C (released in the
-    ``finally`` of :func:`process_external_row`; a crashed worker's death
-    releases it server-side via the dropped connection). Without it two
-    workers could pass the phase-A check together and send twice — the
-    check and the finalize are split by the network call. Returns False
-    when another worker already sends this row (the caller backs off and
-    the lease keeps the row safe). Other dialects (SQLite unit tests) run
-    single-threaded and skip the lock.
+    Row key (``outbox-send:<id>``): best-effort single-flight so parallel
+    workers never send the same row twice — one that finds it busy backs
+    off with ``sending`` (the lease keeps the row safe).
+
+    Candidate key (``candidate-send:<id>``): the SAME key the mutation
+    endpoints take transactionally, so a consent revocation, an email
+    (re-)confirmation or a token re-issuance can never commit between
+    this worker's re-validation and the provider call — it either
+    completes before them (the row is then skipped) or waits until the
+    in-flight send is done.
+
+    Both live on ONE connection checked out for the whole span: a
+    session-level advisory lock taken on the ORM session's connection
+    would leak to the pool at the phase-A commit (the session releases
+    its connection there) and could then be re-acquired re-entrantly by
+    a mutation running on the recycled connection — a dedicated
+    connection cannot be handed out to anyone else while the send is in
+    flight, and a crashed worker's death releases the locks server-side
+    via the dropped connection. Mutations take only the candidate key
+    (transaction-scoped, on their own request connection), so no
+    deadlock cycle can form.
+    """
+
+    connection: Connection
+    outbox_id: object
+    candidate_id: UUID | None
+
+
+def _acquire_send_locks(
+    db: Session, outbox_id: object, candidate_id: UUID | None
+) -> tuple[_SendLocks | None, bool]:
+    """Take the send locks; returns (locks-or-None, busy).
+
+    ``busy`` is True only on PostgreSQL when another worker already
+    sends this row. Other dialects (SQLite unit tests) run
+    single-threaded and skip locking entirely.
     """
     bind = db.get_bind()
     if bind is None or bind.dialect.name != "postgresql":
-        return True
-    # Pin one pooled connection to this session: advisory locks are
-    # per-connection, so phases A and C must share it across the network
-    # call (released back to the pool when the caller closes the session).
-    db.connection()
-    key = f"outbox-send:{outbox_id}"
-    held = db.execute(
-        text("SELECT pg_try_advisory_lock(hashtext(:key))"), {"key": key}
-    ).scalar_one()
-    return bool(held)
-
-
-def _advisory_send_lock_release(db: Session, outbox_id: object) -> None:
-    bind = db.get_bind()
-    if bind is None or bind.dialect.name != "postgresql":
-        return
-    key = f"outbox-send:{outbox_id}"
+        return None, False
+    engine = bind.engine if isinstance(bind, Connection) else bind
+    connection = engine.connect()
     try:
-        db.execute(text("SELECT pg_advisory_unlock(hashtext(:key))"), {"key": key})
-        db.commit()
+        held = connection.execute(
+            text("SELECT pg_try_advisory_lock(hashtext(:key))"),
+            {"key": f"outbox-send:{outbox_id}"},
+        ).scalar_one()
+        if not bool(held):
+            connection.close()
+            return None, True
+        if candidate_id is not None:
+            connection.execute(
+                text("SELECT pg_advisory_lock(hashtext(:key))"),
+                {"key": candidate_send_lock_key(candidate_id)},
+            )
     except Exception:
-        db.rollback()
+        connection.close()
+        raise
+    return (
+        _SendLocks(connection=connection, outbox_id=outbox_id, candidate_id=candidate_id),
+        False,
+    )
+
+
+def _release_send_locks(locks: _SendLocks | None) -> None:
+    """Drop both locks (closing the connection frees them regardless)."""
+    if locks is None:
+        return
+    try:
+        locks.connection.rollback()
+        locks.connection.execute(
+            text("SELECT pg_advisory_unlock(hashtext(:key))"),
+            {"key": f"outbox-send:{locks.outbox_id}"},
+        )
+        if locks.candidate_id is not None:
+            locks.connection.execute(
+                text("SELECT pg_advisory_unlock(hashtext(:key))"),
+                {"key": candidate_send_lock_key(locks.candidate_id)},
+            )
+    except Exception:
+        logger.warning("send lock release failed (closing drops the locks anyway)")
+    finally:
+        locks.connection.close()
 
 
 def process_external_row(
@@ -705,31 +769,91 @@ def process_external_row(
     """Deliver one claimed email/telegram row with real provider I/O.
 
     Three phases: (A) short transaction — re-lock, re-validate, extend the
-    lease, then commit to release the lock; (B) provider call with NO open
-    transaction; (C) short transaction — re-lock and finalize atomically
-    (an admin cancel racing the send wins: its status is left untouched).
+    lease, then commit to release the lock; (B0) a second, lock-free
+    re-validation IMMEDIATELY before the network call; (C) short
+    transaction — re-lock and finalize atomically (an admin cancel racing
+    the send wins: its status is left untouched).
 
-    A PostgreSQL advisory lock spans all three phases so parallel workers
-    can never send the same row twice (a worker that finds the lock busy
-    backs off with ``sending`` — the lease keeps the row safe).
+    Two PostgreSQL advisory locks span all three phases: a per-row one so
+    parallel workers can never send the same row twice, and a
+    per-candidate one (the SAME key the mutation endpoints take) so a
+    consent revocation, an email (re-)confirmation or a token re-issuance
+    cannot commit between the re-validation and the provider call. Exact
+    revocation model, honestly stated:
+
+    * a revocation that completes before the re-validation STOPS the send
+      (the row is skipped, fail-closed);
+    * a revocation that arrives while the provider call is already in
+      flight WAITS (advisory lock) and takes effect right after it — the
+      one message already handed to SMTP/Telegram cannot be unsent, and
+      every other pending row of the channel is cancelled;
+    * mutations NOT serialized by the candidate lock (a card email
+      change, candidate deletion, event changes) are re-checked by the
+      B0 pass, leaving only the unavoidable check-then-call micro-window
+      of any external provider.
 
     Provider ``accepted`` is stored as ``accepted`` with the provider
     message id only when the provider returned one — never ``delivered``,
     never «read». Returns the final status value.
     """
-    if not _advisory_send_lock_held(db, outbox_id):
+    candidate_id = db.execute(
+        select(NotificationOutbox.recipient_candidate_id).where(NotificationOutbox.id == outbox_id)
+    ).scalar_one_or_none()
+    locks, busy = _acquire_send_locks(db, outbox_id, candidate_id)
+    if busy:
         db.rollback()
         return DeliveryStatus.SENDING.value
     try:
         return _process_external_row_locked(db, outbox_id, settings=settings, now=now)
     finally:
-        _advisory_send_lock_release(db, outbox_id)
+        _release_send_locks(locks)
+
+
+def _finalize_external_skip(
+    db: Session, outbox_id: object, skip_class: str, *, now: datetime
+) -> str:
+    """Atomically mark a claimed row skipped (fail-closed, no network).
+
+    Re-locks the row: when an admin cancel/retry raced us and won, its
+    decision stands. Usable both under the phase-A row lock and after its
+    commit (the phase-B0 re-validation).
+    """
+    row = db.execute(
+        select(NotificationOutbox)
+        .where(NotificationOutbox.id == outbox_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    if row.status != DeliveryStatus.SENDING:
+        db.rollback()
+        return row.status.value
+    # The lease CHECK requires status/lease consistency at every flush, so
+    # the terminal state is assigned BEFORE any helper query runs (helper
+    # queries trigger autoflush).
+    row.status = DeliveryStatus.SKIPPED
+    row.failed_at = now
+    row.error_class = skip_class
+    row.attempts += 1
+    row.next_attempt_at = None
+    row.lease_expires_at = None
+    db.add(
+        NotificationDeliveryAttempt(
+            outbox_id=row.id,
+            attempt_no=row.attempts,
+            started_at=row.started_at or now,
+            finished_at=now,
+            outcome="skipped",
+            error_class=skip_class,
+        )
+    )
+    db.commit()
+    return row.status.value
 
 
 def _process_external_row_locked(
     db: Session, outbox_id: object, *, settings: Settings, now: datetime
 ) -> str:
-    """Phases A/B/C of external delivery (the advisory lock is held)."""
+    """Phases A/B0/B/C of external delivery (the advisory locks are held)."""
     from app.smtp import config_from_settings as smtp_config_from_settings
     from app.telegram import config_from_settings as telegram_config_from_settings
 
@@ -746,32 +870,26 @@ def _process_external_row_locked(
     target, skip_class = _resolve_external_target(db, locked, settings=settings)
     if target is None or skip_class is not None:
         assert skip_class is not None
-        locked.status = DeliveryStatus.SKIPPED
-        locked.failed_at = now
-        locked.error_class = skip_class
-        locked.attempts += 1
-        locked.next_attempt_at = None
-        locked.lease_expires_at = None
-        db.add(
-            NotificationDeliveryAttempt(
-                outbox_id=locked.id,
-                attempt_no=locked.attempts,
-                started_at=locked.started_at or now,
-                finished_at=now,
-                outcome="skipped",
-                error_class=skip_class,
-            )
-        )
-        db.commit()
-        return locked.status.value
-    channel = target.channel
+        return _finalize_external_skip(db, outbox_id, skip_class, now=now)
     recipient_user_id = locked.recipient_user_id
     recipient_candidate_id = locked.recipient_candidate_id
-    channel_value = channel.value
     # Fresh lease covering the bounded provider call (recovery re-queues on
     # crash exactly like for in-app rows).
     locked.lease_expires_at = now + timedelta(seconds=settings.worker_lease_seconds)
     db.commit()
+
+    # Phase B0: the last-stop re-validation, immediately before the network
+    # call. Consent/token mutations serialized by the candidate advisory
+    # lock can no longer land here; for the others (a card email change,
+    # candidate deletion, event changes) this narrows the unavoidable
+    # check-then-call window to the call itself. A fresh snapshot also
+    # re-substitutes the confirmation link of a double opt-in letter.
+    target, skip_class = _resolve_external_target(db, locked, settings=settings)
+    if target is None or skip_class is not None:
+        assert skip_class is not None
+        return _finalize_external_skip(db, outbox_id, skip_class, now=now)
+    channel = target.channel
+    channel_value = channel.value
 
     # Phase B: provider I/O with no open transaction.
     outcome: str

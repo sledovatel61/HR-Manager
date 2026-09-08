@@ -600,7 +600,6 @@ def _confirm_letter_row(db: Session, candidate: Candidate, token_id: UUID) -> No
         db,
         candidate=candidate,
         token_id=token_id,
-        confirm_url="https://hr.example.test/candidates/email/confirm?token=confirm-token-0123456789",
         expires_at=utc_now() + timedelta(hours=1),
         initiator_user_id=candidate.owner_user_id,
     )
@@ -626,20 +625,35 @@ def test_confirm_letter_delivered_without_consent(db_session: Session) -> None:
     row.lease_expires_at = utc_now() + timedelta(minutes=2)
     db_session.commit()
 
-    sent: list[str] = []
+    sent: list[tuple[str, str]] = []
 
     def fake_send(config: object, *, to_address: str, subject: str, text_body: str) -> Any:
-        sent.append(to_address)
+        sent.append((to_address, text_body))
         return SmtpSendResult(outcome="accepted")
 
+    settings = _settings(CANDIDATE_EMAIL_CONFIRM_BASE_URL="https://hr.example.test")
     monkeypatch_send = pytest.MonkeyPatch()
     monkeypatch_send.setattr(worker_module, "_send_email_impl", fake_send)
     try:
-        status = process_external_row(db_session, row.id, settings=_settings(), now=utc_now())
+        status = process_external_row(db_session, row.id, settings=settings, now=utc_now())
     finally:
         monkeypatch_send.undo()
     assert status == "accepted"
-    assert sent == ["cand@example.com"]
+    assert [address for address, _ in sent] == ["cand@example.com"]
+
+    # The link was substituted IN MEMORY: the mailed body carries the full
+    # URL for exactly this letter's token, while the stored row body keeps
+    # the placeholder (nothing secret is ever persisted).
+    from app.candidate_messages import CONFIRM_URL_PLACEHOLDER, derive_email_confirm_token
+
+    mailed_body = sent[0][1]
+    raw_token = derive_email_confirm_token(token.id, settings)
+    assert f"https://hr.example.test/candidates/email/confirm?token={raw_token}" in mailed_body
+    assert CONFIRM_URL_PLACEHOLDER not in mailed_body
+    db_session.refresh(row)
+    assert row.body is not None
+    assert CONFIRM_URL_PLACEHOLDER in row.body
+    assert "token=" not in row.body
 
 
 def test_confirm_letter_skipped_when_token_dead(db_session: Session) -> None:
@@ -660,7 +674,11 @@ def test_confirm_letter_skipped_when_token_dead(db_session: Session) -> None:
     row2 = _confirm_letter_row(db_session, candidate, token2.id)
     assert _skip_class(db_session, row2, _settings()) == "token_inactive"
 
-    # The card address changed after the letter was rendered.
+    # The card address changed after the letter was rendered (the previous
+    # token is consumed first: at most one ACTIVE token per candidate).
+    token2.consumed_at = utc_now()
+    token2.consume_reason = "superseded"
+    db_session.commit()
     token3 = _confirm_token_row(
         db_session,
         candidate,
@@ -669,6 +687,67 @@ def test_confirm_letter_skipped_when_token_dead(db_session: Session) -> None:
     )
     row3 = _confirm_letter_row(db_session, candidate, token3.id)
     assert _skip_class(db_session, row3, _settings()) == "address_changed"
+
+
+def test_confirm_letter_skipped_when_base_url_unset(db_session: Session) -> None:
+    """No confirmation page base URL configured at send time: fail-closed."""
+    candidate = make_candidate(db_session, owner=_hr(db_session), email="cand@example.com")
+    token = _confirm_token_row(db_session, candidate)
+    row = _confirm_letter_row(db_session, candidate, token.id)
+    assert _skip_class(db_session, row, _settings()) == "channel_not_configured"
+
+
+def test_confirm_letter_skipped_when_placeholder_missing(db_session: Session) -> None:
+    """A confirm letter without the URL placeholder is malformed: never mail."""
+    candidate = make_candidate(db_session, owner=_hr(db_session), email="cand@example.com")
+    token = _confirm_token_row(db_session, candidate)
+    row = _confirm_letter_row(db_session, candidate, token.id)
+    assert row.body is not None
+    row.body = row.body.replace("[[CANDIDATE_EMAIL_CONFIRM_URL]]", "обычный текст")
+    db_session.commit()
+    settings = _settings(CANDIDATE_EMAIL_CONFIRM_BASE_URL="https://hr.example.test")
+    assert _skip_class(db_session, row, settings) == "token_inactive"
+
+
+def test_send_time_revalidation_runs_again_right_before_provider_call(
+    db_session: Session,
+) -> None:
+    """Phase B0: a mutation landing after phase A still stops the send.
+
+    Simulates a card email change committing between the phase-A
+    validation and the provider call: the last-stop re-validation must
+    skip the row instead of mailing a consent pinned to the old address.
+    """
+
+    candidate = _candidate_with_email(db_session)
+    row = _candidate_row(db_session, candidate, DeliveryChannel.EMAIL)
+    assert row is not None
+
+    original = worker_module._resolve_external_target
+    calls = {"n": 0}
+
+    def resolving_then_mutating(
+        db: Session, locked: NotificationOutbox, *, settings: Any
+    ) -> tuple[Any, str | None]:
+        target, skip = original(db, locked, settings=settings)
+        if calls["n"] == 0 and skip is None:
+            # Right after phase A's read snapshot: the card address (and
+            # with it the consent pin) changes before the network call.
+            candidate.email = "changed@example.com"
+            db.commit()
+        calls["n"] += 1
+        return target, skip
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(worker_module, "_resolve_external_target", resolving_then_mutating)
+    try:
+        result = process_external_row(db_session, row.id, settings=_settings(), now=utc_now())
+    finally:
+        monkeypatch.undo()
+    assert result == "skipped"
+    db_session.refresh(row)
+    assert row.status.value == "skipped"
+    assert row.error_class == "address_changed"
 
 
 def test_interview_message_skipped_when_event_version_changed(db_session: Session) -> None:

@@ -1855,18 +1855,31 @@ class CandidateTelegramLinkToken(Base):
 class CandidateEmailConfirmToken(Base):
     """One-shot expiring token of a candidate's email double opt-in.
 
-    HR initiates the letter; the raw token is rendered once into the
-    confirmation URL (stored only as a SHA-256 hash here) and mailed to
-    the candidate's card address through the outbox. Only the candidate's
-    own click on the link may grant the email consent; a newer initiation
-    supersedes older unconsumed tokens of the same candidate. The token is
-    bound to the normalized address it was issued for.
+    HR initiates the letter; the raw token is an HMAC of the server secret
+    and this row's id — it is re-derived in memory by the worker right
+    before the provider call and NEVER persisted (only its SHA-256 hash
+    lives here, and the queued letter body stores a placeholder instead
+    of the URL). Only the candidate's own click on the link may grant the
+    email consent; a newer initiation supersedes older unconsumed tokens
+    of the same candidate (at most one active token is enforced by a
+    partial unique index). The token is bound to the normalized address
+    it was issued for.
     """
 
     __tablename__ = "candidate_email_confirm_tokens"
     __table_args__ = (
         Index("ix_candidate_email_confirm_tokens_candidate_id", "candidate_id"),
         Index("ix_candidate_email_confirm_tokens_expires_at", "expires_at"),
+        # At most ONE unconsumed (active) token per candidate — the DB-level
+        # backstop of the initiation serialization: a newer initiation must
+        # supersede the previous token before inserting its own.
+        Index(
+            "uq_candidate_email_confirm_tokens_one_active",
+            "candidate_id",
+            unique=True,
+            postgresql_where=text("consumed_at IS NULL"),
+            sqlite_where=text("consumed_at IS NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)

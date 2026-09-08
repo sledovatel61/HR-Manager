@@ -18,6 +18,7 @@ a plaintext TCP SMTP stub). No real chats, credentials or personal data.
 import hashlib
 import os
 import threading
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -33,6 +34,7 @@ from app.main import create_app
 from app.models import (
     Candidate,
     CandidateChannelConsent,
+    CandidateEmailConfirmToken,
     CandidateTelegramLink,
     DeliveryStatus,
     NotificationOutbox,
@@ -520,6 +522,40 @@ def test_email_double_opt_in_end_to_end(
         if row.notification_type == NotificationType.CANDIDATE_EMAIL_CONFIRM
     ]
     assert len(rows) == 1
+    # The stored letter body carries a PLACEHOLDER, never the URL: scan
+    # every text column of every table for the raw token and the link —
+    # nothing persisted (hence no backup either) may contain them.
+    from app.candidate_messages import CONFIRM_URL_PLACEHOLDER, derive_email_confirm_token
+
+    token_row = pg_db.execute(select(CandidateEmailConfirmToken)).scalars().one()
+    raw_token = derive_email_confirm_token(token_row.id, settings)
+    assert rows[0].body is not None
+    assert CONFIRM_URL_PLACEHOLDER in rows[0].body
+    assert "token=" not in rows[0].body
+    text_columns = pg_db.execute(
+        text(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' "
+            "AND data_type IN ('text', 'character varying') "
+            "ORDER BY table_name, column_name"
+        )
+    ).all()
+    assert text_columns, "the scan must actually enumerate columns"
+    for table_name, column_name in text_columns:
+        for pattern in (f"%{raw_token}%", "%candidates/email/confirm?token=%"):
+            hits = pg_db.execute(
+                text(f'SELECT count(*) FROM "{table_name}" WHERE "{column_name}" LIKE :pattern'),
+                {"pattern": pattern},
+            ).scalar_one()
+            assert hits == 0, f"raw confirmation data leaked into {table_name}.{column_name}"
+    # The HR-facing history shows the letter with the link masked out.
+    history = client.get(f"/candidates/{candidate.id}/messages").json()
+    confirm_items = [
+        item for item in history["items"] if item["message_type"] == "candidate_email_confirm"
+    ]
+    assert len(confirm_items) == 1
+    assert "token=" not in (confirm_items[0]["body"] or "")
+    assert "ссылка подтверждения отправлена кандидату" in (confirm_items[0]["body"] or "")
     claimed = claim_batch(pg_db, now=utc_now(), batch_size=5, lease_seconds=120)
     assert claimed
     for row in claimed:
@@ -601,3 +637,239 @@ def test_parallel_identical_sends_produce_one_logical_send(
     assert len(ids) == 2  # one row per channel (email + telegram), not four
     rows = _candidate_rows(pg_db, candidate.id)
     assert len(rows) == 2
+
+
+def test_parallel_confirmation_clicks_confirm_exactly_once(
+    client: TestClient, pg_db: Session, settings: Settings
+) -> None:
+    """Two truly concurrent clicks of the same link: one 200, one 410.
+
+    The one-shot claim is a single conditional UPDATE under the row lock;
+    on PostgreSQL both requests run in parallel connections, so this is
+    the real race the atomic claim must survive (the loser re-reads the
+    consumed state, the consent is granted exactly once, one audit row).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.candidate_messages import email_confirm_url
+    from app.models import AuditEvent
+
+    hr = make_user(pg_db, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(
+        pg_db, owner=hr, email="race-confirm@example.com", full_name="Гонка Клик"
+    )
+    csrf = _login(client, "hr1")
+    initiated = client.post(
+        f"/candidates/{candidate.id}/channels/email/confirmation",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert initiated.status_code == 201, initiated.text
+    token = (
+        pg_db.execute(
+            select(CandidateEmailConfirmToken).where(
+                CandidateEmailConfirmToken.candidate_id == candidate.id
+            )
+        )
+        .scalars()
+        .one()
+    )
+    link = email_confirm_url(token.id, settings)
+
+    barrier = threading.Barrier(2)
+
+    def click() -> Any:
+        barrier.wait()
+        return client.get(link)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(click) for _ in range(2)]
+        responses = [future.result(timeout=60) for future in futures]
+    codes = sorted(response.status_code for response in responses)
+    assert codes == [200, 410]
+    assert sum(1 for r in responses if r.status_code == 200) == 1
+
+    pg_db.expire_all()
+    consent = pg_db.get(CandidateChannelConsent, (candidate.id, "email"))
+    assert consent is not None and consent.granted is True
+    assert consent.source == "email_confirm"
+    token = (
+        pg_db.execute(
+            select(CandidateEmailConfirmToken).where(
+                CandidateEmailConfirmToken.candidate_id == candidate.id
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert token.consumed_at is not None
+    assert token.consume_reason == "confirmed"
+    confirmed_events = (
+        pg_db.execute(
+            select(AuditEvent).where(
+                AuditEvent.action == "candidate_email_confirmed",
+                AuditEvent.candidate_id == candidate.id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(confirmed_events) == 1
+
+
+def test_parallel_initiations_leave_single_active_token_and_letter(
+    client: TestClient, pg_db: Session
+) -> None:
+    """Two truly concurrent initiations: exactly one active token + letter.
+
+    The initiation is serialized by the per-candidate advisory lock (with
+    the partial unique index as the DB-level backstop): the second call
+    waits, supersedes the first token and cancels its still-queued
+    letter instead of leaving two working links alive.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    hr = make_user(pg_db, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(
+        pg_db, owner=hr, email="race-init@example.com", full_name="Гонка Письем"
+    )
+    csrf = _login(client, "hr1")
+    url = f"/candidates/{candidate.id}/channels/email/confirmation"
+    headers = {"X-CSRF-Token": csrf}
+    barrier = threading.Barrier(2)
+
+    def initiate() -> Any:
+        barrier.wait()
+        return client.post(url, headers=headers)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(initiate) for _ in range(2)]
+        responses = [future.result(timeout=60) for future in futures]
+    assert [response.status_code for response in responses] == [201, 201]
+
+    pg_db.expire_all()
+    tokens = (
+        pg_db.execute(
+            select(CandidateEmailConfirmToken).where(
+                CandidateEmailConfirmToken.candidate_id == candidate.id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(tokens) == 2
+    active = [token for token in tokens if token.consumed_at is None]
+    superseded = [token for token in tokens if token.consume_reason == "superseded"]
+    assert len(active) == 1
+    assert len(superseded) == 1
+    letters = [
+        row
+        for row in _candidate_rows(pg_db, candidate.id)
+        if row.notification_type == NotificationType.CANDIDATE_EMAIL_CONFIRM
+    ]
+    assert len(letters) == 2
+    live = [row for row in letters if row.status == DeliveryStatus.QUEUED]
+    cancelled = [row for row in letters if row.status == DeliveryStatus.CANCELLED]
+    assert len(live) == 1
+    assert len(cancelled) == 1
+    # The live letter belongs to the active token (its object_id).
+    assert live[0].object_id == active[0].id
+    assert cancelled[0].object_id == superseded[0].id
+
+
+def test_revoke_during_inflight_send_waits_for_the_provider_call(
+    client: TestClient, pg_db: Session, settings: Settings
+) -> None:
+    """A revocation racing an in-flight send is serialized with it.
+
+    The worker holds the per-candidate advisory lock from its send-time
+    re-validation until the provider call finishes. The revoke endpoint
+    takes the same lock: it can therefore no longer sneak between the
+    checks and the network call — it either completed before them (the
+    row is skipped) or, as here, waits and applies right after the
+    in-flight message, cancelling everything still pending.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    import app.worker as worker_module
+    from app.smtp import SmtpSendResult
+
+    hr = make_user(pg_db, username="hr1", role=UserRole.HR)
+    candidate = _seed_candidate_channels(pg_db, hr, email="inflight@example.com")
+    csrf = _login(client, "hr1")
+    # Two distinct pending messages on the email channel (different
+    # types: the pending-duplicate guard is per message type).
+    for key, message_type, documents in (
+        ("inflight-1", "document_request", ["Паспорт"]),
+        ("inflight-2", "document_reminder", ["СНИЛС"]),
+    ):
+        response = client.post(
+            f"/candidates/{candidate.id}/messages/send",
+            json={
+                "message_type": message_type,
+                "documents": documents,
+                "idempotency_key": key,
+            },
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert response.status_code == 201, response.text
+    claimed = claim_batch(pg_db, now=utc_now(), batch_size=1, lease_seconds=120)
+    assert len(claimed) == 1
+    inflight_row = claimed[0]
+    assert inflight_row.channel.value == "email"
+
+    provider_entered = threading.Event()
+    provider_release = threading.Event()
+    revoke_finished = threading.Event()
+    timings: dict[str, float] = {}
+
+    def blocking_send(config: object, *, to_address: str, subject: str, text_body: str) -> Any:
+        provider_entered.set()
+        assert provider_release.wait(timeout=30), "the provider call must be released"
+        timings["provider_returned"] = time.monotonic()
+        return SmtpSendResult(outcome="accepted")
+
+    def revoke() -> None:
+        response = client.post(
+            f"/candidates/{candidate.id}/channels/email/consent",
+            json={"granted": False},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert response.status_code == 200, response.text
+        timings["revoke_returned"] = time.monotonic()
+        revoke_finished.set()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(worker_module, "_send_email_impl", blocking_send)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            sender = pool.submit(
+                process_external_row, pg_db, inflight_row.id, settings=settings, now=utc_now()
+            )
+            assert provider_entered.wait(timeout=30), "the provider call must start"
+            revoker = pool.submit(revoke)
+            # While the provider call is in flight the revoke MUST be
+            # blocked on the candidate advisory lock (it cannot commit
+            # between the worker's checks and the call).
+            assert not revoke_finished.wait(timeout=1.0), "revoke must wait for the lock"
+            provider_release.set()
+            assert sender.result(timeout=30) == "accepted"
+            assert revoke_finished.wait(timeout=30)
+            revoker.result()
+    finally:
+        monkeypatch.undo()
+
+    assert timings["revoke_returned"] >= timings["provider_returned"]
+    pg_db.expire_all()
+    rows = {row.id: row for row in _candidate_rows(pg_db, candidate.id)}
+    assert rows[inflight_row.id].status == DeliveryStatus.ACCEPTED
+    pending = [
+        row
+        for row in rows.values()
+        if row.channel.value == "email"
+        and row.id != inflight_row.id
+        and row.notification_type != NotificationType.CANDIDATE_EMAIL_CONFIRM
+    ]
+    assert len(pending) == 1
+    assert pending[0].status == DeliveryStatus.CANCELLED
+    consent = pg_db.get(CandidateChannelConsent, (candidate.id, "email"))
+    assert consent is not None and consent.granted is False

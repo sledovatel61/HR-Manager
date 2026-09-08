@@ -804,6 +804,10 @@ export type CandidateMessageType =
   | "document_request"
   | "document_reminder";
 
+/** History-only kind: the double opt-in letter itself. It can never be
+ * composed manually — the confirmation link is never rendered for the HR. */
+export type CandidateHistoryOnlyMessageType = "candidate_email_confirm";
+
 export interface CandidateMessageSendInput {
   message_type: CandidateMessageType;
   event_id?: string;
@@ -827,7 +831,7 @@ export interface CandidateMessagePreview {
  * message — never «delivered», never «read». */
 export interface CandidateMessage {
   id: string;
-  message_type: CandidateMessageType;
+  message_type: CandidateMessageType | CandidateHistoryOnlyMessageType;
   channel: CandidateChannelName;
   status: string;
   source: string;
