@@ -36,6 +36,7 @@ import {
   type User,
 } from "../../types";
 import { DuplicateResolveDialog } from "./DuplicateResolveDialog";
+import { MessagesTab } from "./MessagesTab";
 import { TransferDialog } from "./TransferDialog";
 import { formatDateTime } from "./format";
 import "./drawer.css";
@@ -43,7 +44,7 @@ import "./drawer.css";
 const INTERACTION_PAGE_SIZE = 20;
 const TRANSFER_PAGE_SIZE = 20;
 
-type DrawerTab = "info" | "interactions" | "events" | "transfers";
+type DrawerTab = "info" | "interactions" | "events" | "messages" | "transfers";
 
 interface CandidateDrawerProps {
   candidateId: string;
@@ -149,6 +150,7 @@ export function CandidateDrawer({
     { id: "info" as const, label: "Сведения" },
     { id: "interactions" as const, label: "Взаимодействия" },
     { id: "events" as const, label: "События" },
+    { id: "messages" as const, label: "Сообщения" },
     { id: "transfers" as const, label: "Передачи" },
   ];
 
@@ -208,6 +210,8 @@ export function CandidateDrawer({
               onChanged={onChanged}
             />
           )}
+
+          {tab === "messages" && <MessagesTab candidate={candidate} />}
 
           {tab === "transfers" && (
             <TransfersTab candidate={candidate} onOpenTransfer={() => setTransferOpen(true)} />

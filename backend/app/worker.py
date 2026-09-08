@@ -42,8 +42,13 @@ from app.models import (
     AccessGrant,
     AccessGrantScope,
     AuditAction,
+    Candidate,
+    CandidateChannelConsent,
+    CandidateTelegramLink,
     DeliveryChannel,
     DeliveryStatus,
+    Event,
+    EventStatus,
     NotificationDeliveryAttempt,
     NotificationOutbox,
     NotificationPreference,
@@ -68,7 +73,7 @@ from app.notification_service import (
 from app.quiet_hours import effective_send_time, next_occurrence
 from app.smtp import SmtpConfig, SmtpSendResult
 from app.telegram import REVOKING_ERROR_CLASSES, TelegramConfig, TelegramSendResult
-from app.utils import utc_now
+from app.utils import ensure_aware, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +85,20 @@ CONSENT_MISSING_ERROR_CLASS = "consent_missing"
 ADDRESS_UNVERIFIED_ERROR_CLASS = "address_unverified"
 RECIPIENT_UNAVAILABLE_ERROR_CLASS = "recipient_unavailable"
 RECIPIENT_MISSING_ERROR_CLASS = "recipient_missing"
+# Phase 10 (candidate rows).
+CANDIDATE_UNAVAILABLE_ERROR_CLASS = "candidate_unavailable"
+EVENT_STALE_ERROR_CLASS = "event_stale"
+ADDRESS_CHANGED_ERROR_CLASS = "address_changed"
+
+# Candidate message types whose linked event must still be fresh at send
+# time (see _candidate_event_is_stale).
+_CANDIDATE_EVENT_FRESH_TYPES = frozenset(
+    {
+        NotificationType.CANDIDATE_INTERVIEW_SCHEDULED,
+        NotificationType.CANDIDATE_INTERVIEW_REMINDER,
+        NotificationType.CANDIDATE_INTERVIEW_RESCHEDULED,
+    }
+)
 
 # Test hooks: module-level sender callables. Unit tests monkeypatch these;
 # integration tests point Settings at stub servers and use the real ones.
@@ -259,12 +278,18 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
     try:
         if (
             not locked.quiet_hours_bypassed
-            and locked.recipient_user_id is not None
             and locked.scheduled_at is not None
+            and (locked.recipient_user_id is not None or locked.recipient_candidate_id is not None)
         ):
-            preference = preference_for(
-                db, locked.recipient_user_id, settings.notification_default_timezone
-            )
+            if locked.recipient_user_id is not None:
+                preference = preference_for(
+                    db, locked.recipient_user_id, settings.notification_default_timezone
+                )
+            else:
+                # Phase 10: candidates have no personal preferences; the
+                # system-wide quiet hours/timezone apply (external messages
+                # are not sent at night by default, PRODUCT_SPEC §8).
+                preference = _candidate_quiet_preference(settings)
             effective = effective_send_time(locked.scheduled_at, preference=preference, now_utc=now)
             if effective > now:
                 # Inside quiet hours: postpone to the first allowed minute.
@@ -319,6 +344,115 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
         return _record_failure(db, locked, settings=settings, now=now, error_class="internal_error")
 
 
+def _candidate_quiet_preference(settings: Settings) -> NotificationPreference:
+    """Synthetic quiet-hours schedule for candidate messages (phase 10).
+
+    Candidates have no preference row of their own; the system defaults
+    apply (timezone + quiet hours + workdays from the settings).
+    """
+    return NotificationPreference(
+        user_id=uuid.UUID(int=0),  # synthetic, never flushed
+        timezone=settings.notification_default_timezone,
+        quiet_hours_start=settings.notification_quiet_hours_start,
+        quiet_hours_end=settings.notification_quiet_hours_end,
+        workdays=[int(day) for day in settings.notification_workdays.split(",")],
+        enabled_types=[member.value for member in NotificationType],
+        enabled_channels=[DeliveryChannel.IN_APP.value],
+    )
+
+
+def _candidate_event_is_stale(db: Session, locked: NotificationOutbox, *, now: datetime) -> bool:
+    """True when the interview this message is about is no longer fresh.
+
+    The reminder/scheduled/rescheduled letters must not leave after the
+    interview was moved, cancelled, completed or already began: the event
+    is re-read and re-checked right before the provider call (the stale
+    plan is normally cancelled by the mutation itself — this is the
+    send-time backstop for races and legacy rows).
+    """
+    if locked.notification_type not in _CANDIDATE_EVENT_FRESH_TYPES:
+        return False
+    if locked.object_type != "event" or locked.object_id is None:
+        return False
+    event = db.get(Event, locked.object_id)
+    if event is None:
+        return True
+    if event.status != EventStatus.SCHEDULED:
+        return True
+    return ensure_aware(event.starts_at) <= now
+
+
+def _resolve_candidate_target(
+    db: Session, locked: NotificationOutbox, *, settings: Settings
+) -> tuple[_ExternalTarget | None, str | None]:
+    """Resolve a phase-10 candidate row (fail-closed at send time).
+
+    The recipient is derived exclusively from server-side state: the
+    candidate's own consent record, their card address (for email — the
+    consent is pinned to its normalized value) or their Telegram binding.
+    A stale event, revoked consent, changed address, deleted candidate or
+    missing binding skips the row without any network call.
+    """
+    from app.smtp import config_from_settings as smtp_config_from_settings
+    from app.telegram import config_from_settings as telegram_config_from_settings
+
+    now = utc_now()
+    candidate_id = locked.recipient_candidate_id
+    assert candidate_id is not None
+    candidate = db.get(Candidate, candidate_id)
+    if candidate is None or candidate.deleted_at is not None:
+        return None, CANDIDATE_UNAVAILABLE_ERROR_CLASS
+    if _candidate_event_is_stale(db, locked, now=now):
+        return None, EVENT_STALE_ERROR_CLASS
+
+    if locked.channel == DeliveryChannel.TELEGRAM:
+        if not telegram_config_from_settings(settings).is_configured:
+            return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+        link = db.get(CandidateTelegramLink, candidate_id)
+        if link is None or link.chat_id is None:
+            return None, BINDING_MISSING_ERROR_CLASS
+        if link.revoked_at is not None:
+            return None, BINDING_REVOKED_ERROR_CLASS
+        consent = db.get(CandidateChannelConsent, (candidate_id, DeliveryChannel.TELEGRAM.value))
+        if consent is None or not consent.granted:
+            return None, CONSENT_MISSING_ERROR_CLASS
+        return (
+            _ExternalTarget(
+                channel=DeliveryChannel.TELEGRAM,
+                chat_id=link.chat_id,
+                title=locked.title,
+                body=locked.body,
+            ),
+            None,
+        )
+
+    if locked.channel == DeliveryChannel.EMAIL:
+        if not smtp_config_from_settings(settings).is_configured:
+            return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+        if not candidate.email:
+            return None, BINDING_MISSING_ERROR_CLASS
+        consent = db.get(CandidateChannelConsent, (candidate_id, DeliveryChannel.EMAIL.value))
+        if consent is None or not consent.granted:
+            return None, CONSENT_MISSING_ERROR_CLASS
+        from app.utils import normalize_email
+
+        if consent.email_normalized != normalize_email(candidate.email):
+            # The address changed after the consent was recorded: the
+            # consent does not cover the new address — fail closed.
+            return None, ADDRESS_CHANGED_ERROR_CLASS
+        return (
+            _ExternalTarget(
+                channel=DeliveryChannel.EMAIL,
+                email=candidate.email,
+                title=locked.title,
+                body=locked.body,
+            ),
+            None,
+        )
+
+    return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+
+
 def _resolve_external_target(
     db: Session, locked: NotificationOutbox, *, settings: Settings
 ) -> tuple[_ExternalTarget | None, str | None]:
@@ -327,9 +461,14 @@ def _resolve_external_target(
     Returns (target, None) when the message may be sent, else (None,
     skip_error_class). Consent, bindings and the global configuration are
     re-validated here at send time (scheduling-time checks are advisory).
+    Phase-10 candidate rows are resolved from the candidate's own state
+    (see :func:`_resolve_candidate_target`).
     """
     from app.smtp import config_from_settings as smtp_config_from_settings
     from app.telegram import config_from_settings as telegram_config_from_settings
+
+    if locked.recipient_candidate_id is not None:
+        return _resolve_candidate_target(db, locked, settings=settings)
 
     channel = locked.channel
     template = locked.template
@@ -407,11 +546,26 @@ def _resolve_external_target(
     return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
 
 
-def _note_external_success(db: Session, user_id: UUID | None, channel: DeliveryChannel) -> None:
+def _note_external_success(
+    db: Session,
+    user_id: UUID | None,
+    channel: DeliveryChannel,
+    *,
+    candidate_id: UUID | None = None,
+) -> None:
     """Record a successful provider handoff on the binding (PII-free)."""
+    now = utc_now()
+    if candidate_id is not None:
+        # Phase 10: the candidate's own binding.
+        if channel == DeliveryChannel.TELEGRAM:
+            candidate_link = db.get(CandidateTelegramLink, candidate_id)
+            if candidate_link is not None:
+                candidate_link.last_sent_at = now
+                candidate_link.last_error_class = None
+                candidate_link.last_error_at = None
+        return
     if user_id is None:
         return
-    now = utc_now()
     if channel == DeliveryChannel.TELEGRAM:
         link = db.get(TelegramLink, user_id)
         if link is not None:
@@ -427,12 +581,26 @@ def _note_external_success(db: Session, user_id: UUID | None, channel: DeliveryC
 
 
 def _note_external_error(
-    db: Session, user_id: UUID | None, channel: DeliveryChannel, error_class: str
+    db: Session,
+    user_id: UUID | None,
+    channel: DeliveryChannel,
+    error_class: str,
+    *,
+    candidate_id: UUID | None = None,
 ) -> None:
     """Record a delivery failure class on the binding (PII-free)."""
+    now = utc_now()
+    if candidate_id is not None:
+        # Phase 10: the candidate's own binding (email has no separate
+        # candidate binding — the state derives from the consent/card).
+        if channel == DeliveryChannel.TELEGRAM:
+            candidate_link = db.get(CandidateTelegramLink, candidate_id)
+            if candidate_link is not None:
+                candidate_link.last_error_class = error_class
+                candidate_link.last_error_at = now
+        return
     if user_id is None:
         return
-    now = utc_now()
     if channel == DeliveryChannel.TELEGRAM:
         link = db.get(TelegramLink, user_id)
         if link is not None:
@@ -551,6 +719,7 @@ def _process_external_row_locked(
         return locked.status.value
     channel = target.channel
     recipient_user_id = locked.recipient_user_id
+    recipient_candidate_id = locked.recipient_candidate_id
     channel_value = channel.value
     # Fresh lease covering the bounded provider call (recovery re-queues on
     # crash exactly like for in-app rows).
@@ -637,7 +806,7 @@ def _process_external_row_locked(
                 provider_message_id=provider_message_id,
             )
         )
-        _note_external_success(db, recipient_user_id, channel)
+        _note_external_success(db, recipient_user_id, channel, candidate_id=recipient_candidate_id)
         db.commit()
         return final.status.value
 
@@ -670,13 +839,20 @@ def _process_external_row_locked(
             error_class=error_class or "unknown",
         )
     )
-    _note_external_error(db, recipient_user_id, channel, final.error_class)
+    _note_external_error(
+        db, recipient_user_id, channel, final.error_class, candidate_id=recipient_candidate_id
+    )
     if (
         outcome == "perm_error"
         and channel == DeliveryChannel.TELEGRAM
         and (error_class or "") in REVOKING_ERROR_CLASSES
     ):
-        _auto_revoke_telegram(db, user_id=recipient_user_id, error_class=final.error_class)
+        if recipient_candidate_id is not None:
+            _auto_revoke_candidate_telegram(
+                db, candidate_id=recipient_candidate_id, error_class=final.error_class
+            )
+        else:
+            _auto_revoke_telegram(db, user_id=recipient_user_id, error_class=final.error_class)
     if terminally_failed:
         _alert_pilot_on_terminal_failure(db, row=final, now=now)
     db.commit()
@@ -698,6 +874,25 @@ def _auto_revoke_telegram(db: Session, *, user_id: UUID | None, error_class: str
         AuditAction.CHANNEL_AUTO_REVOKED,
         subject=user_id,
         details=f"channel=telegram reason=auto_blocked class={error_class}",
+        commit=False,
+    )
+
+
+def _auto_revoke_candidate_telegram(db: Session, *, candidate_id: UUID, error_class: str) -> None:
+    """Revoke a candidate's Telegram binding the provider proved dead
+    (blocked/chat gone/deactivated), with an audit record. Re-inviting
+    stays available. The recorded consent is left as-is: the binding is
+    the missing piece, and an HR-recorded refusal must not be erased."""
+    link = db.get(CandidateTelegramLink, candidate_id)
+    if link is None or link.revoked_at is not None:
+        return
+    link.revoked_at = utc_now()
+    link.revoke_reason = "auto_blocked"
+    record_event(
+        db,
+        AuditAction.CHANNEL_AUTO_REVOKED,
+        candidate_id=candidate_id,
+        details=f"channel=candidate_telegram reason=auto_blocked class={error_class}",
         commit=False,
     )
 

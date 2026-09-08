@@ -144,6 +144,7 @@ def schedule(
     *,
     recipient_user_id: UUID | None,
     external_recipient: str | None = None,
+    recipient_candidate_id: UUID | None = None,
     channel: DeliveryChannel = DeliveryChannel.IN_APP,
     type_: NotificationType,
     source: NotificationSource = NotificationSource.SYSTEM,
@@ -177,11 +178,25 @@ def schedule(
       mailbox — anything else raises ValueError and queues nothing. All
       other templates resolve the recipient from the user's own verified
       binding at send time and ignore any stored external value.
+    * ``recipient_candidate_id`` (phase 10) addresses a one-way candidate
+      message; the concrete email/chat is resolved by the worker from the
+      candidate's consented channel state at send time. It is mutually
+      exclusive with both user and external recipients.
     """
-    if recipient_user_id is None and external_recipient is None:
-        raise ValueError("either recipient_user_id or external_recipient is required")
-    if recipient_user_id is not None and external_recipient is not None:
-        raise ValueError("recipient_user_id and external_recipient are mutually exclusive")
+    recipient_count = sum(
+        1
+        for value in (recipient_user_id, external_recipient, recipient_candidate_id)
+        if value is not None
+    )
+    if recipient_count == 0:
+        raise ValueError(
+            "either recipient_user_id, external_recipient or recipient_candidate_id is required"
+        )
+    if recipient_count > 1:
+        raise ValueError(
+            "recipient_user_id, external_recipient and recipient_candidate_id "
+            "are mutually exclusive"
+        )
     if external_recipient is not None:
         from app.smtp import validate_mailbox
 
@@ -192,6 +207,7 @@ def schedule(
     row = NotificationOutbox(
         recipient_user_id=recipient_user_id,
         external_recipient=external_recipient,
+        recipient_candidate_id=recipient_candidate_id,
         channel=channel,
         notification_type=type_,
         source=source,
@@ -236,6 +252,29 @@ def cancel_pending_for_object(
     )
     cancelled = result.rowcount if result.rowcount is not None else 0  # type: ignore[attr-defined]
     return cancelled
+
+
+def cancel_pending_candidate_channel_messages(
+    db: Session, *, candidate_id: UUID, channel: DeliveryChannel, now: datetime | None = None
+) -> int:
+    """Cancel not-yet-claimed candidate messages of one channel.
+
+    Called when a candidate's consent for the channel is revoked (or the
+    Telegram binding unlinked): pending jobs of that channel must never
+    fire. Rows already ``sending`` finish with their own outcome (the
+    worker re-validates consent in every phase anyway). Returns the count.
+    """
+    now = now or utc_now()
+    result = db.execute(
+        update(NotificationOutbox)
+        .where(
+            NotificationOutbox.recipient_candidate_id == candidate_id,
+            NotificationOutbox.channel == channel,
+            NotificationOutbox.status == DeliveryStatus.QUEUED,
+        )
+        .values(status=DeliveryStatus.CANCELLED, cancelled_at=now)
+    )
+    return result.rowcount if result.rowcount is not None else 0  # type: ignore[attr-defined]
 
 
 def deliver_in_app(db: Session, outbox: NotificationOutbox, *, now: datetime | None = None) -> bool:

@@ -131,6 +131,8 @@ DEFAULT_EMAIL_VERIFICATION_TTL_HOURS = 24
 # Current version of the channel-consent terms. Stored with every opt-in so a
 # future policy change can ask users to re-confirm explicitly.
 CONSENT_POLICY_VERSION = "phase9-v1"
+# Phase 10: terms version of the candidate-communication consent policy.
+CANDIDATE_CONSENT_POLICY_VERSION = "phase10-v1"
 
 
 class Settings(BaseSettings):
@@ -267,6 +269,47 @@ class Settings(BaseSettings):
     integration_rate_window_s: int = Field(
         default=300, validation_alias="INTEGRATION_RATE_WINDOW_S"
     )
+    # Phase 10: anti-spam for manual candidate-message sends (per user).
+    candidate_message_rate_limit: int = Field(
+        default=20, validation_alias="CANDIDATE_MESSAGE_RATE_LIMIT"
+    )
+    candidate_message_rate_window_s: int = Field(
+        default=60, validation_alias="CANDIDATE_MESSAGE_RATE_WINDOW_S"
+    )
+    # Phase 10: hours before an interview at which the candidate reminder is
+    # queued (comma-separated list, same shape as the internal offsets).
+    candidate_interview_reminder_hours: str = Field(
+        default="24", validation_alias="CANDIDATE_INTERVIEW_REMINDER_HOURS"
+    )
+    # Phase 10: TTL of a candidate Telegram invitation token (minutes).
+    candidate_telegram_link_ttl_minutes: int = Field(
+        default=60, validation_alias="CANDIDATE_TELEGRAM_LINK_TTL_MINUTES"
+    )
+
+    def candidate_reminder_hours(self) -> list[float]:
+        """Parsed reminder offsets (hours), ascending, deduplicated."""
+        values: list[float] = []
+        for part in self.candidate_interview_reminder_hours.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            value = float(part)
+            if value < 0:
+                raise ValueError("CANDIDATE_INTERVIEW_REMINDER_HOURS must be non-negative")
+            if value not in values:
+                values.append(value)
+        return sorted(values)
+
+    @model_validator(mode="after")
+    def _validate_candidate_settings(self) -> "Settings":
+        if self.candidate_message_rate_limit < 1:
+            raise ValueError("CANDIDATE_MESSAGE_RATE_LIMIT must be at least 1")
+        if self.candidate_message_rate_window_s < 1:
+            raise ValueError("CANDIDATE_MESSAGE_RATE_WINDOW_S must be at least 1")
+        if self.candidate_telegram_link_ttl_minutes < 5:
+            raise ValueError("CANDIDATE_TELEGRAM_LINK_TTL_MINUTES must be at least 5")
+        self.candidate_reminder_hours()  # raises on garbage input
+        return self
 
     @property
     def is_production(self) -> bool:
