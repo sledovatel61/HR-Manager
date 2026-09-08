@@ -872,3 +872,241 @@ export interface CandidateEmailConfirmation {
   email_masked: string;
   expires_at: string;
 }
+
+// --- Phase 11: versioned document lists ---------------------------------------
+
+export type DocumentListStatus = "draft" | "published" | "archived";
+export type CandidateDocumentStatus = "missing" | "received";
+
+export interface DocumentListItemInput {
+  item_key: string;
+  name: string;
+  explanation?: string;
+  is_required?: boolean;
+}
+
+export interface DocumentListItem {
+  id: string;
+  item_key: string;
+  name: string;
+  explanation: string;
+  is_required: boolean;
+  sort_order: number;
+}
+
+export interface DocumentListVersion {
+  id: string;
+  list_id: string;
+  version_number: number;
+  status: DocumentListStatus;
+  row_version: number;
+  published_at: string | null;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+  items: DocumentListItem[];
+}
+
+export interface DocumentListSummary {
+  id: string;
+  name: string;
+  description: string;
+  scope_position: string | null;
+  scope_stage: CandidateStage | null;
+  version: number;
+  published_version_id: string | null;
+  published_version_number: number | null;
+  draft_version_id: string | null;
+  versions_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentListDetail {
+  id: string;
+  name: string;
+  description: string;
+  scope_position: string | null;
+  scope_stage: CandidateStage | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  published_version_id: string | null;
+  published_version_number: number | null;
+  versions: DocumentListVersion[];
+}
+
+export interface DocumentListCreateInput {
+  name: string;
+  description?: string;
+  scope_position?: string | null;
+  scope_stage?: CandidateStage | null;
+  items: DocumentListItemInput[];
+}
+
+export interface DocumentListUpdateInput {
+  expected_version: number;
+  name?: string;
+  description?: string;
+  scope_position?: string | null;
+  scope_stage?: CandidateStage | null;
+  clear_scope_position?: boolean;
+  clear_scope_stage?: boolean;
+}
+
+/** What a regular user may see: published lists only. */
+export interface PublishedDocumentList {
+  id: string;
+  name: string;
+  description: string;
+  scope_position: string | null;
+  scope_stage: CandidateStage | null;
+  published_version_id: string;
+  published_version_number: number;
+  items: DocumentListItem[];
+}
+
+export interface CandidateDocumentItem {
+  id: string;
+  item_key: string;
+  name: string;
+  explanation: string;
+  is_required: boolean;
+  sort_order: number;
+  status: CandidateDocumentStatus;
+  version: number;
+  changed_by_user_id: string | null;
+  changed_by_username: string | null;
+  changed_at: string | null;
+}
+
+export interface CandidateDocumentAssignment {
+  id: string;
+  candidate_id: string;
+  list_id: string;
+  list_name: string;
+  version_id: string;
+  version_number: number;
+  assigned_at: string;
+  assigned_by_user_id: string | null;
+  assigned_by_username: string | null;
+  assigned_by_rule_id: string | null;
+  items: CandidateDocumentItem[];
+  missing_required_count: number;
+  received_count: number;
+}
+
+export interface CandidateDocuments {
+  current: CandidateDocumentAssignment | null;
+  history: CandidateDocumentAssignment[];
+}
+
+export type CandidateDocumentMessageType = "document_request" | "document_reminder";
+
+export interface CandidateDocumentMessageInput {
+  message_type: CandidateDocumentMessageType;
+  channel?: CandidateChannelName;
+  idempotency_key: string;
+}
+
+// --- Phase 11: personal automation rules --------------------------------------
+
+export type AutomationTriggerType = "stage_entered" | "documents_missing_due";
+export type AutomationActionType =
+  | "apply_document_list"
+  | "send_document_request"
+  | "send_document_reminder";
+export type AutomationExecutionOutcome = "queued" | "applied" | "skipped" | "failed";
+
+export interface AutomationRuleConditions {
+  stage?: CandidateStage;
+  list_id?: string;
+  has_missing_required?: boolean;
+  channel?: CandidateChannelName;
+}
+
+export interface AutomationRule {
+  id: string;
+  owner_user_id: string;
+  name: string;
+  is_enabled: boolean;
+  trigger_type: AutomationTriggerType;
+  trigger_params: Record<string, unknown>;
+  conditions: AutomationRuleConditions;
+  action_type: AutomationActionType;
+  action_params: Record<string, unknown>;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutomationRuleInput {
+  name: string;
+  is_enabled?: boolean;
+  trigger_type: AutomationTriggerType;
+  trigger_params: Record<string, unknown>;
+  conditions: AutomationRuleConditions;
+  action_type: AutomationActionType;
+  action_params: Record<string, unknown>;
+}
+
+export interface AutomationRuleExecution {
+  id: string;
+  rule_id: string;
+  rule_version: number;
+  trigger_type: AutomationTriggerType;
+  trigger_object_type: string;
+  trigger_object_id: string | null;
+  trigger_object_version: number | null;
+  candidate_id: string | null;
+  action_type: AutomationActionType;
+  outcome: AutomationExecutionOutcome;
+  outcome_class: string | null;
+  dedupe_key: string;
+  list_id: string | null;
+  list_version_id: string | null;
+  executed_at: string;
+}
+
+export interface AutomationVocabulary {
+  triggers: AutomationTriggerType[];
+  actions: AutomationActionType[];
+  trigger_actions: Record<AutomationTriggerType, AutomationActionType[]>;
+  channels: CandidateChannelName[];
+  stages: CandidateStage[];
+  max_delay_days: number;
+}
+
+export const AUTOMATION_TRIGGER_LABELS: Record<AutomationTriggerType, string> = {
+  stage_entered: "Кандидат перешёл на этап",
+  documents_missing_due: "Документы не получены N дней после применения списка",
+};
+
+export const AUTOMATION_ACTION_LABELS: Record<AutomationActionType, string> = {
+  apply_document_list: "Применить опубликованный список документов",
+  send_document_request: "Отправить запрос документов",
+  send_document_reminder: "Отправить напоминание о документах",
+};
+
+export const AUTOMATION_OUTCOME_LABELS: Record<AutomationExecutionOutcome, string> = {
+  queued: "Поставлено в очередь",
+  applied: "Список применён",
+  skipped: "Пропущено",
+  failed: "Ошибка",
+};
+
+export const AUTOMATION_SKIP_LABELS: Record<string, string> = {
+  owner_inactive: "владелец правила деактивирован",
+  out_of_scope: "кандидат вне вашей зоны доступа",
+  candidate_deleted: "кандидат удалён",
+  condition_stage: "не совпал этап",
+  condition_list: "не совпал список документов",
+  condition_missing_required: "условие по недостающим документам не выполнено",
+  condition_channel: "канал не разрешён кандидатом",
+  already_applied: "список уже применён",
+  list_not_published: "список не опубликован",
+  no_assignment: "кандидату не применён список",
+  nothing_missing: "все документы уже получены",
+  no_allowed_channel: "нет разрешённого канала связи",
+  duplicate: "повтор того же события",
+};

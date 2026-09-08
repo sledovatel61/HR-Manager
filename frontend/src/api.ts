@@ -1,6 +1,20 @@
 import type {
   AccessGrant,
   AdminChannels,
+  AutomationRule,
+  AutomationRuleExecution,
+  AutomationRuleInput,
+  AutomationVocabulary,
+  CandidateDocumentMessageInput,
+  CandidateDocumentStatus,
+  CandidateDocuments,
+  DocumentListCreateInput,
+  DocumentListDetail,
+  DocumentListItemInput,
+  DocumentListSummary,
+  DocumentListUpdateInput,
+  DocumentListVersion,
+  PublishedDocumentList,
   CandidateChannels,
   CandidateEmailConfirmation,
   CandidateChannelName,
@@ -796,5 +810,158 @@ export async function cancelCandidateMessage(
   return request<{ id: string; status: string }>(
     `/candidates/${candidateId}/messages/${messageId}/cancel`,
     { method: "POST" },
+  );
+}
+
+// --- Phase 11: document lists ---------------------------------------------------
+
+export async function listPublishedDocumentLists(): Promise<{ items: PublishedDocumentList[] }> {
+  return request<{ items: PublishedDocumentList[] }>("/document-lists/published");
+}
+
+export async function listDocumentLists(): Promise<{
+  items: DocumentListSummary[];
+  total: number;
+}> {
+  return request<{ items: DocumentListSummary[]; total: number }>("/document-lists");
+}
+
+export async function getDocumentList(listId: string): Promise<DocumentListDetail> {
+  return request<DocumentListDetail>(`/document-lists/${listId}`);
+}
+
+export async function createDocumentList(
+  input: DocumentListCreateInput,
+): Promise<DocumentListDetail> {
+  return request<DocumentListDetail>("/document-lists", { method: "POST", body: input });
+}
+
+export async function updateDocumentList(
+  listId: string,
+  input: DocumentListUpdateInput,
+): Promise<DocumentListDetail> {
+  return request<DocumentListDetail>(`/document-lists/${listId}`, {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+export async function createDocumentListVersion(listId: string): Promise<DocumentListVersion> {
+  return request<DocumentListVersion>(`/document-lists/${listId}/versions`, { method: "POST" });
+}
+
+export async function updateDocumentListVersionItems(
+  listId: string,
+  versionId: string,
+  input: { expected_row_version: number; items: DocumentListItemInput[] },
+): Promise<DocumentListVersion> {
+  return request<DocumentListVersion>(`/document-lists/${listId}/versions/${versionId}/items`, {
+    method: "PUT",
+    body: input,
+  });
+}
+
+export async function publishDocumentListVersion(
+  listId: string,
+  versionId: string,
+  expectedRowVersion: number,
+): Promise<DocumentListVersion> {
+  return request<DocumentListVersion>(
+    `/document-lists/${listId}/versions/${versionId}/publish`,
+    { method: "POST", body: { expected_row_version: expectedRowVersion } },
+  );
+}
+
+export async function archiveDocumentListVersion(
+  listId: string,
+  versionId: string,
+  expectedRowVersion: number,
+): Promise<DocumentListVersion> {
+  return request<DocumentListVersion>(
+    `/document-lists/${listId}/versions/${versionId}/archive`,
+    { method: "POST", body: { expected_row_version: expectedRowVersion } },
+  );
+}
+
+// --- Phase 11: candidate documents -----------------------------------------------
+
+export async function getCandidateDocuments(candidateId: string): Promise<CandidateDocuments> {
+  return request<CandidateDocuments>(`/candidates/${candidateId}/documents`);
+}
+
+export async function applyCandidateDocumentList(
+  candidateId: string,
+  listId: string,
+  replace = false,
+): Promise<CandidateDocuments> {
+  return request<CandidateDocuments>(`/candidates/${candidateId}/documents/apply`, {
+    method: "POST",
+    body: { list_id: listId, replace },
+  });
+}
+
+export async function updateCandidateDocumentItem(
+  candidateId: string,
+  itemId: string,
+  input: { status: CandidateDocumentStatus; expected_version: number },
+): Promise<CandidateDocuments> {
+  return request<CandidateDocuments>(`/candidates/${candidateId}/documents/items/${itemId}`, {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+export async function sendCandidateDocumentMessage(
+  candidateId: string,
+  input: CandidateDocumentMessageInput,
+): Promise<CandidateMessageSendResult> {
+  return request<CandidateMessageSendResult>(`/candidates/${candidateId}/documents/messages`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+// --- Phase 11: automation rules --------------------------------------------------
+
+export async function fetchAutomationVocabulary(): Promise<AutomationVocabulary> {
+  return request<AutomationVocabulary>("/automation-rules/vocabulary");
+}
+
+export async function listAutomationRules(): Promise<{ items: AutomationRule[]; total: number }> {
+  return request<{ items: AutomationRule[]; total: number }>("/automation-rules");
+}
+
+export async function createAutomationRule(input: AutomationRuleInput): Promise<AutomationRule> {
+  return request<AutomationRule>("/automation-rules", { method: "POST", body: input });
+}
+
+export async function updateAutomationRule(
+  ruleId: string,
+  input: Omit<AutomationRuleInput, "is_enabled"> & { expected_version: number },
+): Promise<AutomationRule> {
+  return request<AutomationRule>(`/automation-rules/${ruleId}`, { method: "PUT", body: input });
+}
+
+export async function toggleAutomationRule(
+  ruleId: string,
+  input: { expected_version: number; is_enabled: boolean },
+): Promise<AutomationRule> {
+  return request<AutomationRule>(`/automation-rules/${ruleId}/toggle`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function deleteAutomationRule(ruleId: string): Promise<void> {
+  await request<void>(`/automation-rules/${ruleId}`, { method: "DELETE" });
+}
+
+export async function listAutomationRuleExecutions(
+  ruleId: string,
+  limit = 20,
+  offset = 0,
+): Promise<{ items: AutomationRuleExecution[]; total: number }> {
+  return request<{ items: AutomationRuleExecution[]; total: number }>(
+    `/automation-rules/${ruleId}/executions?limit=${limit}&offset=${offset}`,
   );
 }

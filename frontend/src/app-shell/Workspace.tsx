@@ -13,6 +13,8 @@ import { PreferencesPage } from "../features/notifications/PreferencesPage";
 import { IntegrationsPage } from "../features/notifications/IntegrationsPage";
 import { AdminQueuePage } from "../features/notifications/AdminQueuePage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
+import { RulesPage } from "../features/automation/RulesPage";
+import { DocumentListsPage } from "../features/documents/DocumentListsPage";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
 import "./workspace.css";
 
@@ -32,6 +34,8 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   reminders: { label: "Напоминания", icon: "clock" },
   preferences: { label: "Настройки уведомлений", icon: "settings" },
   integrations: { label: "Интеграции", icon: "arrow-right-left" },
+  rules: { label: "Мои правила", icon: "list" },
+  "document-lists": { label: "Списки документов", icon: "file-text" },
   admin: { label: "Администрирование", icon: "shield" },
 };
 
@@ -41,10 +45,23 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   // reminders and preferences are available to every role; the admin
   // screen (queue diagnostics + pilot setup) is admin-only. The backend
   // re-checks every right regardless of the navigation.
-  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations"];
-  return role === "hr"
-    ? ["queue", "calendar", "kanban", "deleted", ...personal]
-    : ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "admin"];
+  // «Мои правила» (phase 11) are personal for every role; document list
+  // management (versions/publication) is admin-only.
+  const personal: WorkspaceSection[] = [
+    "notifications",
+    "reminders",
+    "rules",
+    "preferences",
+    "integrations",
+  ];
+  if (role === "hr") {
+    return ["queue", "calendar", "kanban", "deleted", ...personal];
+  }
+  const team: WorkspaceSection[] = ["candidates", "calendar", "kanban", "deleted", "analytics"];
+  if (role === "manager") {
+    return [...team, ...personal, "admin"];
+  }
+  return [...team, ...personal, "document-lists", "admin"];
 }
 
 function initialsOf(fullName: string, username: string): string {
@@ -145,6 +162,8 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           {section === "reminders" && <RemindersPage user={user} />}
           {section === "preferences" && <PreferencesPage />}
           {section === "integrations" && <IntegrationsPage user={user} />}
+          {section === "rules" && <RulesPage />}
+          {section === "document-lists" && <DocumentListsPage />}
           {section === "admin" && <AdminQueuePage />}
           {section !== "calendar" &&
             section !== "kanban" &&
@@ -153,6 +172,8 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             section !== "reminders" &&
             section !== "preferences" &&
             section !== "integrations" &&
+            section !== "rules" &&
+            section !== "document-lists" &&
             section !== "admin" && (
             <CandidatesListPage
               key={section}

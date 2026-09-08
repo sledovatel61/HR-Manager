@@ -1,8 +1,10 @@
 # Текущее состояние и handoff
 
 > Фазы 0–10 приняты. Актуальный `main` после merge PR #14 —
-> `7cebac27a89b7544ff4ff494f45eb906840d96e7`. Следующий этап — Phase 11;
-> использовать `prompts/PHASE_11_PROMPT.md`.
+> `7cebac27a89b7544ff4ff494f45eb906840d96e7` (плюс docs-коммит
+> `1a5d0291780a8e41964ff9e47de8e8f09983544f`). **Phase 11 реализована и
+> ожидает review** в ветке `arena/01a081a2-hr-manager` — см.
+> `docs/phase-11-report-agent2.md`.
 
 ## Что принято
 
@@ -44,6 +46,28 @@ provider call, маскирование ссылки в истории и отс
 
 PR #13 с альтернативной реализацией закрыт как superseded by PR #14.
 
+## Phase 11 (на review)
+
+- Ветка `arena/01a081a2-hr-manager` от baseline
+  `1a5d0291780a8e41964ff9e47de8e8f09983544f`; отчёт —
+  `docs/phase-11-report-agent2.md` (PR, SHA и результаты CI — там).
+- Миграционный head после Phase 11: `0012`
+  (`0012_document_lists_and_automation_rules`, обратимая; цикл
+  upgrade→downgrade→upgrade + повторный upgrade доказан на PostgreSQL 16).
+- Что добавлено: версионируемые списки документов
+  (`draft/published/archived`, одна опубликованная версия на список
+  гарантирована partial unique index), точный снимок применённой версии у
+  кандидата с отметками `missing|received` под optimistic concurrency,
+  ручные `document_request`/`document_reminder` только о реально
+  недостающих документах через существующий outbox/worker с send-time
+  revalidation, личные правила из закрытых словарей (триггеры
+  `stage_entered`/`documents_missing_due`, три действия) с durable dedupe,
+  неизменяемой историей срабатываний, soft delete и подчинением
+  quiet-hours/workdays владельца; frontend: «Списки документов» (admin),
+  вкладка «Документы» в карточке кандидата, «Мои правила».
+- Архитектура — раздел «Списки документов и правила автоматизации
+  (этап 11)» в `docs/ARCHITECTURE.md`.
+
 ## Ограничения локальной проверки merge
 
 - На Windows полный backend-прогон локально блокировался Unix-only импортом
@@ -56,9 +80,8 @@ PR #13 с альтернативной реализацией закрыт ка�
 
 ## Следующая фаза
 
-Строго по `ROADMAP.md` следующая работа — **Phase 11: списки документов и
-правила автоматизации**. Полный самодостаточный контракт находится в
-`prompts/PHASE_11_PROMPT.md`.
+Пока PR Phase 11 не влит, следующая работа — его review/merge владельцем.
+Для справки: контракт Phase 11 находится в `prompts/PHASE_11_PROMPT.md`.
 
 Scope:
 

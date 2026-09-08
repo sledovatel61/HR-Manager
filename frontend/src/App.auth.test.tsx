@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -81,6 +81,23 @@ describe("App authentication flow", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "Кандидаты" })
     ).toBeInTheDocument();
+  });
+
+  it("shows the phase 11 sections by role: rules for everyone, document lists for admins", async () => {
+    const { unmount } = render(<App currentUserFetcher={vi.fn().mockResolvedValue(ADMIN)} />);
+    const nav = await screen.findByRole("navigation", { name: "Разделы" });
+    expect(within(nav).getByRole("button", { name: "Мои правила" })).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "Списки документов" })).toBeInTheDocument();
+    unmount();
+
+    const HR: CurrentUser = {
+      ...ADMIN,
+      user: { ...ADMIN.user, id: "22222222-2222-4222-8222-222222222222", username: "hr1", role: "hr" },
+    };
+    render(<App currentUserFetcher={vi.fn().mockResolvedValue(HR)} />);
+    const hrNav = await screen.findByRole("navigation", { name: "Разделы" });
+    expect(within(hrNav).getByRole("button", { name: "Мои правила" })).toBeInTheDocument();
+    expect(within(hrNav).queryByRole("button", { name: "Списки документов" })).toBeNull();
   });
 
   it("shows a loading state while checking the session", () => {

@@ -36,9 +36,11 @@ from sqlalchemy import Connection, func, select, text
 from sqlalchemy.orm import Session
 
 from app.audit import record_event
+from app.automation_rules import scan_due_rules
 from app.candidate_messages import CONFIRM_URL_PLACEHOLDER, email_confirm_url
 from app.config import Settings
 from app.db import build_engine
+from app.document_lists import DOCUMENT_ASSIGNMENT_OBJECT_TYPE, revalidate_document_message
 from app.models import (
     AccessGrant,
     AccessGrantScope,
@@ -93,6 +95,10 @@ CANDIDATE_UNAVAILABLE_ERROR_CLASS = "candidate_unavailable"
 EVENT_STALE_ERROR_CLASS = "event_stale"
 ADDRESS_CHANGED_ERROR_CLASS = "address_changed"
 TOKEN_INACTIVE_ERROR_CLASS = "token_inactive"
+# Phase 11 (document rows built from an applied list).
+DOCUMENTS_COMPLETE_ERROR_CLASS = "documents_complete"
+ASSIGNMENT_REPLACED_ERROR_CLASS = "assignment_replaced"
+RULE_INACTIVE_ERROR_CLASS = "rule_inactive"
 
 # Candidate message types whose linked event must still be fresh at send
 # time (see _candidate_event_is_stale).
@@ -289,6 +295,13 @@ def process_row(db: Session, row: NotificationOutbox, *, settings: Settings, now
                 preference = preference_for(
                     db, locked.recipient_user_id, settings.notification_default_timezone
                 )
+            elif locked.source == NotificationSource.RULE and locked.initiator_user_id is not None:
+                # Phase 11: a rule-queued candidate message obeys the RULE
+                # OWNER's timezone, quiet hours and workdays (never the
+                # bypass flag — rules cannot bypass quiet hours).
+                preference = preference_for(
+                    db, locked.initiator_user_id, settings.notification_default_timezone
+                )
             else:
                 # Phase 10: candidates have no personal preferences; the
                 # system-wide quiet hours/timezone apply (external messages
@@ -462,6 +475,23 @@ def _resolve_candidate_target(
     if _candidate_event_is_stale(db, locked, now=now):
         return None, EVENT_STALE_ERROR_CLASS
 
+    # Phase 11: a document request/reminder built from an applied list is
+    # re-checked against the CURRENT snapshot right before the provider
+    # call — nothing leaves if every listed item was received meanwhile
+    # (or the list was replaced); a partially received list re-renders
+    # the body from the remaining items only. A rule-queued row also
+    # requires the rule to be still enabled and its owner active/in scope.
+    body_override: str | None = None
+    if locked.object_type == DOCUMENT_ASSIGNMENT_OBJECT_TYPE:
+        check = revalidate_document_message(db, candidate=candidate, row=locked)
+        if check.skip_class is not None:
+            return None, check.skip_class
+        body_override = check.body
+    if locked.source == NotificationSource.RULE and locked.rule_id is not None:
+        skip = _rule_row_skip_class(db, locked, candidate)
+        if skip is not None:
+            return None, skip
+
     if locked.channel == DeliveryChannel.TELEGRAM:
         if not telegram_config_from_settings(settings).is_configured:
             return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
@@ -478,7 +508,7 @@ def _resolve_candidate_target(
                 channel=DeliveryChannel.TELEGRAM,
                 chat_id=link.chat_id,
                 title=locked.title,
-                body=locked.body,
+                body=body_override if body_override is not None else locked.body,
             ),
             None,
         )
@@ -506,12 +536,35 @@ def _resolve_candidate_target(
                 channel=DeliveryChannel.EMAIL,
                 email=candidate.email,
                 title=locked.title,
-                body=locked.body,
+                body=body_override if body_override is not None else locked.body,
             ),
             None,
         )
 
     return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+
+
+def _rule_row_skip_class(
+    db: Session, locked: NotificationOutbox, candidate: Candidate
+) -> str | None:
+    """Send-time check of a rule-queued row (phase 11).
+
+    The rule must still exist, be enabled and not deleted, and its owner
+    must still be active with the candidate inside the CURRENT scope — a
+    disabled rule, a deactivated owner or a revoked pilot grant stops the
+    job at the last moment (disable also cancels queued rows eagerly; this
+    is the backstop for rows claimed in between).
+    """
+    from app.access import candidate_in_scope
+    from app.models import AutomationRule
+
+    rule = db.get(AutomationRule, locked.rule_id)
+    if rule is None or not rule.is_enabled or rule.deleted_at is not None:
+        return RULE_INACTIVE_ERROR_CLASS
+    owner = db.get(User, rule.owner_user_id)
+    if owner is None or not candidate_in_scope(db, owner, candidate):
+        return RULE_INACTIVE_ERROR_CLASS
+    return None
 
 
 def _resolve_external_target(
@@ -1298,6 +1351,21 @@ def run_worker(settings: Settings) -> None:
                     db.rollback()
                     logger.exception("worker pass failed; retrying after the poll interval")
                     claimed = []
+                if settings.automation_rules_enabled:
+                    # Phase 11: scheduled document-reminder rules. Isolated
+                    # from the delivery pass — a rule failure never delays
+                    # queued deliveries (each evaluation commits alone).
+                    with Session(engine) as rules_db:
+                        try:
+                            scan_due_rules(
+                                rules_db,
+                                settings=settings,
+                                now=now,
+                                batch_size=settings.automation_rules_batch_size,
+                            )
+                        except Exception:
+                            rules_db.rollback()
+                            logger.exception("rule scheduler pass failed; retrying next pass")
                 # Process each claimed row in its own transaction (the rows
                 # were already committed as 'sending' by claim_batch).
                 for row in claimed:

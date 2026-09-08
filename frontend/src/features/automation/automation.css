@@ -1,0 +1,330 @@
+/* --- Phase 11: rules and document lists ---------------------------------------- */
+
+.rules-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.rules-intro {
+  margin: 0;
+  max-width: 720px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.rule-form .rule-conditions {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 10px 12px 4px;
+  margin: 0;
+}
+
+.rule-form .rule-conditions legend {
+  padding: 0 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.rule-conditions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.rule-form-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.rule-card.is-disabled .notif-card-title {
+  color: var(--muted);
+}
+
+.rule-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.rule-card-summary {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 8px 0 4px;
+  font-size: 0.88rem;
+}
+
+.rule-card-summary dt {
+  color: var(--muted);
+}
+
+.rule-card-summary dd {
+  margin: 0;
+}
+
+.rule-history {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.rule-history-total,
+.rule-empty-history {
+  margin: 6px 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.rule-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rule-history-item {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.rule-history-item.is-queued,
+.rule-history-item.is-applied {
+  border-left-color: var(--accent-default);
+}
+
+.rule-history-item.is-failed {
+  border-left-color: #f87171;
+}
+
+.rule-history-when {
+  color: var(--muted);
+}
+
+.rule-history-meta {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+/* --- Document lists (admin) ------------------------------------------------ */
+
+.doclist-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .doclist-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.doclist-nav {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.doclist-nav-item {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.doclist-nav-item.is-active {
+  border-color: var(--accent-default);
+  background: rgba(96, 165, 250, 0.12);
+}
+
+.doclist-nav-item small {
+  color: var(--muted);
+}
+
+.doclist-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.doclist-versions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.doclist-version {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, var(--panel), #0e1729);
+}
+
+.doclist-version-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.doclist-version-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.doclist-items {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.doclist-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.88rem;
+}
+
+.doclist-item-key {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.doclist-item-explanation {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.doclist-item-editor {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto auto;
+  gap: 8px;
+  align-items: end;
+}
+
+@media (max-width: 900px) {
+  .doclist-item-editor {
+    grid-template-columns: 1fr;
+  }
+}
+
+.doclist-item-editor .field {
+  margin: 0;
+}
+
+/* --- Candidate documents tab -------------------------------------------------- */
+
+.cand-docs {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cand-docs-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cand-docs-head h3 {
+  margin: 0 0 4px;
+}
+
+.cand-docs-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.cand-docs-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cand-docs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cand-docs-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 4px 12px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.cand-docs-item.is-received {
+  border-color: rgba(52, 211, 153, 0.45);
+}
+
+.cand-docs-item-name {
+  font-weight: 500;
+}
+
+.cand-docs-item-note {
+  grid-column: 2 / -1;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.cand-docs-apply {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.cand-docs-apply .field {
+  min-width: 240px;
+  flex: 1;
+}
+
+.cand-docs-history summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+}

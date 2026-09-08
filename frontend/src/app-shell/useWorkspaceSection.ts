@@ -11,6 +11,8 @@ export type WorkspaceSection =
   | "reminders"
   | "preferences"
   | "integrations"
+  | "rules"
+  | "document-lists"
   | "admin";
 
 const SECTION_HASHES: Record<WorkspaceSection, string> = {
@@ -24,6 +26,8 @@ const SECTION_HASHES: Record<WorkspaceSection, string> = {
   reminders: "#/reminders",
   preferences: "#/preferences",
   integrations: "#/integrations",
+  rules: "#/rules",
+  "document-lists": "#/document-lists",
   admin: "#/admin",
 };
 

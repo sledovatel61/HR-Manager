@@ -70,13 +70,17 @@ HR Manager — многопользовательская внутренняя �
 - На reviewed SHA зелёные Backend checks, PostgreSQL integration, Frontend checks
   и Compose stack smoke. Ограничения локальной Windows-проверки записаны в
   `docs/CURRENT_STATUS.md`.
-- Следующая работа: Phase 11 — версионируемые списки документов, учёт
-  недостающих документов и ограниченные личные правила. Полное задание:
-  `prompts/PHASE_11_PROMPT.md`.
-- Phase 11 должна переиспользовать существующие outbox/worker, согласия,
-  quiet-hours и серверные шаблоны Phase 10; универсальный rule engine запрещён.
-- Для Phase 11 требуется отдельный отчёт `docs/phase-11-report-<agent>.md` и
-  handoff для следующей работы.
+- Phase 11 (версионируемые списки документов, учёт недостающих документов и
+  ограниченные личные правила) реализована в ветке
+  `arena/01a081a2-hr-manager` и ожидает review; отчёт —
+  `docs/phase-11-report-agent2.md`, задание — `prompts/PHASE_11_PROMPT.md`.
+  Миграционный head — `0012`.
+- Phase 11 переиспользует существующие outbox/worker, согласия, quiet-hours и
+  серверные шаблоны Phase 10; универсальный rule engine по-прежнему запрещён —
+  словари триггеров/условий/действий закрыты на сервере.
+- Правила: soft delete, история срабатываний неизменяема, отложенные задания
+  правила отменяются при disable/update/delete, владелец правила не может
+  обойти quiet-hours, потеря прав/деактивация делает правило невыполнимым.
 
 ## Definition of Done
 
