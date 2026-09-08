@@ -1,5 +1,14 @@
 # Phase 11 — документы и личные правила (Arena)
 
+## PR и проверяемый код
+
+- PR: https://github.com/sledovatel61/HR-Manager/pull/18
+- Code SHA (включая заключительное форматирование): `3f095a58dad8c88a65f766c974f607725c3afbd3`.
+- CI итогового tip: https://github.com/sledovatel61/HR-Manager/pull/18/checks
+- Final tip SHA, конкретный CI run и подтверждение всех четырёх jobs будут
+  опубликованы в итоговом комментарии PR после завершения проверок. Этот
+  отчёт сам входит в проверяемый tip; code SHA выше не подменяет final SHA.
+
 ## База и ветка
 
 - Дата: 2026-09-08.
