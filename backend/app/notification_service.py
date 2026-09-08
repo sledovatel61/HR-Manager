@@ -190,6 +190,8 @@ def schedule(
     consent_snapshot: dict | None = None,
     quiet_hours_bypassed: bool = False,
     object_version: int | None = None,
+    rule_id: UUID | None = None,
+    object_snapshot: dict | None = None,
 ) -> NotificationOutbox | None:
     """Insert one outbox row (transactional, deduplicated).
 
@@ -212,6 +214,9 @@ def schedule(
       message; the concrete email/chat is resolved by the worker from the
       candidate's consented channel state at send time. It is mutually
       exclusive with both user and external recipients.
+    * ``rule_id`` / ``object_snapshot`` (phase 11) record the personal rule
+      that queued the row and a PII-free snapshot of the rendered business
+      object (document list/version and item keys) for send-time checks.
     """
     recipient_count = sum(
         1
@@ -249,6 +254,8 @@ def schedule(
         object_type=object_type,
         object_id=object_id,
         object_version=object_version,
+        object_snapshot=object_snapshot,
+        rule_id=rule_id,
         scheduled_at=scheduled_at,
         queued_at=utc_now(),
         status=DeliveryStatus.QUEUED,

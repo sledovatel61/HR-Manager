@@ -24,8 +24,11 @@ from app.routers import (
     analytics,
     audit,
     auth,
+    automation_rules,
+    candidate_documents,
     candidate_messages,
     candidates,
+    document_lists,
     events,
     health,
     integrations,
@@ -129,6 +132,9 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(reminders.router)
     app.include_router(preferences.router)
     app.include_router(setup.router)
+    app.include_router(document_lists.router)
+    app.include_router(candidate_documents.router)
+    app.include_router(automation_rules.router)
     return app
 
 

@@ -283,7 +283,10 @@ def pg_client(pg_settings: Settings, pg_engine: Engine) -> Iterator[TestClient]:
                 "candidate_channel_consents, notification_delivery_attempts, "
                 "notification_outbox, notifications, notification_preferences, "
                 "telegram_start_events, telegram_link_tokens, telegram_links, "
-                "telegram_poll_state, user_emails, access_grants "
+                "telegram_poll_state, user_emails, access_grants, "
+                "automation_rule_executions, automation_rules, candidate_document_items, "
+                "candidate_document_assignments, document_list_items, "
+                "document_list_versions, document_lists "
                 "RESTART IDENTITY CASCADE"
             )
         )

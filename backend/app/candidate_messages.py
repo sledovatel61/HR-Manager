@@ -429,6 +429,11 @@ def queue_candidate_message(
     initiator_user_id: UUID | None = None,
     dedupe_key: str,
     scheduled_at: datetime | None = None,
+    rule_id: UUID | None = None,
+    object_type: str | None = None,
+    object_id: UUID | None = None,
+    object_version: int | None = None,
+    object_snapshot: dict | None = None,
 ) -> NotificationOutbox | None:
     """Queue one candidate message on one channel (transactional outbox).
 
@@ -436,10 +441,15 @@ def queue_candidate_message(
     resolved by the worker at send time. ``event_version`` snapshots the
     interview's optimistic version: the worker refuses to send the row if
     the event mutated after rendering (reschedule/cancel/complete).
-    Returns the row or ``None`` when the idempotency key already exists
-    (duplicate business event).
+    Phase 11 document messages pass ``object_type="document_assignment"``
+    with the assignment id/version and a PII-free ``object_snapshot`` of
+    the listed item keys, re-validated by the worker before the provider
+    call. Returns the row or ``None`` when the idempotency key already
+    exists (duplicate business event).
     """
     type_ = CANDIDATE_MESSAGE_TYPES[message_type_key]
+    if event_id is not None:
+        object_type, object_id, object_version = "event", event_id, event_version
     return schedule(
         db,
         recipient_user_id=None,
@@ -449,9 +459,11 @@ def queue_candidate_message(
         source=source,
         title=message.title,
         body=message.body[:MAX_BODY_LENGTH],
-        object_type="event" if event_id is not None else None,
-        object_id=event_id,
-        object_version=event_version if event_id is not None else None,
+        object_type=object_type,
+        object_id=object_id,
+        object_version=object_version,
+        object_snapshot=object_snapshot,
+        rule_id=rule_id,
         dedupe_key=f"cand:{dedupe_key}:{channel.value}",
         scheduled_at=scheduled_at,
         template=f"candidate_{message_type_key}",
@@ -475,6 +487,11 @@ def queue_candidate_message_all_channels(
     scheduled_at: datetime | None = None,
     settings: Settings,
     only_channel: DeliveryChannel | None = None,
+    rule_id: UUID | None = None,
+    object_type: str | None = None,
+    object_id: UUID | None = None,
+    object_version: int | None = None,
+    object_snapshot: dict | None = None,
 ) -> list[NotificationOutbox]:
     """Queue the message on every allowed channel (or one explicit one).
 
@@ -498,6 +515,11 @@ def queue_candidate_message_all_channels(
             initiator_user_id=initiator_user_id,
             dedupe_key=dedupe_key,
             scheduled_at=scheduled_at,
+            rule_id=rule_id,
+            object_type=object_type,
+            object_id=object_id,
+            object_version=object_version,
+            object_snapshot=object_snapshot,
         )
         if row is not None:
             rows.append(row)

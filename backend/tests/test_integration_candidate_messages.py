@@ -107,7 +107,10 @@ def client(pg_engine: Engine, settings: Settings) -> Iterator[TestClient]:
                 "candidate_message_requests, telegram_start_events, telegram_poll_state, "
                 "telegram_link_tokens, telegram_links, user_emails, "
                 "notification_delivery_attempts, notification_outbox, notifications, "
-                "notification_preferences, reminders, access_grants RESTART IDENTITY CASCADE"
+                "notification_preferences, reminders, access_grants, "
+                "automation_rule_executions, automation_rules, candidate_document_items, "
+                "candidate_document_assignments, document_list_items, "
+                "document_list_versions, document_lists RESTART IDENTITY CASCADE"
             )
         )
     app = create_app(settings, engine=pg_engine)

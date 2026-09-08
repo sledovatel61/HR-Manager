@@ -27,6 +27,8 @@ from sqlalchemy.orm import Session
 
 from app.analytics_ledger import record_fact
 from app.audit import record_event
+from app.automation_rules import run_stage_entered_rules
+from app.config import Settings
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import (
@@ -407,6 +409,18 @@ def update_candidate(
     next phase).
     """
     candidate = _get_visible_candidate(db, candidate_id, user)
+    if payload.stage is not None:
+        # Stage transitions are serialized on the candidate row: a second
+        # concurrent request to the same stage re-reads the committed state
+        # and becomes a no-op instead of recording the transition (fact,
+        # audit, phase-11 rules) twice. A no-op on SQLite (single-threaded
+        # tests); the PostgreSQL integration suite proves the race.
+        candidate = db.execute(
+            select(Candidate)
+            .where(Candidate.id == candidate.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one()
 
     new_phone = payload.phone if payload.phone is not None else candidate.phone
     new_email = str(payload.email) if payload.email is not None else candidate.email
@@ -483,6 +497,22 @@ def update_candidate(
             candidate=candidate,
             details="; ".join(changes),
             commit=False,
+        )
+    if stage_changed:
+        # Phase 11: personal «stage entered» rules run in the SAME
+        # transaction (their outbox rows commit with the stage change or
+        # not at all); each rule is contained in its own savepoint, so a
+        # rule error is recorded in the execution history and never breaks
+        # this update.
+        settings: Settings = request.app.state.settings
+        db.flush()
+        run_stage_entered_rules(
+            db,
+            candidate=candidate,
+            new_stage=candidate.stage,
+            transition_at=candidate.updated_at,
+            settings=settings,
+            now=candidate.updated_at,
         )
     db.commit()
     db.refresh(candidate)

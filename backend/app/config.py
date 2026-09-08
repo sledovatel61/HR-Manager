@@ -71,6 +71,11 @@ Environment variables
                            disables the flow (fail-closed 503)
 ``PUBLIC_CONFIRM_RATE_LIMIT``/``PUBLIC_CONFIRM_RATE_WINDOW_S``  per-IP
                            anti-abuse of the public confirmation endpoint
+``AUTOMATION_RULES_ENABLED``  run the phase-11 scheduled-rule pass in the
+                           worker (default true; stage-transition rules
+                           always run inside the candidate update)
+``AUTOMATION_RULES_BATCH_SIZE``  assignments evaluated per rule per worker
+                           pass (default 100)
 """
 
 from functools import lru_cache
@@ -238,6 +243,12 @@ class Settings(BaseSettings):
         default=10.0, validation_alias="WORKER_HEARTBEAT_INTERVAL_S"
     )
     worker_stale_after_s: float = Field(default=45.0, validation_alias="WORKER_STALE_AFTER_S")
+    automation_rules_enabled: bool = Field(
+        default=True, validation_alias="AUTOMATION_RULES_ENABLED"
+    )
+    automation_rules_batch_size: int = Field(
+        default=100, validation_alias="AUTOMATION_RULES_BATCH_SIZE"
+    )
 
     # External channels (phase 9): Telegram Bot API and universal SMTP.
     # Disabled by default; enabling requires explicit configuration.
@@ -455,6 +466,8 @@ class Settings(BaseSettings):
             problems.append("WORKER_MAX_ATTEMPTS must be at least 1")
         if self.worker_batch_size < 1:
             problems.append("WORKER_BATCH_SIZE must be at least 1")
+        if self.automation_rules_batch_size < 1:
+            problems.append("AUTOMATION_RULES_BATCH_SIZE must be at least 1")
 
         # External channels (phase 9). Misconfiguration must fail fast; the
         # messages below never echo secret values.

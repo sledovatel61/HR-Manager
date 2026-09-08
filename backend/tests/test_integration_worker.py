@@ -24,6 +24,7 @@ from app.models import (
     Notification,
     NotificationDeliveryAttempt,
     NotificationOutbox,
+    NotificationPreference,
     NotificationType,
     Reminder,
     ReminderRecurrence,
@@ -141,6 +142,20 @@ def test_end_to_end_event_to_notification(pg_client: TestClient, pg_db: Session)
     owner = make_user(pg_db, username="hr-e2e-owner", role=UserRole.HR)
     assignee = make_user(pg_db, username="hr-e2e-assignee", role=UserRole.HR)
     make_user(pg_db, username="mgr-e2e", role=UserRole.MANAGER)
+    # The flow runs against the real clock: disable the assignee's quiet
+    # hours (start == end) so the in-app delivery is not legitimately
+    # deferred when CI happens to run between 21:00 and 08:00 Moscow time.
+    pg_db.add(
+        NotificationPreference(
+            user_id=assignee.id,
+            timezone="Europe/Moscow",
+            quiet_hours_start="00:00",
+            quiet_hours_end="00:00",
+            workdays=[1, 2, 3, 4, 5, 6, 7],
+            enabled_types=[member.value for member in NotificationType],
+            enabled_channels=["in_app"],
+        )
+    )
     candidate = Candidate(
         full_name="Кандидат E2E",
         full_name_normalized="кандидат e2e",

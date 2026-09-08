@@ -1389,3 +1389,533 @@ class CandidateMessageCancelOut(BaseModel):
 
     id: UUID
     status: str
+
+
+# --- Phase 11: document lists -------------------------------------------------
+
+DOCUMENT_ITEM_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+MAX_DOCUMENT_LIST_ITEMS = 20
+MAX_REMINDER_DELAY_DAYS = 30
+
+
+def _clean_line(value: str, *, field: str, max_length: int) -> str:
+    """Trim and reject control characters (names/explanations are rendered
+    into plain-text candidate messages — they must stay single-line)."""
+    cleaned = value.strip()
+    if any(ord(char) < 32 or ord(char) == 127 for char in cleaned):
+        raise ValueError(f"{field}: управляющие символы недопустимы")
+    if len(cleaned) > max_length:
+        raise ValueError(f"{field}: не больше {max_length} символов")
+    return cleaned
+
+
+class DocumentListItemIn(BaseModel):
+    """One item of a draft version (closed shape, safe text only)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_key: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+    explanation: str = Field(default="", max_length=500)
+    is_required: bool = True
+
+    @field_validator("item_key")
+    @classmethod
+    def _key_shape(cls, value: str) -> str:
+        if not DOCUMENT_ITEM_KEY_PATTERN.match(value):
+            raise ValueError(
+                "ключ элемента: латинские буквы в нижнем регистре, цифры, «-» и «_», до 64 символов"
+            )
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _name_clean(cls, value: str) -> str:
+        cleaned = _clean_line(value, field="название", max_length=200)
+        if not cleaned:
+            raise ValueError("название элемента не может быть пустым")
+        return cleaned
+
+    @field_validator("explanation")
+    @classmethod
+    def _explanation_clean(cls, value: str) -> str:
+        return _clean_line(value, field="пояснение", max_length=500)
+
+
+def _validate_items(items: list[DocumentListItemIn]) -> list[DocumentListItemIn]:
+    if len(items) > MAX_DOCUMENT_LIST_ITEMS:
+        raise ValueError(f"не больше {MAX_DOCUMENT_LIST_ITEMS} элементов в списке")
+    keys = [item.item_key for item in items]
+    if len(set(keys)) != len(keys):
+        raise ValueError("ключи элементов должны быть уникальными")
+    return items
+
+
+class DocumentListCreate(BaseModel):
+    """Create a list together with its first draft version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    scope_position: str | None = Field(default=None, max_length=200)
+    scope_stage: CandidateStage | None = None
+    items: list[DocumentListItemIn] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def _name_clean(cls, value: str) -> str:
+        cleaned = _clean_line(value, field="название", max_length=200)
+        if not cleaned:
+            raise ValueError("название списка не может быть пустым")
+        return cleaned
+
+    @field_validator("scope_position")
+    @classmethod
+    def _position_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = _clean_line(value, field="должность", max_length=200)
+        return cleaned or None
+
+    @field_validator("items")
+    @classmethod
+    def _items_valid(cls, value: list[DocumentListItemIn]) -> list[DocumentListItemIn]:
+        return _validate_items(value)
+
+
+class DocumentListUpdate(BaseModel):
+    """Edit the list header (name/description/scope) — optimistic version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    scope_position: str | None = Field(default=None, max_length=200)
+    scope_stage: CandidateStage | None = None
+    clear_scope_position: bool = False
+    clear_scope_stage: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _name_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = _clean_line(value, field="название", max_length=200)
+        if not cleaned:
+            raise ValueError("название списка не может быть пустым")
+        return cleaned
+
+    @field_validator("scope_position")
+    @classmethod
+    def _position_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _clean_line(value, field="должность", max_length=200) or None
+
+
+class DocumentListVersionItemsUpdate(BaseModel):
+    """Replace the items of a DRAFT version (optimistic row version)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_row_version: int = Field(ge=1)
+    items: list[DocumentListItemIn]
+
+    @field_validator("items")
+    @classmethod
+    def _items_valid(cls, value: list[DocumentListItemIn]) -> list[DocumentListItemIn]:
+        return _validate_items(value)
+
+
+class DocumentListVersionActionRequest(BaseModel):
+    """Publish / archive a version — optimistic row version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_row_version: int = Field(ge=1)
+
+
+class DocumentListItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    item_key: str
+    name: str
+    explanation: str
+    is_required: bool
+    sort_order: int
+
+
+class DocumentListVersionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    list_id: UUID
+    version_number: int
+    status: str
+    row_version: int
+    published_at: datetime | None = None
+    archived_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    items: list[DocumentListItemOut]
+
+
+class DocumentListOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    description: str
+    scope_position: str | None = None
+    scope_stage: CandidateStage | None = None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    published_version_id: UUID | None = None
+    published_version_number: int | None = None
+    versions: list[DocumentListVersionOut] = Field(default_factory=list)
+
+
+class DocumentListSummaryOut(BaseModel):
+    """Compact list row (no items)."""
+
+    id: UUID
+    name: str
+    description: str
+    scope_position: str | None = None
+    scope_stage: CandidateStage | None = None
+    version: int
+    published_version_id: UUID | None = None
+    published_version_number: int | None = None
+    draft_version_id: UUID | None = None
+    versions_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentListList(BaseModel):
+    items: list[DocumentListSummaryOut]
+    total: int
+
+
+class PublishedDocumentListOut(BaseModel):
+    """What a regular user may see: published lists only (for applying and
+    for rule parameters) — no drafts, no history."""
+
+    id: UUID
+    name: str
+    description: str
+    scope_position: str | None = None
+    scope_stage: CandidateStage | None = None
+    published_version_id: UUID
+    published_version_number: int
+    items: list[DocumentListItemOut]
+
+
+class PublishedDocumentListList(BaseModel):
+    items: list[PublishedDocumentListOut]
+
+
+# --- Phase 11: candidate documents -------------------------------------------
+
+
+class CandidateDocumentApplyRequest(BaseModel):
+    """Apply the CURRENT published version of a list to the candidate.
+
+    ``replace`` must be true to replace an already applied list (the
+    previous assignment is closed, never deleted).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    list_id: UUID
+    replace: bool = False
+
+
+class CandidateDocumentItemUpdate(BaseModel):
+    """Mark one snapshot item received/missing — optimistic row version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["missing", "received"]
+    expected_version: int = Field(ge=1)
+
+
+class CandidateDocumentItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    item_key: str
+    name: str
+    explanation: str
+    is_required: bool
+    sort_order: int
+    status: str
+    version: int
+    changed_by_user_id: UUID | None = None
+    changed_by_username: str | None = None
+    changed_at: datetime | None = None
+
+
+class CandidateDocumentAssignmentOut(BaseModel):
+    id: UUID
+    candidate_id: UUID
+    list_id: UUID
+    list_name: str
+    version_id: UUID
+    version_number: int
+    assigned_at: datetime
+    assigned_by_user_id: UUID | None = None
+    assigned_by_username: str | None = None
+    assigned_by_rule_id: UUID | None = None
+    items: list[CandidateDocumentItemOut]
+    missing_required_count: int
+    received_count: int
+
+
+class CandidateDocumentsOut(BaseModel):
+    """The candidate's current list (or ``null``) plus closed history."""
+
+    current: CandidateDocumentAssignmentOut | None = None
+    history: list[CandidateDocumentAssignmentOut] = Field(default_factory=list)
+
+
+class CandidateMissingDocumentOut(BaseModel):
+    item_key: str
+    name: str
+    is_required: bool
+    sort_order: int
+
+
+class CandidateMissingDocumentsOut(BaseModel):
+    """Only the items still missing, in the stable list order."""
+
+    list_id: UUID | None = None
+    version_id: UUID | None = None
+    version_number: int | None = None
+    items: list[CandidateMissingDocumentOut]
+    required_only: bool
+
+
+class CandidateDocumentMessageRequest(BaseModel):
+    """Queue a manual document request/reminder from the applied list.
+
+    No text, recipient or document names are accepted: the server renders
+    the currently missing items of the exact applied version.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_type: Literal["document_request", "document_reminder"]
+    channel: Literal["email", "telegram"] | None = None
+    idempotency_key: str = Field(min_length=8, max_length=255)
+
+
+# --- Phase 11: automation rules ----------------------------------------------
+
+
+class RuleTriggerStageEntered(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stage: CandidateStage
+
+
+class RuleTriggerDocumentsMissingDue(BaseModel):
+    """«Required documents are still missing N days after the list was
+    applied» — evaluated by the worker in the owner's timezone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days_after: int = Field(ge=1, le=MAX_REMINDER_DELAY_DAYS)
+
+
+class RuleConditions(BaseModel):
+    """Optional closed conditions (all given ones must hold)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage: CandidateStage | None = None
+    list_id: UUID | None = None
+    has_missing_required: bool | None = None
+    channel: Literal["email", "telegram"] | None = None
+
+
+class RuleActionApplyDocumentList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    list_id: UUID
+
+
+class RuleActionSendDocumentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: Literal["email", "telegram"] | None = None
+
+
+class RuleActionSendDocumentReminder(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: Literal["email", "telegram"] | None = None
+    delay_days: int = Field(ge=0, le=MAX_REMINDER_DELAY_DAYS)
+
+
+RuleTriggerParams = RuleTriggerStageEntered | RuleTriggerDocumentsMissingDue
+RuleActionParams = (
+    RuleActionApplyDocumentList | RuleActionSendDocumentRequest | RuleActionSendDocumentReminder
+)
+
+_TRIGGER_SCHEMAS: dict[str, type[BaseModel]] = {
+    "stage_entered": RuleTriggerStageEntered,
+    "documents_missing_due": RuleTriggerDocumentsMissingDue,
+}
+_ACTION_SCHEMAS: dict[str, type[BaseModel]] = {
+    "apply_document_list": RuleActionApplyDocumentList,
+    "send_document_request": RuleActionSendDocumentRequest,
+    "send_document_reminder": RuleActionSendDocumentReminder,
+}
+# Which actions make sense for which trigger (closed matrix).
+ALLOWED_TRIGGER_ACTIONS: dict[str, frozenset[str]] = {
+    "stage_entered": frozenset(
+        {"apply_document_list", "send_document_request", "send_document_reminder"}
+    ),
+    "documents_missing_due": frozenset({"send_document_reminder"}),
+}
+
+
+def validate_rule_params(
+    *,
+    trigger_type: str,
+    trigger_params: dict,
+    conditions: dict,
+    action_type: str,
+    action_params: dict,
+) -> tuple[dict, dict, dict]:
+    """Validate the typed parameter objects of a rule against the closed
+    schemas of its trigger/action. Returns canonical (JSON-ready) dicts.
+    Raises ``ValueError`` with a Russian explanation."""
+    trigger_schema = _TRIGGER_SCHEMAS.get(trigger_type)
+    action_schema = _ACTION_SCHEMAS.get(action_type)
+    if trigger_schema is None:
+        raise ValueError("неизвестный триггер")
+    if action_schema is None:
+        raise ValueError("неизвестное действие")
+    if action_type not in ALLOWED_TRIGGER_ACTIONS[trigger_type]:
+        raise ValueError("это действие недоступно для выбранного триггера")
+    trigger_model = trigger_schema.model_validate(trigger_params)
+    conditions_model = RuleConditions.model_validate(conditions)
+    action_model = action_schema.model_validate(action_params)
+    return (
+        trigger_model.model_dump(mode="json"),
+        conditions_model.model_dump(mode="json", exclude_none=True),
+        action_model.model_dump(mode="json"),
+    )
+
+
+class AutomationRuleCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    is_enabled: bool = True
+    trigger_type: Literal["stage_entered", "documents_missing_due"]
+    trigger_params: dict = Field(default_factory=dict)
+    conditions: dict = Field(default_factory=dict)
+    action_type: Literal["apply_document_list", "send_document_request", "send_document_reminder"]
+    action_params: dict = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def _name_clean(cls, value: str) -> str:
+        cleaned = _clean_line(value, field="название", max_length=200)
+        if not cleaned:
+            raise ValueError("название правила не может быть пустым")
+        return cleaned
+
+
+class AutomationRuleUpdate(BaseModel):
+    """Full replacement of the editable fields (optimistic version)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=200)
+    trigger_type: Literal["stage_entered", "documents_missing_due"]
+    trigger_params: dict = Field(default_factory=dict)
+    conditions: dict = Field(default_factory=dict)
+    action_type: Literal["apply_document_list", "send_document_request", "send_document_reminder"]
+    action_params: dict = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def _name_clean(cls, value: str) -> str:
+        cleaned = _clean_line(value, field="название", max_length=200)
+        if not cleaned:
+            raise ValueError("название правила не может быть пустым")
+        return cleaned
+
+
+class AutomationRuleToggleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1)
+    is_enabled: bool
+
+
+class AutomationRuleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    owner_user_id: UUID
+    name: str
+    is_enabled: bool
+    trigger_type: str
+    trigger_params: dict
+    conditions: dict
+    action_type: str
+    action_params: dict
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AutomationRuleList(BaseModel):
+    items: list[AutomationRuleOut]
+    total: int
+
+
+class AutomationRuleExecutionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    rule_id: UUID
+    rule_version: int
+    trigger_type: str
+    trigger_object_type: str
+    trigger_object_id: UUID | None = None
+    trigger_object_version: int | None = None
+    candidate_id: UUID | None = None
+    action_type: str
+    outcome: str
+    outcome_class: str | None = None
+    dedupe_key: str
+    list_id: UUID | None = None
+    list_version_id: UUID | None = None
+    executed_at: datetime
+
+
+class AutomationRuleExecutionList(BaseModel):
+    items: list[AutomationRuleExecutionOut]
+    total: int
+
+
+class AutomationVocabularyOut(BaseModel):
+    """The closed vocabularies the UI may offer (server is the source)."""
+
+    triggers: list[str]
+    actions: list[str]
+    trigger_actions: dict[str, list[str]]
+    channels: list[str]
+    stages: list[str]
+    max_delay_days: int
