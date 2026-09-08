@@ -44,6 +44,7 @@ from app.models import (
     AuditAction,
     Candidate,
     CandidateChannelConsent,
+    CandidateEmailConfirmToken,
     CandidateTelegramLink,
     DeliveryChannel,
     DeliveryStatus,
@@ -89,6 +90,7 @@ RECIPIENT_MISSING_ERROR_CLASS = "recipient_missing"
 CANDIDATE_UNAVAILABLE_ERROR_CLASS = "candidate_unavailable"
 EVENT_STALE_ERROR_CLASS = "event_stale"
 ADDRESS_CHANGED_ERROR_CLASS = "address_changed"
+TOKEN_INACTIVE_ERROR_CLASS = "token_inactive"
 
 # Candidate message types whose linked event must still be fresh at send
 # time (see _candidate_event_is_stale).
@@ -379,6 +381,11 @@ def _candidate_event_is_stale(db: Session, locked: NotificationOutbox, *, now: d
         return True
     if event.status != EventStatus.SCHEDULED:
         return True
+    if locked.object_version is not None and event.version != locked.object_version:
+        # The interview mutated after this text was rendered (reschedule,
+        # cancel, complete — every mutation bumps the optimistic version):
+        # the rendered date/time may no longer be true.
+        return True
     return ensure_aware(event.starts_at) <= now
 
 
@@ -402,6 +409,42 @@ def _resolve_candidate_target(
     candidate = db.get(Candidate, candidate_id)
     if candidate is None or candidate.deleted_at is not None:
         return None, CANDIDATE_UNAVAILABLE_ERROR_CLASS
+
+    if locked.notification_type == NotificationType.CANDIDATE_EMAIL_CONFIRM:
+        # The double opt-in letter itself: the only candidate email that is
+        # delivered WITHOUT a granted consent (delivering it is the purpose
+        # of the flow). The link must still be alive and bound to the exact
+        # card address it was issued for — otherwise nothing is sent.
+        from app.smtp import config_from_settings as smtp_config_from_settings
+        from app.utils import normalize_email
+
+        if locked.channel != DeliveryChannel.EMAIL:
+            return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+        if not smtp_config_from_settings(settings).is_configured:
+            return None, CHANNEL_NOT_CONFIGURED_ERROR_CLASS
+        if not candidate.email:
+            return None, BINDING_MISSING_ERROR_CLASS
+        if locked.object_type != "candidate_email_token" or locked.object_id is None:
+            return None, TOKEN_INACTIVE_ERROR_CLASS
+        token = db.get(CandidateEmailConfirmToken, locked.object_id)
+        if token is None or token.candidate_id != candidate_id:
+            return None, TOKEN_INACTIVE_ERROR_CLASS
+        if token.consumed_at is not None or token.expires_at <= now:
+            return None, TOKEN_INACTIVE_ERROR_CLASS
+        if token.email_normalized != normalize_email(candidate.email):
+            # The card address changed after the letter was rendered: the
+            # link confirms a different mailbox — never deliver it.
+            return None, ADDRESS_CHANGED_ERROR_CLASS
+        return (
+            _ExternalTarget(
+                channel=DeliveryChannel.EMAIL,
+                email=candidate.email,
+                title=locked.title,
+                body=locked.body,
+            ),
+            None,
+        )
+
     if _candidate_event_is_stale(db, locked, now=now):
         return None, EVENT_STALE_ERROR_CLASS
 
@@ -436,6 +479,10 @@ def _resolve_candidate_target(
             return None, CONSENT_MISSING_ERROR_CLASS
         from app.utils import normalize_email
 
+        if consent.source != "email_confirm":
+            # Granted without the candidate's own confirmation click
+            # (legacy/manual recording): double opt-in is not satisfied.
+            return None, CONSENT_MISSING_ERROR_CLASS
         if consent.email_normalized != normalize_email(candidate.email):
             # The address changed after the consent was recorded: the
             # consent does not cover the new address — fail closed.

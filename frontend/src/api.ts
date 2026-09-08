@@ -2,10 +2,12 @@ import type {
   AccessGrant,
   AdminChannels,
   CandidateChannels,
+  CandidateEmailConfirmation,
   CandidateChannelName,
   CandidateConsent,
   CandidateMessageList,
   CandidateMessagePreview,
+  CandidateMessagePreviewInput,
   CandidateMessageSendInput,
   CandidateMessageSendResult,
   CandidateTelegramConfirm,
@@ -707,6 +709,15 @@ export async function queueAdminSmtpTest(): Promise<ChannelTestResult> {
 
 // --- Phase 10: one-way candidate messages --------------------------------------
 
+export async function initiateCandidateEmailConfirmation(
+  candidateId: string,
+): Promise<CandidateEmailConfirmation> {
+  return request<CandidateEmailConfirmation>(
+    `/candidates/${candidateId}/channels/email/confirmation`,
+    { method: "POST" },
+  );
+}
+
 export async function getCandidateChannels(candidateId: string): Promise<CandidateChannels> {
   return request<CandidateChannels>(`/candidates/${candidateId}/channels`);
 }
@@ -760,7 +771,7 @@ export async function listCandidateMessages(
 
 export async function previewCandidateMessage(
   candidateId: string,
-  input: CandidateMessageSendInput,
+  input: CandidateMessagePreviewInput,
 ): Promise<CandidateMessagePreview> {
   return request<CandidateMessagePreview>(`/candidates/${candidateId}/messages/preview`, {
     method: "POST",

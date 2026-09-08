@@ -66,6 +66,9 @@ def channels_app(unit_engine: Any) -> Iterator[TestClient]:
 
 
 def _allow(db: Session, candidate: Candidate, *channels: str) -> None:
+    """Seed the message-allowed channel states: for email that is ONLY the
+    candidate-confirmed double opt-in consent, for telegram a voluntary
+    /start consent plus the chat binding."""
     for channel in channels:
         db.add(
             CandidateChannelConsent(
@@ -73,7 +76,7 @@ def _allow(db: Session, candidate: Candidate, *channels: str) -> None:
                 channel=channel,
                 granted=True,
                 granted_at=NOW,
-                source="hr_recorded",
+                source="email_confirm" if channel == "email" else "telegram_start",
                 policy_version="phase10-v1",
                 email_normalized=normalize_email(candidate.email)
                 if channel == "email" and candidate.email

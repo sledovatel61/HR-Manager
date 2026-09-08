@@ -13,6 +13,7 @@ Fake senders, no network. Coverage:
 * lease recovery returns a crashed candidate row to the queue.
 """
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -46,6 +47,7 @@ from app.models import (
 )
 from app.smtp import SmtpSendResult
 from app.telegram import TelegramSendResult
+from app.utils import utc_now
 from app.worker import process_external_row, process_row, recover_stale_leases
 from tests.conftest import make_candidate, make_event, make_user
 
@@ -108,7 +110,7 @@ def _candidate_for(
                 channel="email",
                 granted=True,
                 granted_at=NOW,
-                source="hr_recorded",
+                source="email_confirm",
                 policy_version="phase10-v1",
                 email_normalized=normalize_email(consent_email or email),
             )
@@ -558,3 +560,138 @@ def test_lease_recovery_returns_candidate_row_to_queue(db_session: Session) -> N
     assert row.lease_expires_at is None
     attempts = _attempts(db_session, row)
     assert attempts[-1].error_class == "lease_expired"
+
+
+# --- Double opt-in letter and version snapshot (phase 10 rework) ------------------
+
+
+def test_skip_email_with_hr_recorded_consent(db_session: Session) -> None:
+    """An email consent NOT confirmed by the candidate never unlocks sends."""
+    candidate = _candidate_with_email(db_session)
+    consent = db_session.get(CandidateChannelConsent, (candidate.id, "email"))
+    assert consent is not None
+    consent.source = "hr_recorded"
+    db_session.commit()
+    row = _candidate_row(db_session, candidate, DeliveryChannel.EMAIL)
+    assert _skip_class(db_session, row, _settings()) == "consent_missing"
+
+
+def _confirm_token_row(db: Session, candidate: Candidate, **overrides: object) -> Any:
+    from app.models import CandidateEmailConfirmToken
+
+    defaults: dict[str, object] = dict(
+        candidate_id=candidate.id,
+        token_hash=hashlib.sha256(b"confirm-token-0123456789").hexdigest(),
+        email_normalized="cand@example.com",
+        created_at=utc_now(),
+        expires_at=utc_now() + timedelta(hours=1),
+    )
+    defaults.update(overrides)
+    token = CandidateEmailConfirmToken(**defaults)
+    db.add(token)
+    db.commit()
+    return token
+
+
+def _confirm_letter_row(db: Session, candidate: Candidate, token_id: UUID) -> NotificationOutbox:
+    from app.candidate_messages import queue_candidate_email_confirm
+
+    row = queue_candidate_email_confirm(
+        db,
+        candidate=candidate,
+        token_id=token_id,
+        confirm_url="https://hr.example.test/candidates/email/confirm?token=confirm-token-0123456789",
+        expires_at=utc_now() + timedelta(hours=1),
+        initiator_user_id=candidate.owner_user_id,
+    )
+    assert row is not None
+    # Claimed shape + the frozen NOW clock of the worker tests.
+    row.status = DeliveryStatus.SENDING
+    row.started_at = NOW
+    row.lease_expires_at = NOW + timedelta(minutes=2)
+    row.scheduled_at = NOW
+    db.commit()
+    return row
+
+
+def test_confirm_letter_delivered_without_consent(db_session: Session) -> None:
+    """The double opt-in letter is the only consent-free candidate email."""
+    from app.worker import process_external_row
+
+    candidate = make_candidate(db_session, owner=_hr(db_session), email="cand@example.com")
+    token = _confirm_token_row(db_session, candidate)
+    row = _confirm_letter_row(db_session, candidate, token.id)
+    row.status = DeliveryStatus.SENDING
+    row.started_at = utc_now()
+    row.lease_expires_at = utc_now() + timedelta(minutes=2)
+    db_session.commit()
+
+    sent: list[str] = []
+
+    def fake_send(config: object, *, to_address: str, subject: str, text_body: str) -> Any:
+        sent.append(to_address)
+        return SmtpSendResult(outcome="accepted")
+
+    monkeypatch_send = pytest.MonkeyPatch()
+    monkeypatch_send.setattr(worker_module, "_send_email_impl", fake_send)
+    try:
+        status = process_external_row(db_session, row.id, settings=_settings(), now=utc_now())
+    finally:
+        monkeypatch_send.undo()
+    assert status == "accepted"
+    assert sent == ["cand@example.com"]
+
+
+def test_confirm_letter_skipped_when_token_dead(db_session: Session) -> None:
+    """Consumed/expired/superseded links and changed addresses never mail."""
+    candidate = make_candidate(db_session, owner=_hr(db_session), email="cand@example.com")
+    # Consumed (already clicked).
+    token = _confirm_token_row(db_session, candidate, consumed_at=utc_now())
+    row = _confirm_letter_row(db_session, candidate, token.id)
+    assert _skip_class(db_session, row, _settings()) == "token_inactive"
+
+    # Expired.
+    token2 = _confirm_token_row(
+        db_session,
+        candidate,
+        token_hash=hashlib.sha256(b"expired").hexdigest(),
+        expires_at=utc_now() - timedelta(minutes=1),
+    )
+    row2 = _confirm_letter_row(db_session, candidate, token2.id)
+    assert _skip_class(db_session, row2, _settings()) == "token_inactive"
+
+    # The card address changed after the letter was rendered.
+    token3 = _confirm_token_row(
+        db_session,
+        candidate,
+        token_hash=hashlib.sha256(b"other").hexdigest(),
+        email_normalized="previous@example.com",
+    )
+    row3 = _confirm_letter_row(db_session, candidate, token3.id)
+    assert _skip_class(db_session, row3, _settings()) == "address_changed"
+
+
+def test_interview_message_skipped_when_event_version_changed(db_session: Session) -> None:
+    """The optimistic version snapshot: a mutated interview invalidates the
+    rendered text even if the stale-plan cancellation ever raced."""
+    hr = _hr(db_session)
+    candidate = _candidate_with_email(db_session)
+    event = make_event(
+        db_session,
+        candidate=candidate,
+        author=hr,
+        assignee=hr,
+        type_=EventType.INTERVIEW,
+        starts_at=NOW + timedelta(days=2),
+    )
+    row = _candidate_row(
+        db_session,
+        candidate,
+        DeliveryChannel.EMAIL,
+        event_id=event.id,
+        type_key="interview_scheduled",
+    )
+    # The event mutated after the message was rendered (version bumped).
+    event.version += 1
+    db_session.commit()
+    assert _skip_class(db_session, row, _settings()) == "event_stale"

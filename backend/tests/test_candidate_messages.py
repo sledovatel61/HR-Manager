@@ -15,11 +15,12 @@ Coverage matrix:
 * audit rows without PII/message text; caplog carries no text/addresses.
 """
 
+import hashlib
 import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,13 +44,16 @@ from app.models import (
     AuditEvent,
     Candidate,
     CandidateChannelConsent,
+    CandidateEmailConfirmToken,
     CandidateTelegramLink,
     DeliveryStatus,
     EventType,
     NotificationOutbox,
+    NotificationType,
     User,
     UserRole,
 )
+from app.utils import utc_now
 from tests.conftest import FIXTURE_PASSWORD, make_candidate, make_event, make_user
 
 NOW = datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC)
@@ -86,6 +90,8 @@ def channels_app(unit_engine: Any) -> Iterator[TestClient]:
             "TELEGRAM_BOT_TOKEN": "123:test-token",
             "TELEGRAM_API_BASE_URL": "https://telegram.example.test",
             "TELEGRAM_BOT_USERNAME": "hr_test_bot",
+            "CANDIDATE_EMAIL_CONFIRM_BASE_URL": "https://hr.example.test",
+            "PUBLIC_CONFIRM_RATE_LIMIT": "1000",
         }
     )
     app = create_app(settings, engine=unit_engine)
@@ -141,24 +147,24 @@ def test_render_all_six_types() -> None:
     assert "Справка 2-НДФЛ" in doc_reminder.body
 
 
-def test_render_sanitizes_control_characters_and_location() -> None:
+def test_render_sanitizes_control_characters() -> None:
     candidate = Candidate(
         full_name="Ольга\r\nПетрова",
         full_name_normalized="ольга петрова",
-        position="Аналитик",
+        position="Аналитик <script>alert('x')</script>",
     )
     message = render_candidate_message(
         "interview_scheduled",
         candidate=candidate,
         starts_at_local="05.09.2026 10:00",
-        location="Офис <script>alert('x')</script>\nпер. Ленина, 1",
     )
     # No raw control characters smuggled into the single-line fields.
     assert "\r" not in message.body
     assert "Ольга Петрова" in message.body  # CRLF collapsed inside the greeting
     assert "<script>" in message.body  # plain text: shown as-is, never executed
-    # The location stays on one line (newline replaced by a space).
-    assert "Офис <script>alert('x')</script> пер. Ленина, 1." in message.body
+    # The template has no «Место» line at all: the events model carries no
+    # free-form location and the client may not inject one.
+    assert "Место" not in message.body
 
 
 def test_sanitize_inline_caps_length() -> None:
@@ -216,43 +222,110 @@ def test_mutations_require_csrf(client: TestClient, db_session: Session, hr_user
     candidate = make_candidate(db_session, owner=hr_user, email="a@example.com")
     _login(client, "hr1")
     response = client.post(
-        f"/candidates/{candidate.id}/channels/email/consent", json={"granted": True}
+        f"/candidates/{candidate.id}/channels/email/consent", json={"granted": False}
     )
+    assert response.status_code == 403
+    response = client.post(f"/candidates/{candidate.id}/channels/email/confirmation")
     assert response.status_code == 403
 
 
 # --- Consent --------------------------------------------------------------------
 
 
-def test_email_consent_lifecycle_and_pending_cancellation(
+def _initiate_confirmation(client: TestClient, csrf: str, candidate: Candidate) -> dict:
+    response = client.post(
+        f"/candidates/{candidate.id}/channels/email/confirmation",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _confirmation_link(db: Session, candidate: Candidate) -> str:
+    """The one-time link from the newest queued double opt-in letter."""
+    import re as _re
+
+    row = (
+        db.execute(
+            select(NotificationOutbox)
+            .where(
+                NotificationOutbox.recipient_candidate_id == candidate.id,
+                NotificationOutbox.notification_type == NotificationType.CANDIDATE_EMAIL_CONFIRM,
+                NotificationOutbox.status == DeliveryStatus.QUEUED,
+            )
+            .order_by(NotificationOutbox.queued_at.desc())
+            .execution_options(populate_existing=True)
+        )
+        .scalars()
+        .first()
+    )
+    assert row is not None and row.body
+    match = _re.search(r"https://\S+token=([A-Za-z0-9_-]+)", row.body)
+    assert match is not None
+    return match.group(0)
+
+
+def test_email_double_opt_in_flow_and_revocation(
     channels_app: TestClient, db_session: Session, hr_user: User
 ) -> None:
     candidate = make_candidate(db_session, owner=hr_user, email="cand@example.com")
     csrf = _login(channels_app, "hr1")
 
-    # Without a recorded consent the channel is pending (address present).
+    # Without a confirmed consent the channel is pending (address present).
     body = channels_app.get(f"/candidates/{candidate.id}/channels").json()
     assert body["email"]["state"] == CHANNEL_STATE_PENDING
     assert body["allowed_channels"] == []
 
-    # Granting without an address in the card is refused.
-    no_email = make_candidate(db_session, owner=hr_user)
-    response = channels_app.post(
-        f"/candidates/{no_email.id}/channels/email/consent",
-        json={"granted": True},
-        headers={"X-CSRF-Token": csrf},
-    )
-    assert response.status_code == 422
-
-    # Grant consent for the current address.
+    # The HR can NEVER grant the email consent directly: double opt-in only.
     response = channels_app.post(
         f"/candidates/{candidate.id}/channels/email/consent",
         json={"granted": True},
         headers={"X-CSRF-Token": csrf},
     )
+    assert response.status_code == 409
+    assert "подтвержд" in response.json()["detail"]
+
+    # Without an address in the card the initiation is refused.
+    no_email = make_candidate(db_session, owner=hr_user)
+    response = channels_app.post(
+        f"/candidates/{no_email.id}/channels/email/confirmation",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 422
+
+    # HR initiates: the letter is queued via the outbox, only the hash stored.
+    initiated = _initiate_confirmation(channels_app, csrf, candidate)
+    assert initiated["queued"] is True
+    assert initiated["email_masked"].startswith("c")
+    assert "cand@example.com" not in initiated["email_masked"]
+    link = _confirmation_link(db_session, candidate)
+    assert link.startswith("https://hr.example.test/candidates/email/confirm?token=")
+    body = channels_app.get(f"/candidates/{candidate.id}/channels").json()
+    assert body["email"]["state"] == CHANNEL_STATE_PENDING
+    assert body["email"]["invite_active"] is True
+    tokens = (
+        db_session.execute(
+            select(CandidateEmailConfirmToken).where(
+                CandidateEmailConfirmToken.candidate_id == candidate.id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(tokens) == 1
+    assert tokens[0].token_hash not in link  # hash only, never the raw token
+
+    # The candidate clicks the public link: the consent activates.
+    response = channels_app.get(link)
     assert response.status_code == 200
-    assert response.json()["granted"] is True
-    assert response.json()["policy_version"] == "phase10-v1"
+    assert "подтверждено" in response.text
+    db_session.refresh(tokens[0])
+    assert tokens[0].consumed_at is not None
+    assert tokens[0].consume_reason == "confirmed"
+    consent = db_session.get(CandidateChannelConsent, (candidate.id, "email"))
+    assert consent is not None and consent.granted is True
+    assert consent.source == "email_confirm"
+    assert consent.granted_by_user_id is None
 
     body = channels_app.get(f"/candidates/{candidate.id}/channels").json()
     assert body["email"]["state"] == CHANNEL_STATE_ALLOWED
@@ -261,10 +334,18 @@ def test_email_consent_lifecycle_and_pending_cancellation(
     assert "cand@example.com" not in str(body["email"]["target_masked"])
     assert "email" in body["allowed_channels"]
 
+    # The link is one-shot: a second click changes nothing.
+    response = channels_app.get(link)
+    assert response.status_code == 410
+
     # Queue a message, then revoke: the pending row must be cancelled.
     send = channels_app.post(
         f"/candidates/{candidate.id}/messages/send",
-        json={"message_type": "document_request", "documents": ["Паспорт"]},
+        json={
+            "message_type": "document_request",
+            "documents": ["Паспорт"],
+            "idempotency_key": "lifecycle-send-1",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert send.status_code == 201, send.text
@@ -283,15 +364,23 @@ def test_email_consent_lifecycle_and_pending_cancellation(
     assert body["email"]["state"] == CHANNEL_STATE_FORBIDDEN
     assert body["allowed_channels"] == []
 
-    # Re-enable: allowed again, a fresh send works.
-    channels_app.post(
+    # Re-enabling again requires a NEW candidate confirmation (no HR grant).
+    response = channels_app.post(
         f"/candidates/{candidate.id}/channels/email/consent",
         json={"granted": True},
         headers={"X-CSRF-Token": csrf},
     )
+    assert response.status_code == 409
+    _initiate_confirmation(channels_app, csrf, candidate)
+    link2 = _confirmation_link(db_session, candidate)
+    assert channels_app.get(link2).status_code == 200
     send = channels_app.post(
         f"/candidates/{candidate.id}/messages/send",
-        json={"message_type": "document_reminder", "documents": ["Паспорт"]},
+        json={
+            "message_type": "document_reminder",
+            "documents": ["Паспорт"],
+            "idempotency_key": "lifecycle-send-2",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert send.status_code == 201
@@ -302,17 +391,51 @@ def test_email_consent_is_pinned_to_the_address(
 ) -> None:
     candidate = make_candidate(db_session, owner=hr_user, email="first@example.com")
     csrf = _login(channels_app, "hr1")
-    channels_app.post(
-        f"/candidates/{candidate.id}/channels/email/consent",
-        json={"granted": True},
-        headers={"X-CSRF-Token": csrf},
-    )
-    # The address changes in the card -> the recorded consent no longer
+    _initiate_confirmation(channels_app, csrf, candidate)
+    assert channels_app.get(_confirmation_link(db_session, candidate)).status_code == 200
+
+    # The address changes in the card -> the confirmed consent no longer
     # covers it: the channel re-opens the confirmation (fail-closed).
     candidate.email = "second@example.com"
     candidate.email_normalized = "second@example.com"
     db_session.commit()
     body = channels_app.get(f"/candidates/{candidate.id}/channels").json()
+    assert body["email"]["state"] == CHANNEL_STATE_PENDING
+    assert body["allowed_channels"] == []
+
+    # An OLD confirmation letter (issued for the previous address) must not
+    # unlock the new address: the public endpoint refuses it.
+    stale = make_candidate(db_session, owner=hr_user, email="old@example.com")
+    _initiate_confirmation(channels_app, csrf, stale)
+    old_link = _confirmation_link(db_session, stale)
+    assert channels_app.get(old_link).status_code == 200
+    assert channels_app.get(old_link).status_code == 410  # one-shot anyway
+    # Directly simulate: token issued for old address, card now has another.
+    from app.models import CandidateEmailConfirmToken
+
+    token = CandidateEmailConfirmToken(
+        candidate_id=stale.id,
+        token_hash=hashlib.sha256(b"pinned-token-0123456789").hexdigest(),
+        email_normalized="old@example.com",
+        created_at=utc_now(),
+        expires_at=utc_now() + timedelta(hours=1),
+    )
+    db_session.add(token)
+    db_session.commit()
+    stale.email = "new@example.com"
+    stale.email_normalized = "new@example.com"
+    db_session.commit()
+    response = channels_app.get(
+        "https://hr.example.test/candidates/email/confirm?token=pinned-token-0123456789"
+    )
+    assert response.status_code == 410
+    assert "изменился" in response.text
+    consent = db_session.get(CandidateChannelConsent, (stale.id, "email"))
+    # The old confirmation was never extended to the new address.
+    assert consent is not None
+    assert consent.email_normalized == "old@example.com"
+    db_session.refresh(consent)
+    body = channels_app.get(f"/candidates/{stale.id}/channels").json()
     assert body["email"]["state"] == CHANNEL_STATE_PENDING
     assert body["allowed_channels"] == []
 
@@ -435,7 +558,11 @@ def test_telegram_invite_confirm_unlink(
     # Queue a telegram message, then unlink: pending rows are cancelled.
     send = channels_app.post(
         f"/candidates/{candidate.id}/messages/send",
-        json={"message_type": "document_request", "documents": ["Паспорт"]},
+        json={
+            "message_type": "document_request",
+            "documents": ["Паспорт"],
+            "idempotency_key": "tg-flow-1",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert send.status_code == 201
@@ -516,14 +643,17 @@ def test_telegram_hr_refusal_is_not_overwritten_by_start(
 
 
 def _allow_email(db_session: Session, candidate: Candidate) -> None:
+    """Seed the CONFIRMED email consent (as if the candidate clicked the
+    double opt-in link): only this state unlocks regular messages."""
     db_session.add(
         CandidateChannelConsent(
             candidate_id=candidate.id,
             channel="email",
             granted=True,
             granted_at=NOW,
-            source="hr_recorded",
+            source="email_confirm",
             policy_version="phase10-v1",
+            granted_by_user_id=None,
             email_normalized=candidate.email_normalized,
         )
     )
@@ -579,7 +709,9 @@ def test_send_happy_path_and_duplicate_guard(
         json={
             "message_type": "interview_scheduled",
             "event_id": str(interview.id),
-            "location": "Офис, пер. Ленина 1",
+            # No location field exists in the contract: the text is fully
+            # server-rendered from the event.
+            "idempotency_key": "happy-path-1",
         },
         headers={"X-CSRF-Token": csrf},
     )
@@ -590,22 +722,29 @@ def test_send_happy_path_and_duplicate_guard(
     assert message["status"] == "queued"
     assert message["message_type"] == "candidate_interview_scheduled"
     assert message["event_id"] == str(interview.id)
-    assert "Офис, пер. Ленина 1" in message["body"]
+    assert "Место" not in message["body"]
+    assert message["initiator_user_id"] == str(hr_user.id)
+    assert message["initiator_username"] == "hr1"
     row = db_session.get(NotificationOutbox, UUID(message["id"]))
     assert row is not None
     assert row.recipient_candidate_id == candidate.id
     assert row.recipient_user_id is None and row.external_recipient is None
+    assert row.object_version == interview.version
     assert row.consent_snapshot == {
         "channel": "email",
         "granted": True,
-        "source": "hr_recorded",
+        "source": "email_confirm",
         "policy_version": "phase10-v1",
     }
 
-    # Duplicate while still pending -> 409, no second row.
+    # Duplicate while still pending (a NEW key) -> 409, no second row.
     response = channels_app.post(
         f"/candidates/{candidate.id}/messages/send",
-        json={"message_type": "interview_scheduled", "event_id": str(interview.id)},
+        json={
+            "message_type": "interview_scheduled",
+            "event_id": str(interview.id),
+            "idempotency_key": "happy-path-2",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 409
@@ -639,9 +778,17 @@ def test_send_refusals(channels_app: TestClient, db_session: Session, hr_user: U
     def send(payload: dict) -> Any:
         return channels_app.post(
             f"/candidates/{candidate.id}/messages/send",
-            json=payload,
+            json={**payload, "idempotency_key": f"refusal-{uuid4().hex}"},
             headers={"X-CSRF-Token": csrf},
         )
+
+    # The idempotency key is required and bounded.
+    raw = channels_app.post(
+        f"/candidates/{candidate.id}/messages/send",
+        json={"message_type": "document_request", "documents": ["Паспорт"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert raw.status_code == 422
 
     # No channels allowed yet.
     assert send({"message_type": "document_request", "documents": ["Паспорт"]}).status_code == 409
@@ -671,13 +818,6 @@ def test_send_refusals(channels_app: TestClient, db_session: Session, hr_user: U
     assert send({"message_type": "document_request", "documents": [" "]}).status_code == 422
     assert send({"message_type": "document_request", "documents": ["x"] * 21}).status_code == 422
     assert send({"message_type": "document_request", "documents": ["x" * 201]}).status_code == 422
-    # Location only applies to interview messages.
-    assert (
-        send(
-            {"message_type": "document_request", "documents": ["Паспорт"], "location": "Офис"}
-        ).status_code
-        == 422
-    )
     # Unknown type / channel.
     assert send({"message_type": "spam"}).status_code == 422
     assert (
@@ -714,7 +854,11 @@ def test_send_rate_limited(channels_app: TestClient, db_session: Session, hr_use
     for i in range(22):
         response = channels_app.post(
             f"/candidates/{candidate.id}/messages/send",
-            json={"message_type": "document_request", "documents": [f"Документ {i}"]},
+            json={
+                "message_type": "document_request",
+                "documents": [f"Документ {i}"],
+                "idempotency_key": f"rate-limit-{i}",
+            },
             headers={"X-CSRF-Token": csrf},
         )
         codes.append(response.status_code)
@@ -729,18 +873,24 @@ def test_cancel_and_history(channels_app: TestClient, db_session: Session, hr_us
     csrf = _login(channels_app, "hr1")
     send = channels_app.post(
         f"/candidates/{candidate.id}/messages/send",
-        json={"message_type": "document_request", "documents": ["Паспорт"]},
+        json={
+            "message_type": "document_request",
+            "documents": ["Паспорт"],
+            "idempotency_key": "history-1",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     row_id = send.json()["messages"][0]["id"]
 
-    # History shows the exact text and status.
+    # History shows the exact text, status and the initiator.
     history = channels_app.get(f"/candidates/{candidate.id}/messages").json()
     assert history["total"] == 1
     item = history["items"][0]
     assert item["id"] == row_id
     assert item["title"] == "Запрос документов"
     assert "— Паспорт" in item["body"]
+    assert item["initiator_username"] == "hr1"
+    assert item["initiator_user_id"] == str(hr_user.id)
 
     # Cancel the queued message.
     response = channels_app.post(
@@ -756,6 +906,40 @@ def test_cancel_and_history(channels_app: TestClient, db_session: Session, hr_us
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 409
+
+
+def test_cancel_is_refused_for_sending_and_terminal_states(
+    channels_app: TestClient, db_session: Session, hr_user: User
+) -> None:
+    """Only `queued` rows may be cancelled via the API."""
+    candidate = make_candidate(db_session, owner=hr_user, email="cq@example.com")
+    _allow_email(db_session, candidate)
+    csrf = _login(channels_app, "hr1")
+    for i, (status_value, expected) in enumerate(
+        [("accepted", 409), ("failed", 409), ("skipped", 409), ("sending", 409)]
+    ):
+        send = channels_app.post(
+            f"/candidates/{candidate.id}/messages/send",
+            json={
+                "message_type": "document_reminder",
+                "documents": [f"Документ {i}"],
+                "idempotency_key": f"cancel-state-{i}",
+            },
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert send.status_code == 201, send.text
+        row_id = send.json()["messages"][0]["id"]
+        row = db_session.get(NotificationOutbox, UUID(row_id))
+        assert row is not None
+        row.status = DeliveryStatus(status_value)
+        if status_value == "sending":
+            row.lease_expires_at = utc_now() + timedelta(minutes=2)
+        db_session.commit()
+        response = channels_app.post(
+            f"/candidates/{candidate.id}/messages/{row_id}/cancel",
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert response.status_code == expected, status_value
 
     # Foreign candidate / foreign message: 404 for another HR.
     other_hr = make_user(db_session, username="hr2", role=UserRole.HR)
@@ -787,7 +971,11 @@ def test_audit_rows_have_no_pii_or_text(
     csrf = _login(channels_app, "hr1")
     channels_app.post(
         f"/candidates/{candidate.id}/messages/send",
-        json={"message_type": "document_request", "documents": ["Паспорт"]},
+        json={
+            "message_type": "document_request",
+            "documents": ["Паспорт"],
+            "idempotency_key": "audit-check-1",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     events = (
@@ -814,7 +1002,11 @@ def test_no_message_text_or_targets_in_logs(
     with caplog.at_level(logging.DEBUG, logger="app"):
         channels_app.post(
             f"/candidates/{candidate.id}/messages/send",
-            json={"message_type": "document_request", "documents": ["Секретный документ"]},
+            json={
+                "message_type": "document_request",
+                "documents": ["Секретный документ"],
+                "idempotency_key": "logs-check-1",
+            },
             headers={"X-CSRF-Token": csrf},
         )
         channels_app.get(f"/candidates/{candidate.id}/messages")
@@ -823,3 +1015,307 @@ def test_no_message_text_or_targets_in_logs(
         assert "Секретный документ" not in text
         assert "logs@example.com" not in text
         assert "Логгинг" not in text
+
+
+# --- Email double opt-in token lifecycle ------------------------------------------
+
+
+def test_email_confirmation_token_lifecycle(
+    channels_app: TestClient, db_session: Session, hr_user: User
+) -> None:
+    candidate = make_candidate(db_session, owner=hr_user, email="tok@example.com")
+    csrf = _login(channels_app, "hr1")
+
+    # An unknown token is a plain 404 without any details.
+    response = channels_app.get(
+        "https://hr.example.test/candidates/email/confirm?token=" + "x" * 43
+    )
+    assert response.status_code == 404
+    assert "tok@example.com" not in response.text
+
+    # Initiate twice: the newer token supersedes the older one and its
+    # still-queued letter is cancelled (a dead link is never mailed).
+    _initiate_confirmation(channels_app, csrf, candidate)
+    first_link = _confirmation_link(db_session, candidate)
+    _initiate_confirmation(channels_app, csrf, candidate)
+    second_link = _confirmation_link(db_session, candidate)
+    assert first_link != second_link
+    response = channels_app.get(first_link)
+    assert response.status_code == 410  # superseded
+    consent = db_session.get(CandidateChannelConsent, (candidate.id, "email"))
+    assert consent is None or consent.granted is False
+
+    from app.notification_service import cancel_pending_for_object  # noqa: F401
+
+    old_rows = (
+        db_session.execute(
+            select(NotificationOutbox).where(
+                NotificationOutbox.recipient_candidate_id == candidate.id,
+                NotificationOutbox.notification_type == NotificationType.CANDIDATE_EMAIL_CONFIRM,
+                NotificationOutbox.status == DeliveryStatus.CANCELLED,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(old_rows) == 1  # the first letter was cancelled
+
+    # An expired token changes nothing.
+    db_session.add(
+        CandidateEmailConfirmToken(
+            candidate_id=candidate.id,
+            token_hash=hashlib.sha256(b"expired-token-1234").hexdigest(),
+            email_normalized="tok@example.com",
+            created_at=NOW - timedelta(hours=2),
+            expires_at=NOW - timedelta(hours=1),
+        )
+    )
+    db_session.commit()
+    response = channels_app.get(
+        "https://hr.example.test/candidates/email/confirm?token=expired-token-1234"
+    )
+    assert response.status_code == 410
+    assert "Истёк" in response.text or "срок" in response.text.lower()
+    consent = db_session.get(CandidateChannelConsent, (candidate.id, "email"))
+    assert consent is None or consent.granted is False
+
+    # The still-valid second link confirms; a repeat click is 410.
+    assert channels_app.get(second_link).status_code == 200
+    assert channels_app.get(second_link).status_code == 410
+
+
+def test_email_confirmation_initiation_access_and_config(
+    client: TestClient, channels_app: TestClient, db_session: Session, hr_user: User
+) -> None:
+    other_hr = make_user(db_session, username="hr2", role=UserRole.HR)
+    make_user(db_session, username="mgr", role=UserRole.MANAGER)
+    make_user(db_session, username="adm", role=UserRole.ADMIN)
+    own = make_candidate(db_session, owner=hr_user, email="acc@example.com")
+    foreign = make_candidate(db_session, owner=other_hr, email="f@example.com")
+
+    # Foreign candidate: 404 for another HR (no existence leak).
+    csrf = _login(channels_app, "hr1")
+    response = channels_app.post(
+        f"/candidates/{foreign.id}/channels/email/confirmation",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 404
+
+    # A manager of the area may initiate; a plain admin may not (403).
+    csrf_mgr = _login(channels_app, "mgr")
+    assert (
+        channels_app.post(
+            f"/candidates/{own.id}/channels/email/confirmation",
+            headers={"X-CSRF-Token": csrf_mgr},
+        ).status_code
+        == 201
+    )
+    csrf_adm = _login(channels_app, "adm")
+    assert (
+        channels_app.post(
+            f"/candidates/{own.id}/channels/email/confirmation",
+            headers={"X-CSRF-Token": csrf_adm},
+        ).status_code
+        == 403
+    )
+
+    # Without the public base URL configured the flow is disabled (503).
+    csrf2 = _login(client, "hr1")
+    response = client.post(
+        f"/candidates/{own.id}/channels/email/confirmation",
+        headers={"X-CSRF-Token": csrf2},
+    )
+    assert response.status_code == 503
+
+
+def test_public_confirm_is_rate_limited_per_ip(
+    monkeypatch: pytest.MonkeyPatch, channels_app: TestClient, db_session: Session, hr_user: User
+) -> None:
+    from app.routers import candidate_messages as router_module
+
+    limiter = router_module._public_limiter_for(channels_app.app.state.settings)  # type: ignore[attr-defined]
+    monkeypatch.setattr(limiter, "_limit", 3)
+    limiter.reset()
+    url = "https://hr.example.test/candidates/email/confirm?token=" + "x" * 43
+    codes = [channels_app.get(url).status_code for _ in range(5)]
+    assert 429 in codes
+    assert codes.count(429) == 2
+
+
+# --- Manual-send idempotency --------------------------------------------------------
+
+
+def test_send_idempotency_replays_the_original_result(
+    channels_app: TestClient, db_session: Session, hr_user: User
+) -> None:
+    candidate = make_candidate(db_session, owner=hr_user, email="idem@example.com")
+    _allow_email(db_session, candidate)
+    csrf = _login(channels_app, "hr1")
+    payload = {
+        "message_type": "document_request",
+        "documents": ["Паспорт"],
+        "idempotency_key": "idem-key-1",
+    }
+
+    first = channels_app.post(
+        f"/candidates/{candidate.id}/messages/send",
+        json=payload,
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert first.status_code == 201, first.text
+    first_body = first.json()
+    assert first_body["channels"] == ["email"]
+    row_id = first_body["messages"][0]["id"]
+
+    # Same key + same payload: the ORIGINAL result, no new rows.
+    second = channels_app.post(
+        f"/candidates/{candidate.id}/messages/send",
+        json=payload,
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert second.status_code in (200, 201)
+    assert second.json() == first_body
+
+    rows = (
+        db_session.execute(
+            select(NotificationOutbox).where(
+                NotificationOutbox.recipient_candidate_id == candidate.id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert str(rows[0].id) == row_id
+
+    # Same key + different payload -> 409.
+    conflict = channels_app.post(
+        f"/candidates/{candidate.id}/messages/send",
+        json={
+            "message_type": "document_request",
+            "documents": ["СНИЛС"],
+            "idempotency_key": "idem-key-1",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert conflict.status_code == 409
+
+    # The same key bound to ANOTHER user -> 409 as well.
+    make_user(db_session, username="mgr", role=UserRole.MANAGER)
+    csrf_mgr = _login(channels_app, "mgr")
+    other_user = channels_app.post(
+        f"/candidates/{candidate.id}/messages/send",
+        json=payload,
+        headers={"X-CSRF-Token": csrf_mgr},
+    )
+    assert other_user.status_code == 409
+
+    # The key is never echoed in user-facing messages or audit details.
+    events = (
+        db_session.execute(select(AuditEvent).where(AuditEvent.candidate_id == candidate.id))
+        .scalars()
+        .all()
+    )
+    assert all("idem-key-1" not in (e.details or "") for e in events)
+
+
+def test_send_idempotency_unique_race_replays_the_winner(
+    channels_app: TestClient, db_session: Session, hr_user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The concurrent-winner path: the pre-insert lookup misses the row (race
+    window), the INSERT loses the unique index — the stored response of the
+    winner is replayed and nothing new is queued. (The genuinely parallel
+    two-thread race runs against PostgreSQL in the integration suite.)"""
+    from app.routers import candidate_messages as router_module
+
+    candidate = make_candidate(db_session, owner=hr_user, email="conc@example.com")
+    _allow_email(db_session, candidate)
+    csrf = _login(channels_app, "hr1")
+
+    # The "winner" already committed: a stored response exists.
+    winner_row_id = uuid4()
+    stored_response = {
+        "messages": [
+            {
+                "id": str(winner_row_id),
+                "message_type": "candidate_document_request",
+                "channel": "email",
+                "status": "queued",
+                "source": "manual",
+                "title": "Запрос документов",
+                "body": "текст",
+                "event_id": None,
+                "initiator_user_id": str(hr_user.id),
+                "initiator_username": "hr1",
+                "scheduled_at": "2026-09-04T12:00:00Z",
+                "scheduled_at_effective": None,
+                "queued_at": "2026-09-04T12:00:00Z",
+                "accepted_at": None,
+                "delivered_at": None,
+                "failed_at": None,
+                "cancelled_at": None,
+                "attempts": 0,
+                "next_attempt_at": None,
+                "error_code": None,
+                "error_class": None,
+                "provider_message_id": None,
+            }
+        ],
+        "channels": ["email"],
+    }
+    from app.models import CandidateMessageRequest
+
+    db_session.add(
+        CandidateMessageRequest(
+            idempotency_key="concurrent-key-1",
+            user_id=hr_user.id,
+            candidate_id=candidate.id,
+            message_type="document_request",
+            payload_hash=router_module._manual_payload_hash(
+                user_id=hr_user.id,
+                candidate_id=candidate.id,
+                message_type="document_request",
+                event_id=None,
+                documents=["Паспорт"],
+                channel=None,
+            ),
+            response=stored_response,
+        )
+    )
+    db_session.commit()
+
+    # Simulate the race: the FIRST lookup returns None (the loser has not
+    # seen the winner yet), subsequent lookups see the committed row.
+    real_lookup = router_module._idempotency_lookup
+    calls = {"n": 0}
+
+    def racing_lookup(db: Session, key: str) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real_lookup(db, key)
+
+    monkeypatch.setattr(router_module, "_idempotency_lookup", racing_lookup)
+
+    response = channels_app.post(
+        f"/candidates/{candidate.id}/messages/send",
+        json={
+            "message_type": "document_request",
+            "documents": ["Паспорт"],
+            "idempotency_key": "concurrent-key-1",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code in (200, 201), response.text
+    assert response.json() == stored_response  # the winner's stored result
+
+    rows = (
+        db_session.execute(
+            select(NotificationOutbox).where(
+                NotificationOutbox.recipient_candidate_id == candidate.id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == []  # the loser queued nothing

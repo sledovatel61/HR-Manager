@@ -29,6 +29,7 @@ instead of exact ones wherever the exact value is not strictly needed.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import secrets
 from collections.abc import Callable
@@ -37,6 +38,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -54,10 +56,10 @@ from app.candidate_messages import (
     allowed_candidate_channels,
     candidate_channel_state,
     candidate_consent,
+    queue_candidate_email_confirm,
     queue_candidate_message_all_channels,
     record_candidate_consent,
     render_candidate_message,
-    sanitize_inline,
     telegram_link_for,
 )
 from app.config import Settings
@@ -68,6 +70,8 @@ from app.models import (
     AccessGrantScope,
     AuditAction,
     Candidate,
+    CandidateEmailConfirmToken,
+    CandidateMessageRequest,
     CandidateTelegramLink,
     CandidateTelegramLinkToken,
     DeliveryChannel,
@@ -95,6 +99,7 @@ from app.schemas import (
     CandidateChannelStateOut,
     CandidateConsentOut,
     CandidateConsentUpdate,
+    CandidateEmailConfirmationOut,
     CandidateMessageCancelOut,
     CandidateMessageListOut,
     CandidateMessageOut,
@@ -111,6 +116,10 @@ if TYPE_CHECKING:
     from app.telegram import TelegramConfig, TelegramUpdatesResult
 
 router = APIRouter(prefix="/candidates/{candidate_id}", tags=["candidate-messages"])
+# Public (unauthenticated) router: the double opt-in confirmation page the
+# candidate opens from the letter. Rate-limited per IP; no session, no CSRF
+# (a plain GET that only consumes a one-shot hashed token).
+public_router = APIRouter(prefix="/candidates/email", tags=["candidate-messages"])
 
 _MAX_LIST_LIMIT = 100
 _DEFAULT_LIST_LIMIT = 50
@@ -194,6 +203,8 @@ def reset_candidate_message_limiters() -> None:
     """Clear all candidate-message rate counters (used between tests)."""
     for limiter in _limiters.values():
         limiter.reset()
+    for limiter in _public_limiters.values():
+        limiter.reset()
 
 
 def _enforce_rate_limit(action: str, user: User, settings: Settings) -> None:
@@ -243,6 +254,7 @@ def _channel_state_out(
         if candidate.email:
             has_target = True
             target_masked = mask_email(candidate.email)
+        invite_active = _active_email_confirm_exists(db, candidate.id, now)
     else:
         link = telegram_link_for(db, candidate.id)
         if link is not None and link.chat_id is not None:
@@ -315,9 +327,17 @@ def _channel_or_422(channel: str | None) -> DeliveryChannel | None:
 
 
 def _validate_send_payload(
-    db: Session, candidate: Candidate, payload: CandidateMessageSendRequest
+    db: Session,
+    candidate: Candidate,
+    payload: CandidateMessageSendRequest | CandidateMessagePreviewRequest,
 ) -> tuple[str, Event | None, list[str]]:
-    """Validate type/event/documents; returns (type_key, event, documents)."""
+    """Validate type/event/documents; returns (type_key, event, documents).
+
+    The event is re-read server-side: it must belong to THIS candidate,
+    be an interview and (for the reminder) still be scheduled in the
+    future. No client-supplied content is ever accepted — the exact text
+    is rendered from the server's own state.
+    """
     message_type = _message_type_or_422(payload.message_type)
 
     event: Event | None = None
@@ -375,11 +395,6 @@ def _validate_send_payload(
             detail="Список документов применяется только к сообщениям о документах.",
         )
 
-    if message_type not in INTERVIEW_MESSAGE_TYPES and payload.location:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Место указывается только для сообщений о собеседовании.",
-        )
     return message_type, event, documents
 
 
@@ -390,8 +405,9 @@ def _render_for(
     message_type: str,
     event: Event | None,
     documents: list[str],
-    location: str | None,
 ) -> RenderedMessage:
+    """The single server-side renderer shared by preview and send: the
+    candidate sees in the preview the exact text the queue would carry."""
     starts_local = None
     if event is not None:
         timezone = _display_timezone(db, candidate, settings)
@@ -401,12 +417,13 @@ def _render_for(
         candidate=candidate,
         starts_at_local=starts_local,
         previous_starts_at_local=None,
-        location=sanitize_inline(location, max_length=300) if location else None,
         documents=documents or None,
     )
 
 
-def _to_message_out(row: NotificationOutbox) -> CandidateMessageOut:
+def _to_message_out(
+    row: NotificationOutbox, initiator_username: str | None = None
+) -> CandidateMessageOut:
     return CandidateMessageOut(
         id=row.id,
         message_type=row.notification_type.value,
@@ -416,6 +433,8 @@ def _to_message_out(row: NotificationOutbox) -> CandidateMessageOut:
         title=row.title,
         body=row.body,
         event_id=row.object_id if row.object_type == "event" else None,
+        initiator_user_id=row.initiator_user_id,
+        initiator_username=initiator_username,
         scheduled_at=row.scheduled_at,
         scheduled_at_effective=row.scheduled_at_effective,
         queued_at=row.queued_at,
@@ -472,7 +491,7 @@ def get_candidate_channels(
 @router.post(
     "/channels/email/consent",
     response_model=CandidateConsentOut,
-    summary="Record or revoke the candidate's email consent",
+    summary="Revoke the candidate's email consent (granting is double opt-in only)",
 )
 def set_email_consent(
     candidate_id: str,
@@ -481,24 +500,31 @@ def set_email_consent(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CandidateConsentOut:
-    """Record (or revoke) that the candidate agreed to receive email.
+    """Revoke the candidate's email consent (immediate, fail-closed).
 
-    The consent is pinned to the current address from the candidate card
-    (the only allowed address); a later change of the address re-opens the
-    confirmation. Revocation stops every pending email message of this
-    candidate. The worker re-validates everything at send time.
+    GRANTING is never done here: the email channel may be unlocked only
+    by the candidate's own click on the one-time link from the
+    confirmation letter (double opt-in,
+    ``POST /candidates/{id}/channels/email/confirmation``). There is no
+    administrative override — an HR call can never put the channel into
+    the message-allowed state by itself. Revocation stops every pending
+    email message of this candidate; the worker re-validates at send
+    time as well.
     """
     candidate = _accessible_candidate(db, candidate_id, user)
-    if payload.granted and not candidate.email:
+    if payload.granted:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="У кандидата не указан адрес электронной почты.",
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Согласие на email подтверждает только сам кандидат: "
+                "отправьте письмо подтверждения и дождитесь перехода по ссылке."
+            ),
         )
     consent = record_candidate_consent(
         db,
         candidate=candidate,
         channel=DeliveryChannel.EMAIL,
-        granted=payload.granted,
+        granted=False,
         granted_by_user_id=user.id,
         source="hr_recorded",
         commit=False,
@@ -509,7 +535,7 @@ def set_email_consent(
         AuditAction.CANDIDATE_CHANNEL_CONSENT_UPDATED,
         actor=user,
         candidate=candidate,
-        details=f"channel=email granted={payload.granted}",
+        details="channel=email granted=False",
         commit=False,
     )
     db.commit()
@@ -519,6 +545,111 @@ def set_email_consent(
         granted_at=consent.granted_at,
         source=consent.source,
         policy_version=consent.policy_version,
+    )
+
+
+@router.post(
+    "/channels/email/confirmation",
+    response_model=CandidateEmailConfirmationOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Initiate the candidate's email double opt-in letter",
+)
+def initiate_email_confirmation(
+    candidate_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CandidateEmailConfirmationOut:
+    """Mail the one-time confirmation link to the candidate's card address.
+
+    A cryptographically random token is generated server-side; only its
+    SHA-256 hash is stored, the raw value travels exactly once — inside
+    the letter rendered through the existing outbox (no direct SMTP in
+    the request). A newer initiation supersedes older unconsumed tokens
+    and cancels their still-queued letters. The consent itself is granted
+    ONLY by the candidate clicking the public link; an expired, used or
+    superseded token changes nothing.
+    """
+    candidate = _accessible_candidate(db, candidate_id, user)
+    settings: Settings = request.app.state.settings
+    _enforce_rate_limit("candidate-email-confirmation", user, settings)
+    if not _channel_configured(settings, DeliveryChannel.EMAIL):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Email-канал не настроен. Обратитесь к администратору.",
+        )
+    base_url = settings.candidate_email_confirm_base_url.strip()
+    if not base_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Не настроен адрес страницы подтверждения (CANDIDATE_EMAIL_CONFIRM_BASE_URL).",
+        )
+    if not candidate.email:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="У кандидата не указан адрес электронной почты.",
+        )
+    from app.utils import normalize_email
+
+    address_normalized = normalize_email(candidate.email)
+    now = utc_now()
+    # Supersede older unconsumed tokens AND cancel their queued letters
+    # (a dead link must not be mailed).
+    stale_ids = [
+        row_id
+        for row_id in db.execute(
+            select(CandidateEmailConfirmToken.id).where(
+                CandidateEmailConfirmToken.candidate_id == candidate.id,
+                CandidateEmailConfirmToken.consumed_at.is_(None),
+            )
+        ).scalars()
+    ]
+    if stale_ids:
+        db.execute(
+            update(CandidateEmailConfirmToken)
+            .where(CandidateEmailConfirmToken.id.in_(stale_ids))
+            .values(consumed_at=now, consume_reason="superseded")
+        )
+        from app.notification_service import cancel_pending_for_object
+
+        for row_id in stale_ids:
+            cancel_pending_for_object(
+                db, object_type="candidate_email_token", object_id=row_id, now=now
+            )
+    raw_token = secrets.token_urlsafe(32)
+    token = CandidateEmailConfirmToken(
+        candidate_id=candidate.id,
+        token_hash=_token_hash(raw_token),
+        email_normalized=address_normalized,
+        created_at=now,
+        expires_at=now + timedelta(minutes=settings.candidate_email_confirm_ttl_minutes),
+    )
+    db.add(token)
+    db.flush()
+    confirm_url = f"{base_url}/candidates/email/confirm?token={raw_token}"
+    queued = queue_candidate_email_confirm(
+        db,
+        candidate=candidate,
+        token_id=token.id,
+        confirm_url=confirm_url,
+        expires_at=token.expires_at,
+        initiator_user_id=user.id,
+    )
+    _audit(
+        db,
+        request,
+        AuditAction.CANDIDATE_EMAIL_CONFIRM_INITIATED,
+        actor=user,
+        candidate=candidate,
+        details=f"masked={mask_email(candidate.email)}",
+        commit=False,
+    )
+    db.commit()
+    assert token.expires_at is not None
+    return CandidateEmailConfirmationOut(
+        queued=queued is not None,
+        email_masked=mask_email(candidate.email),
+        expires_at=token.expires_at,
     )
 
 
@@ -954,19 +1085,16 @@ def list_candidate_messages(
     total = db.execute(
         select(func.count()).select_from(NotificationOutbox).where(*filters)
     ).scalar_one()
-    rows = (
-        db.execute(
-            select(NotificationOutbox)
-            .where(*filters)
-            .order_by(NotificationOutbox.queued_at.desc(), NotificationOutbox.id.desc())
-            .limit(limit)
-            .offset(offset)
-        )
-        .scalars()
-        .all()
-    )
+    rows = db.execute(
+        select(NotificationOutbox, User.username)
+        .outerjoin(User, NotificationOutbox.initiator_user_id == User.id)
+        .where(*filters)
+        .order_by(NotificationOutbox.queued_at.desc(), NotificationOutbox.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
     return CandidateMessageListOut(
-        items=[_to_message_out(row) for row in rows],
+        items=[_to_message_out(row, username) for row, username in rows],
         total=int(total),
         limit=limit,
         offset=offset,
@@ -1017,6 +1145,43 @@ def _pending_duplicate_exists(
     )
 
 
+def _manual_payload_hash(
+    *,
+    user_id: UUID,
+    candidate_id: UUID,
+    message_type: str,
+    event_id: UUID | None,
+    documents: list[str],
+    channel: str | None,
+) -> str:
+    """SHA-256 of the canonical manual-send payload.
+
+    The idempotency key is bound to the acting user, the candidate and the
+    exact operation; the key itself is never stored in logs or responses.
+    """
+    canonical = json.dumps(
+        {
+            "user_id": str(user_id),
+            "candidate_id": str(candidate_id),
+            "message_type": message_type,
+            "event_id": str(event_id) if event_id is not None else None,
+            "documents": documents,
+            "channel": channel,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _idempotency_lookup(db: Session, idempotency_key: str) -> CandidateMessageRequest | None:
+    return db.execute(
+        select(CandidateMessageRequest).where(
+            CandidateMessageRequest.idempotency_key == idempotency_key
+        )
+    ).scalar_one_or_none()
+
+
 @router.post(
     "/messages/preview",
     response_model=CandidateMessagePreviewOut,
@@ -1033,7 +1198,7 @@ def preview_candidate_message(
     candidate = _accessible_candidate(db, candidate_id, user)
     settings: Settings = request.app.state.settings
     message_type, event, documents = _validate_send_payload(db, candidate, payload)
-    message = _render_for(db, candidate, settings, message_type, event, documents, payload.location)
+    message = _render_for(db, candidate, settings, message_type, event, documents)
     allowed = allowed_candidate_channels(db, candidate=candidate, settings=settings)
     return CandidateMessagePreviewOut(
         title=message.title,
@@ -1060,15 +1225,49 @@ def send_candidate_message(
     The server renders the text, resolves the channels from the CURRENT
     consent state and queues outbox rows — the worker performs the actual
     delivery later (outside any HTTP request), re-validating consent,
-    address, candidate state, event freshness and cancellation right
-    before the provider call. Duplicate pending messages of the same type
-    are refused; the action is rate-limited and audited.
+    address, candidate state, event freshness, version and cancellation
+    right before the provider call.
+
+    Idempotency: the client-generated ``idempotency_key`` is bound to
+    this user, this candidate and a SHA-256 of the exact payload. A retry
+    with the same key and payload replays the stored original response
+    (HTTP 200) without queueing anything again; the same key with a
+    different payload or user is refused with 409. Concurrent identical
+    requests produce exactly one logical send (unique index arbitration).
+    The key is never logged or echoed.
+
+    Duplicate pending messages of the same type are refused; the action
+    is rate-limited and audited.
     """
     candidate = _accessible_candidate(db, candidate_id, user)
     settings: Settings = request.app.state.settings
     _enforce_rate_limit("candidate-message-send", user, settings)
     message_type, event, documents = _validate_send_payload(db, candidate, payload)
     channel = _channel_or_422(payload.channel)
+
+    # Idempotency first: a retry of an already-completed operation returns
+    # the ORIGINAL result — even if the consent/channel state has changed
+    # since (the business checks below only gate NEW sends).
+    idempotency_key = payload.idempotency_key.strip()
+    payload_hash = _manual_payload_hash(
+        user_id=user.id,
+        candidate_id=candidate.id,
+        message_type=message_type,
+        event_id=event.id if event is not None else None,
+        documents=documents,
+        channel=channel.value if channel is not None else None,
+    )
+    replay = _idempotency_lookup(db, idempotency_key)
+    if replay is not None:
+        if replay.user_id != user.id or replay.payload_hash != payload_hash:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ключ идемпотентности уже использован с другим запросом.",
+            )
+        # A verbatim replay of the original result: nothing new is queued.
+        db.rollback()
+        return CandidateMessageSendOut.model_validate(replay.response)
+
     allowed = allowed_candidate_channels(db, candidate=candidate, settings=settings)
     if channel is not None:
         if channel not in allowed:
@@ -1080,9 +1279,39 @@ def send_candidate_message(
             status_code=status.HTTP_409_CONFLICT,
             detail="Такое сообщение уже ожидает отправки этому кандидату.",
         )
-    message = _render_for(db, candidate, settings, message_type, event, documents, payload.location)
+
+    message = _render_for(db, candidate, settings, message_type, event, documents)
     now = utc_now()
-    request_key = secrets.token_urlsafe(12)
+    record = CandidateMessageRequest(
+        idempotency_key=idempotency_key,
+        user_id=user.id,
+        candidate_id=candidate.id,
+        message_type=message_type,
+        payload_hash=payload_hash,
+        response={},
+    )
+    db.add(record)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        if not is_duplicate_key_error(exc):
+            raise
+        # A concurrent identical request won the unique index: fall back
+        # to the stored result of the winner (or refuse on mismatch).
+        db.rollback()
+        replay = _idempotency_lookup(db, idempotency_key)
+        if replay is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Запрос обрабатывается, повторите попытку.",
+            ) from None
+        if replay.user_id != user.id or replay.payload_hash != payload_hash:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ключ идемпотентности уже использован с другим запросом.",
+            ) from None
+        return CandidateMessageSendOut.model_validate(replay.response)
+
     rows = queue_candidate_message_all_channels(
         db,
         candidate=candidate,
@@ -1090,8 +1319,9 @@ def send_candidate_message(
         message_type_key=message_type,
         source=NotificationSource.MANUAL,
         event_id=event.id if event else None,
+        event_version=event.version if event is not None else None,
         initiator_user_id=user.id,
-        dedupe_key=f"manual:{request_key}",
+        dedupe_key=f"manual:{idempotency_key}",
         scheduled_at=now,
         settings=settings,
         only_channel=channel,
@@ -1108,13 +1338,15 @@ def send_candidate_message(
         ),
         commit=False,
     )
+    result = CandidateMessageSendOut(
+        messages=[_to_message_out(row, user.username) for row in rows],
+        channels=[row.channel.value for row in rows],
+    )
+    record.response = result.model_dump(mode="json")
     db.commit()
     for row in rows:
         db.refresh(row)
-    return CandidateMessageSendOut(
-        messages=[_to_message_out(row) for row in rows],
-        channels=[row.channel.value for row in rows],
-    )
+    return result
 
 
 @router.post(
@@ -1163,3 +1395,195 @@ def cancel_candidate_message(
     )
     db.commit()
     return CandidateMessageCancelOut(id=row.id, status=row.status.value)
+
+
+# --- Public email double opt-in confirmation -------------------------------------
+
+
+def _active_email_confirm_exists(db: Session, candidate_id: UUID, now: datetime) -> bool:
+    return (
+        db.execute(
+            select(CandidateEmailConfirmToken.id)
+            .where(
+                CandidateEmailConfirmToken.candidate_id == candidate_id,
+                CandidateEmailConfirmToken.consumed_at.is_(None),
+                CandidateEmailConfirmToken.expires_at > now,
+            )
+            .limit(1)
+        ).scalar()
+        is not None
+    )
+
+
+_public_limiters: dict[str, SlidingWindowRateLimiter] = {}
+_public_limiter_shape: tuple[int, int] | None = None
+
+
+def _public_limiter_for(settings: Settings) -> SlidingWindowRateLimiter:
+    global _public_limiter_shape
+    shape = (settings.public_confirm_rate_limit, settings.public_confirm_rate_window_s)
+    if _public_limiter_shape != shape:
+        _public_limiters.clear()
+        _public_limiter_shape = shape
+    limiter = _public_limiters.get("candidate-email-confirm")
+    if limiter is None:
+        limiter = SlidingWindowRateLimiter(limit=shape[0], window_seconds=shape[1])
+        _public_limiters["candidate-email-confirm"] = limiter
+    return limiter
+
+
+_CONFIRM_PAGE = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+ body {{ font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0;
+        display: flex; min-height: 100vh; align-items: center; justify-content: center;
+        background: #f5f6f8; color: #1f2330; }}
+ .card {{ background: #fff; border-radius: 12px; padding: 32px 40px; max-width: 460px;
+          margin: 16px; box-shadow: 0 4px 16px rgba(0,0,0,.08); }}
+ h1 {{ font-size: 20px; margin: 0 0 12px; }}
+ p {{ font-size: 15px; line-height: 1.5; margin: 0; }}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>{title}</h1>
+<p>{detail}</p>
+</div>
+</body>
+</html>"""
+
+
+def _confirm_page(title: str, detail: str) -> HTMLResponse:
+    # Static Russian strings only — the token is never reflected back.
+    return HTMLResponse(_CONFIRM_PAGE.format(title=title, detail=detail))
+
+
+@public_router.get(
+    "/confirm",
+    response_class=HTMLResponse,
+    summary="Confirm the candidate's email consent (public one-shot link)",
+)
+def confirm_candidate_email(
+    request: Request,
+    token: str = Query(min_length=16, max_length=128),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """The candidate's own click activates the email consent (double opt-in).
+
+    Public and unauthenticated (the candidate has no account): rate-limited
+    per client IP, one-shot hashed token, no CSRF (plain GET, no session).
+    An expired, already used or superseded link — and a changed card
+    address — change NOTHING (fail-closed). On success the consent is
+    recorded with source ``email_confirm``; every other pending
+    confirmation token of the candidate is superseded.
+    """
+    settings: Settings = request.app.state.settings
+    ip = client_ip(request) or "unknown"
+    result = _public_limiter_for(settings).check(f"ip:{ip}")
+    if not result.allowed:
+        return HTMLResponse(
+            _CONFIRM_PAGE.format(title="Слишком много попыток", detail="Повторите позже."),
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+    raw = token.strip()
+    row = db.execute(
+        select(CandidateEmailConfirmToken).where(
+            CandidateEmailConfirmToken.token_hash == _token_hash(raw)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        # Unknown link: no details, no existence leak.
+        return HTMLResponse(
+            _CONFIRM_PAGE.format(
+                title="Ссылка недействительна",
+                detail="Проверьте ссылку из письма или запросите новое письмо.",
+            ),
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    now = utc_now()
+    if row.consumed_at is not None or row.expires_at <= now:
+        return HTMLResponse(
+            _CONFIRM_PAGE.format(
+                title="Ссылка больше не действует",
+                detail="Истёк срок действия или ссылка уже была использована. "
+                "Запросите новое письмо у вашего HR-менеджера.",
+            ),
+            status_code=status.HTTP_410_GONE,
+        )
+    candidate = db.get(Candidate, row.candidate_id)
+    if candidate is None or candidate.deleted_at is not None:
+        return HTMLResponse(
+            _CONFIRM_PAGE.format(
+                title="Ссылка больше не действует",
+                detail="Запросите новое письмо у вашего HR-менеджера.",
+            ),
+            status_code=status.HTTP_410_GONE,
+        )
+    from app.utils import normalize_email
+
+    if not candidate.email or row.email_normalized != normalize_email(candidate.email):
+        # The card address changed after this letter was issued: the link
+        # confirms a different mailbox — the consent stays untouched.
+        return HTMLResponse(
+            _CONFIRM_PAGE.format(
+                title="Адрес изменился",
+                detail="Адрес электронной почты в карточке изменился. "
+                "Запросите новое письмо у вашего HR-менеджера.",
+            ),
+            status_code=status.HTTP_410_GONE,
+        )
+
+    # Success: consume the token, supersede the sibling tokens and their
+    # queued letters, record the consent (the candidate's own action).
+    row.consumed_at = now
+    row.consume_reason = "confirmed"
+    sibling_ids = [
+        token_id
+        for token_id in db.execute(
+            select(CandidateEmailConfirmToken.id).where(
+                CandidateEmailConfirmToken.candidate_id == candidate.id,
+                CandidateEmailConfirmToken.consumed_at.is_(None),
+                CandidateEmailConfirmToken.id != row.id,
+            )
+        ).scalars()
+    ]
+    if sibling_ids:
+        db.execute(
+            update(CandidateEmailConfirmToken)
+            .where(CandidateEmailConfirmToken.id.in_(sibling_ids))
+            .values(consumed_at=now, consume_reason="superseded")
+        )
+        from app.notification_service import cancel_pending_for_object
+
+        for token_id in sibling_ids:
+            cancel_pending_for_object(
+                db, object_type="candidate_email_token", object_id=token_id, now=now
+            )
+    record_candidate_consent(
+        db,
+        candidate=candidate,
+        channel=DeliveryChannel.EMAIL,
+        granted=True,
+        granted_by_user_id=None,
+        source="email_confirm",
+        commit=False,
+    )
+    record_event(
+        db,
+        AuditAction.CANDIDATE_EMAIL_CONFIRMED,
+        actor=None,
+        candidate_id=candidate.id,
+        ip_address=client_ip(request),
+        user_agent=user_agent(request.headers),
+        details=f"masked={mask_email(candidate.email)}",
+        commit=False,
+    )
+    db.commit()
+    return _confirm_page(
+        "Готово",
+        "Согласие на сообщения по электронной почте подтверждено. Можно закрыть эту страницу.",
+    )

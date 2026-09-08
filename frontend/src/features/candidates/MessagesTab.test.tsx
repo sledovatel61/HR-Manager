@@ -11,6 +11,7 @@ vi.mock("../../api", async (importOriginal) => {
     ...original,
     getCandidateChannels: vi.fn(),
     updateCandidateChannelConsent: vi.fn(),
+    initiateCandidateEmailConfirmation: vi.fn(),
     createCandidateTelegramInvite: vi.fn(),
     confirmCandidateTelegram: vi.fn(),
     unlinkCandidateTelegram: vi.fn(),
@@ -91,6 +92,8 @@ const MESSAGES: CandidateMessageList = {
       title: "Запрос документов",
       body: "Здравствуйте, Петров Пётр Петрович!\n— Паспорт РФ",
       event_id: null,
+      initiator_user_id: "22222222-2222-2222-2222-222222222222",
+      initiator_username: "hr1",
       scheduled_at: "2026-09-02T10:01:00Z",
       scheduled_at_effective: "2026-09-02T10:01:00Z",
       queued_at: "2026-09-02T10:01:00Z",
@@ -109,10 +112,12 @@ const MESSAGES: CandidateMessageList = {
       message_type: "document_reminder",
       channel: "telegram",
       status: "queued",
-      source: "manual",
+      source: "system",
       title: "Напоминание о недостающих документах",
       body: "Здравствуйте! Напоминаем про документы.",
       event_id: null,
+      initiator_user_id: null,
+      initiator_username: null,
       scheduled_at: null,
       scheduled_at_effective: null,
       queued_at: "2026-09-03T10:00:00Z",
@@ -168,14 +173,12 @@ describe("MessagesTab", () => {
     ).toBeNull();
   });
 
-  it("revokes email consent through the API and refreshes states", async () => {
+  it("initiates the email double opt-in letter and revokes via the API", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.updateCandidateChannelConsent).mockResolvedValue({
-      channel: "email",
-      granted: false,
-      granted_at: "2026-09-03T12:00:00Z",
-      source: "hr_recorded",
-      policy_version: "phase10-v1",
+    vi.mocked(api.initiateCandidateEmailConfirmation).mockResolvedValue({
+      queued: true,
+      email_masked: "p***@example.com",
+      expires_at: "2026-09-03T12:30:00Z",
     });
     const revoked: CandidateChannels = {
       ...CHANNELS,
@@ -194,8 +197,13 @@ describe("MessagesTab", () => {
     renderTab();
     await screen.findByText("Разрешён");
 
-    await user.click(screen.getByRole("button", { name: "Отозвать согласие" }));
+    // The granted channel offers no new letter (already confirmed).
+    expect(
+      screen.queryByRole("button", { name: "Отправить письмо подтверждения" })
+    ).toBeDisabled();
 
+    // Revoke (the only HR power over the email consent).
+    await user.click(screen.getByRole("button", { name: "Отозвать согласие" }));
     await waitFor(() =>
       expect(api.updateCandidateChannelConsent).toHaveBeenCalledWith(
         CANDIDATE.id,
@@ -204,6 +212,15 @@ describe("MessagesTab", () => {
       )
     );
     expect(await screen.findByText("Запрещён")).toBeInTheDocument();
+
+    // On a non-allowed channel the HR may only send the confirmation letter.
+    await user.click(screen.getByRole("button", { name: "Отправить письмо подтверждения" }));
+    await waitFor(() =>
+      expect(api.initiateCandidateEmailConfirmation).toHaveBeenCalledWith(CANDIDATE.id)
+    );
+    expect(
+      await screen.findByText(/Письмо подтверждения отправлено на p\*\*\*@example\.com/)
+    ).toBeInTheDocument();
   });
 
   it("creates a Telegram invitation and shows the deep link once", async () => {
@@ -259,12 +276,14 @@ describe("MessagesTab", () => {
     expect(await screen.findByText(/Уйдёт по каналам: Электронная почта/)).toBeInTheDocument();
   });
 
-  it("queues a message and refreshes the history", async () => {
+  it("retries a failed send with the same idempotency key and refreshes the history", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.sendCandidateMessage).mockResolvedValue({
-      messages: [],
-      channels: ["email"],
-    });
+    const success = { messages: [], channels: ["email" as const] };
+    // The first attempt fails on the transport level: the form stays filled,
+    // so the retry must reuse the same idempotency key.
+    vi.mocked(api.sendCandidateMessage)
+      .mockRejectedValueOnce(new api.ApiError(0, "network error"))
+      .mockResolvedValue(success);
 
     renderTab();
     await screen.findByText("История отправок");
@@ -273,12 +292,34 @@ describe("MessagesTab", () => {
     await user.type(documentsField, "Паспорт РФ");
 
     await user.click(screen.getByRole("button", { name: /^Отправить$/ }));
+    expect(await screen.findByText("network error")).toBeInTheDocument();
 
-    await waitFor(() => expect(api.sendCandidateMessage).toHaveBeenCalled());
-    expect(api.sendCandidateMessage).toHaveBeenCalledWith(CANDIDATE.id, {
+    await user.click(screen.getByRole("button", { name: /^Отправить$/ }));
+    await waitFor(() => expect(vi.mocked(api.sendCandidateMessage).mock.calls.length).toBe(2));
+    const [firstId, firstPayload] = vi.mocked(api.sendCandidateMessage).mock.calls[0];
+    const secondPayload = vi.mocked(api.sendCandidateMessage).mock.calls[1][1];
+    expect(firstId).toBe(CANDIDATE.id);
+    expect(firstPayload).toMatchObject({
       message_type: "document_request",
       documents: ["Паспорт РФ"],
     });
+    expect(typeof firstPayload.idempotency_key).toBe("string");
+    expect(firstPayload.idempotency_key.length).toBeGreaterThanOrEqual(8);
+    // The same payload retried -> the same operation -> the same key.
+    expect(secondPayload.idempotency_key).toBe(firstPayload.idempotency_key);
+
+    // The successful send clears the form; the next composition is a new
+    // operation: a fresh key and still no location field.
+    await user.type(documentsField, "СНИЛС");
+    await user.click(screen.getByRole("button", { name: /^Отправить$/ }));
+    await waitFor(() => expect(vi.mocked(api.sendCandidateMessage).mock.calls.length).toBe(3));
+    const thirdPayload = vi.mocked(api.sendCandidateMessage).mock.calls[2][1];
+    expect(thirdPayload).toMatchObject({
+      message_type: "document_request",
+      documents: ["СНИЛС"],
+    });
+    expect("location" in thirdPayload).toBe(false);
+    expect(thirdPayload.idempotency_key).not.toBe(firstPayload.idempotency_key);
     // The history reloaded after the send.
     await waitFor(() =>
       expect(vi.mocked(api.listCandidateMessages).mock.calls.length).toBeGreaterThanOrEqual(2)
@@ -363,8 +404,10 @@ describe("MessagesTab", () => {
     expect(within(history).getByText("Запрос документов")).toBeInTheDocument();
     expect(within(history).getByText("Принято провайдером")).toBeInTheDocument();
     expect(within(history).getByText("В очереди")).toBeInTheDocument();
-    // The exact stored text is part of the history.
+    // The exact stored text and the initiator are part of the history.
     expect(within(history).getByText(/— Паспорт РФ/)).toBeInTheDocument();
+    expect(within(history).getByText(/инициатор: hr1/)).toBeInTheDocument();
+    expect(within(history).getByText(/инициатор: система/)).toBeInTheDocument();
 
     await user.click(within(history).getByRole("button", { name: "Отменить отправку" }));
 

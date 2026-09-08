@@ -160,6 +160,7 @@ def schedule(
     initiator_user_id: UUID | None = None,
     consent_snapshot: dict | None = None,
     quiet_hours_bypassed: bool = False,
+    object_version: int | None = None,
 ) -> NotificationOutbox | None:
     """Insert one outbox row (transactional, deduplicated).
 
@@ -218,6 +219,7 @@ def schedule(
         initiator_user_id=initiator_user_id,
         object_type=object_type,
         object_id=object_id,
+        object_version=object_version,
         scheduled_at=scheduled_at,
         queued_at=utc_now(),
         status=DeliveryStatus.QUEUED,
