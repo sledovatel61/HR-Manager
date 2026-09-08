@@ -131,8 +131,32 @@ const MESSAGES: CandidateMessageList = {
       error_class: null,
       provider_message_id: null,
     },
+    {
+      id: "33333333-1111-1111-1111-111111111111",
+      message_type: "candidate_email_confirm",
+      channel: "email",
+      status: "accepted",
+      source: "system",
+      title: "Подтвердите согласие на сообщения по почте",
+      body: "Здравствуйте! Перейдите по ссылке: (ссылка подтверждения отправлена кандидату в письме)",
+      event_id: null,
+      initiator_user_id: "22222222-2222-2222-2222-222222222222",
+      initiator_username: "hr1",
+      scheduled_at: null,
+      scheduled_at_effective: null,
+      queued_at: "2026-09-04T10:00:00Z",
+      accepted_at: "2026-09-04T10:00:05Z",
+      delivered_at: null,
+      failed_at: null,
+      cancelled_at: null,
+      attempts: 1,
+      next_attempt_at: null,
+      error_code: null,
+      error_class: null,
+      provider_message_id: null,
+    },
   ],
-  total: 2,
+  total: 3,
   limit: 20,
   offset: 0,
 };
@@ -402,12 +426,20 @@ describe("MessagesTab", () => {
 
     const history = await screen.findByRole("region", { name: "История сообщений" });
     expect(within(history).getByText("Запрос документов")).toBeInTheDocument();
-    expect(within(history).getByText("Принято провайдером")).toBeInTheDocument();
+    expect(within(history).getAllByText("Принято провайдером").length).toBeGreaterThanOrEqual(1);
     expect(within(history).getByText("В очереди")).toBeInTheDocument();
     // The exact stored text and the initiator are part of the history.
     expect(within(history).getByText(/— Паспорт РФ/)).toBeInTheDocument();
-    expect(within(history).getByText(/инициатор: hr1/)).toBeInTheDocument();
+    expect(within(history).getAllByText(/инициатор: hr1/).length).toBeGreaterThanOrEqual(1);
     expect(within(history).getByText(/инициатор: система/)).toBeInTheDocument();
+    // The double opt-in letter is listed, but its confirmation link is
+    // masked — the HR must never be able to click it.
+    const confirmLetter = within(history).getByText(
+      "Подтвердите согласие на сообщения по почте"
+    );
+    expect(confirmLetter).toBeInTheDocument();
+    expect(within(history).getByText(/ссылка подтверждения отправлена кандидату/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("token=");
 
     await user.click(within(history).getByRole("button", { name: "Отменить отправку" }));
 

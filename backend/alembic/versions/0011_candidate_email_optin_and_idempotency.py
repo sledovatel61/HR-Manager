@@ -3,11 +3,15 @@
 PR #14 rework. Two additions on top of revision 0010:
 
 * ``candidate_email_confirm_tokens`` — one-shot expiring tokens of the
-  candidate's email double opt-in. The raw token is rendered once into
-  the confirmation URL mailed to the candidate; only the SHA-256 hash is
-  stored. The token is bound to the normalized card address it was
-  issued for. The email consent may from now on be granted only by the
-  candidate's own click (``source='email_confirm'``) — the
+  candidate's email double opt-in. The raw token is an HMAC of the
+  server secret and the row id: it is re-derived in memory by the worker
+  right before the provider call and never persisted — only its SHA-256
+  hash is stored, and the queued letter body carries a placeholder
+  instead of the URL. A partial unique index enforces at most one
+  unconsumed (active) token per candidate. The token is bound to the
+  normalized card address it was issued for. The email consent may from
+  now on be granted only by the candidate's own click
+  (``source='email_confirm'``) — the
   ``ck_candidate_channel_consents_source_valid`` CHECK is recreated to
   allow that value (no data change: previously granted
   ``hr_recorded`` email consents are no longer honoured by the code,
@@ -129,6 +133,15 @@ def upgrade() -> None:
         "candidate_email_confirm_tokens",
         ["expires_at"],
     )
+    # At most one unconsumed (active) token per candidate: the DB-level
+    # backstop of the initiation serialization.
+    op.create_index(
+        "uq_candidate_email_confirm_tokens_one_active",
+        "candidate_email_confirm_tokens",
+        ["candidate_id"],
+        unique=True,
+        postgresql_where=sa.text("consumed_at IS NULL"),
+    )
 
     # --- Manual-send idempotency records ---------------------------------
     op.create_table(
@@ -173,6 +186,10 @@ def downgrade() -> None:
 
     op.drop_index(
         "ix_candidate_email_confirm_tokens_expires_at",
+        table_name="candidate_email_confirm_tokens",
+    )
+    op.drop_index(
+        "uq_candidate_email_confirm_tokens_one_active",
         table_name="candidate_email_confirm_tokens",
     )
     op.drop_index(

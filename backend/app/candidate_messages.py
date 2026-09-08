@@ -24,6 +24,8 @@ Security model (mirrors the phase-8/9 outbox contract):
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import re
 from dataclasses import dataclass
@@ -607,20 +609,62 @@ def plan_candidate_interview_messages(
     return rows
 
 
+# The letter body never carries the confirmation URL itself: this
+# placeholder is substituted by the worker IN MEMORY right before the
+# provider call, so no persisted field (outbox body/title, request
+# snapshots, audit, backups) ever contains a working confirmation link.
+CONFIRM_URL_PLACEHOLDER = "[[CANDIDATE_EMAIL_CONFIRM_URL]]"
+
+_EMAIL_CONFIRM_TOKEN_INFO = b"hr-manager:candidate-email-confirm-token:v1"
+
+
+def _email_confirm_derivation_key(settings: Settings) -> bytes:
+    """A dedicated key derived from the server secret (never stored)."""
+    return hmac.new(
+        settings.secret_key.encode("utf-8"),
+        _EMAIL_CONFIRM_TOKEN_INFO,
+        hashlib.sha256,
+    ).digest()
+
+
+def derive_email_confirm_token(token_id: UUID, settings: Settings) -> str:
+    """The raw one-time token: HMAC(derived server key, token row id).
+
+    Deterministic on purpose. The database stores only the SHA-256 hash
+    of this value; the worker re-derives the raw token (and the URL) in
+    memory at send time, so the capability exists outside the request
+    that issued it and outside the worker that mails it — but never in
+    any persisted field or backup. Rotating SECRET_KEY invalidates the
+    not-yet-confirmed links (bounded by the token TTL).
+    """
+    return hmac.new(
+        _email_confirm_derivation_key(settings),
+        b"email-confirm:" + token_id.bytes,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def email_confirm_url(token_id: UUID, settings: Settings) -> str:
+    """The public one-shot link of a confirmation token (memory only)."""
+    base_url = settings.candidate_email_confirm_base_url.strip()
+    token = derive_email_confirm_token(token_id, settings)
+    return f"{base_url}/candidates/email/confirm?token={token}"
+
+
 def queue_candidate_email_confirm(
     db: Session,
     *,
     candidate: Candidate,
     token_id: UUID,
-    confirm_url: str,
     expires_at: datetime,
     initiator_user_id: UUID,
 ) -> NotificationOutbox | None:
     """Queue the double opt-in letter (the ONLY consent-free candidate email).
 
-    The exact text — including the one-time confirmation URL — is snapshotted
-    here; the worker re-validates the token, the card address and the
-    candidate state right before the provider call and skips dead links.
+    The body carries :data:`CONFIRM_URL_PLACEHOLDER` instead of the URL:
+    the raw token is never persisted anywhere — the worker re-validates
+    the token, the card address and the candidate state right before the
+    provider call, substitutes the link in memory and skips dead links.
     """
     expires_local = expires_at.strftime("%d.%m.%Y %H:%M UTC")
     body = (
@@ -628,7 +672,7 @@ def queue_candidate_email_confirm(
         "При оформлении вашей кандидатуры был указан этот адрес электронной "
         "почты. Чтобы мы могли присылать вам сообщения о собеседованиях и "
         "документах, подтвердите согласие получать письма.\n\n"
-        f"Перейдите по ссылке: {sanitize_inline(confirm_url, max_length=500)}\n\n"
+        f"Перейдите по ссылке: {CONFIRM_URL_PLACEHOLDER}\n\n"
         f"Ссылка действительна до {expires_local}. "
         "Если вы не давали согласие, просто проигнорируйте это письмо."
     )

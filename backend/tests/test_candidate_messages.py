@@ -19,7 +19,7 @@ import hashlib
 import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -241,28 +241,34 @@ def _initiate_confirmation(client: TestClient, csrf: str, candidate: Candidate) 
     return response.json()
 
 
-def _confirmation_link(db: Session, candidate: Candidate) -> str:
-    """The one-time link from the newest queued double opt-in letter."""
-    import re as _re
+def _confirmation_link(db: Session, candidate: Candidate, app: TestClient) -> str:
+    """The one-time link of the candidate's active token.
 
-    row = (
+    The link is NEVER stored anywhere (the queued letter body carries a
+    placeholder), so it is derived exactly the way the worker derives it
+    in memory right before mailing the letter — this is the link the
+    candidate receives.
+    """
+    from fastapi import FastAPI
+
+    from app.candidate_messages import email_confirm_url
+
+    settings = cast("Settings", cast(FastAPI, app.app).state.settings)
+    token = (
         db.execute(
-            select(NotificationOutbox)
+            select(CandidateEmailConfirmToken)
             .where(
-                NotificationOutbox.recipient_candidate_id == candidate.id,
-                NotificationOutbox.notification_type == NotificationType.CANDIDATE_EMAIL_CONFIRM,
-                NotificationOutbox.status == DeliveryStatus.QUEUED,
+                CandidateEmailConfirmToken.candidate_id == candidate.id,
+                CandidateEmailConfirmToken.consumed_at.is_(None),
             )
-            .order_by(NotificationOutbox.queued_at.desc())
+            .order_by(CandidateEmailConfirmToken.created_at.desc())
             .execution_options(populate_existing=True)
         )
         .scalars()
         .first()
     )
-    assert row is not None and row.body
-    match = _re.search(r"https://\S+token=([A-Za-z0-9_-]+)", row.body)
-    assert match is not None
-    return match.group(0)
+    assert token is not None
+    return email_confirm_url(token.id, settings)
 
 
 def test_email_double_opt_in_flow_and_revocation(
@@ -298,7 +304,7 @@ def test_email_double_opt_in_flow_and_revocation(
     assert initiated["queued"] is True
     assert initiated["email_masked"].startswith("c")
     assert "cand@example.com" not in initiated["email_masked"]
-    link = _confirmation_link(db_session, candidate)
+    link = _confirmation_link(db_session, candidate, channels_app)
     assert link.startswith("https://hr.example.test/candidates/email/confirm?token=")
     body = channels_app.get(f"/candidates/{candidate.id}/channels").json()
     assert body["email"]["state"] == CHANNEL_STATE_PENDING
@@ -372,7 +378,7 @@ def test_email_double_opt_in_flow_and_revocation(
     )
     assert response.status_code == 409
     _initiate_confirmation(channels_app, csrf, candidate)
-    link2 = _confirmation_link(db_session, candidate)
+    link2 = _confirmation_link(db_session, candidate, channels_app)
     assert channels_app.get(link2).status_code == 200
     send = channels_app.post(
         f"/candidates/{candidate.id}/messages/send",
@@ -392,7 +398,9 @@ def test_email_consent_is_pinned_to_the_address(
     candidate = make_candidate(db_session, owner=hr_user, email="first@example.com")
     csrf = _login(channels_app, "hr1")
     _initiate_confirmation(channels_app, csrf, candidate)
-    assert channels_app.get(_confirmation_link(db_session, candidate)).status_code == 200
+    assert (
+        channels_app.get(_confirmation_link(db_session, candidate, channels_app)).status_code == 200
+    )
 
     # The address changes in the card -> the confirmed consent no longer
     # covers it: the channel re-opens the confirmation (fail-closed).
@@ -407,7 +415,7 @@ def test_email_consent_is_pinned_to_the_address(
     # unlock the new address: the public endpoint refuses it.
     stale = make_candidate(db_session, owner=hr_user, email="old@example.com")
     _initiate_confirmation(channels_app, csrf, stale)
-    old_link = _confirmation_link(db_session, stale)
+    old_link = _confirmation_link(db_session, stale, channels_app)
     assert channels_app.get(old_link).status_code == 200
     assert channels_app.get(old_link).status_code == 410  # one-shot anyway
     # Directly simulate: token issued for old address, card now has another.
@@ -1036,9 +1044,9 @@ def test_email_confirmation_token_lifecycle(
     # Initiate twice: the newer token supersedes the older one and its
     # still-queued letter is cancelled (a dead link is never mailed).
     _initiate_confirmation(channels_app, csrf, candidate)
-    first_link = _confirmation_link(db_session, candidate)
+    first_link = _confirmation_link(db_session, candidate, channels_app)
     _initiate_confirmation(channels_app, csrf, candidate)
-    second_link = _confirmation_link(db_session, candidate)
+    second_link = _confirmation_link(db_session, candidate, channels_app)
     assert first_link != second_link
     response = channels_app.get(first_link)
     assert response.status_code == 410  # superseded
@@ -1060,12 +1068,14 @@ def test_email_confirmation_token_lifecycle(
     )
     assert len(old_rows) == 1  # the first letter was cancelled
 
-    # An expired token changes nothing.
+    # An expired token changes nothing (its own candidate: at most one
+    # ACTIVE token per candidate is enforced by a partial unique index).
+    expired_owner = make_candidate(db_session, owner=hr_user, email="expired@example.com")
     db_session.add(
         CandidateEmailConfirmToken(
-            candidate_id=candidate.id,
+            candidate_id=expired_owner.id,
             token_hash=hashlib.sha256(b"expired-token-1234").hexdigest(),
-            email_normalized="tok@example.com",
+            email_normalized="expired@example.com",
             created_at=NOW - timedelta(hours=2),
             expires_at=NOW - timedelta(hours=1),
         )
@@ -1076,12 +1086,113 @@ def test_email_confirmation_token_lifecycle(
     )
     assert response.status_code == 410
     assert "Истёк" in response.text or "срок" in response.text.lower()
-    consent = db_session.get(CandidateChannelConsent, (candidate.id, "email"))
+    consent = db_session.get(CandidateChannelConsent, (expired_owner.id, "email"))
     assert consent is None or consent.granted is False
+    # The claim was NOT consumed by the failed attempt (fail-closed).
+    token_row = (
+        db_session.execute(
+            select(CandidateEmailConfirmToken).where(
+                CandidateEmailConfirmToken.candidate_id == expired_owner.id
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert token_row.consumed_at is None
 
     # The still-valid second link confirms; a repeat click is 410.
     assert channels_app.get(second_link).status_code == 200
     assert channels_app.get(second_link).status_code == 410
+
+
+def test_confirmation_letter_persists_no_link(
+    channels_app: TestClient, db_session: Session, hr_user: User
+) -> None:
+    """No persisted field ever contains a working confirmation link.
+
+    The raw token is an HMAC derived from the server secret and the token
+    row id; the queued letter body stores a placeholder that the worker
+    substitutes in memory at send time. The scan below checks every
+    candidate-scoped text field we persist (outbox title/body, idempotency
+    request snapshots, audit details) for BOTH the raw token and the URL.
+    """
+    from fastapi import FastAPI
+
+    from app.candidate_messages import CONFIRM_URL_PLACEHOLDER, derive_email_confirm_token
+
+    candidate = make_candidate(db_session, owner=hr_user, email="secret@example.com")
+    csrf = _login(channels_app, "hr1")
+    _initiate_confirmation(channels_app, csrf, candidate)
+
+    settings = cast("Settings", cast(FastAPI, channels_app.app).state.settings)
+    token = (
+        db_session.execute(
+            select(CandidateEmailConfirmToken).where(
+                CandidateEmailConfirmToken.candidate_id == candidate.id
+            )
+        )
+        .scalars()
+        .one()
+    )
+    raw_token = derive_email_confirm_token(token.id, settings)
+    assert len(raw_token) >= 16
+
+    letters = (
+        db_session.execute(
+            select(NotificationOutbox).where(
+                NotificationOutbox.recipient_candidate_id == candidate.id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(letters) == 1
+    letter = letters[0]
+    # The stored body carries the placeholder, never the URL itself.
+    assert letter.body is not None
+    assert CONFIRM_URL_PLACEHOLDER in letter.body
+    assert "token=" not in letter.body
+    assert "https://" not in letter.body
+    # ...and neither the raw token nor the hash is anywhere in the text.
+    for field in (letter.title, letter.body):
+        assert raw_token not in (field or "")
+        assert token.token_hash not in (field or "")
+
+    # The idempotency snapshots and audit details stay clean as well.
+    from app.models import CandidateMessageRequest
+
+    requests = db_session.execute(select(CandidateMessageRequest)).scalars().all()
+    for row in requests:
+        assert raw_token not in str(row.response)
+    from sqlalchemy import text as _text
+
+    # The whole database is scanned textually: no table may hold the
+    # raw token or a working link (backups inherit exactly this state).
+    leaked = (
+        db_session.execute(
+            _text(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND data_type IN ('text', 'character varying')"
+            )
+        ).all()
+        if db_session.get_bind().dialect.name == "postgresql"
+        else []
+    )
+    assert leaked == []  # the scan proper runs in the PG integration suite
+
+    # The history API shows the letter with the link masked out: an HR
+    # user must never be able to click the candidate's confirmation.
+    history = channels_app.get(f"/candidates/{candidate.id}/messages").json()
+    items = [item for item in history["items"] if item["message_type"] == "candidate_email_confirm"]
+    assert len(items) == 1
+    assert CONFIRM_URL_PLACEHOLDER not in (items[0]["body"] or "")
+    assert "token=" not in (items[0]["body"] or "")
+    assert "ссылка подтверждения отправлена кандидату" in (items[0]["body"] or "")
+
+    # The candidate's link still derives to the same hash the DB stores.
+    import hashlib as _hashlib
+
+    assert token.token_hash == _hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
 def test_email_confirmation_initiation_access_and_config(

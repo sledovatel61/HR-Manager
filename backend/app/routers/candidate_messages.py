@@ -32,20 +32,23 @@ import hashlib
 import json
 import re
 import secrets
+import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit import record_event
 from app.candidate_messages import (
     CANDIDATE_MESSAGE_TYPE_KEYS,
+    CONFIRM_URL_PLACEHOLDER,
     DOCUMENT_MESSAGE_TYPES,
     INTERVIEW_MESSAGE_TYPES,
     MAX_DOCUMENT_ITEM_LENGTH,
@@ -56,6 +59,7 @@ from app.candidate_messages import (
     allowed_candidate_channels,
     candidate_channel_state,
     candidate_consent,
+    derive_email_confirm_token,
     queue_candidate_email_confirm,
     queue_candidate_message_all_channels,
     record_candidate_consent,
@@ -92,6 +96,7 @@ from app.notification_service import (
     cancel_pending_candidate_channel_messages,
     format_local,
     is_duplicate_key_error,
+    lock_candidate_for_mutation,
 )
 from app.rate_limiting import SlidingWindowRateLimiter
 from app.schemas import (
@@ -421,6 +426,21 @@ def _render_for(
     )
 
 
+# What the history shows instead of the confirmation link placeholder:
+# the exact link must stay known only to the candidate's mailbox — an HR
+# user seeing it could confirm on the candidate's behalf.
+_CONFIRM_LINK_HISTORY_NOTE = "(ссылка подтверждения отправлена кандидату в письме)"
+
+
+def _history_body(row: NotificationOutbox) -> str | None:
+    """The stored text — with the confirmation link never rendered."""
+    if row.body is None:
+        return None
+    if row.notification_type == NotificationType.CANDIDATE_EMAIL_CONFIRM:
+        return row.body.replace(CONFIRM_URL_PLACEHOLDER, _CONFIRM_LINK_HISTORY_NOTE)
+    return row.body
+
+
 def _to_message_out(
     row: NotificationOutbox, initiator_username: str | None = None
 ) -> CandidateMessageOut:
@@ -431,7 +451,7 @@ def _to_message_out(
         status=row.status.value,
         source=row.source.value,
         title=row.title,
-        body=row.body,
+        body=_history_body(row),
         event_id=row.object_id if row.object_type == "event" else None,
         initiator_user_id=row.initiator_user_id,
         initiator_username=initiator_username,
@@ -520,6 +540,10 @@ def set_email_consent(
                 "отправьте письмо подтверждения и дождитесь перехода по ссылке."
             ),
         )
+    # Serialize the revocation with any in-flight worker send of this
+    # candidate (PG advisory lock): a revoke that arrives during a send
+    # applies right after it instead of silently losing the race.
+    lock_candidate_for_mutation(db, candidate.id)
     consent = record_candidate_consent(
         db,
         candidate=candidate,
@@ -562,13 +586,16 @@ def initiate_email_confirmation(
 ) -> CandidateEmailConfirmationOut:
     """Mail the one-time confirmation link to the candidate's card address.
 
-    A cryptographically random token is generated server-side; only its
-    SHA-256 hash is stored, the raw value travels exactly once — inside
-    the letter rendered through the existing outbox (no direct SMTP in
-    the request). A newer initiation supersedes older unconsumed tokens
-    and cancels their still-queued letters. The consent itself is granted
-    ONLY by the candidate clicking the public link; an expired, used or
-    superseded token changes nothing.
+    The raw token is an HMAC of the server secret and the token row id:
+    only its SHA-256 hash is stored, and the queued letter body carries a
+    placeholder — the worker re-derives the link in memory right before
+    the provider call, so no persisted field or backup ever contains a
+    working confirmation link. Serialized per candidate by an advisory
+    lock (with a partial unique index as the DB-level backstop), a newer
+    initiation supersedes older unconsumed tokens and cancels their
+    still-queued letters. The consent itself is granted ONLY by the
+    candidate clicking the public link; an expired, used or superseded
+    token changes nothing.
     """
     candidate = _accessible_candidate(db, candidate_id, user)
     settings: Settings = request.app.state.settings
@@ -591,6 +618,10 @@ def initiate_email_confirmation(
         )
     from app.utils import normalize_email
 
+    # Serialize parallel initiations of the same candidate (PG advisory
+    # lock): exactly one active token can exist — the second call waits,
+    # supersedes the first token and cancels its still-queued letter.
+    lock_candidate_for_mutation(db, candidate.id)
     address_normalized = normalize_email(candidate.email)
     now = utc_now()
     # Supersede older unconsumed tokens AND cancel their queued letters
@@ -616,22 +647,24 @@ def initiate_email_confirmation(
             cancel_pending_for_object(
                 db, object_type="candidate_email_token", object_id=row_id, now=now
             )
-    raw_token = secrets.token_urlsafe(32)
+    token_id = uuid.uuid4()
     token = CandidateEmailConfirmToken(
+        id=token_id,
         candidate_id=candidate.id,
-        token_hash=_token_hash(raw_token),
+        # The raw token is DERIVED (HMAC of the server secret and the row
+        # id), never random-then-stored: the worker re-derives it at send
+        # time, so nothing secret is persisted anywhere.
+        token_hash=_token_hash(derive_email_confirm_token(token_id, settings)),
         email_normalized=address_normalized,
         created_at=now,
         expires_at=now + timedelta(minutes=settings.candidate_email_confirm_ttl_minutes),
     )
     db.add(token)
     db.flush()
-    confirm_url = f"{base_url}/candidates/email/confirm?token={raw_token}"
     queued = queue_candidate_email_confirm(
         db,
         candidate=candidate,
         token_id=token.id,
-        confirm_url=confirm_url,
         expires_at=token.expires_at,
         initiator_user_id=user.id,
     )
@@ -672,6 +705,7 @@ def set_telegram_consent(
     records explicitly. Revocation stops every pending Telegram message.
     """
     candidate = _accessible_candidate(db, candidate_id, user)
+    lock_candidate_for_mutation(db, candidate.id)
     consent = record_candidate_consent(
         db,
         candidate=candidate,
@@ -1476,10 +1510,17 @@ def confirm_candidate_email(
 
     Public and unauthenticated (the candidate has no account): rate-limited
     per client IP, one-shot hashed token, no CSRF (plain GET, no session).
+    The one-shot semantics are ATOMIC: the token is claimed by a single
+    conditional ``UPDATE ... WHERE consumed_at IS NULL AND expires_at > now``
+    whose rowcount decides the winner — two parallel clicks of the same
+    link can never both confirm (the loser re-reads the consumed state).
     An expired, already used or superseded link — and a changed card
-    address — change NOTHING (fail-closed). On success the consent is
-    recorded with source ``email_confirm``; every other pending
-    confirmation token of the candidate is superseded.
+    address — change NOTHING (fail-closed: the claim is rolled back, the
+    token stays as it was). On success the consent is recorded with
+    source ``email_confirm``; every other pending confirmation token of
+    the candidate is superseded. The whole mutation is serialized with
+    in-flight worker sends and other token mutations by the candidate
+    advisory lock (PostgreSQL).
     """
     settings: Settings = request.app.state.settings
     ip = client_ip(request) or "unknown"
@@ -1490,12 +1531,13 @@ def confirm_candidate_email(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         )
     raw = token.strip()
-    row = db.execute(
+    token_hash = _token_hash(raw)
+    pre = db.execute(
         select(CandidateEmailConfirmToken).where(
-            CandidateEmailConfirmToken.token_hash == _token_hash(raw)
+            CandidateEmailConfirmToken.token_hash == token_hash
         )
     ).scalar_one_or_none()
-    if row is None:
+    if pre is None:
         # Unknown link: no details, no existence leak.
         return HTMLResponse(
             _CONFIRM_PAGE.format(
@@ -1505,7 +1547,29 @@ def confirm_candidate_email(
             status_code=status.HTTP_404_NOT_FOUND,
         )
     now = utc_now()
-    if row.consumed_at is not None or row.expires_at <= now:
+    # Serialize with in-flight candidate sends and token mutations (the
+    # claim itself is atomic regardless of the lock).
+    lock_candidate_for_mutation(db, pre.candidate_id)
+    # Atomic one-shot claim: the winner's conditional UPDATE flips
+    # consumed_at under the row lock; a parallel request with the same
+    # link either waits for this row lock and then matches zero rows, or
+    # is the one that got there first — exactly one confirmation wins.
+    claimed = cast(
+        "CursorResult[Any]",
+        db.execute(
+            update(CandidateEmailConfirmToken)
+            .where(
+                CandidateEmailConfirmToken.token_hash == token_hash,
+                CandidateEmailConfirmToken.consumed_at.is_(None),
+                CandidateEmailConfirmToken.expires_at > now,
+            )
+            .values(consumed_at=now, consume_reason="confirmed")
+            .execution_options(synchronize_session=False)
+        ),
+    )
+    if claimed.rowcount != 1:
+        # Lost the race, or the link is simply dead: nothing was changed.
+        db.rollback()
         return HTMLResponse(
             _CONFIRM_PAGE.format(
                 title="Ссылка больше не действует",
@@ -1514,8 +1578,15 @@ def confirm_candidate_email(
             ),
             status_code=status.HTTP_410_GONE,
         )
+    row = db.execute(
+        select(CandidateEmailConfirmToken).where(
+            CandidateEmailConfirmToken.token_hash == token_hash
+        )
+    ).scalar_one()
     candidate = db.get(Candidate, row.candidate_id)
     if candidate is None or candidate.deleted_at is not None:
+        # Fail-closed without consuming anything.
+        db.rollback()
         return HTMLResponse(
             _CONFIRM_PAGE.format(
                 title="Ссылка больше не действует",
@@ -1527,7 +1598,9 @@ def confirm_candidate_email(
 
     if not candidate.email or row.email_normalized != normalize_email(candidate.email):
         # The card address changed after this letter was issued: the link
-        # confirms a different mailbox — the consent stays untouched.
+        # confirms a different mailbox — the consent stays untouched and
+        # the token is NOT consumed (the claim is rolled back).
+        db.rollback()
         return HTMLResponse(
             _CONFIRM_PAGE.format(
                 title="Адрес изменился",
@@ -1537,10 +1610,8 @@ def confirm_candidate_email(
             status_code=status.HTTP_410_GONE,
         )
 
-    # Success: consume the token, supersede the sibling tokens and their
-    # queued letters, record the consent (the candidate's own action).
-    row.consumed_at = now
-    row.consume_reason = "confirmed"
+    # Success: the token is claimed; supersede the sibling tokens and
+    # their queued letters, record the consent (the candidate's action).
     sibling_ids = [
         token_id
         for token_id in db.execute(
