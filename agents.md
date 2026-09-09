@@ -63,20 +63,20 @@ HR Manager — многопользовательская внутренняя �
 
 ## Текущий статус и handoff
 
-- Фазы 0–10 приняты.
+- Фазы 0–11 приняты.
 - Phase 10 прошла review в PR #14 и влита в `main` merge-коммитом
   `7cebac27a89b7544ff4ff494f45eb906840d96e7` (reviewed SHA
   `4b44ff8bb446982aea4609e96bfa6819a8fe2331`).
 - На reviewed SHA зелёные Backend checks, PostgreSQL integration, Frontend checks
   и Compose stack smoke. Ограничения локальной Windows-проверки записаны в
   `docs/CURRENT_STATUS.md`.
-- Следующая работа: Phase 11 — версионируемые списки документов, учёт
-  недостающих документов и ограниченные личные правила. Полное задание:
-  `prompts/PHASE_11_PROMPT.md`.
-- Phase 11 должна переиспользовать существующие outbox/worker, согласия,
-  quiet-hours и серверные шаблоны Phase 10; универсальный rule engine запрещён.
-- Для Phase 11 требуется отдельный отчёт `docs/phase-11-report-<agent>.md` и
-  handoff для следующей работы.
+- Phase 11 принята через PR #18: reviewed SHA
+  `381e24b89fa54919d25d74778d86d659b2c59e88`, merge-коммит
+  `a6ac73cb797919383b80ce65b1614cd6e4dad47f`, миграционный head `0012`.
+- Политика Phase 11: HR/manager без `candidate_documents_all` работает только
+  с кандидатами, где он owner; scope явно открывает документы всей базы.
+- Следующая работа — Phase 12 после согласования отдельного продуктового
+  контракта. Ветка агента 5 `arena/01a081aa-hr-manager` сохранена.
 
 ## Definition of Done
 
