@@ -117,6 +117,7 @@ def test_pilot_overlay_requires_generated_secrets(pilot_overlay: dict[str, Any])
     for required in (
         "${HRM_POSTGRES_PASSWORD:?",
         "${HRM_SIGNING_KEY:?",
+        "${HRM_BOOTSTRAP_ADMIN_PASSWORD:?",
         "${HRM_EXCHANGE_TOKEN:?",
         "${HRM_BACKUP_KEY:?",
         "${HRM_BACKUP_KEY_ID:?",
