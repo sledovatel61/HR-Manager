@@ -67,14 +67,17 @@ def _clean_login_limiter() -> Iterator[None]:
     from app.routers.auth import reset_login_limiter
     from app.routers.candidate_messages import reset_candidate_message_limiters
     from app.routers.integrations import reset_integration_limiters
+    from app.routers.setup import reset_first_run_limiter
 
     reset_login_limiter()
     reset_integration_limiters()
     reset_candidate_message_limiters()
+    reset_first_run_limiter()
     yield
     reset_login_limiter()
     reset_integration_limiters()
     reset_candidate_message_limiters()
+    reset_first_run_limiter()
 
 
 @pytest.fixture()
@@ -283,7 +286,8 @@ def pg_client(pg_settings: Settings, pg_engine: Engine) -> Iterator[TestClient]:
                 "candidate_channel_consents, notification_delivery_attempts, "
                 "notification_outbox, notifications, notification_preferences, "
                 "telegram_start_events, telegram_link_tokens, telegram_links, "
-                "telegram_poll_state, user_emails, access_grants "
+                "telegram_poll_state, user_emails, access_grants, "
+                "bootstrap_tickets, bootstrap_exchanges "
                 "RESTART IDENTITY CASCADE"
             )
         )
