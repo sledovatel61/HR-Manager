@@ -38,6 +38,62 @@ from app.utils import normalize_email, normalize_full_name, normalize_phone, utc
 
 TEST_SQLITE_URL = "sqlite+pysqlite://"
 
+
+def _install_pg8000_error_translation() -> None:
+    """Local-harness aid: pg8000 maps only 23505 to ``IntegrityError``.
+
+    The integration tests are written against psycopg semantics (any class-23
+    integrity violation raises ``sqlalchemy.exc.IntegrityError``). pg8000's
+    legacy layer translates every other server error to ``ProgrammingError``,
+    so FK (23001), CHECK (23514) and trigger (P0001) violations would fail
+    those assertions on the local PGlite harness. When the integration URL
+    uses the pg8000 driver, re-translate class-23 errors at the DBAPI layer.
+    This patch is a no-op for psycopg/postgres:16 in CI.
+    """
+
+    if "pg8000" not in os.environ.get("TEST_DATABASE_URL", ""):
+        return
+    try:
+        import pg8000.dbapi
+        import pg8000.legacy
+    except ImportError:  # pragma: no cover - pg8000 is a dev-only dependency
+        return
+
+    original_execute = pg8000.legacy.Cursor.execute
+
+    def execute(  # type: ignore[no-untyped-def]
+        self, operation, args=(), stream=None
+    ):
+        try:
+            return original_execute(self, operation, args, stream)
+        except pg8000.dbapi.ProgrammingError as exc:
+            message = exc.args[0] if exc.args else ""
+            code = message.get("C", "") if isinstance(message, dict) else ""
+            if code.startswith("23"):
+                raise pg8000.dbapi.IntegrityError(message) from exc
+            raise
+
+    if pg8000.legacy.Cursor.execute is not execute:
+        pg8000.legacy.Cursor.execute = execute  # type: ignore[method-assign]
+
+    # PGlite quirk: a repeated ROLLBACK over the socket returns a stray
+    # DataRow; pg8000's row-less rollback context has ``rows=None`` and
+    # crashes with ``'NoneType' object has no attribute 'append'``. Tolerate
+    # stray rows in row-less contexts (they are discarded by the caller).
+    import pg8000.core as _pg8000_core
+
+    def handle_DATA_ROW(self, data, context):  # type: ignore[no-untyped-def]
+        if context.rows is None:
+            context.rows = []
+        original_data_row(self, data, context)
+
+    original_data_row = _pg8000_core.CoreConnection.handle_DATA_ROW
+    if _pg8000_core.CoreConnection.handle_DATA_ROW is not handle_DATA_ROW:
+        _pg8000_core.CoreConnection.handle_DATA_ROW = handle_DATA_ROW  # type: ignore[method-assign]
+
+
+_install_pg8000_error_translation()
+
 # A valid strong password used by fixtures (satisfies the password policy).
 FIXTURE_PASSWORD = "Str0ng-Pass-2026"
 
