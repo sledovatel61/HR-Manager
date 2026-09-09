@@ -1,0 +1,157 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 9d6fdee..8f7cbd3 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -283,3 +283,152 @@ jobs:
+       - name: Clean up the stack
+         if: always()
+         run: docker compose -f infra/docker-compose.yml down -v --remove-orphans
++
++  pilot-compose:
++    name: Pilot overlay + first-run smoke (compose, Linux)
++    runs-on: ubuntu-latest
++    needs: [backend, frontend]
++    env:
++      HRMGR_RELEASE_VERSION: 12.0.0-ci
++      RELEASE_SHA: 12.0.0-ci
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Generate ephemeral pilot secrets
++        run: |
++          # Ephemeral CI-only values (the real pilot generates them locally per
++          # machine); written to $GITHUB_ENV so every compose step sees them.
++          echo "SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" >> "$GITHUB_ENV"
++          echo "POSTGRES_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_hex(16))')" >> "$GITHUB_ENV"
++
++      - name: Validate pilot overlay configuration
++        run: |
++          docker compose -f infra/docker-compose.yml -f infra/compose.pilot.yml config -q
++          rendered="$(docker compose -f infra/docker-compose.yml -f infra/compose.pilot.yml config)"
++          # `config` renders long syntax: exactly one published host port total,
++          # bound to 127.0.0.1 (the frontend); db/backend/worker publish none.
++          published="$(echo "$rendered" | grep -c 'published:' || true)"
++          loopback="$(echo "$rendered" | grep -c 'host_ip: 127.0.0.1' || true)"
++          if [ "$published" -ne 1 ] || [ "$loopback" -ne 1 ]; then
++            echo "expected exactly one loopback-published port (published=$published host_ip=$loopback)" >&2; exit 1
++          fi
++          if echo "$rendered" | grep -q 'hr_manager_dev_password'; then
++            echo "pilot leaks development credentials" >&2; exit 1
++          fi
++          if ! echo "$rendered" | grep -q 'pilot-disabled'; then
++            echo "pilot must run without mailpit (profile pilot-disabled)" >&2; exit 1
++          fi
++          echo "pilot overlay config is clean"
++
++      - name: Build and start the pilot stack (explicit migrations)
++        run: |
++          docker compose -p hr-manager-pilot -f infra/docker-compose.yml -f infra/compose.pilot.yml up -d --build
++          docker compose -p hr-manager-pilot -f infra/docker-compose.yml -f infra/compose.pilot.yml \
++            run --rm backend alembic upgrade head
++          docker compose -p hr-manager-pilot -f infra/docker-compose.yml -f infra/compose.pilot.yml \
++            up -d --wait --wait-timeout 300
++
++      - name: First-run pairing + claim smoke (loopback security model)
++        run: python3 .github/scripts/pilot_first_run_smoke.py
++
++      - name: Backup volume check (encrypted dump appeared)
++        run: |
++          for attempt in $(seq 1 24); do
++            if docker compose -p hr-manager-pilot -f infra/docker-compose.yml \
++                -f infra/compose.pilot.yml exec -T backup \
++                sh -lc 'ls /var/backups/hr-manager/*.sql.gz >/dev/null 2>&1 \
++                     || ls /var/backups/hr-manager/*.pgdump.enc >/dev/null 2>&1'; then
++              echo "backup present"; exit 0
++            fi
++            sleep 5
++          done
++          docker compose -p hr-manager-pilot -f infra/docker-compose.yml -f infra/compose.pilot.yml logs backup
++          echo "no backup appeared" >&2; exit 1
++
++      - name: Collect logs on failure
++        if: failure()
++        run: |
++          docker compose -p hr-manager-pilot -f infra/docker-compose.yml \
++            -f infra/compose.pilot.yml logs --tail 120 || true
++
++      - name: Clean up the pilot stack
++        if: always()
++        run: docker compose -p hr-manager-pilot -f infra/docker-compose.yml -f infra/compose.pilot.yml down -v --remove-orphans
++
++  installer-windows:
++    name: Windows engine + Setup.exe build
++    runs-on: windows-latest
++    needs: [backend, frontend]
++    env:
++      HRMGR_TEST_STATE_DIR: ${{ runner.temp }}\hrmgr-ci-state
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Engine tests (mocked docker/HTTP, real PowerShell on Windows)
++        shell: pwsh
++        run: pwsh -NoProfile -File infra/windows/tests/Invoke-HrmTests.ps1
++
++      - name: Build release bundle with manifest + SHA256SUMS
++        shell: pwsh
++        run: |
++          $version = "12.0.0-ci." + $env:GITHUB_SHA.Substring(0, 7)
++          pwsh -NoProfile -File infra/windows/release/Build-Release.ps1 -OutDir "$env:RUNNER_TEMP\release-bundle" -Version $version
++          "HRMGR_BUNDLE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
++
++      - name: Verify bundle integrity with the engine checker
++        shell: pwsh
++        run: |
++          . infra/windows/lib/HrManager.Common.ps1
++          $problems = @(Test-HrmReleaseIntegrity -ReleaseDir "$env:RUNNER_TEMP\release-bundle")
++          if ($problems.Count -gt 0) { $problems; exit 1 }
++          "bundle integrity OK"
++
++      - name: Install pinned Inno Setup (checksum + Authenticode)
++        shell: pwsh
++        run: |
++          $lock = Get-Content infra/windows/installer/inno-lock.json -Raw | ConvertFrom-Json
++          $installer = Join-Path $env:RUNNER_TEMP "innosetup-$($lock.version).exe"
++          Invoke-WebRequest -Uri $lock.url -OutFile $installer
++          if ($lock.sha256) {
++            $actual = (Get-FileHash -Algorithm SHA256 -Path $installer).Hash.ToLowerInvariant()
++            if ($actual -ne $lock.sha256) { "Inno Setup sha256 mismatch: $actual" | Out-Host; exit 1 }
++          }
++          $sig = Get-AuthenticodeSignature $installer
++          if ($sig.Status -ne "Valid") { "Inno Setup Authenticode status: $($sig.Status)" | Out-Host; exit 1 }
++          Start-Process $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/CURRENTUSER" -Wait
++          if ($LASTEXITCODE) { exit $LASTEXITCODE }
++
++      - name: Compile Setup.exe
++        shell: pwsh
++        run: |
++          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
++            "/DMyAppVersion=$env:HRMGR_BUNDLE_VERSION" `
++            "/DBundleDir=$env:RUNNER_TEMP\release-bundle" `
++            infra/windows/installer/HrManagerPilot.iss
++          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
++
++      - name: Silent install/uninstall smoke (engine disabled by design)
++        shell: pwsh
++        run: |
++          # The engine itself must not run here (no Docker Desktop on the
++          # runner by default); [Code] honours HRMGR_SMOKE_NO_ENGINE: install
++          # drops smoke-ok.txt, uninstall completes silently.
++          $env:HRMGR_SMOKE_NO_ENGINE = "1"
++          $setup = Get-ChildItem "build/installer/HRManager-Setup-*.exe" | Select-Object -First 1
++          Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
++          $app = Join-Path $env:LOCALAPPDATA "Programs\HRManagerPilot"
++          if (-not (Test-Path (Join-Path $app "smoke-ok.txt"))) { "smoke marker missing after install" | Out-Host; exit 1 }
++          if (-not (Test-Path (Join-Path $app "bundle\release-manifest.json"))) { "bundle missing" | Out-Host; exit 1 }
++          if (-not (Get-ChildItem $app -Recurse | Where-Object Name -eq "hr-manager.ps1")) { "engine missing" | Out-Host; exit 1 }
++          Start-Process (Join-Path $app "uninstall.exe") -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
++          if (Test-Path (Join-Path $app "smoke-ok.txt")) { "smoke marker survived uninstall" | Out-Host; exit 1 }
++
++      - name: Upload Setup.exe + bundle checksums
++        uses: actions/upload-artifact@v4
++        with:
++          name: hr-manager-windows-pilot
++          path: |
++            build/installer/HRManager-Setup-*.exe
++            infra/windows/installer/inno-lock.json
++          if-no-files-found: error
++
