@@ -43,6 +43,7 @@ from app.models import (
     CandidateTransfer,
     EventStatus,
     EventType,
+    User,
     UserRole,
 )
 from app.routers.auth import reset_login_limiter
@@ -238,9 +239,43 @@ def test_migration_backfills_facts_from_history(
             )
 
         t0 = datetime(2026, 2, 1, 9, 0, tzinfo=UTC)
-        hr1 = make_user(pg_db, username="anna", role=UserRole.HR)
-        hr2 = make_user(pg_db, username="bob", role=UserRole.HR)
-        manager = make_user(pg_db, username="mgr", role=UserRole.MANAGER)
+        # Users are planted on the 0005 schema, which predates the phase-12
+        # work_role/password_is_bootstrap columns — insert the 0005 row shape
+        # with raw SQL (the ORM model already carries the new columns).
+        from app.security import hash_password
+
+        def _make_user_at_0005(username: str, role: UserRole) -> User:
+            user_id = uuid4()
+            pg_db.execute(
+                text(
+                    "INSERT INTO users (id, username, full_name, role, password_hash,"
+                    " is_active, failed_login_count, created_at, updated_at)"
+                    " VALUES (:id, :username, :full_name, :role, :hash, true, 0,"
+                    " :now, :now)"
+                ),
+                {
+                    "id": user_id,
+                    "username": username,
+                    "full_name": username,
+                    "role": role.value,
+                    "hash": hash_password("x"),
+                    "now": t0,
+                },
+            )
+            # Return a detached, unattached copy only so make_candidate can
+            # read the id; the DB row itself was inserted with raw SQL.
+            return User(
+                id=user_id,
+                username=username,
+                full_name=username,
+                role=role,
+                password_hash="detached",
+            )
+
+        hr1 = _make_user_at_0005("anna", UserRole.HR)
+        hr2 = _make_user_at_0005("bob", UserRole.HR)
+        manager = _make_user_at_0005("mgr", UserRole.MANAGER)
+        hr1_id, hr2_id, manager_id = hr1.id, hr2.id, manager.id
 
         candidate = make_candidate(pg_db, owner=hr1, source=CandidateSource.REFERRAL)
         pg_db.execute(
@@ -250,7 +285,7 @@ def test_migration_backfills_facts_from_history(
 
         interaction = CandidateInteraction(
             candidate_id=candidate.id,
-            author_user_id=hr1.id,
+            author_user_id=hr1_id,
             type="call",
             comment="звонок",
             created_at=t0 + timedelta(hours=1),
@@ -259,9 +294,9 @@ def test_migration_backfills_facts_from_history(
 
         transfer = CandidateTransfer(
             candidate_id=candidate.id,
-            initiator_user_id=manager.id,
-            from_user_id=hr1.id,
-            to_user_id=hr2.id,
+            initiator_user_id=manager_id,
+            from_user_id=hr1_id,
+            to_user_id=hr2_id,
             reason="нагрузка",
             created_at=t0 + timedelta(hours=2),
         )
@@ -281,8 +316,8 @@ def test_migration_backfills_facts_from_history(
             ),
             {
                 "candidate_id": candidate.id,
-                "author": hr1.id,
-                "assignee": hr2.id,
+                "author": hr1_id,
+                "assignee": hr2_id,
                 "type": EventType.INTERVIEW.value,
                 "title": "Интервью",
                 "status": EventStatus.COMPLETED.value,
@@ -296,7 +331,7 @@ def test_migration_backfills_facts_from_history(
         pg_db.add(
             AuditEvent(
                 action=AuditAction.CANDIDATE_STAGE_CHANGED,
-                actor_user_id=hr1.id,
+                actor_user_id=hr1_id,
                 candidate_id=candidate.id,
                 details="new -> contacted",
                 created_at=t0 + timedelta(minutes=30),
@@ -305,7 +340,7 @@ def test_migration_backfills_facts_from_history(
         pg_db.add(
             AuditEvent(
                 action=AuditAction.CANDIDATE_STAGE_CHANGED,
-                actor_user_id=hr2.id,
+                actor_user_id=hr2_id,
                 candidate_id=candidate.id,
                 details="contacted -> offer",
                 created_at=t0 + timedelta(hours=5),

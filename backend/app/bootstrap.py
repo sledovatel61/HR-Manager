@@ -41,6 +41,16 @@ def bootstrap_admin(db: Session, settings: Settings) -> User | None:
     username = settings.bootstrap_admin_username.strip()
     password = settings.bootstrap_admin_password
 
+    if not password:
+        # Explicit opt-out (phase 12 pilot profile): an empty
+        # BOOTSTRAP_ADMIN_PASSWORD means "no bootstrap account" — the single
+        # owner is created through the authenticated first-run pairing.
+        logger.info(
+            "administrator bootstrap skipped: BOOTSTRAP_ADMIN_PASSWORD is empty "
+            "(explicitly disabled; create users via first-run or 'python -m app.cli create-admin')"
+        )
+        return None
+
     if settings.is_production and password == DEVELOPMENT_BOOTSTRAP_ADMIN_PASSWORD:
         logger.error(
             "no users exist and BOOTSTRAP_ADMIN_PASSWORD is not set; refusing to create a "

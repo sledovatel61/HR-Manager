@@ -81,3 +81,67 @@ def normalize_full_name(value: str) -> str:
     ASCII-only ``lower()``, so search behaves the same on both databases.
     """
     return value.strip().casefold()
+
+
+# --- Phase 12: pilot username derivation --------------------------------------
+
+# Deterministic Cyrillic→Latin romanization (GOST-ish). The pilot username is
+# generated, never typed by the user, and stays hidden from the installer UI.
+_CYRILLIC_TO_LATIN: dict[str, str] = {
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "д": "d",
+    "е": "e",
+    "ё": "e",
+    "ж": "zh",
+    "з": "z",
+    "и": "i",
+    "й": "y",
+    "к": "k",
+    "л": "l",
+    "м": "m",
+    "н": "n",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "у": "u",
+    "ф": "f",
+    "х": "kh",
+    "ц": "ts",
+    "ч": "ch",
+    "ш": "sh",
+    "щ": "shch",
+    "ъ": "",
+    "ы": "y",
+    "ь": "",
+    "э": "e",
+    "ю": "yu",
+    "я": "ya",
+}
+
+
+def romanize_full_name(value: str) -> str:
+    """Romanize a (Cyrillic or Latin) full name into a safe ASCII slug.
+
+    Non-letters collapse to single hyphens; the result is lowercase and limited
+    to ``[a-z0-9-]`` for direct use as a username seed. Never raises.
+    """
+    out: list[str] = []
+    for char in value.strip().casefold():
+        mapped = _CYRILLIC_TO_LATIN.get(char)
+        if mapped is not None:
+            out.append(mapped)
+        elif char.isascii() and (char.isalnum()):
+            out.append(char)
+        else:
+            out.append("-")
+    slug = "".join(out)
+    # Collapse repeated hyphens, trim, cap length.
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    slug = slug.strip("-")[:24]
+    return slug or "pilot"

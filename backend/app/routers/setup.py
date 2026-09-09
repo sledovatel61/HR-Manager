@@ -74,6 +74,11 @@ def setup_state(
         pilot_grant_active=pilot_grant is not None,
         preferences_initialized=preferences is not None,
         worker_alive=worker_is_healthy(db, settings=settings, now=utc_now()),
+        # Phase 12: the requesting user's installer working mode (display
+        # metadata; empty for users created outside the pilot flow) and the
+        # "owner must replace the bootstrap password" marker.
+        work_role=user.work_role.value if user.work_role is not None else None,
+        needs_password=bool(user.password_is_bootstrap),
         channels={
             # Global availability only (per-user bindings live in
             # /integrations/status); «available» never claims the user's

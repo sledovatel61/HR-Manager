@@ -86,6 +86,21 @@ class UserRole(StrEnum):
     ADMIN = "admin"
 
 
+class WorkRole(StrEnum):
+    """Chosen *working mode* of the phase-12 pilot owner (UX, not RBAC).
+
+    The installer asks for exactly one of three understandable modes
+    (HR / Руководитель / Администратор). The value is display metadata on the
+    profile: it never grants or restricts anything. Authorization stays on
+    ``User.role`` + explicit ``AccessGrant`` scopes; the first owner keeps
+    role ``admin`` + ``pilot_full_access`` regardless of the chosen mode.
+    """
+
+    HR = "hr"
+    MANAGER = "manager"
+    ADMIN = "admin"
+
+
 class AuditAction(StrEnum):
     """Audited security events."""
 
@@ -139,6 +154,12 @@ class AuditAction(StrEnum):
     PILOT_USER_CREATED = "pilot_user_created"
     PILOT_ACCESS_GRANTED = "pilot_access_granted"
     PILOT_ACCESS_REVOKED = "pilot_access_revoked"
+    # Phase 12: local-pilot first-run pairing and password finalization.
+    PILOT_PAIRING_ISSUED = "pilot_pairing_issued"
+    PILOT_PAIRING_CLAIMED = "pilot_pairing_claimed"
+    PILOT_PAIRING_CANCELLED = "pilot_pairing_cancelled"
+    PILOT_PAIRING_REJECTED = "pilot_pairing_rejected"
+    PILOT_PASSWORD_SET = "pilot_password_set"
     # Phase 9: external channels (Telegram/SMTP), consent and bindings.
     TELEGRAM_LINK_STARTED = "telegram_link_started"
     TELEGRAM_LINK_CONFIRMED = "telegram_link_confirmed"
@@ -255,6 +276,10 @@ class User(Base):
             name="ck_users_role_valid",
         ),
         CheckConstraint(
+            "work_role IS NULL OR work_role IN ('hr', 'manager', 'admin')",
+            name="ck_users_work_role_valid",
+        ),
+        CheckConstraint(
             "failed_login_count >= 0",
             name="ck_users_failed_login_count_non_negative",
         ),
@@ -274,6 +299,22 @@ class User(Base):
         ),
         nullable=False,
     )
+    # Phase 12: the installer's working-mode choice (UX label only — see
+    # WorkRole). Nullable: only the first pilot owner carries it, and existing
+    # users never get a synthetic value. It is NOT the authorization source.
+    work_role: Mapped[WorkRole | None] = mapped_column(
+        Enum(
+            WorkRole,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=True,
+    )
+    # Phase 12: the first-run pilot is created with a server-generated random
+    # password the user never sees; this flag marks "you must set your own
+    # password" in the browser UI until the owner chooses one.
+    password_is_bootstrap: Mapped[bool] = mapped_column(default=False, nullable=False)
     # Only an Argon2id hash is ever stored — never a plaintext password.
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
@@ -2127,3 +2168,93 @@ class DocumentRuleExecution(Base):
             name="ck_rule_executions_outcome",
         ),
     )
+
+
+# --- Phase 12: local pilot first-run pairing ---------------------------------
+
+
+class PilotPairingStatus(StrEnum):
+    """Closed lifecycle of a pairing code issued by the Windows installer.
+
+    ``pending`` → ``claimed`` (owner created) or ``cancelled`` (replaced by a
+    new issue, manually cancelled or exhausted attempts). Statuses never go
+    back — a claimed code cannot be reused (single-pilot guard).
+    """
+
+    PENDING = "pending"
+    CLAIMED = "claimed"
+    CANCELLED = "cancelled"
+
+
+class PilotPairing(Base):
+    """One short-lived pairing code that links the local installer to the
+    browser first-run (phase 12).
+
+    The raw code is never stored: only its SHA-256 hex digest. The code is
+    shown in the installer UI, typed by the user into the browser and
+    consumed atomically exactly once, while the user table is still empty.
+    That makes it impossible to: reuse the code after a claim, create a
+    second full pilot, or take over an installation without physical access
+    to the loopback machine and the installer screen.
+
+    ``surname`` is the only personal value the installer collects; it is kept
+    here only until the claim (then cleared) and is never written to logs,
+    audit details or any response body.
+    """
+
+    __tablename__ = "pilot_pairings"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'claimed', 'cancelled')",
+            name="ck_pilot_pairings_status",
+        ),
+        CheckConstraint(
+            "work_role IN ('hr', 'manager', 'admin')",
+            name="ck_pilot_pairings_work_role",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_pilot_pairings_attempts_non_negative"),
+        # At most one PENDING pairing at any moment: a new installer run
+        # explicitly replaces the previous one, two racing claims race for a
+        # single row (FOR UPDATE serializes them).
+        Index(
+            "uq_pilot_pairings_pending",
+            "status",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    # sha256 hex of the upper-cased code; constant-time compared server-side.
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    work_role: Mapped[WorkRole] = mapped_column(
+        Enum(
+            WorkRole,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    surname: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[PilotPairingStatus] = mapped_column(
+        Enum(
+            PilotPairingStatus,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=PilotPairingStatus.PENDING,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    claimed_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid (no PII!)
+        return f"<PilotPairing id={self.id} status={self.status}>"

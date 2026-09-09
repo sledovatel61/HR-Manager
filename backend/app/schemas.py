@@ -86,6 +86,10 @@ class UserOut(BaseModel):
     username: str
     full_name: str
     role: UserRole
+    # Phase 12: the installer working mode (display metadata, not RBAC) and
+    # the "set your own password" marker for the first-run owner.
+    work_role: str | None = None
+    password_is_bootstrap: bool = False
     is_active: bool
     locked_until: datetime | None = None
     last_login_at: datetime | None = None
@@ -1073,13 +1077,60 @@ class AccessGrantRequest(BaseModel):
 
 
 class SetupStateOut(BaseModel):
-    """Honest setup status: what works, what is not configured."""
+    """Honest setup status: what works, what is not configured.
+
+    ``work_role`` and ``needs_password`` (phase 12) describe the *requesting*
+    user: the installer working mode they claimed with, and whether the owner
+    still has to replace the server-generated bootstrap password. Additive
+    fields keep the phase-8 contract unchanged for existing consumers.
+    """
 
     pilot_exists: bool
     pilot_grant_active: bool
     preferences_initialized: bool
     worker_alive: bool
     channels: dict[str, str]
+    work_role: str | None = None
+    needs_password: bool = False
+
+
+# --- Phase 12: loopback pilot first-run pairing --------------------------------
+
+
+class FirstRunStateOut(BaseModel):
+    """Public (loopback) first-run state — booleans and labels only.
+
+    Never exposes surname, codes, usernames, versions of stored hashes or any
+    other secret/PII: just enough for the UI to decide which step to show.
+    """
+
+    pending: bool
+    pending_work_role: str | None = None
+    pending_expires_in_seconds: int | None = None
+    # True while the user table is completely empty (only then a claim is
+    # possible); after the claim the flow is closed forever.
+    fresh_install: bool
+    pilot_owner_exists: bool
+
+
+class FirstRunClaimRequest(BaseModel):
+    """Claim body: the pairing code typed by the user in the browser."""
+
+    code: str = Field(min_length=6, max_length=16)
+
+
+class FirstRunClaimOut(BaseModel):
+    """Claim result: the authenticated owner + session, like /auth/login."""
+
+    user: UserOut
+    csrf_token: str
+    must_set_password: bool
+
+
+class FirstRunPasswordSetRequest(BaseModel):
+    """Owner chooses a permanent password (first-run UI; never a CLI/env)."""
+
+    password: str = Field(min_length=12, max_length=128)
 
 
 # --- Phase 9: Telegram/SMTP integrations, bindings, consent -------------------

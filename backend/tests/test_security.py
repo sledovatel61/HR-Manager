@@ -157,3 +157,16 @@ def test_production_bootstrap_creates_admin_with_configured_password(
     assert created is not None
     assert created.username == "prodadmin"
     assert verify_password(created.password_hash, "Strong-Bootstrap-Pass-1")
+
+
+def test_bootstrap_empty_password_disables_bootstrap(db_session: Session) -> None:
+    """Phase 12: an empty BOOTSTRAP_ADMIN_PASSWORD means "no bootstrap admin".
+
+    The pilot profile relies on this: the users table stays empty until the
+    first-run pairing creates the single owner — no shared technical account
+    and no printed credential ever exist.
+    """
+    settings = _settings(BOOTSTRAP_ADMIN_PASSWORD="")
+    assert bootstrap_admin(db_session, settings) is None
+    count = db_session.scalar(select(func.count()).select_from(User))
+    assert count == 0
