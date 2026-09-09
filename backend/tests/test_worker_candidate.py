@@ -49,7 +49,7 @@ from app.smtp import SmtpSendResult
 from app.telegram import TelegramSendResult
 from app.utils import utc_now
 from app.worker import process_external_row, process_row, recover_stale_leases
-from tests.conftest import make_candidate, make_event, make_user
+from tests.conftest import make_candidate, make_document_set, make_event, make_user
 
 NOW = datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC)
 
@@ -173,6 +173,14 @@ def _candidate_row(
         scheduled_at=scheduled_at,
     )
     assert row is not None
+    if type_key in ("document_request", "document_reminder"):
+        from app.documents import current_set
+
+        make_document_set(db, candidate, ["Паспорт"])
+        snapshot = current_set(db, candidate.id)
+        assert snapshot
+        row.initiator_user_id = candidate.owner_user_id
+        row.document_context = {"set_id": str(snapshot.id), "items": snapshot.snapshot["items"]}
     row.status = DeliveryStatus.SENDING
     row.started_at = NOW
     row.lease_expires_at = NOW + timedelta(minutes=2)

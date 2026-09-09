@@ -44,7 +44,7 @@ from app.models import (
 )
 from app.utils import utc_now
 from app.worker import claim_batch, process_external_row
-from tests.conftest import FIXTURE_PASSWORD, make_candidate, make_user
+from tests.conftest import FIXTURE_PASSWORD, make_candidate, make_document_set, make_user
 from tests.test_integration_external import SmtpStub, TelegramStub
 
 RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
@@ -186,7 +186,10 @@ def test_manual_send_end_to_end_both_channels(
     # Preview shows the exact text without queueing.
     preview = client.post(
         f"/candidates/{candidate.id}/messages/preview",
-        json={"message_type": "document_request", "documents": ["Паспорт РФ", "СНИЛС"]},
+        json={
+            "message_type": "document_request",
+            "document_set_id": make_document_set(pg_db, candidate, ["Паспорт РФ", "СНИЛС"]),
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert preview.status_code == 200
@@ -198,7 +201,7 @@ def test_manual_send_end_to_end_both_channels(
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_request",
-            "documents": ["Паспорт РФ", "СНИЛС"],
+            "document_set_id": make_document_set(pg_db, candidate, ["Паспорт РФ", "СНИЛС"]),
             "idempotency_key": "integ-manual-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -337,7 +340,7 @@ def test_parallel_workers_deliver_once(
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_request",
-            "documents": ["Паспорт"],
+            "document_set_id": make_document_set(pg_db, candidate, ["Паспорт"]),
             "idempotency_key": "integ-race-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -386,7 +389,7 @@ def test_consent_revoke_before_send_stops_message(
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_request",
-            "documents": ["Паспорт"],
+            "document_set_id": make_document_set(pg_db, candidate, ["Паспорт"]),
             "idempotency_key": "integ-revoke-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -502,7 +505,7 @@ def test_email_double_opt_in_end_to_end(
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_request",
-            "documents": ["Паспорт"],
+            "document_set_id": make_document_set(pg_db, candidate, ["Паспорт"]),
             "idempotency_key": "optin-refused-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -588,7 +591,7 @@ def test_email_double_opt_in_end_to_end(
         f"/candidates/{candidate.id}/messages/send",
         json={
             "message_type": "document_request",
-            "documents": ["Паспорт"],
+            "document_set_id": make_document_set(pg_db, candidate, ["Паспорт"]),
             "idempotency_key": "optin-send-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -615,7 +618,7 @@ def test_parallel_identical_sends_produce_one_logical_send(
     csrf = _login(client, "hr1")
     payload = {
         "message_type": "document_request",
-        "documents": ["Паспорт"],
+        "document_set_id": make_document_set(pg_db, candidate, ["Паспорт"]),
         "idempotency_key": "parallel-key-1",
     }
     url = f"/candidates/{candidate.id}/messages/send"
@@ -798,7 +801,7 @@ def test_revoke_during_inflight_send_waits_for_the_provider_call(
     csrf = _login(client, "hr1")
     # Two distinct pending messages on the email channel (different
     # types: the pending-duplicate guard is per message type).
-    for key, message_type, documents in (
+    for key, message_type, _documents in (
         ("inflight-1", "document_request", ["Паспорт"]),
         ("inflight-2", "document_reminder", ["СНИЛС"]),
     ):
@@ -806,7 +809,7 @@ def test_revoke_during_inflight_send_waits_for_the_provider_call(
             f"/candidates/{candidate.id}/messages/send",
             json={
                 "message_type": message_type,
-                "documents": documents,
+                "document_set_id": make_document_set(pg_db, candidate, ["Паспорт", "СНИЛС"]),
                 "idempotency_key": key,
             },
             headers={"X-CSRF-Token": csrf},

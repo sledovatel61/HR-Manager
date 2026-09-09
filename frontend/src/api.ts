@@ -798,3 +798,6 @@ export async function cancelCandidateMessage(
     { method: "POST" },
   );
 }
+
+// Phase 11 uses the same authenticated, CSRF-protected, same-origin client.
+export { request as documentRequest };

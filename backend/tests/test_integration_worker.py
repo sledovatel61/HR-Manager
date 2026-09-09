@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, delete, select
+from sqlalchemy import Engine, delete, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -44,8 +44,8 @@ NOW = datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC)
 def _clean_queue(db: Session) -> None:
     """Isolate queue-based tests: pg_db shares the database with the rest
     of the integration suite, so every test starts from an empty queue."""
-    db.execute(delete(NotificationDeliveryAttempt))
-    db.execute(delete(NotificationOutbox))
+    db.execute(text("TRUNCATE notification_delivery_attempts CASCADE"))
+    db.execute(text("TRUNCATE notification_outbox CASCADE"))
     db.execute(delete(Reminder))
     db.execute(delete(Notification))
     db.execute(delete(WorkerHeartbeat))

@@ -155,6 +155,8 @@ class AuditAction(StrEnum):
     SMTP_CHECKED = "smtp_checked"
     SMTP_TEST_QUEUED = "smtp_test_queued"
     # Phase 10: one-way candidate communications.
+    DOCUMENT_CHANGED = "document_changed"
+    DOCUMENT_RULE_CHANGED = "document_rule_changed"
     CANDIDATE_MESSAGE_QUEUED = "candidate_message_queued"
     CANDIDATE_MESSAGE_CANCELLED = "candidate_message_cancelled"
     CANDIDATE_CHANNEL_CONSENT_UPDATED = "candidate_channel_consent_updated"
@@ -1114,6 +1116,8 @@ class AccessGrantScope(StrEnum):
     an explicit, audited designation — it never bypasses RBAC)."""
 
     PILOT_FULL_ACCESS = "pilot_full_access"
+    DOCUMENT_LISTS_MANAGE = "document_lists_manage"
+    CANDIDATE_DOCUMENTS_ALL = "candidate_documents_all"
 
 
 _NOTIFICATION_TYPES = [member.value for member in NotificationType]
@@ -1376,6 +1380,13 @@ class NotificationOutbox(Base):
 
     __tablename__ = "notification_outbox"
     __table_args__ = (
+        Index(
+            "ix_document_rule_outbox_discovery",
+            "rule_id",
+            "template_version",
+            "object_type",
+            "object_id",
+        ),
         CheckConstraint(
             f"channel IN ({_sql_list(_CHANNELS)})",
             name="ck_notification_outbox_channel_valid",
@@ -1472,6 +1483,7 @@ class NotificationOutbox(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     rule_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    document_context: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     object_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     object_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     # Snapshot of the business object's optimistic version at queue time
@@ -1975,4 +1987,143 @@ class CandidateChannelConsent(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+# Phase 11: content snapshots and a closed, personal automation constructor.
+class DocumentList(Base):
+    __tablename__ = "document_lists"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    stage: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    version: Mapped[int] = mapped_column(default=1, nullable=False)
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", name="fk_document_lists_author", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, onupdate=utc_now)
+    __table_args__ = (CheckConstraint("version > 0", name="ck_document_lists_version"),)
+
+
+class DocumentListVersion(Base):
+    __tablename__ = "document_list_versions"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    list_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_lists.id", name="fk_document_versions_list", ondelete="RESTRICT")
+    )
+    number: Mapped[int] = mapped_column(nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), default="draft", nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    items: Mapped[list] = mapped_column(JSON, nullable=False)
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", name="fk_document_versions_author", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    __table_args__ = (
+        UniqueConstraint("list_id", "number", name="uq_document_versions_number"),
+        CheckConstraint("number > 0", name="ck_document_versions_number"),
+        CheckConstraint(
+            "state IN ('draft','published','archived')", name="ck_document_versions_state"
+        ),
+        Index(
+            "uq_document_versions_published_scope",
+            "stage",
+            unique=True,
+            postgresql_where=text("state = 'published'"),
+            sqlite_where=text("state = 'published'"),
+        ),
+    )
+
+
+class CandidateDocumentSet(Base):
+    __tablename__ = "candidate_document_sets"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", name="fk_document_sets_candidate", ondelete="RESTRICT")
+    )
+    list_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "document_list_versions.id", name="fk_document_sets_version", ondelete="RESTRICT"
+        )
+    )
+    revision: Mapped[int] = mapped_column(nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", name="fk_document_sets_author", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "revision", name="uq_document_sets_revision"),
+    )
+
+
+class CandidateDocumentItem(Base):
+    __tablename__ = "candidate_document_items"
+    set_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidate_document_sets.id", name="fk_document_items_set", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), default="missing", nullable=False)
+    version: Mapped[int] = mapped_column(default=1, nullable=False)
+    changed_by: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", name="fk_document_items_author", ondelete="RESTRICT")
+    )
+    changed_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)
+    __table_args__ = (
+        CheckConstraint("state IN ('missing','received')", name="ck_document_items_state"),
+        CheckConstraint("version > 0", name="ck_document_items_version"),
+    )
+
+
+class DocumentRule(Base):
+    __tablename__ = "document_rules"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", name="fk_document_rules_owner", ondelete="RESTRICT")
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    version: Mapped[int] = mapped_column(default=1, nullable=False)
+    params: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, onupdate=utc_now)
+    __table_args__ = (
+        CheckConstraint("version > 0", name="ck_document_rules_version"),
+        Index("ix_document_rules_owner", "owner_id"),
+    )
+
+
+class DocumentRuleExecution(Base):
+    __tablename__ = "document_rule_executions"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_rules.id", name="fk_rule_executions_rule", ondelete="RESTRICT")
+    )
+    rule_version: Mapped[int] = mapped_column(nullable=False)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", name="fk_rule_executions_candidate", ondelete="RESTRICT")
+    )
+    trigger_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    trigger_version: Mapped[int] = mapped_column(nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    params: Mapped[dict] = mapped_column(JSON, nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    outbox_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("notification_outbox.id", name="fk_rule_executions_outbox", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_rule_executions_dedupe"),
+        CheckConstraint(
+            "action IN ('apply_list','document_request','document_reminder')",
+            name="ck_rule_executions_action",
+        ),
+        CheckConstraint(
+            "outcome IN ('applied','queued','skipped','cancelled','failed')",
+            name="ck_rule_executions_outcome",
+        ),
     )
