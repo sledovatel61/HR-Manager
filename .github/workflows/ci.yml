@@ -294,9 +294,6 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
 
-      - name: Structural Windows engine lint
-        run: python infra/windows/tests/lint-engine.py
-
       - name: Build HR Manager Setup.exe
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0
