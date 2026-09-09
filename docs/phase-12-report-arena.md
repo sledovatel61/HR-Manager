@@ -13,7 +13,11 @@
   - `7afa253` — фикс mypy (pg8000-патч conftest: import-not-found в CI /
     import-untyped в локальном PGlite-окружении; убраны неиспользуемые
     ignore)
-- **Final code SHA:** `7afa253` (+ docs-коммит с этим отчётом поверх)
+- **Final code SHA:** `7afa253` (+ docs-коммит `6656878` с этим отчётом)
+- **CI (полный зелёный):** run
+  https://github.com/sledovatel61/HR-Manager/actions/runs/34347421698 —
+  Backend checks 2m17s, Backend integration tests (PostgreSQL) 1m54s,
+  Frontend checks 1m8s, Compose stack smoke 2m5s.
 - **Миграционная голова:** `0013` (`users.working_mode` + обмен первого запуска)
 - **Merge в `main`:** не выполнялся (по правилам — владелец).
 
