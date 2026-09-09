@@ -27,11 +27,13 @@ import type {
   NotificationPreferences,
   NotificationResolve,
   QueueDiagnostics,
+  RedeemOwnerInput,
   Reminder,
   ReminderImportance,
   ReminderListPayload,
   ReminderRecurrence,
   ReminderStatus,
+  SetupPreview,
   SetupState,
   AnalyticsKpiReport,
   AnalyticsQuery,
@@ -801,3 +803,25 @@ export async function cancelCandidateMessage(
 
 // Phase 11 uses the same authenticated, CSRF-protected, same-origin client.
 export { request as documentRequest };
+
+// --- Phase 12: local pilot first-run (Windows installer exchange) ------------
+
+/** First-run screen data: surname/mode collected by the installer plus
+ * readiness. The ticket stays in the URL fragment — never sent as a query
+ * parameter. */
+export async function previewOwnerSetup(ticket: string): Promise<SetupPreview> {
+  return request<SetupPreview>("/setup/owner/preview", {
+    method: "POST",
+    body: { ticket },
+  });
+}
+
+/** Complete the first run: creates the single pilot owner, applies
+ * preferences and opens the authenticated session (cookies set by the
+ * backend). */
+export async function redeemOwnerSetup(input: RedeemOwnerInput): Promise<CurrentUser> {
+  return request<CurrentUser>("/setup/owner/redeem", {
+    method: "POST",
+    body: input,
+  });
+}

@@ -3,7 +3,7 @@ import { MyRulesPage } from "../features/documents/MyRulesPage";
 import { useEffect, useState } from "react";
 import { logout, onUnauthorized } from "../api";
 import { Icon, type IconName } from "../design-system/icons/Icon";
-import { ROLE_LABELS, type CurrentUser, type UserRole } from "../types";
+import { ROLE_LABELS, WORKING_MODE_LABELS, type CurrentUser, type UserRole } from "../types";
 import CandidatesListPage from "../features/candidates/CandidatesListPage";
 import KanbanPage from "../features/candidates/KanbanPage";
 import CalendarPage from "../features/calendar/CalendarPage";
@@ -128,6 +128,11 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             <span className="topbar-user-text">
               <span className="topbar-username">{user.full_name || user.username}</span>
               <span className="topbar-role">{ROLE_LABELS[user.role]}</span>
+              {current.working_mode && (
+                <span className="topbar-working-mode" title="Режим, выбранный при установке">
+                  Режим: {WORKING_MODE_LABELS[current.working_mode]}
+                </span>
+              )}
             </span>
             <button type="button" className="topbar-logout" onClick={() => void handleLogout()}>
               <Icon name="log-out" size={15} />

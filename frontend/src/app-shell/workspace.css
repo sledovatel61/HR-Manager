@@ -143,6 +143,11 @@
   color: var(--text-tertiary);
 }
 
+.topbar-working-mode {
+  font-size: var(--text-size-2xs);
+  color: var(--text-tertiary);
+}
+
 .topbar-logout {
   display: inline-flex;
   align-items: center;

@@ -42,6 +42,36 @@ export interface User {
 export interface CurrentUser {
   user: User;
   csrf_token: string;
+  /** Phase 12: role chosen in the Windows installer (profile data only). */
+  working_mode?: WorkingMode | null;
+}
+
+export type WorkingMode = "hr" | "manager" | "admin";
+
+export const WORKING_MODE_LABELS: Record<WorkingMode, string> = {
+  hr: "HR",
+  manager: "Руководитель",
+  admin: "Администратор",
+};
+
+/** POST /setup/owner/preview payload (first-run screen data). */
+export interface SetupPreview {
+  surname: string;
+  working_mode: WorkingMode;
+  timezone: string;
+  readiness: Record<string, string>;
+  channels: Record<string, string>;
+  full_access: boolean;
+}
+
+/** POST /setup/owner/redeem payload. */
+export interface RedeemOwnerInput {
+  ticket: string;
+  timezone: string;
+  workdays: number[];
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  password: string;
 }
 
 /** One audit trail entry (see backend AuditEventOut). */
