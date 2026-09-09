@@ -40,3 +40,9 @@ logs/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# ---- Windows installer build artifacts (source: installer/) ----
+installer/staging/
+installer/output/
+installer/.cache/
+installer/release-manifest.json
