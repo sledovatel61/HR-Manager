@@ -134,3 +134,57 @@ def test_retention_below_seven_days_is_rejected() -> None:
     env["BACKUP_RETENTION_DAYS"] = "6"
     with pytest.raises(ValidationError, match="BACKUP_RETENTION_DAYS"):
         Settings.model_validate(env)
+
+
+# --- Phase 12: local pilot environment ---------------------------------------
+
+
+BASE_PILOT_ENV = {
+    "APP_ENV": "pilot",
+    "APP_DEBUG": "false",
+    "SECRET_KEY": "x" * 48,
+    "DATABASE_URL": "postgresql+psycopg://pilot:strong-pass@db:5432/hr_manager",
+    "PILOT_BOOTSTRAP_EXCHANGE_TOKEN": "e" * 64,
+}
+
+
+def test_pilot_accepts_fully_configured_secrets() -> None:
+    settings = Settings.model_validate(BASE_PILOT_ENV)
+    assert settings.environment == "pilot"
+    assert settings.is_pilot
+    assert settings.is_production is False
+    # The pilot serves plain http on 127.0.0.1: Secure cookies would break
+    # login, so the loopback trust model defaults them to non-Secure.
+    assert settings.session_cookie_is_secure is False
+    # No bootstrap admin password is required: the first-run exchange
+    # replaces the bootstrap administrator in the pilot.
+    assert settings.bootstrap_admin_password == DEVELOPMENT_BOOTSTRAP_ADMIN_PASSWORD
+
+
+def test_pilot_allows_explicit_secure_cookies() -> None:
+    env = dict(BASE_PILOT_ENV)
+    env["SESSION_COOKIE_SECURE"] = "true"
+    assert Settings.model_validate(env).session_cookie_is_secure is True
+
+
+def test_pilot_without_exchange_token_requires_strong_bootstrap_password() -> None:
+    env = dict(BASE_PILOT_ENV)
+    del env["PILOT_BOOTSTRAP_EXCHANGE_TOKEN"]
+    with pytest.raises(ValidationError, match="BOOTSTRAP_ADMIN_PASSWORD"):
+        Settings.model_validate(env)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("SECRET_KEY", DEVELOPMENT_SECRET_KEY),
+        ("SECRET_KEY", "too-short"),
+        ("DATABASE_URL", "postgresql+psycopg://app@db:5432/hr_manager"),
+        ("APP_DEBUG", "true"),
+    ],
+)
+def test_pilot_rejects_insecure_configuration(field: str, value: str) -> None:
+    env = dict(BASE_PILOT_ENV)
+    env[field] = value
+    with pytest.raises(ValidationError):
+        Settings.model_validate(env)

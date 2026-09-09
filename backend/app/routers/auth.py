@@ -199,7 +199,9 @@ def login(
     )
 
     payload_out = CurrentUserOut(
-        user=UserOut.model_validate(user), csrf_token=user_session.csrf_token
+        user=UserOut.model_validate(user),
+        csrf_token=user_session.csrf_token,
+        working_mode=user.working_mode,
     )
     # Build the response explicitly so the Set-Cookie headers are attached to
     # the same object that travels back through the middleware stack.
@@ -250,7 +252,9 @@ def me(
 ) -> CurrentUserOut:
     """Return the current user and the session CSRF token."""
     return CurrentUserOut(
-        user=UserOut.model_validate(current_user), csrf_token=user_session.csrf_token
+        user=UserOut.model_validate(current_user),
+        csrf_token=user_session.csrf_token,
+        working_mode=current_user.working_mode,
     )
 
 

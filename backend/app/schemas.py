@@ -20,6 +20,7 @@ from app.models import (
     EventHistoryKind,
     EventStatus,
     EventType,
+    PilotWorkingMode,
     UserRole,
 )
 from app.utils import normalize_phone
@@ -93,10 +94,15 @@ class UserOut(BaseModel):
 
 
 class CurrentUserOut(BaseModel):
-    """``GET /auth/me`` payload: the user plus the session CSRF token."""
+    """``GET /auth/me`` payload: the user plus the session CSRF token.
+
+    ``working_mode`` is the phase-12 pilot starter interface selection; it
+    is profile data of the authenticated user, never exposed through the
+    HR directory (which stays minimal)."""
 
     user: UserOut
     csrf_token: str
+    working_mode: PilotWorkingMode | None = None
 
 
 class LogoutRequest(BaseModel):
@@ -1079,7 +1085,56 @@ class SetupStateOut(BaseModel):
     pilot_grant_active: bool
     preferences_initialized: bool
     worker_alive: bool
+    working_mode: PilotWorkingMode | None = None
     channels: dict[str, str]
+
+
+# --- Phase 12: local pilot first-run (Windows installer exchange) ------------
+
+
+class SetupOwnerClaimRequest(BaseModel):
+    """One-time exchange claim: token plus the owner data collected by the
+    installer wizard. Surname and role are validated server-side and never
+    enter a process command line, log or audit record."""
+
+    exchange_token: str = Field(min_length=43, max_length=256)
+    surname: str = Field(min_length=1, max_length=60)
+    working_mode: PilotWorkingMode
+    timezone: str | None = Field(default=None, max_length=64)
+
+
+class SetupOwnerClaimResponse(BaseModel):
+    """Short-lived one-time ticket handed to the browser (URL fragment)."""
+
+    ticket: str
+    expires_at: datetime
+
+
+class SetupOwnerPreviewRequest(BaseModel):
+    ticket: str = Field(min_length=43, max_length=64)
+
+
+class SetupOwnerPreviewResponse(BaseModel):
+    """First-run screen content: never requires re-entering the surname."""
+
+    surname: str
+    working_mode: PilotWorkingMode
+    timezone: str
+    readiness: dict[str, str]
+    channels: dict[str, str]
+    full_access: bool
+
+
+class SetupOwnerRedeemRequest(BaseModel):
+    """Completion of the first run: the owner password is chosen here, in a
+    protected UI, never in a console or a URL."""
+
+    ticket: str = Field(min_length=43, max_length=64)
+    timezone: str = Field(min_length=1, max_length=64)
+    workdays: list[int] = Field(min_length=1, max_length=7)
+    quiet_hours_start: str = Field(min_length=5, max_length=5)
+    quiet_hours_end: str = Field(min_length=5, max_length=5)
+    password: str = Field(min_length=1, max_length=128)
 
 
 # --- Phase 9: Telegram/SMTP integrations, bindings, consent -------------------
