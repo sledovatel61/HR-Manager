@@ -32,6 +32,10 @@ export interface User {
   username: string;
   full_name: string;
   role: UserRole;
+  // Phase 12 (pilot first-run): the installer working mode is display
+  // metadata only (NOT RBAC); the bootstrap marker drives the first-run UI.
+  work_role?: "hr" | "manager" | "admin" | null;
+  password_is_bootstrap?: boolean;
   is_active: boolean;
   locked_until: string | null;
   last_login_at: string | null;
@@ -875,4 +879,30 @@ export interface CandidateEmailConfirmation {
   queued: boolean;
   email_masked: string;
   expires_at: string;
+}
+
+// --- Phase 12: first-run pairing (local pilot) ------------------------------
+
+/** Public first-run state (GET /setup/first-run/state, loopback only). */
+export interface FirstRunState {
+  pending: boolean;
+  pending_work_role: "hr" | "manager" | "admin" | null;
+  pending_expires_in_seconds: number | null;
+  fresh_install: boolean;
+  pilot_owner_exists: boolean;
+}
+
+/** POST /setup/first-run/claim result: session + owner, like a login. */
+export interface FirstRunClaimResult extends CurrentUser {
+  must_set_password: boolean;
+}
+
+/** GET /ops/status subset used by the first-run readiness checklist. */
+export interface OpsReadinessStatus {
+  status: string;
+  release_sha: string;
+  database: { status: string };
+  migrations?: { ok: boolean };
+  notifications?: { worker_alive: boolean };
+  backup?: { available: boolean; ok?: boolean; age_seconds?: number | null };
 }

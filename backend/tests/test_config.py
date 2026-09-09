@@ -134,3 +134,54 @@ def test_retention_below_seven_days_is_rejected() -> None:
     env["BACKUP_RETENTION_DAYS"] = "6"
     with pytest.raises(ValidationError, match="BACKUP_RETENTION_DAYS"):
         Settings.model_validate(env)
+
+
+# --- Phase 12: loopback pilot profile -----------------------------------------
+
+
+def test_pilot_local_trusted_allows_non_secure_production_cookie() -> None:
+    env = dict(BASE_PRODUCTION_ENV)
+    env.update({"SESSION_COOKIE_SECURE": "false", "HRMGR_PILOT_LOCAL_TRUSTED": "true"})
+    settings = Settings.model_validate(env)
+    assert settings.pilot_local_trusted is True
+    assert settings.session_cookie_is_secure is False
+
+
+def test_production_rejects_insecure_cookie_without_pilot_profile() -> None:
+    env = dict(BASE_PRODUCTION_ENV)
+    env["SESSION_COOKIE_SECURE"] = "false"
+    with pytest.raises(ValidationError, match="HRMGR_PILOT_LOCAL_TRUSTED"):
+        Settings.model_validate(env)
+
+
+def test_pilot_profile_rejects_debug_and_development() -> None:
+    env = dict(BASE_PRODUCTION_ENV)
+    env.update({"HRMGR_PILOT_LOCAL_TRUSTED": "true", "APP_DEBUG": "true"})
+    with pytest.raises(ValidationError, match="APP_DEBUG must be false when HRMGR"):
+        Settings.model_validate(env)
+    env2 = {
+        "APP_ENV": "development",
+        "HRMGR_PILOT_LOCAL_TRUSTED": "true",
+        "DATABASE_URL": "postgresql+psycopg://app:pass@db:5432/hr_manager",
+    }
+    with pytest.raises(ValidationError, match="production/test profile switch"):
+        Settings.model_validate(env2)
+
+
+def test_pilot_profile_rejects_forced_secure_contradiction() -> None:
+    env = dict(BASE_PRODUCTION_ENV)
+    env.update({"SESSION_COOKIE_SECURE": "true", "HRMGR_PILOT_LOCAL_TRUSTED": "true"})
+    with pytest.raises(ValidationError, match="contradicts"):
+        Settings.model_validate(env)
+
+
+def test_empty_bootstrap_password_is_an_explicit_disable() -> None:
+    env = dict(BASE_PRODUCTION_ENV)
+    env["BOOTSTRAP_ADMIN_PASSWORD"] = ""
+    settings = Settings.model_validate(env)  # must NOT raise
+    assert settings.bootstrap_admin_password == ""
+    # Weak non-empty values are still rejected.
+    env_bad = dict(BASE_PRODUCTION_ENV)
+    env_bad["BOOTSTRAP_ADMIN_PASSWORD"] = "weak"
+    with pytest.raises(ValidationError, match="BOOTSTRAP_ADMIN_PASSWORD"):
+        Settings.model_validate(env_bad)

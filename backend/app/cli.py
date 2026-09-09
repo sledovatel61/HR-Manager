@@ -28,6 +28,7 @@ without PII; exit codes are documented in ``docs/OPERATIONS.md``.
 import argparse
 import getpass
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -326,6 +327,9 @@ def build_parser() -> argparse.ArgumentParser:
     worker.set_defaults(func=run_notification_worker)
     worker_check = sub.add_parser("worker-check", help="exit 0 when the worker heartbeat is fresh")
     worker_check.set_defaults(func=worker_check_command)
+
+    # Phase 12: first-run pairing (the Windows automation engine's channel).
+    build_pairing_parser(sub)
     return parser
 
 
@@ -357,6 +361,108 @@ def worker_check_command(args: argparse.Namespace) -> int:
         return EXIT_OK if healthy else 1
     finally:
         engine.dispose()
+
+
+def pilot_pairing_issue(args: argparse.Namespace) -> int:
+    """Create/replace the one-shot first-run pairing for the local pilot.
+
+    The pairing code and surname are read from a JSON object on STDIN (never
+    argv), so nothing sensitive lands in the process command line. The code is
+    hashed (SHA-256) and only the hash is persisted. Exactly one PENDING
+    pairing may exist: any previous one is cancelled first. This is the only
+    way the automation engine hands the installer's choices to the backend.
+
+    Prints the pairing id on success (safe: opaque), never the code/surname.
+    """
+    import json as _json
+    from datetime import timedelta
+
+    from app.config import PILOT_PAIRING_TTL_MINUTES
+    from app.models import PilotPairing, PilotPairingStatus, WorkRole
+    from app.routers.first_run import hash_pairing_code
+
+    raw = sys.stdin.read()
+    try:
+        payload = _json.loads(raw)
+    except _json.JSONDecodeError:
+        print("pilot-pairing: STDIN must be a JSON object", file=sys.stderr)
+        return 2
+    code = str(payload.get("code", "")).strip().upper()
+    surname = str(payload.get("surname", "")).strip()
+    work_role = str(payload.get("work_role", "")).strip().lower()
+    if (
+        not re.fullmatch(r"[A-Z0-9]{6,8}", code)
+        or not 2 <= len(surname) <= 120
+        or work_role not in {m.value for m in WorkRole}
+    ):
+        print(
+            "pilot-pairing: JSON must have a 6-8 char [A-Z0-9] 'code', a 2-120 char "
+            "'surname' and a valid 'work_role' (hr|manager|admin)",
+            file=sys.stderr,
+        )
+        return 2
+
+    with _session() as db:
+        now = utc_now()
+        stale = db.scalars(
+            select(PilotPairing).where(PilotPairing.status == PilotPairingStatus.PENDING)
+        ).all()
+        for row in stale:
+            row.status = PilotPairingStatus.CANCELLED
+        pairing = PilotPairing(
+            code_hash=hash_pairing_code(code),
+            work_role=WorkRole(work_role),
+            surname=surname[:120],
+            status=PilotPairingStatus.PENDING,
+            expires_at=now + timedelta(minutes=PILOT_PAIRING_TTL_MINUTES),
+            created_at=now,
+        )
+        db.add(pairing)
+        db.flush()
+        pairing_id = str(pairing.id)
+        db.commit()
+    print(pairing_id)
+    return EXIT_OK
+
+
+def pilot_pairing_status(args: argparse.Namespace) -> int:
+    """Report whether a PENDING, unexpired pairing exists (installer polling).
+
+    Exit 0 + 'pending' when a fresh pending pairing exists; exit 1 + 'ready'
+    once the user table is non-empty (install already claimed); exit 2 +
+    'waiting' otherwise. Never reveals the code or surname.
+    """
+    from sqlalchemy import func as _func
+
+    from app.models import PilotPairing, PilotPairingStatus, User
+    from app.utils import ensure_aware
+
+    with _session() as db:
+        users = db.scalar(select(_func.count()).select_from(User)) or 0
+        pending = db.scalars(
+            select(PilotPairing).where(PilotPairing.status == PilotPairingStatus.PENDING)
+        ).first()
+        if users > 0:
+            print("ready")
+            return 1
+        if pending is not None and ensure_aware(pending.expires_at) > utc_now():
+            print("pending")
+            return 0
+        print("waiting")
+        return 2
+
+
+def build_pairing_parser(sub: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
+    pairing = sub.add_parser("pilot-pairing", help="manage the first-run pilot pairing (phase 12)")
+    pairing_sub = pairing.add_subparsers(dest="action", required=True)
+    issue = pairing_sub.add_parser(
+        "issue", help="read {code,surname,work_role} JSON on STDIN and start a pairing"
+    )
+    issue.set_defaults(func=pilot_pairing_issue)
+    status_cmd = pairing_sub.add_parser(
+        "status", help="poll first-run state (pending/ready/waiting)"
+    )
+    status_cmd.set_defaults(func=pilot_pairing_status)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,0 +1,132 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# HR Manager — LOCAL PILOT profile (phase 12). Windows 10/11 x64 + Docker
+# Desktop/WSL2, single administrator whose PC is workstation and server.
+#
+# This is an EXPLICITLY NAMED overlay for `infra/docker-compose.yml`:
+#
+#   docker compose -p hr-manager-pilot \
+#       -f infra/docker-compose.yml -f infra/compose.pilot.yml \
+#       --env-file "<local state>\\pilot.env" up -d
+#
+# What it changes versus the development base file, and why:
+#   * stable Compose project name `hr-manager-pilot` (volumes survive
+#     stop/start/update/reinstall because the project name never changes);
+#   * ONLY the frontend is published, bound to 127.0.0.1 on
+#     ${HRMGR_PILOT_PORT:-8081} — database, backend, worker, backup and the
+#     dev Mailpit sink are unreachable from the LAN;
+#   * full production guards: APP_ENV=production, APP_DEBUG=false, and every
+#     secret comes from the installer-generated env file with `${VAR:?}` —
+#     a missing secret fails fast instead of silently using a dev default;
+#   * the locally-trusted cookie model: SESSION_COOKIE_SECURE=false is valid
+#     ONLY together with HRMGR_PILOT_LOCAL_TRUSTED=true (the backend refuses
+#     every request whose Host is not a loopback name — see
+#     docs/pilot-windows-install.md);
+#   * no bootstrap admin: BOOTSTRAP_ADMIN_PASSWORD is explicitly EMPTY, which
+#     disables the weak shared account. The single pilot owner is created by
+#     the first-run pairing flow in the browser;
+#   * external channels off (Telegram/SMTP); data and encrypted backups live
+#     in named volumes.
+#
+# It REQUIRES Docker Compose v2.24+ (the !reset YAML tag), same as the
+# production overlay. `infra/compose.prod.yml` (server contour) is NOT
+# weakened by this file: each profile is independent.
+# ─────────────────────────────────────────────────────────────────────────────
+name: hr-manager-pilot
+
+services:
+  db:
+    environment:
+      POSTGRES_DB: hr_manager
+      POSTGRES_USER: hr_manager
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required for the pilot profile}
+    ports: !reset []
+
+  backend:
+    # Versioned images make update/rollback a re-tag: the launcher installs a
+    # release, sets HRMGR_RELEASE_VERSION, and previous tags stay available.
+    image: hr-manager-backend:pilot-${HRMGR_RELEASE_VERSION:?HRMGR_RELEASE_VERSION is required}
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required for the pilot profile}
+      SESSION_COOKIE_SECURE: "false"
+      HRMGR_PILOT_LOCAL_TRUSTED: "true"
+      DATABASE_URL: postgresql+psycopg://hr_manager:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/hr_manager
+      # Explicitly empty: bootstrap admin creation is DISABLED. The single
+      # owner comes from the first-run pairing (browser), never a shared
+      # technical account with a printed password.
+      BOOTSTRAP_ADMIN_PASSWORD: ""
+      RELEASE_SHA: ${RELEASE_SHA:-}
+      # External integrations are off in the pilot profile and must never
+      # block startup.
+      TELEGRAM_ENABLED: "false"
+      SMTP_ENABLED: "false"
+      CANDIDATE_EMAIL_CONFIRM_BASE_URL: ""
+    ports: !reset []
+    # Migrations are NOT run at container start: the launcher executes a
+    # one-shot `alembic upgrade head` (advisory-locked) before switching.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  worker:
+    image: hr-manager-backend:pilot-${HRMGR_RELEASE_VERSION:?HRMGR_RELEASE_VERSION is required}
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required for the pilot profile}
+      DATABASE_URL: postgresql+psycopg://hr_manager:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/hr_manager
+      NOTIFICATION_DEFAULT_TIMEZONE: "Europe/Moscow"
+      NOTIFICATION_QUIET_HOURS_START: "21:00"
+      NOTIFICATION_QUIET_HOURS_END: "08:00"
+      WORKER_POLL_INTERVAL_S: "2"
+      WORKER_LEASE_SECONDS: "120"
+      WORKER_MAX_ATTEMPTS: "5"
+      TELEGRAM_ENABLED: "false"
+      SMTP_ENABLED: "false"
+      TZ: UTC
+    ports: !reset []
+
+  frontend:
+    image: hr-manager-frontend:pilot-${HRMGR_RELEASE_VERSION:?HRMGR_RELEASE_VERSION is required}
+    # The ONLY published port of the pilot profile, loopback-bound. The nginx
+    # inside the container keeps proxying /api/ to `backend` on the Compose
+    # network; the browser talks to http://127.0.0.1:${HRMGR_PILOT_PORT}.
+    ports:
+      - "127.0.0.1:${HRMGR_PILOT_PORT:-8081}:8080"
+
+  backup:
+    image: hr-manager-backup:pilot-${HRMGR_RELEASE_VERSION:?HRMGR_RELEASE_VERSION is required}
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      DATABASE_URL: postgresql+psycopg://hr_manager:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/hr_manager
+      BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://hr_manager:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/postgres
+      BACKUP_DIR: /var/backups/hr-manager
+      BACKUP_STATE_FILE: /var/backups/hr-manager/state.json
+      BACKUP_KEY_ID: ${BACKUP_KEY_ID:?BACKUP_KEY_ID is required for the pilot backup contour}
+      BACKUP_ENC_KEY: ${BACKUP_ENC_KEY:?BACKUP_ENC_KEY is required for the pilot backup contour}
+      BACKUP_LEGACY_KEYS: ${BACKUP_LEGACY_KEYS:-}
+      BACKUP_SCHEDULE_UTC: "02:00"
+      BACKUP_DRILL_INTERVAL_HOURS: "168"
+      # The pilot always keeps a fresh encrypted backup (update safety gate
+      # depends on it), so one is produced right after install.
+      BACKUP_ON_START: "1"
+      BACKUP_MIN_FREE_MB: "512"
+      TZ: UTC
+    ports: !reset []
+
+  # Development Mailpit sink: NOT PART OF THE PILOT. A service profile that
+  # is never enabled keeps it out of `up` entirely (no published port, no
+  # container) while the base file stays untouched.
+  mailpit:
+    profiles: ["pilot-disabled"]
+    ports: !reset []

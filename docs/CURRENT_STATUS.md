@@ -4,6 +4,25 @@
 > `a6ac73cb797919383b80ce65b1614cd6e4dad47f`. Ветка агента 5
 > `arena/01a081aa-hr-manager` сохранена для продолжения работы над Phase 12.
 
+## В работе: Phase 12 (локальный пилот Windows) — реализация открыта, ждёт ревью
+
+- Ветка: `arena/01a084e5-hr-manager`, PR в `main` (не влит).
+- База: `main` на `8d6c2a34e11da9a3aae8a4fc6cbd4aacf16c910f`.
+- Миграционный head: `0013` (pilot first-run).
+- Реализовано: backend first-run/pairing (хранилище одноразовых кодов,
+  loopback/origin-защита, race-safe claim, смена bootstrap-пароля), профиль
+  `infra/compose.pilot.yml` (публикуется только frontend на 127.0.0.1),
+  PowerShell-движок `infra/windows/` (install/start/status/update/diagnostics/
+  uninstall/resume, ACL-хранилище секретов, backup-до-миграций, откат только
+  кода), GUI-установщик Inno Setup (собирается в CI; бинарников в git нет),
+  страница `/first-run` во фронтенде, инструкция
+  `docs/PHASE_12_WINDOWS_PILOT.md`.
+- CI: добавлены jobs `pilot-compose` (реальный контур + смоук первого входа на
+  Linux) и `installer-windows` (тесты движка на PowerShell, сборка и смоук
+  Setup.exe). Живой приёмочный прогон с Docker Desktop — ручная процедура
+  `infra/windows/acceptance/Run-Windows-Acceptance.ps1`.
+- После принятия — перенести сводку в блок «Что принято» ниже.
+
 ## Что принято
 
 - Фундамент продукта: FastAPI, SQLAlchemy 2, Alembic, PostgreSQL, React,

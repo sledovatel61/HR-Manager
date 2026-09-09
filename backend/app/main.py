@@ -14,12 +14,14 @@ from fastapi import FastAPI
 from sqlalchemy import Engine
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app import __version__, metrics
 from app.bootstrap import bootstrap_admin
 from app.config import Settings, get_settings
 from app.db import bind_session_factory, build_engine
+from app.host_guard import REJECTION_DETAIL, is_loopback_host
 from app.routers import (
     analytics,
     audit,
@@ -29,6 +31,7 @@ from app.routers import (
     document_rules,
     documents,
     events,
+    first_run,
     health,
     integrations,
     notifications,
@@ -82,6 +85,34 @@ def _exception_response() -> Response:
     return Response(status_code=500)
 
 
+class PilotHostGuard:
+    """Pure-ASGI guard for the loopback pilot profile (phase 12).
+
+    Installed ONLY when ``HRMGR_PILOT_LOCAL_TRUSTED`` is on. It rejects any
+    request whose ``Host`` header is not a loopback name, so the plain-HTTP
+    pilot cannot be reached via DNS rebinding or a non-loopback hostname.
+    Requests that pass are forwarded unchanged. The guard never logs the
+    header value.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        if is_loopback_host(headers.get("host")):
+            await self.app(scope, receive, send)
+            return
+        response = JSONResponse(status_code=403, content={"detail": REJECTION_DETAIL})
+        await response(scope, receive, send)
+
+
 def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:
     """Build the FastAPI application.
 
@@ -115,6 +146,12 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
 
     app.add_middleware(MetricsMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
+    if app_settings.pilot_local_trusted:
+        # Added last on purpose: Starlette runs middleware in reverse
+        # registration order, so the guard evaluates before everything else
+        # and a non-loopback Host never reaches a route, the metrics or the
+        # session layer.
+        app.add_middleware(PilotHostGuard)
 
     app.include_router(health.router)
     app.include_router(ops.router)
@@ -133,6 +170,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(reminders.router)
     app.include_router(preferences.router)
     app.include_router(setup.router)
+    app.include_router(first_run.router)
     return app
 
 

@@ -16,6 +16,14 @@ Environment variables
 ``SESSION_TTL_MINUTES``    idle lifetime of a user session (sliding expiration)
 ``SESSION_COOKIE_SECURE``  force the Secure flag on session/CSRF cookies
                            (defaults to true in production automatically)
+``HRMGR_PILOT_LOCAL_TRUSTED``  phase 12 loopback-pilot profile: production
+                           checks stay enforced, but the session cookies are
+                           allowed to be non-Secure over ``http://127.0.0.1``
+                           and the API rejects every request whose Host is
+                           not a loopback name (see app/host_guard.py). Only
+                           valid with APP_ENV=production (or the test fixtures)
+                           and APP_DEBUG=false; the Compose profile must
+                           publish ONLY on 127.0.0.1.
 ``LOGIN_RATE_LIMIT``       max login attempts per IP per window
 ``LOGIN_RATE_WINDOW_SECONDS``  sliding window length for the login limiter
 ``LOGIN_MAX_FAILURES``     consecutive failed logins before an account is locked
@@ -23,7 +31,10 @@ Environment variables
 ``BOOTSTRAP_ADMIN_USERNAME`` / ``BOOTSTRAP_ADMIN_PASSWORD`` /
 ``BOOTSTRAP_ADMIN_FULL_NAME``  initial administrator (created once, when the
                            user table is empty; safe development default in
-                           non-production, never used implicitly in production)
+                           non-production, never used implicitly in production;
+                           an empty BOOTSTRAP_ADMIN_PASSWORD explicitly disables
+                           bootstrap — phase 12 creates the single pilot owner
+                           via the authenticated first-run pairing instead)
 ``RELEASE_SHA``            full git SHA of the running release (reported by
                            the ops status endpoint; injected by CI/deploy)
 ``BACKUP_DIR``             directory holding encrypted backups and state
@@ -106,6 +117,11 @@ MIN_SECRET_KEY_LENGTH = 32
 # Password policy (also enforced in app/security.py with a dedicated message).
 MIN_PASSWORD_LENGTH = 12
 
+# Phase 12: lifetime of a first-run pairing code before it expires (minutes).
+# The installer opens the browser right after the smoke check, so a short TTL
+# is safe and shrinks the abuse window of the public claim endpoint.
+PILOT_PAIRING_TTL_MINUTES = 15
+
 # Notification contour defaults (phase 8). All persisted timestamps stay
 # timezone-aware UTC; these defaults describe the *display/scheduling*
 # behaviour of the recipient and are validated against zoneinfo.
@@ -165,6 +181,16 @@ class Settings(BaseSettings):
     session_cookie_secure: bool | None = Field(
         default=None, validation_alias="SESSION_COOKIE_SECURE"
     )
+    # Phase 12: locally-trusted pilot profile. Only the explicit opt-in makes
+    # the production guard accept plain HTTP: the Windows pilot runs the full
+    # production checks (no dev secrets, no debug) while its frontend is bound
+    # to 127.0.0.1 only. When enabled, session cookies lose the Secure flag
+    # (a browser would otherwise never send them over http://127.0.0.1) and
+    # the API additionally rejects every request whose Host is not loopback
+    # (see app/host_guard.py). The flag is a deployment promise, not a
+    # general relaxation: development profiles never need it, test enables it
+    # only in explicit fixtures, production requires it for Secure=false.
+    pilot_local_trusted: bool = Field(default=False, validation_alias="HRMGR_PILOT_LOCAL_TRUSTED")
 
     # Login brute-force protection.
     login_rate_limit: int = Field(default=20, validation_alias="LOGIN_RATE_LIMIT")
@@ -353,12 +379,19 @@ class Settings(BaseSettings):
 
     @property
     def session_cookie_is_secure(self) -> bool:
-        """Effective Secure flag for session/CSRF cookies."""
-        return (
-            self.session_cookie_secure
-            if self.session_cookie_secure is not None
-            else (self.is_production)
-        )
+        """Effective Secure flag for session/CSRF cookies.
+
+        The loopback pilot (``HRMGR_PILOT_LOCAL_TRUSTED``) is the ONLY way to
+        run a production deployment over plain ``http://127.0.0.1``: browsers
+        drop ``Secure`` cookies on non-HTTPS origins, so the pilot profile
+        turns the flag off deliberately while keeping every other production
+        check active. An explicit ``SESSION_COOKIE_SECURE`` still wins.
+        """
+        if self.session_cookie_secure is not None:
+            return self.session_cookie_secure
+        if self.pilot_local_trusted:
+            return False
+        return self.is_production
 
     @model_validator(mode="after")
     def _enforce_environment_rules(self) -> "Settings":
@@ -373,6 +406,24 @@ class Settings(BaseSettings):
                 "SQLite is not supported outside of isolated unit tests; use PostgreSQL"
             )
 
+        # Phase 12: the loopback-pilot opt-in must never weaken a stack that
+        # is reachable beyond this machine. It is a deliberate production/
+        # test profile (the pilot overlay publishes ONLY 127.0.0.1); it
+        # forbids debug output and a contradictory forced-Secure cookie.
+        if self.pilot_local_trusted:
+            if self.debug:
+                problems.append("APP_DEBUG must be false when HRMGR_PILOT_LOCAL_TRUSTED is enabled")
+            if self.environment == "development":
+                problems.append(
+                    "HRMGR_PILOT_LOCAL_TRUSTED is a production/test profile switch; "
+                    "development stacks already run without the Secure cookie"
+                )
+            if self.session_cookie_secure is True:
+                problems.append(
+                    "SESSION_COOKIE_SECURE=true contradicts HRMGR_PILOT_LOCAL_TRUSTED "
+                    "(the pilot is served over http://127.0.0.1)"
+                )
+
         if self.is_production:
             if not self.secret_key or self.secret_key == DEVELOPMENT_SECRET_KEY:
                 problems.append("SECRET_KEY must be set to a non-default value in production")
@@ -386,19 +437,29 @@ class Settings(BaseSettings):
                 problems.append("DATABASE_URL must include a password in production")
             if self.debug:
                 problems.append("APP_DEBUG must be false in production")
-            if self.session_cookie_secure is False:
-                problems.append("SESSION_COOKIE_SECURE must not be disabled in production")
+            if self.session_cookie_secure is False and not self.pilot_local_trusted:
+                problems.append(
+                    "SESSION_COOKIE_SECURE must not be disabled in production; a loopback "
+                    "pilot uses the explicit HRMGR_PILOT_LOCAL_TRUSTED profile instead"
+                )
             # The bootstrap administrator must never get an implicit weak
-            # password in production.
+            # password in production. An EMPTY password explicitly disables
+            # bootstrap creation (used by the phase-12 pilot profile, where the
+            # single owner is created through the authenticated first-run
+            # pairing instead): the table then stays empty and no weak account
+            # exists.
             if self.bootstrap_admin_password == DEVELOPMENT_BOOTSTRAP_ADMIN_PASSWORD:
                 problems.append(
                     "BOOTSTRAP_ADMIN_PASSWORD must be set to a strong value in production "
                     "(or create the administrator with 'python -m app.cli create-admin')"
                 )
-            if len(self.bootstrap_admin_password) < MIN_PASSWORD_LENGTH:
+            if (
+                self.bootstrap_admin_password
+                and len(self.bootstrap_admin_password) < MIN_PASSWORD_LENGTH
+            ):
                 problems.append(
                     f"BOOTSTRAP_ADMIN_PASSWORD must be at least {MIN_PASSWORD_LENGTH} characters "
-                    "in production"
+                    "in production (or be set to the empty string to disable bootstrap)"
                 )
             # Backups are secret assets: when the backup contour is enabled in
             # production the encryption key must be a real, correctly sized,
