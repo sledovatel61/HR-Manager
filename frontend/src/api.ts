@@ -52,6 +52,7 @@ import type {
   EventHistoryEntry,
   EventListQuery,
   EventUpdateInput,
+  FirstRunStatus,
   HealthResponse,
   Paginated,
   User,
@@ -590,6 +591,23 @@ export async function savePreferences(input: {
 
 export async function listTimezones(): Promise<{ timezones: string[] }> {
   return request<{ timezones: string[] }>("/notification-preferences/timezones");
+}
+
+// --- Phase 12: local pilot first-run ----------------------------------------
+
+export async function fetchFirstRunStatus(): Promise<FirstRunStatus> {
+  return request<FirstRunStatus>("/setup/first-run/status");
+}
+
+export async function claimFirstRun(exchangeToken: string): Promise<CurrentUser> {
+  return request<CurrentUser>("/setup/first-run", {
+    method: "POST",
+    body: { exchange_token: exchangeToken },
+  });
+}
+
+export async function setOwnPassword(password: string): Promise<User> {
+  return request<User>("/setup/password", { method: "POST", body: { password } });
 }
 
 // --- Phase 8: setup wizard and admin queue ----------------------------------
