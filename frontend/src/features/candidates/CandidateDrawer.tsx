@@ -1,3 +1,4 @@
+import { DocumentsTab } from "../documents/DocumentsTab";
 import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
@@ -44,7 +45,7 @@ import "./drawer.css";
 const INTERACTION_PAGE_SIZE = 20;
 const TRANSFER_PAGE_SIZE = 20;
 
-type DrawerTab = "info" | "interactions" | "events" | "messages" | "transfers";
+type DrawerTab = "info" | "interactions" | "events" | "messages" | "documents" | "transfers";
 
 interface CandidateDrawerProps {
   candidateId: string;
@@ -151,6 +152,7 @@ export function CandidateDrawer({
     { id: "interactions" as const, label: "Взаимодействия" },
     { id: "events" as const, label: "События" },
     { id: "messages" as const, label: "Сообщения" },
+    { id: "documents" as const, label: "Документы" },
     { id: "transfers" as const, label: "Передачи" },
   ];
 
@@ -212,6 +214,7 @@ export function CandidateDrawer({
           )}
 
           {tab === "messages" && <MessagesTab candidate={candidate} />}
+          {tab === "documents" && <DocumentsTab candidateId={candidate.id} stage={candidate.stage} />}
 
           {tab === "transfers" && (
             <TransfersTab candidate={candidate} onOpenTransfer={() => setTransferOpen(true)} />

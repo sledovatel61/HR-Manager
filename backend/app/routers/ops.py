@@ -458,6 +458,12 @@ def retry_notification(
     from app.models import DeliveryStatus
 
     old = _get_outbox_row(db, outbox_id)
+    if old.document_context:
+        raise HTTPException(
+            409,
+            "Используйте документы кандидата или личное правило: "
+            "повтор через общую очередь запрещён.",
+        )
     if old.status not in (
         DeliveryStatus.FAILED,
         DeliveryStatus.SKIPPED,
@@ -523,6 +529,10 @@ def cancel_notification(
     from app.models import DeliveryStatus
 
     row = _get_outbox_row(db, outbox_id)
+    if row.document_context:
+        raise HTTPException(
+            409, "Отмените сообщение в карточке кандидата или выключите личное правило."
+        )
     if row.status in (DeliveryStatus.DELIVERED, DeliveryStatus.ACCEPTED):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
