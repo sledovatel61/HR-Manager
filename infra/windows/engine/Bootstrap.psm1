@@ -1,4 +1,4 @@
-# Первый запуск: одноразовый loopback-обмен между движком и бэкендом.
+﻿# Первый запуск: одноразовый loopback-обмен между движком и бэкендом.
 # Движок сам НЕ создаёт администратора — он лишь передаёт собранные
 # мастером установки данные через /setup/owner/claim и открывает браузер
 # с одноразовым тикетом в URL-фрагменте. Создание единственного владельца
@@ -87,7 +87,8 @@ function Start-HrmFirstRun {
     $input = Get-HrmFirstRunInput $StateDir
     $result = Invoke-HrmFirstRunClaim -StateDir $StateDir -BaseUrl $baseUrl `
         -Surname $input.Surname -WorkingMode $input.WorkingMode -Timezone $input.Timezone
-    if ($result.AlreadyCreated) {
+    $alreadyCreated = $result.ContainsKey("AlreadyCreated") -and [bool]$result["AlreadyCreated"]
+    if ($alreadyCreated) {
         # Обмен закрыт сервером: владелец есть. Фиксируем и убираем токен
         # из env (bootstrap больше не нужен; пользователи уже существуют).
         Set-HrmInstallRecord $StateDir @{ pilot_created = $true }

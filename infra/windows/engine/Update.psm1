@@ -1,4 +1,4 @@
-# Обновление из доверенного каталога релиза.
+﻿# Обновление из доверенного каталога релиза.
 #
 # ДОВЕРЕННАЯ ГРАНИЦА: -ReleaseDir — это каталог, куда пользователь (или
 # официальный автозагрузчик) положил подписанный/проверенный снимок релиза
@@ -171,6 +171,11 @@ function Update-HrmApp {
 
         if ($phase -eq "migrate") {
             Write-HrmLog "info" "Однократная миграция схемы (alembic upgrade head)…"
+            # A resumed operation may enter directly at migrate after the
+            # switch was persisted. Reassert the release env and running
+            # containers before migration so smoke observes the target SHA.
+            $null = Write-HrmPilotEnv $StateDir $releaseData.release_sha $port
+            Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
             $migrate = Invoke-HrmCompose $InstallDir $StateDir @("exec", "-T", "backend", "alembic", "upgrade", "head")
             Write-HrmLog "info" (($migrate.Stdout -split "`n" | Select-Object -Last 3) -join " ")
             Set-HrmUpdateJournal $StateDir "smoke" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }

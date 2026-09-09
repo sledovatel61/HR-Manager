@@ -1,9 +1,19 @@
-# Общий слой движка: пути, журнал, редакция секретов, внешние команды.
+﻿# Общий слой движка: пути, журнал, редакция секретов, внешние команды.
 # Все внешние вызовы (docker, icacls, тесты сети) и все интерактивные
 # действия (запросы, открытие браузера) проходят через функции этого
 # модуля, чтобы Pester-тесты могли их мокать, не трогая реальную машину.
 
 Set-StrictMode -Version 2.0
+
+# The modules are also imported directly by the test harness and can be used
+# by operators without going through hr-manager.ps1.  Define cross-module
+# flags defensively so StrictMode never turns a read into a runtime failure.
+if ($null -eq (Get-Variable -Name HrmNonInteractive -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:HrmNonInteractive = $false
+}
+if ($null -eq (Get-Variable -Name HrmOpenBrowser -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:HrmOpenBrowser = $false
+}
 
 # --- Каталоги ---------------------------------------------------------------
 
@@ -107,7 +117,20 @@ function Invoke-HrmExternal {
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardInput = $true
     $psi.CreateNoWindow = $true
-    foreach ($arg in $Arguments) { [void]$psi.ArgumentList.Add($arg) }
+    # ProcessStartInfo.ArgumentList only exists in modern .NET. Windows
+    # PowerShell 5.1 runs on .NET Framework, so construct the command line
+    # using the documented CommandLineToArgvW escaping rules instead.
+    $quotedArguments = foreach ($arg in $Arguments) {
+        $value = [string]$arg
+        if ($value.Length -gt 0 -and $value -notmatch '[\s"]') {
+            $value
+            continue
+        }
+        $escaped = [regex]::Replace($value, '(\\*)"', '$1$1\"')
+        $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+        '"' + $escaped + '"'
+    }
+    $psi.Arguments = $quotedArguments -join " "
     $process = [System.Diagnostics.Process]::Start($psi)
     if ($Stdin) { $process.StandardInput.Write($Stdin) }
     $process.StandardInput.Close()

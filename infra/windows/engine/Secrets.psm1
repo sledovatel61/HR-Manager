@@ -1,4 +1,4 @@
-# Секреты пилота: генерация один раз, хранение только в защищённом каталоге
+﻿# Секреты пилота: генерация один раз, хранение только в защищённом каталоге
 # состояния, без ротации при повторных запусках, без попадания в вывод,
 # git, диагностику или URL. Командная строка процессов секретов не содержит:
 # в контейнеры они попадают через `docker compose --env-file pilot.env`.
@@ -38,7 +38,8 @@ function Get-HrmSecretsMap {
     if ($null -eq $data) { return @{} }
     $map = @{}
     foreach ($name in $script:SecretNames) {
-        $value = $data.$name
+        $property = $data.PSObject.Properties[$name]
+        $value = if ($null -ne $property) { $property.Value } else { $null }
         if ($value) { $map[$name] = [string]$value }
     }
     return $map
@@ -59,12 +60,12 @@ function Get-HrmSecret {
         }
     }
     $value = switch ($Name) {
-        "HRM_POSTGRES_PASSWORD" { New-HrmHex 32 }
-        "HRM_SIGNING_KEY" { New-HrmHex 64 }
-        "HRM_BOOTSTRAP_ADMIN_PASSWORD" { New-HrmHex 32 }
-        "HRM_BACKUP_KEY" { New-HrmHex 64 }
+        "HRM_POSTGRES_PASSWORD" { New-HrmHex 16 }
+        "HRM_SIGNING_KEY" { New-HrmHex 32 }
+        "HRM_BOOTSTRAP_ADMIN_PASSWORD" { New-HrmHex 16 }
+        "HRM_BACKUP_KEY" { New-HrmHex 32 }
         "HRM_BACKUP_KEY_ID" { "pilot-" + (New-HrmHex 4) }
-        "HRM_EXCHANGE_TOKEN" { New-HrmHex 32 }
+        "HRM_EXCHANGE_TOKEN" { New-HrmHex 16 }
     }
     $file = Get-HrmSecretsFile $StateDir
     $data = Get-HrmJsonFile $file
@@ -84,7 +85,8 @@ function Clear-HrmExchangeToken {
     param([string]$StateDir)
     $file = Get-HrmSecretsFile $StateDir
     $data = Get-HrmJsonFile $file
-    if ($null -ne $data -and $data.HRM_EXCHANGE_TOKEN) {
+    $exchangeProperty = if ($null -ne $data) { $data.PSObject.Properties["HRM_EXCHANGE_TOKEN"] } else { $null }
+    if ($null -ne $exchangeProperty -and $exchangeProperty.Value) {
         $merged = [ordered]@{}
         foreach ($prop in $data.PSObject.Properties) { $merged[$prop.Name] = $prop.Value }
         $merged["HRM_EXCHANGE_TOKEN"] = ""

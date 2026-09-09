@@ -1,4 +1,4 @@
-# Обвязка тестов движка (без зависимости от Pester): мини-DSL, загрузка
+﻿# Обвязка тестов движка (без зависимости от Pester): мини-DSL, загрузка
 # модулей с моками, мок-мир внешних команд и HTTP. Запускается на Windows
 # PowerShell 5.1+ и pwsh: `powershell -File run-tests.ps1`.
 
@@ -79,6 +79,8 @@ function Initialize-HrmTestEngine {
     $env:HRM_STATE_DIR = Join-Path $TestRoot "state каталог"
     $env:HRM_INSTALL_DIR = Join-Path $TestRoot "install каталог"
     $env:HRM_CLAIM_RETRY_SECONDS = "0"
+    $global:HrmNonInteractive = $true
+    $global:HrmOpenBrowser = $false
     Remove-Item Env:HRM_PURGE_CONFIRMATION -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_PILOT_PORT -ErrorAction SilentlyContinue
     Clear-HrmExternalMock
@@ -135,6 +137,7 @@ function New-HrmMockWorld {
         BackendStatus = 200
         TagCount = 0
         BuildCount = 0
+        SimulateStaleRelease = $false
     }
     $world.OpsBody = [pscustomobject]@{
         status = "ok"
@@ -179,6 +182,15 @@ function New-HrmMockWorld {
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "up")) {
                 $global:HRM_MockWorld.Running = $true
+                if (-not $global:HRM_MockWorld.SimulateStaleRelease) {
+                    $envIndex = [array]::IndexOf([object[]]$Arguments, "--env-file")
+                    if ($envIndex -ge 0 -and $envIndex + 1 -lt $Arguments.Count -and (Test-Path $Arguments[$envIndex + 1])) {
+                        $releaseLine = Get-Content $Arguments[$envIndex + 1] | Where-Object { $_ -like "HRM_RELEASE_SHA=*" } | Select-Object -First 1
+                        if ($releaseLine) {
+                            $global:HRM_MockWorld.OpsBody.release_sha = ($releaseLine -replace '^HRM_RELEASE_SHA=', '').Trim()
+                        }
+                    }
+                }
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "started"; Stderr = "" }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "down")) {
@@ -196,6 +208,15 @@ function New-HrmMockWorld {
                 }
                 if ($joined -match "alembic upgrade") {
                     $global:HRM_MockWorld.AlembicUpgradeCount++
+                    if (-not $global:HRM_MockWorld.SimulateStaleRelease) {
+                        $envIndex = [array]::IndexOf([object[]]$Arguments, "--env-file")
+                        if ($envIndex -ge 0 -and $envIndex + 1 -lt $Arguments.Count -and (Test-Path $Arguments[$envIndex + 1])) {
+                            $releaseLine = Get-Content $Arguments[$envIndex + 1] | Where-Object { $_ -like "HRM_RELEASE_SHA=*" } | Select-Object -First 1
+                            if ($releaseLine) {
+                                $global:HRM_MockWorld.OpsBody.release_sha = ($releaseLine -replace '^HRM_RELEASE_SHA=', '').Trim()
+                            }
+                        }
+                    }
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "INFO [alembic.runtime.migration] Running upgrade -> 0013"; Stderr = "" }
                 }
                 if ($joined -match "worker-check") {

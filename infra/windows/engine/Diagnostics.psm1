@@ -1,4 +1,4 @@
-# Агрегированная диагностика. Различает обязательные состояния контракта:
+﻿# Агрегированная диагностика. Различает обязательные состояния контракта:
 #   docker: missing | daemon_down | ok
 #   app:    stopped | starting | ready | degraded
 #   db:     unknown | ok | down
@@ -67,7 +67,9 @@ function Get-HrmDiagnostics {
         if ($running) {
             $frontend = Test-HrmFrontendReady $baseUrl
             $backend = Test-HrmBackendReady $baseUrl
-            if ($backend) { $ops = Get-HrmOpsStatus $baseUrl }
+            # /ops/status deliberately returns 503 with a structured body when
+            # the database is down; query it whenever the frontend proxy is up.
+            if ($frontend) { $ops = Get-HrmOpsStatus $baseUrl }
         }
     }
 
@@ -75,6 +77,7 @@ function Get-HrmDiagnostics {
     if (-not $running) { $app = "stopped" }
     elseif ($null -ne $ops -and $ops.database -and $ops.database.status -ne "ok") { $app = "degraded" }
     elseif ($frontend -and $backend) { $app = "ready" }
+    elseif ($frontend -and -not $backend -and $null -ne $ops) { $app = "degraded" }
     elseif ($frontend -or $backend) { $app = "starting" }
     else { $app = "degraded" }
 
@@ -82,6 +85,12 @@ function Get-HrmDiagnostics {
     $db = "unknown"
     if ($null -ne $ops -and $ops.database) {
         $db = if ($ops.database.status -eq "ok") { "ok" } else { "down" }
+    }
+    elseif ($running -and $frontend -and -not $backend) {
+        # The frontend is reachable and containers are running, but the API
+        # health gate is failing. In this topology that is the observable
+        # database-down/degraded state even when /ops/status is unavailable.
+        $db = "down"
     }
 
     # Миграции: head и отсутствие дрейфа.
