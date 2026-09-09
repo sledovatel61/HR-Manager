@@ -307,6 +307,33 @@ docker compose -f infra/docker-compose.yml down
 # в разделе «Администрирование».
 ```
 
+## Локальный пилот Windows (этап 12)
+
+Обычный пользователь Windows 10/11 x64 устанавливает HR Manager в несколько
+кликов: скачать `HR Manager Setup.exe` (артефакт CI), запустить, выбрать
+роль (`HR | Руководитель | Администратор`), ввести фамилию, нажать
+«Установить». Дальше мастер сам собирает образы, генерирует секреты,
+поднимает Postgres/бэкенд/фронтенд/worker/бэкапы в Docker Desktop и
+открывает браузер на `http://127.0.0.1:8080` — там создаётся единственная
+учётная запись пилота с паролем, который пользователь задаёт сам.
+Никаких команд Docker/Postgres/Alembic, `.env` или PowerShell в основном
+сценарии нет.
+
+- [`installer/README.md`](installer/README.md) — сборка установщика,
+  закреплённый инструмент (Inno Setup 6.7.3, SHA256), манифест хешей,
+  честный статус кодовой подписи;
+- [`infra/windows/README.md`](infra/windows/README.md) — движок
+  `hr-manager.ps1` (install/start/stop/status/open/update/diagnostics/
+  uninstall/resume), секреты, доверенная граница обновления, состояния
+  диагностики, неинтерактивный режим и тесты;
+- [`infra/compose.pilot.yml`](infra/compose.pilot.yml) — пилотный overlay
+  (проект `hr-manager-pilot`, только `127.0.0.1`, тома `pilot_pgdata`/
+  `pilot_backups`, внешние SMTP/Telegram выключены; production-контур
+  `compose.prod.yml` не ослаблен).
+
+Docker Desktop пользователь ставит сам с официального docker.com —
+установщик лицензии за него не принимает.
+
 ## Локальная разработка без Docker
 
 ### Backend (Python 3.12+, PostgreSQL 16 на localhost:5432)
@@ -374,7 +401,9 @@ backend/   FastAPI + SQLAlchemy 2 + Alembic, тесты, Dockerfile
 frontend/  React + TypeScript + Vite, тесты, Dockerfile + nginx
 design/    UX/UI-концепция «Живая воронка»: дизайн-система, гайд переноса
 design-prototype/  изолированный интерактивный прототип (не production-код)
-infra/     docker-compose.yml, production overlay, preflight-скрипт
+infra/     docker-compose.yml, production/pilot overlays, preflight-скрипт
+          windows/ — движок установки/обновления пилота (phase 12)
+installer/ исходники Inno Setup мастера HR Manager Setup.exe (phase 12)
 docs/      ARCHITECTURE.md — решения и ограничения этапа
 prompts/   промпты этапов разработки
 ```
@@ -463,6 +492,7 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
 - [`prompts/PHASE_2_PROMPT.md`](prompts/PHASE_2_PROMPT.md) — промпт этапа 2;
 - [`prompts/PHASE_3_PROMPT.md`](prompts/PHASE_3_PROMPT.md) — исторический промпт базы кандидатов;
 - [`prompts/PHASE_11_PROMPT.md`](prompts/PHASE_11_PROMPT.md) — историческое задание этапа 11;
+- [`docs/phase-12-report-arena.md`](docs/phase-12-report-arena.md) — отчёт этапа 12 (Windows-пилот);
 - [`design/IMPLEMENTATION_GUIDE.md`](design/IMPLEMENTATION_GUIDE.md) — план
   переноса дизайна «Живая воронка» в production.
 
@@ -483,3 +513,15 @@ grant включает оба). Согласия email/Telegram подключа
 
 Подробные API/миграционные решения, проверки, границы совместимости и handoff:
 [`docs/phase-11-report-arena.md`](docs/phase-11-report-arena.md).
+
+## Phase 12 — принято
+
+Windows-пилот: графический установщик `HR Manager Setup.exe` (Inno Setup
+6.7.3, сборка в CI, манифест хешей), движок `infra/windows/hr-manager.ps1`
+(9 действий, секреты только в защищённом каталоге состояния, честный
+префлайт, обновление с бэкап-воротами и откатом без даунгрейда БД,
+агрегированная диагностика с редакцией секретов), одноразовый loopback-обмен
+первого запуска (единственный владелец: роль `admin` + грант
+`pilot_full_access`, режим работы — поле профиля), пилотный Compose-оверлей
+с публикацией только на `127.0.0.1` и миграция `0013`. Отчёт:
+[`docs/phase-12-report-arena.md`](docs/phase-12-report-arena.md).
