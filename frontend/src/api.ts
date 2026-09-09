@@ -798,3 +798,152 @@ export async function cancelCandidateMessage(
     { method: "POST" },
   );
 }
+
+// --- Phase 11: document lists, candidate documents, automation rules ------
+
+/** List all document lists (admin). */
+export async function listDocumentLists(): Promise<{
+  items: import("./types").DocumentList[];
+  total: number;
+}> {
+  return request("/admin/document-lists");
+}
+
+/** Create a document list with initial draft version. */
+export async function createDocumentList(input: {
+  title: string;
+  description?: string | null;
+  list_scope?: Record<string, unknown> | null;
+  items?: import("./types").DocumentListItem[];
+}): Promise<import("./types").DocumentList> {
+  return request("/admin/document-lists", { method: "POST", body: input });
+}
+
+/** Get a single document list. */
+export async function getDocumentList(listId: string): Promise<import("./types").DocumentList> {
+  return request(`/admin/document-lists/${listId}`);
+}
+
+/** Update draft version's items. */
+export async function updateDocumentListDraft(
+  listId: string,
+  items: import("./types").DocumentListItem[],
+): Promise<import("./types").DocumentListVersion> {
+  return request(`/admin/document-lists/${listId}/draft`, {
+    method: "PUT",
+    body: { items },
+  });
+}
+
+/** Create a new draft version. */
+export async function createDocumentListVersion(
+  listId: string,
+  items: import("./types").DocumentListItem[],
+): Promise<import("./types").DocumentListVersion> {
+  return request(`/admin/document-lists/${listId}/versions`, {
+    method: "POST",
+    body: { items },
+  });
+}
+
+/** Publish a draft version. */
+export async function publishDocumentListVersion(
+  listId: string,
+  versionId: string,
+): Promise<import("./types").DocumentListVersion> {
+  return request(`/admin/document-lists/${listId}/versions/${versionId}/publish`, {
+    method: "POST",
+  });
+}
+
+/** Archive a published version. */
+export async function archiveDocumentListVersion(
+  listId: string,
+  versionId: string,
+): Promise<import("./types").DocumentListVersion> {
+  return request(`/admin/document-lists/${listId}/versions/${versionId}/archive`, {
+    method: "POST",
+  });
+}
+
+/** Get candidate's applied document lists. */
+export async function getCandidateDocuments(
+  candidateId: string,
+): Promise<import("./types").CandidateDocumentLists> {
+  return request(`/candidates/${candidateId}/documents`);
+}
+
+/** Apply a published document list to a candidate. */
+export async function applyDocumentList(
+  candidateId: string,
+  listId: string,
+): Promise<import("./types").CandidateDocumentList> {
+  return request(`/candidates/${candidateId}/documents/${listId}/apply`, {
+    method: "POST",
+  });
+}
+
+/** Update one document item's status. */
+export async function updateDocumentItemStatus(
+  candidateId: string,
+  listId: string,
+  itemKey: string,
+  expectedVersion: number,
+  status: "missing" | "received",
+): Promise<import("./types").CandidateDocumentItem> {
+  return request(`/candidates/${candidateId}/documents/${listId}/items/${itemKey}`, {
+    method: "PATCH",
+    body: { expected_version: expectedVersion, status },
+  });
+}
+
+/** List own automation rules. */
+export async function listRules(): Promise<import("./types").AutomationRuleList> {
+  return request("/rules");
+}
+
+/** Create an automation rule. */
+export async function createRule(input: {
+  title: string;
+  trigger_type: import("./types").RuleTriggerType;
+  trigger_params: Record<string, unknown>;
+  conditions?: Record<string, unknown> | null;
+  action_type: import("./types").RuleActionType;
+  action_params: Record<string, unknown>;
+}): Promise<import("./types").AutomationRule> {
+  return request("/rules", { method: "POST", body: input });
+}
+
+/** Update an automation rule. */
+export async function updateRule(
+  ruleId: string,
+  input: { expected_version: number } & Partial<{
+    title: string;
+    trigger_type: import("./types").RuleTriggerType;
+    trigger_params: Record<string, unknown>;
+    conditions: Record<string, unknown> | null;
+    action_type: import("./types").RuleActionType;
+    action_params: Record<string, unknown>;
+  }>,
+): Promise<import("./types").AutomationRule> {
+  return request(`/rules/${ruleId}`, { method: "PATCH", body: input });
+}
+
+/** Toggle a rule's enabled state. */
+export async function toggleRule(ruleId: string): Promise<import("./types").AutomationRule> {
+  return request(`/rules/${ruleId}/toggle`, { method: "POST" });
+}
+
+/** Delete a rule. */
+export async function deleteRule(ruleId: string): Promise<void> {
+  await request(`/rules/${ruleId}`, { method: "DELETE" });
+}
+
+/** List rule execution history. */
+export async function listRuleExecutions(
+  ruleId: string,
+  limit = 20,
+  offset = 0,
+): Promise<import("./types").AutomationRuleExecutionList> {
+  return request(`/rules/${ruleId}/executions?limit=${limit}&offset=${offset}`);
+}

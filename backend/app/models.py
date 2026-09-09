@@ -163,6 +163,18 @@ class AuditAction(StrEnum):
     CANDIDATE_TELEGRAM_UNLINKED = "candidate_telegram_unlinked"
     CANDIDATE_EMAIL_CONFIRM_INITIATED = "candidate_email_confirm_initiated"
     CANDIDATE_EMAIL_CONFIRMED = "candidate_email_confirmed"
+    # Phase 11: document lists and automation rules.
+    DOCUMENT_LIST_CREATED = "document_list_created"
+    DOCUMENT_LIST_VERSION_CREATED = "document_list_version_created"
+    DOCUMENT_LIST_PUBLISHED = "document_list_published"
+    DOCUMENT_LIST_ARCHIVED = "document_list_archived"
+    DOCUMENT_LIST_APPLIED = "document_list_applied"
+    DOCUMENT_ITEM_RECEIVED = "document_item_received"
+    DOCUMENT_ITEM_REVERTED = "document_item_reverted"
+    AUTOMATION_RULE_CREATED = "automation_rule_created"
+    AUTOMATION_RULE_UPDATED = "automation_rule_updated"
+    AUTOMATION_RULE_TOGGLED = "automation_rule_toggled"
+    AUTOMATION_RULE_DELETED = "automation_rule_deleted"
 
 
 class CandidateStage(StrEnum):
@@ -1976,3 +1988,339 @@ class CandidateChannelConsent(Base):
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
     )
+
+
+# --- Phase 11: document lists, candidate documents and automation rules ------
+
+
+class DocumentListVersionStatus(StrEnum):
+    """Lifecycle of a document-list version."""
+
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    ARCHIVED = "archived"
+
+
+class CandidateDocumentItemStatus(StrEnum):
+    """Per-item document status on a candidate."""
+
+    MISSING = "missing"
+    RECEIVED = "received"
+
+
+class RuleTriggerType(StrEnum):
+    """Closed trigger vocabulary for personal automation rules."""
+
+    STAGE_TRANSITION = "stage_transition"
+    SCHEDULED_REMINDER = "scheduled_reminder"
+
+
+class RuleActionType(StrEnum):
+    """Closed action vocabulary for personal automation rules."""
+
+    APPLY_LIST = "apply_list"
+    DOCUMENT_REQUEST = "document_request"
+    DOCUMENT_REMINDER = "document_reminder"
+
+
+class RuleExecutionOutcome(StrEnum):
+    """Outcome of one rule execution."""
+
+    SUCCESS = "success"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+_DL_VERSION_STATUSES = [member.value for member in DocumentListVersionStatus]
+_CDI_STATUSES = [member.value for member in CandidateDocumentItemStatus]
+_TRIGGER_TYPES = [member.value for member in RuleTriggerType]
+_ACTION_TYPES = [member.value for member in RuleActionType]
+_EXEC_OUTCOMES = [member.value for member in RuleExecutionOutcome]
+
+
+class DocumentList(Base):
+    """A named document list (logical grouping).
+
+    Contains no items itself — items live in versioned snapshots. The list
+    has a stable id, a title, a description and an optional scope filter
+    (JSON dict with ``position`` and/or ``stage`` keys). Empty scope means
+    a general-purpose list.
+    """
+
+    __tablename__ = "document_lists"
+    __table_args__ = (
+        CheckConstraint("length(trim(title)) > 0", name="ck_document_lists_title_not_blank"),
+        Index("ix_document_lists_author_user_id", "author_user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    list_scope: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    author_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    author: Mapped[User] = relationship(foreign_keys=[author_user_id])
+    versions: Mapped[list["DocumentListVersion"]] = relationship(
+        back_populates="document_list",
+        cascade="all, delete-orphan",
+        order_by="DocumentListVersion.version_number",
+    )
+
+
+class DocumentListVersion(Base):
+    """An immutable version of a document list.
+
+    Items are stored as a JSON array — once published, the snapshot never
+    changes. Only a ``draft`` version may be edited; publishing atomically
+    marks one version as ``published`` within the list. A published version
+    can be ``archived`` (not deleted). ``version_number`` is unique within
+    the list.
+    """
+
+    __tablename__ = "document_list_versions"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN ({_sql_list(_DL_VERSION_STATUSES)})",
+            name="ck_document_list_versions_status_valid",
+        ),
+        CheckConstraint("version_number >= 1", name="ck_document_list_versions_number_positive"),
+        UniqueConstraint(
+            "document_list_id", "version_number",
+            name="uq_document_list_versions_list_version",
+        ),
+        Index("ix_document_list_versions_list_id", "document_list_id"),
+        Index("ix_document_list_versions_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    document_list_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_lists.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[DocumentListVersionStatus] = mapped_column(
+        Enum(
+            DocumentListVersionStatus,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=DocumentListVersionStatus.DRAFT,
+    )
+    # Items are a JSON array of dicts: {key, title, description?, mandatory}.
+    items: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    published_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+
+    document_list: Mapped[DocumentList] = relationship(back_populates="versions")
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    published_by: Mapped[User | None] = relationship(foreign_keys=[published_by_user_id])
+
+
+class CandidateDocumentList(Base):
+    """A candidate's binding to an exact published document-list version.
+
+    This is an exact snapshot: future publications never rewrite it. The
+    version_number is stored alongside the list_id so the full set of
+    items can always be reconstructed even if the version is later
+    archived.
+    """
+
+    __tablename__ = "candidate_document_lists"
+    __table_args__ = (
+        Index("ix_candidate_document_lists_candidate_id", "candidate_id"),
+        Index("ix_candidate_document_lists_list_id", "document_list_id"),
+    )
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), primary_key=True
+    )
+    document_list_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_lists.id", ondelete="RESTRICT"), primary_key=True
+    )
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_list_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    applied_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+
+    candidate: Mapped[Candidate] = relationship(foreign_keys=[candidate_id])
+    document_list: Mapped[DocumentList] = relationship(foreign_keys=[document_list_id])
+    version: Mapped[DocumentListVersion] = relationship(foreign_keys=[version_id])
+    applied_by: Mapped[User] = relationship(foreign_keys=[applied_by_user_id])
+
+
+class CandidateDocumentItem(Base):
+    """Per-item document status for a candidate's applied list version.
+
+    ``version`` is the optimistic concurrency counter — two HRs marking the
+    same item simultaneously will conflict (409). ``status`` is either
+    ``missing`` or ``received``.
+    """
+
+    __tablename__ = "candidate_document_items"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN ({_sql_list(_CDI_STATUSES)})",
+            name="ck_candidate_document_items_status_valid",
+        ),
+        Index("ix_candidate_document_items_candidate_list", "candidate_id", "document_list_id"),
+    )
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), primary_key=True
+    )
+    document_list_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_lists.id", ondelete="CASCADE"), primary_key=True
+    )
+    item_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    mandatory: Mapped[bool] = mapped_column(nullable=False, default=True)
+    status: Mapped[CandidateDocumentItemStatus] = mapped_column(
+        Enum(
+            CandidateDocumentItemStatus,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=CandidateDocumentItemStatus.MISSING,
+    )
+    received_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    received_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class AutomationRule(Base):
+    """A personal automation rule owned by a single user.
+
+    The rule consists of a typed trigger, optional typed conditions and a
+    typed action with validated structured parameters. No arbitrary code,
+    SQL, regex or templates are allowed. ``version`` is the optimistic
+    concurrency counter.
+    """
+
+    __tablename__ = "automation_rules"
+    __table_args__ = (
+        CheckConstraint(
+            f"trigger_type IN ({_sql_list(_TRIGGER_TYPES)})",
+            name="ck_automation_rules_trigger_type_valid",
+        ),
+        CheckConstraint(
+            f"action_type IN ({_sql_list(_ACTION_TYPES)})",
+            name="ck_automation_rules_action_type_valid",
+        ),
+        CheckConstraint("length(trim(title)) > 0", name="ck_automation_rules_title_not_blank"),
+        Index("ix_automation_rules_owner_user_id", "owner_user_id"),
+        Index("ix_automation_rules_enabled", "enabled"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
+    trigger_type: Mapped[RuleTriggerType] = mapped_column(
+        Enum(
+            RuleTriggerType,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    trigger_params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    conditions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    action_type: Mapped[RuleActionType] = mapped_column(
+        Enum(
+            RuleActionType,
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    action_params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    owner: Mapped[User] = relationship(foreign_keys=[owner_user_id])
+    executions: Mapped[list["AutomationRuleExecution"]] = relationship(
+        back_populates="rule",
+        cascade="all, delete-orphan",
+        order_by="AutomationRuleExecution.created_at.desc()",
+    )
+
+
+class AutomationRuleExecution(Base):
+    """Immutable execution history of an automation rule.
+
+    Records the rule, trigger object, candidate, action, outcome and
+    dedupe key. Never stores message text, PII or candidate personal data.
+    """
+
+    __tablename__ = "automation_rule_executions"
+    __table_args__ = (
+        CheckConstraint(
+            f"outcome IN ({_sql_list(_EXEC_OUTCOMES)})",
+            name="ck_automation_rule_executions_outcome_valid",
+        ),
+        Index("ix_automation_rule_executions_rule_id", "rule_id"),
+        Index("ix_automation_rule_executions_candidate_id", "candidate_id"),
+        Index("ix_automation_rule_executions_created_at", "created_at"),
+        Index(
+            "uq_automation_rule_executions_dedupe",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text("dedupe_key IS NOT NULL"),
+            sqlite_where=text("dedupe_key IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("automation_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    trigger_object_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    trigger_object_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    action_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    outcome: Mapped[RuleExecutionOutcome] = mapped_column(
+        Enum(
+            RuleExecutionOutcome,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    error_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+
+    rule: Mapped[AutomationRule] = relationship(back_populates="executions")

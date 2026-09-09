@@ -1389,3 +1389,283 @@ class CandidateMessageCancelOut(BaseModel):
 
     id: UUID
     status: str
+
+
+# --- Phase 11: document lists, candidate documents and automation rules -----
+
+class DocumentListItemIn(BaseModel):
+    """One item in a document-list version."""
+
+    key: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=500)
+    mandatory: bool = True
+
+    @field_validator("key")
+    @classmethod
+    def _strip_key(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Ключ элемента обязателен.")
+        return cleaned
+
+    @field_validator("title")
+    @classmethod
+    def _strip_title(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Название элемента обязательно.")
+        return cleaned
+
+
+class DocumentListCreate(BaseModel):
+    """Create a new document list with an initial draft version."""
+
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    list_scope: dict | None = None
+    items: list[DocumentListItemIn] = Field(default_factory=list)
+
+    @field_validator("title")
+    @classmethod
+    def _strip_title(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Название списка обязательно.")
+        return cleaned
+
+    @field_validator("items")
+    @classmethod
+    def _validate_items(cls, value: list[DocumentListItemIn]) -> list[DocumentListItemIn]:
+        keys = [item.key for item in value]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Ключи элементов должны быть уникальными.")
+        return value
+
+
+class DocumentListVersionOut(BaseModel):
+    """One version of a document list."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    document_list_id: UUID
+    version_number: int
+    status: str
+    items: list[dict]
+    created_by_user_id: UUID
+    published_at: datetime | None = None
+    archived_at: datetime | None = None
+    created_at: datetime
+
+
+class DocumentListOut(BaseModel):
+    """Public document-list representation."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    title: str
+    description: str | None = None
+    list_scope: dict | None = None
+    author_user_id: UUID
+    created_at: datetime
+    updated_at: datetime
+    published_version: DocumentListVersionOut | None = None
+    draft_version: DocumentListVersionOut | None = None
+
+
+class DocumentListList(BaseModel):
+    """Paginated document list."""
+
+    items: list[DocumentListOut]
+    total: int
+
+
+class DocumentListVersionUpdate(BaseModel):
+    """Update a draft version's items."""
+
+    items: list[DocumentListItemIn]
+
+    @field_validator("items")
+    @classmethod
+    def _validate_items(cls, value: list[DocumentListItemIn]) -> list[DocumentListItemIn]:
+        keys = [item.key for item in value]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Ключи элементов должны быть уникальными.")
+        return value
+
+
+class CandidateDocumentItemOut(BaseModel):
+    """Per-item document status for a candidate."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    candidate_id: UUID
+    document_list_id: UUID
+    item_key: str
+    title: str
+    mandatory: bool
+    status: str
+    received_at: datetime | None = None
+    received_by_user_id: UUID | None = None
+    version: int
+
+
+class CandidateDocumentListOut(BaseModel):
+    """A candidate's applied document list with items."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    candidate_id: UUID
+    document_list_id: UUID
+    document_list_title: str
+    version_id: UUID
+    version_number: int
+    applied_at: datetime
+    applied_by_user_id: UUID
+    items: list[CandidateDocumentItemOut]
+
+
+class CandidateDocumentListsOut(BaseModel):
+    """All applied document lists for a candidate."""
+
+    items: list[CandidateDocumentListOut]
+    missing_mandatory_total: int
+
+
+class DocumentItemStatusUpdate(BaseModel):
+    """Update one document item's status."""
+
+    expected_version: int = Field(ge=1)
+    status: Literal["missing", "received"]
+
+
+class AutomationRuleConditionIn(BaseModel):
+    """Conditions filter: stage and channel values from closed vocabularies."""
+
+    stage: CandidateStage | None = None
+    channel: Literal["email", "telegram"] | None = None
+    has_missing_mandatory: bool | None = None
+    list_id: UUID | None = None
+
+
+class AutomationRuleCreate(BaseModel):
+    """Create a personal automation rule."""
+
+    title: str = Field(min_length=1, max_length=200)
+    trigger_type: Literal["stage_transition", "scheduled_reminder"]
+    trigger_params: dict = Field(default_factory=dict)
+    conditions: AutomationRuleConditionIn | None = None
+    action_type: Literal["apply_list", "document_request", "document_reminder"]
+    action_params: dict = Field(default_factory=dict)
+
+    @field_validator("title")
+    @classmethod
+    def _strip_title(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Название правила обязательно.")
+        return cleaned
+
+    @field_validator("trigger_params")
+    @classmethod
+    def _validate_trigger_params(cls, value: dict, info: ValidationInfo) -> dict:
+        trigger_type = info.data.get("trigger_type")
+        if trigger_type == "stage_transition":
+            stage = value.get("stage")
+            if not stage:
+                raise ValueError("Для триггера stage_transition укажите stage.")
+            valid_stages = {s.value for s in CandidateStage}
+            if stage not in valid_stages:
+                raise ValueError(f"Недопустимый этап: {stage}")
+        elif trigger_type == "scheduled_reminder":
+            delay_days = value.get("delay_days")
+            if delay_days is None:
+                raise ValueError("Для scheduled_reminder укажите delay_days.")
+            if not isinstance(delay_days, int) or delay_days < 1 or delay_days > 365:
+                raise ValueError("delay_days должен быть целым числом от 1 до 365.")
+        return value
+
+    @field_validator("action_params")
+    @classmethod
+    def _validate_action_params(cls, value: dict, info: ValidationInfo) -> dict:
+        action_type = info.data.get("action_type")
+        if action_type == "apply_list":
+            list_id = value.get("list_id")
+            if not list_id:
+                raise ValueError("Для apply_list укажите list_id.")
+        elif action_type == "document_reminder":
+            delay_days = value.get("delay_days")
+            if delay_days is None:
+                raise ValueError("Для document_reminder укажите delay_days.")
+            if not isinstance(delay_days, int) or delay_days < 1 or delay_days > 365:
+                raise ValueError("delay_days должен быть целым числом от 1 до 365.")
+        return value
+
+
+class AutomationRuleUpdate(BaseModel):
+    """Update a personal automation rule (optimistic concurrency)."""
+
+    expected_version: int = Field(ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    trigger_type: Literal["stage_transition", "scheduled_reminder"] | None = None
+    trigger_params: dict | None = None
+    conditions: AutomationRuleConditionIn | None = None
+    action_type: Literal["apply_list", "document_request", "document_reminder"] | None = None
+    action_params: dict | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _strip_title(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class AutomationRuleOut(BaseModel):
+    """Public automation rule representation."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    owner_user_id: UUID
+    title: str
+    enabled: bool
+    trigger_type: str
+    trigger_params: dict
+    conditions: dict | None = None
+    action_type: str
+    action_params: dict
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AutomationRuleList(BaseModel):
+    """Paginated automation rules."""
+
+    items: list[AutomationRuleOut]
+
+
+class AutomationRuleExecutionOut(BaseModel):
+    """One immutable rule execution history entry."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    rule_id: UUID
+    rule_version: int
+    trigger_object_type: str | None = None
+    trigger_object_id: UUID | None = None
+    candidate_id: UUID
+    action_type: str
+    outcome: str
+    error_class: str | None = None
+    dedupe_key: str | None = None
+    created_at: datetime
+
+
+class AutomationRuleExecutionList(BaseModel):
+    """Paginated rule execution history."""
+
+    items: list[AutomationRuleExecutionOut]
+    total: int

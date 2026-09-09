@@ -11,7 +11,9 @@ export type WorkspaceSection =
   | "reminders"
   | "preferences"
   | "integrations"
-  | "admin";
+  | "admin"
+  | "documents"
+  | "rules";
 
 const SECTION_HASHES: Record<WorkspaceSection, string> = {
   queue: "#/queue",
@@ -25,6 +27,8 @@ const SECTION_HASHES: Record<WorkspaceSection, string> = {
   preferences: "#/preferences",
   integrations: "#/integrations",
   admin: "#/admin",
+  documents: "#/documents",
+  rules: "#/rules",
 };
 
 function sectionFromHash(hash: string, fallback: WorkspaceSection): WorkspaceSection {

@@ -872,3 +872,135 @@ export interface CandidateEmailConfirmation {
   email_masked: string;
   expires_at: string;
 }
+
+// --- Phase 11: document lists, candidate documents, automation rules ------
+
+export interface DocumentListItem {
+  key: string;
+  title: string;
+  description?: string | null;
+  mandatory: boolean;
+}
+
+export interface DocumentListVersion {
+  id: string;
+  document_list_id: string;
+  version_number: number;
+  status: "draft" | "published" | "archived";
+  items: DocumentListItem[];
+  created_by_user_id: string;
+  published_at: string | null;
+  archived_at: string | null;
+  created_at: string;
+}
+
+export interface DocumentList {
+  id: string;
+  title: string;
+  description: string | null;
+  list_scope: Record<string, unknown> | null;
+  author_user_id: string;
+  created_at: string;
+  updated_at: string;
+  published_version: DocumentListVersion | null;
+  draft_version: DocumentListVersion | null;
+}
+
+export interface DocumentListListResponse {
+  items: DocumentList[];
+  total: number;
+}
+
+export interface CandidateDocumentItem {
+  candidate_id: string;
+  document_list_id: string;
+  item_key: string;
+  title: string;
+  mandatory: boolean;
+  status: "missing" | "received";
+  received_at: string | null;
+  received_by_user_id: string | null;
+  version: number;
+}
+
+export interface CandidateDocumentList {
+  candidate_id: string;
+  document_list_id: string;
+  document_list_title: string;
+  version_id: string;
+  version_number: number;
+  applied_at: string;
+  applied_by_user_id: string;
+  items: CandidateDocumentItem[];
+}
+
+export interface CandidateDocumentLists {
+  items: CandidateDocumentList[];
+  missing_mandatory_total: number;
+}
+
+export type RuleTriggerType = "stage_transition" | "scheduled_reminder";
+export type RuleActionType = "apply_list" | "document_request" | "document_reminder";
+
+export interface AutomationRule {
+  id: string;
+  owner_user_id: string;
+  title: string;
+  enabled: boolean;
+  trigger_type: RuleTriggerType;
+  trigger_params: Record<string, unknown>;
+  conditions: Record<string, unknown> | null;
+  action_type: RuleActionType;
+  action_params: Record<string, unknown>;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutomationRuleList {
+  items: AutomationRule[];
+}
+
+export interface AutomationRuleExecution {
+  id: string;
+  rule_id: string;
+  rule_version: number;
+  trigger_object_type: string | null;
+  trigger_object_id: string | null;
+  candidate_id: string;
+  action_type: string;
+  outcome: "success" | "skipped" | "failed";
+  error_class: string | null;
+  dedupe_key: string | null;
+  created_at: string;
+}
+
+export interface AutomationRuleExecutionList {
+  items: AutomationRuleExecution[];
+  total: number;
+}
+
+export const RULE_TRIGGER_LABELS: Record<RuleTriggerType, string> = {
+  stage_transition: "Смена этапа",
+  scheduled_reminder: "Напоминание по сроку",
+};
+
+export const RULE_ACTION_LABELS: Record<RuleActionType, string> = {
+  apply_list: "Применить список документов",
+  document_request: "Запрос документов",
+  document_reminder: "Напоминание о документах",
+};
+
+export const STAGE_LABELS_EXTENDED: Record<string, string> = {
+  new: "Новый",
+  contacted: "Контакт",
+  reached: "Дозвон",
+  interview_scheduled: "Собеседование назначено",
+  interview_done: "Собеседование проведено",
+  offer: "Оффер",
+  hired: "Оформлен",
+  started: "Вышел",
+  probation: "Испытательный срок",
+  fired: "Уволен",
+  rejected: "Отказ",
+};
