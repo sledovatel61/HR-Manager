@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Windows diagnostics redaction patterns",
+  "type": "object",
+  "required": ["patterns", "replacements"],
+  "properties": {
+    "description": { "type": "string" },
+    "patterns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "reason", "pattern"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string" },
+          "pattern": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "replacements": {
+      "type": "object",
+      "required": ["default"],
+      "properties": {
+        "default": { "type": "string" }
+      }
+    }
+  },
+  "additionalProperties": false
+}
