@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchCurrentUser, login as defaultLogin } from "./api";
+import FirstRun from "./components/FirstRun";
 import LoginForm from "./components/LoginForm";
 import Workspace from "./app-shell/Workspace";
 import { ToastProvider } from "./design-system/components/Toast";
@@ -14,9 +15,19 @@ interface AppProps {
   loginFetcher?: (username: string, password: string) => Promise<CurrentUser>;
 }
 
+/** True on the pilot first-run page (phase 12): the auth gate must not
+ * interfere there — the claim flow hands over a session itself. */
+function isRunningFirstRun(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.location.pathname.replace(/\/+$/, "") === "/first-run"
+  );
+}
+
 /** Application shell: restores the session on load and gates on auth. */
 export default function App({ currentUserFetcher, loginFetcher = defaultLogin }: AppProps) {
-  const [state, setState] = useState<AuthState>("loading");
+  const firstRun = isRunningFirstRun();
+  const [state, setState] = useState<AuthState>(firstRun ? "anonymous" : "loading");
   const [current, setCurrent] = useState<CurrentUser | null>(null);
 
   const restore = useCallback(async () => {
@@ -32,8 +43,13 @@ export default function App({ currentUserFetcher, loginFetcher = defaultLogin }:
   }, [currentUserFetcher]);
 
   useEffect(() => {
+    if (firstRun) return; // no session probing on the first-run page
     void restore();
-  }, [restore]);
+  }, [restore, firstRun]);
+
+  if (firstRun) {
+    return <FirstRun />;
+  }
 
   if (state === "loading") {
     return (

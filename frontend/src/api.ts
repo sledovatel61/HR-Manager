@@ -801,3 +801,36 @@ export async function cancelCandidateMessage(
 
 // Phase 11 uses the same authenticated, CSRF-protected, same-origin client.
 export { request as documentRequest };
+
+// --- Phase 12: first-run pairing (local pilot) ------------------------------
+
+import type { FirstRunClaimResult, FirstRunState, OpsReadinessStatus } from "./types";
+
+/**
+ * Public loopback-only first-run state. Booleans/labels only — never codes,
+ * surnames or secrets (the backend guarantees the shape).
+ */
+export async function fetchFirstRunState(): Promise<FirstRunState> {
+  return request<FirstRunState>("/setup/first-run/state");
+}
+
+/**
+ * Exchange the one-time pairing code typed by the user for a session. The
+ * code is single-use: after a successful claim the backend closes the flow.
+ */
+export async function claimFirstRun(code: string): Promise<FirstRunClaimResult> {
+  return request<FirstRunClaimResult>("/setup/first-run/claim", {
+    method: "POST",
+    body: { code: code.toUpperCase().replace(/\s+/g, "") },
+  });
+}
+
+/** The owner sets their permanent password (session + CSRF; bootstrap-only). */
+export async function setFirstRunPassword(password: string): Promise<void> {
+  await request<unknown>("/setup/first-run/password", { method: "PUT", body: { password } });
+}
+
+/** Local ops readiness view for the first-run checklist (no PII, public). */
+export async function fetchOpsReadiness(): Promise<OpsReadinessStatus> {
+  return request<OpsReadinessStatus>("/ops/status");
+}
