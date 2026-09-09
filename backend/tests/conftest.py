@@ -54,16 +54,16 @@ def _install_pg8000_error_translation() -> None:
     if "pg8000" not in os.environ.get("TEST_DATABASE_URL", ""):
         return
     try:
-        import pg8000.dbapi
-        import pg8000.legacy
+        # Безбрюкий ignore: в CI модуль отсутствует (import-not-found),
+        # в локальном PGlite-окружении установлен без stubs (import-untyped).
+        import pg8000.dbapi  # type: ignore
+        import pg8000.legacy  # type: ignore
     except ImportError:  # pragma: no cover - pg8000 is a dev-only dependency
         return
 
     original_execute = pg8000.legacy.Cursor.execute
 
-    def execute(  # type: ignore[no-untyped-def]
-        self, operation, args=(), stream=None
-    ):
+    def execute(self, operation, args=(), stream=None):
         try:
             return original_execute(self, operation, args, stream)
         except pg8000.dbapi.ProgrammingError as exc:
@@ -74,22 +74,22 @@ def _install_pg8000_error_translation() -> None:
             raise
 
     if pg8000.legacy.Cursor.execute is not execute:
-        pg8000.legacy.Cursor.execute = execute  # type: ignore[method-assign]
+        pg8000.legacy.Cursor.execute = execute
 
     # PGlite quirk: a repeated ROLLBACK over the socket returns a stray
     # DataRow; pg8000's row-less rollback context has ``rows=None`` and
     # crashes with ``'NoneType' object has no attribute 'append'``. Tolerate
     # stray rows in row-less contexts (they are discarded by the caller).
-    import pg8000.core as _pg8000_core
+    import pg8000.core as _pg8000_core  # type: ignore
 
-    def handle_DATA_ROW(self, data, context):  # type: ignore[no-untyped-def]
+    def handle_DATA_ROW(self, data, context):
         if context.rows is None:
             context.rows = []
         original_data_row(self, data, context)
 
     original_data_row = _pg8000_core.CoreConnection.handle_DATA_ROW
     if _pg8000_core.CoreConnection.handle_DATA_ROW is not handle_DATA_ROW:
-        _pg8000_core.CoreConnection.handle_DATA_ROW = handle_DATA_ROW  # type: ignore[method-assign]
+        _pg8000_core.CoreConnection.handle_DATA_ROW = handle_DATA_ROW
 
 
 _install_pg8000_error_translation()
