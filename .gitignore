@@ -35,6 +35,15 @@ dumps/
 *.log
 logs/
 
+# ---- Windows pilot installer (phase 12) ----
+# Локальное состояние установщика (секреты/state) никогда не в git.
+.hr-manager/
+# Артефакты сборки Setup.exe и release-manifest не коммитятся в git.
+infra/windows/dist/
+dist/windows/
+HR Manager Setup.exe
+*.pilot.env
+
 # ---- Editor and OS noise ----
 .idea/
 .vscode/

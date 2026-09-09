@@ -3,7 +3,7 @@ import { MyRulesPage } from "../features/documents/MyRulesPage";
 import { useEffect, useState } from "react";
 import { logout, onUnauthorized } from "../api";
 import { Icon, type IconName } from "../design-system/icons/Icon";
-import { ROLE_LABELS, type CurrentUser, type UserRole } from "../types";
+import { ROLE_LABELS, type CurrentUser, type User, type UserRole } from "../types";
 import CandidatesListPage from "../features/candidates/CandidatesListPage";
 import KanbanPage from "../features/candidates/KanbanPage";
 import CalendarPage from "../features/calendar/CalendarPage";
@@ -59,11 +59,21 @@ function initialsOf(fullName: string, username: string): string {
   return (fullName || username).slice(0, 2).toUpperCase();
 }
 
+/** Phase 12: the pilot owner's chosen working mode picks their start screen
+ * (the owner keeps full admin access regardless of the mode). */
+function startSectionFor(user: User): WorkspaceSection {
+  const sections = sectionsForRole(user.role);
+  if (user.working_mode === "hr") return "candidates";
+  if (user.working_mode === "manager") return "analytics";
+  if (user.working_mode === "admin") return "admin";
+  return sections[0];
+}
+
 /** Post-login application shell: navigation, current-user info, logout. */
 export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
   const { user } = current;
   const sections = sectionsForRole(user.role);
-  const [section, navigate] = useWorkspaceSection(sections[0]);
+  const [section, navigate] = useWorkspaceSection(startSectionFor(user));
   const [pendingCandidateId, setPendingCandidateId] = useState<string | null>(null);
 
   // A 401 from any API call means the session is gone: return to login.
@@ -127,7 +137,12 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             </span>
             <span className="topbar-user-text">
               <span className="topbar-username">{user.full_name || user.username}</span>
-              <span className="topbar-role">{ROLE_LABELS[user.role]}</span>
+              <span className="topbar-role">
+                {ROLE_LABELS[user.role]}
+                {user.working_mode && user.working_mode !== user.role
+                  ? ` · ${ROLE_LABELS[user.working_mode]}`
+                  : ""}
+              </span>
             </span>
             <button type="button" className="topbar-logout" onClick={() => void handleLogout()}>
               <Icon name="log-out" size={15} />

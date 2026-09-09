@@ -90,6 +90,10 @@ class UserOut(BaseModel):
     locked_until: datetime | None = None
     last_login_at: datetime | None = None
     created_at: datetime
+    # Phase 12: the pilot owner's chosen working mode (None for non-pilot
+    # accounts) and whether the owner must still set their own password.
+    working_mode: str | None = None
+    password_change_required: bool = False
 
 
 class CurrentUserOut(BaseModel):
@@ -1080,6 +1084,39 @@ class SetupStateOut(BaseModel):
     preferences_initialized: bool
     worker_alive: bool
     channels: dict[str, str]
+
+
+# --- Phase 12: local pilot first-run exchange ---------------------------------
+
+
+class FirstRunStatusOut(BaseModel):
+    """Unauthenticated, PII-free first-run signal for the installer/SPA.
+
+    ``pending`` is true only when no user exists yet AND a first-run token is
+    armed. ``needs_password`` is true when the single pilot owner already
+    exists but has not set their own password yet (a lost session before the
+    UI password step) — the installer re-arms a fresh token and reopens the
+    first-run page to continue setup. No surname, token, working mode or other
+    personal data is exposed here.
+    """
+
+    pending: bool
+    needs_password: bool = False
+
+
+class FirstRunClaimRequest(BaseModel):
+    """One-shot first-run claim. The surname and working mode are read
+    server-side from the installer-injected environment (never trusted from
+    the client and never carried in the URL). The exchange token is the only
+    client-supplied value."""
+
+    exchange_token: str = Field(min_length=16, max_length=256)
+
+
+class PilotPasswordSetRequest(BaseModel):
+    """Owner sets their own password after the first-run exchange."""
+
+    password: str = Field(min_length=1, max_length=128)
 
 
 # --- Phase 9: Telegram/SMTP integrations, bindings, consent -------------------

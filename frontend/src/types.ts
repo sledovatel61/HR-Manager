@@ -36,6 +36,10 @@ export interface User {
   locked_until: string | null;
   last_login_at: string | null;
   created_at: string;
+  /** Phase 12: the pilot owner's chosen working mode (null/undefined for non-pilot). */
+  working_mode?: UserRole | null;
+  /** Phase 12: true until the owner sets their own password in the UI. */
+  password_change_required?: boolean;
 }
 
 /** GET /auth/me payload: the current user plus the session CSRF token. */
@@ -649,6 +653,12 @@ export interface SetupState {
   preferences_initialized: boolean;
   worker_alive: boolean;
   channels: Record<string, string>;
+}
+
+/** Phase 12: unauthenticated, PII-free first-run signal (see backend). */
+export interface FirstRunStatus {
+  pending: boolean;
+  needs_password: boolean;
 }
 
 export interface AccessGrant {

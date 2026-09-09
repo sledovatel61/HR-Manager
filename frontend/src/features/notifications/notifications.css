@@ -170,6 +170,22 @@
   white-space: pre-wrap;
 }
 
+.first-run-summary {
+  margin: 0 0 14px;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: #39414f;
+}
+
+.first-run-summary code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(47, 109, 179, 0.1);
+  font-size: 0.85rem;
+}
+
 .notif-card-meta {
   font-size: 0.72rem;
   color: var(--muted);

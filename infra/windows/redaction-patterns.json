@@ -1,0 +1,64 @@
+{
+  "$schema": "./redaction-patterns.schema.json",
+  "description": "Ordered regex patterns used by the Windows engine to scrub secrets and PII from diagnostics. Consumed by infra/windows/hr-manager.ps1 (via .NET regex) and by backend/tests/test_windows_engine.py (via Python re) so the same rules are regression-tested on both sides. Patterns are deliberately simple and kept compatible across .NET and Python regex engines.",
+  "patterns": [
+    {
+      "id": "postgres-password",
+      "reason": "POSTGRES_PASSWORD value",
+      "pattern": "(?i)(POSTGRES_PASSWORD)\\s*[:=]\\s*\\S+"
+    },
+    {
+      "id": "secret-key",
+      "reason": "application signing key",
+      "pattern": "(?i)(SECRET_KEY)\\s*[:=]\\s*\\S+"
+    },
+    {
+      "id": "backup-enc-key",
+      "reason": "backup encryption key (base64)",
+      "pattern": "(?i)(BACKUP_ENC_KEY)\\s*[:=]\\s*\\S+"
+    },
+    {
+      "id": "backup-key-id",
+      "reason": "backup key identifier",
+      "pattern": "(?i)(BACKUP_KEY_ID)\\s*[:=]\\s*\\S+"
+    },
+    {
+      "id": "first-run-token",
+      "reason": "one-shot first-run exchange token",
+      "pattern": "(?i)(FIRST_RUN_TOKEN)\\s*[:=]\\s*\\S+"
+    },
+    {
+      "id": "connection-string",
+      "reason": "PostgreSQL connection string / database URL",
+      "pattern": "(?i)(DATABASE_URL|postgresql(?:\\+psycopg)?://)\\s*[:=]?\\s*\\S+"
+    },
+    {
+      "id": "token-value",
+      "reason": "bearer/auth/csrf token literal",
+      "pattern": "(?i)\\b(?:bearer\\s+)?(?:token|csrf)\\s*[:=]\\s*[A-Za-z0-9_\\-\\.]{8,}"
+    },
+    {
+      "id": "password-value",
+      "reason": "password literal assignment",
+      "pattern": "(?i)password\\s*[:=]\\s*[^\\s,;]+"
+    },
+    {
+      "id": "email",
+      "reason": "email address PII",
+      "pattern": "[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}"
+    },
+    {
+      "id": "phone",
+      "reason": "phone number PII (RU/EU formats)",
+      "pattern": "(?:\\+7|8)[\\s\\-\\(]*\\d{3}[\\s\\-\\)]*\\d{3}[\\s\\-]*\\d{2}[\\s\\-]*\\d{2}"
+    },
+    {
+      "id": "person-name",
+      "reason": "full name PII (two capitalized words, Cyrillic or Latin)",
+      "pattern": "\\b(?:[А-ЯЁA-Z][а-яёa-z]+)[ \\t]+(?:[А-ЯЁA-Z][а-яёa-z]+)\\b"
+    }
+  ],
+  "replacements": {
+    "default": "<REDACTED>"
+  }
+}

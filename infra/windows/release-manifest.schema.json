@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HR Manager Windows pilot release manifest",
+  "description": "Machine-readable integrity manifest for a Windows pilot release payload. Written by infra/windows/scripts/build-installer.ps1 and verified by the engine before an update. Signing status is stated honestly (signed=false until a trusted code-signing certificate is provisioned).",
+  "type": "object",
+  "required": ["name", "version", "release_sha", "files"],
+  "properties": {
+    "name": { "type": "string", "const": "hr-manager-pilot" },
+    "version": { "type": "string", "minLength": 1 },
+    "channel": { "type": "string", "const": "pilot" },
+    "release_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "built_at": { "type": "string", "format": "date-time" },
+    "signature": {
+      "type": "object",
+      "required": ["signed"],
+      "properties": {
+        "signed": { "type": "boolean" },
+        "certificate_thumbprint": { "type": ["string", "null"] },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["sha256", "bytes"],
+        "properties": {
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "bytes": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
