@@ -1,0 +1,72 @@
+/* Phase 12: first-run screen (Windows pilot). */
+
+.first-run-panel {
+  max-width: 560px;
+  width: 100%;
+}
+
+.first-run-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 0 0 20px;
+  padding: 12px 16px;
+  border: 1px solid #dde3ee;
+  border-radius: 8px;
+  background: #f8fafd;
+}
+
+.first-run-summary dt {
+  font-size: 0.8rem;
+  color: #5a6478;
+}
+
+.first-run-summary dd {
+  margin: 2px 0 0;
+  font-weight: 600;
+}
+
+.first-run-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.first-run-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.first-run-fieldset legend {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.first-run-weekdays {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.first-run-weekday {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid #dde3ee;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.first-run-weekday input {
+  accent-color: #2f6fed;
+}
+
+.first-run-submit {
+  align-self: flex-start;
+}
+
+.first-run-note {
+  font-size: 0.85rem;
+}
