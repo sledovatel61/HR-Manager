@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, text
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
-HEAD_REVISION = "0012"
+HEAD_REVISION = "0013"
 EXPECTED_TABLES = {
     "users",
     "user_sessions",
@@ -46,6 +46,7 @@ EXPECTED_TABLES = {
     "candidate_channel_consents",
     "candidate_email_confirm_tokens",
     "candidate_message_requests",
+    "pilot_first_run_claims",
 }
 
 
@@ -104,6 +105,55 @@ def test_alembic_upgrade_downgrade_upgrade_cycle() -> None:
             # gen_random_uuid() must work (via pgcrypto or the PG13+ built-in).
             generated = connection.execute(text("SELECT gen_random_uuid()")).scalar_one()
             assert generated is not None
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not RUN_INTEGRATION, reason="TEST_DATABASE_URL is not set")
+def test_upgrade_0012_to_head_preserves_data() -> None:
+    """Phase 12: applying 0013 on top of a populated 0012 database keeps all
+    data and backfills the new owner columns with safe defaults."""
+    url = os.environ["TEST_DATABASE_URL"]
+
+    _run_alembic("downgrade", "0012", url=url)
+
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, username, full_name, role, password_hash, "
+                    "is_active, failed_login_count, created_at, updated_at) "
+                    "VALUES (gen_random_uuid(), 'pilot-before', 'Тестовая', 'admin', 'x', "
+                    "true, 0, now(), now())"
+                )
+            )
+        _run_alembic("upgrade", "head", url=url)
+
+        with engine.connect() as connection:
+            count = connection.execute(
+                text("SELECT count(*) FROM users WHERE username = 'pilot-before'")
+            ).scalar_one()
+            assert count == 1
+            working_mode, change_required = connection.execute(
+                text(
+                    "SELECT working_mode, password_change_required "
+                    "FROM users WHERE username = 'pilot-before'"
+                )
+            ).one()
+            assert working_mode is None
+            assert change_required is False
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = 'public'"
+                    )
+                )
+            }
+            assert "pilot_first_run_claims" in tables
     finally:
         engine.dispose()
 

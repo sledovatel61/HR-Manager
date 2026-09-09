@@ -165,6 +165,10 @@ class AuditAction(StrEnum):
     CANDIDATE_TELEGRAM_UNLINKED = "candidate_telegram_unlinked"
     CANDIDATE_EMAIL_CONFIRM_INITIATED = "candidate_email_confirm_initiated"
     CANDIDATE_EMAIL_CONFIRMED = "candidate_email_confirmed"
+    # Phase 12: local pilot first-run exchange.
+    FIRST_RUN_CLAIMED = "first_run_claimed"
+    FIRST_RUN_COMPLETED = "first_run_completed"
+    PILOT_PASSWORD_SET = "pilot_password_set"
 
 
 class CandidateStage(StrEnum):
@@ -258,6 +262,10 @@ class User(Base):
             "failed_login_count >= 0",
             name="ck_users_failed_login_count_non_negative",
         ),
+        CheckConstraint(
+            "working_mode IS NULL OR working_mode IN ('hr', 'manager', 'admin')",
+            name="ck_users_working_mode_valid",
+        ),
         # Usernames are unique case-insensitively.
         Index("ix_users_username_lower", text("lower(username)"), unique=True),
     )
@@ -274,6 +282,15 @@ class User(Base):
         ),
         nullable=False,
     )
+    # Phase 12: the pilot owner's chosen working mode (display/start mode
+    # only). RBAC is never derived from it — the owner keeps the server-side
+    # role ``admin`` plus the explicit ``pilot_full_access`` grant. NULL for
+    # every account created outside the pilot first-run flow.
+    working_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Phase 12: true for the first-run-created owner until they set their own
+    # password in the UI (the initial password is a random value they were
+    # never shown, never logged and never returned by the API).
+    password_change_required: Mapped[bool] = mapped_column(default=False, nullable=False)
     # Only an Argon2id hash is ever stored — never a plaintext password.
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
@@ -2127,3 +2144,26 @@ class DocumentRuleExecution(Base):
             name="ck_rule_executions_outcome",
         ),
     )
+
+
+# --- Phase 12: local pilot first-run exchange ---------------------------------
+
+
+class PilotFirstRunClaim(Base):
+    """One-shot consumption record of the installer's first-run token.
+
+    Only the SHA-256 of the raw token is stored here (the raw value exists
+    exclusively in the runtime environment). The ``token_hash`` primary key
+    makes the claim atomic across concurrent requests: the first INSERT wins,
+    any second claim of the same token fails on the unique constraint and is
+    reported as «already used». A single pilot owner can therefore never be
+    created twice and the bootstrap flow cannot be replayed.
+    """
+
+    __tablename__ = "pilot_first_run_claims"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", name="fk_pilot_first_run_claims_user", ondelete="RESTRICT")
+    )
+    claimed_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)

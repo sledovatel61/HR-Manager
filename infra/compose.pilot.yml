@@ -1,0 +1,131 @@
+# Local Windows pilot overlay (phase 12) for infra/docker-compose.yml.
+#
+# One pilot contour on a Windows 10/11 workstation: PostgreSQL, backend,
+# frontend, worker and the encrypted-backup service run as Linux containers
+# under Docker Desktop/WSL2, driven by the HR Manager Setup.exe automation
+# engine (infra/windows/hr-manager.ps1). The user never sees a terminal,
+# `.env`, Docker commands or generated secrets.
+#
+# SECURITY MODEL (locally-trusted loopback):
+#   * only the frontend is published — bound to 127.0.0.1 (${PILOT_HTTP_PORT});
+#     PostgreSQL, backend, worker and backup publish NO ports;
+#   * APP_ENV=pilot is hardened like production (strong random SECRET_KEY,
+#     PostgreSQL password and backup encryption key, APP_DEBUG=false, no
+#     development defaults), but the loopback site is plain HTTP, so session
+#     cookies are NOT flagged Secure by default (they would break login);
+#     SameSite=Lax + HttpOnly + server-side CSRF remain active. The machine
+#     is a single-user pilot and the boundary is the OS user session — see
+#     docs/ARCHITECTURE.md "Phase 12 threat model".
+#   * no development secrets, no dev passwords, no APP_DEBUG=true;
+#   * Telegram/SMTP stay disabled (optional integrations are configured later
+#     in the UI, never required for a working pilot);
+#   * mailpit is excluded via a dedicated profile (dev-only sink).
+#
+# REQUIRES Docker Compose v2.24+ (the !reset YAML tag). Secrets arrive ONLY
+# from the environment file written by the installer to the local state dir
+# (ACL-restricted to the current Windows user); the ${VAR:?} syntax makes
+# `docker compose` fail fast when a required value is missing.
+#
+# Usage (from the engine, never by hand):
+#   docker compose -f infra/docker-compose.yml -f infra/compose.pilot.yml \
+#       --env-file <state>/pilot.env up -d --wait
+name: hr-manager-pilot
+
+services:
+  db:
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hr_manager}
+      POSTGRES_USER: ${POSTGRES_USER:-hr_manager}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required for the pilot}
+    ports: !reset []
+
+  backend:
+    # Release-tagged image; the engine switches PILOT_RELEASE_TAG between the
+    # current and previous release on update/rollback (previous tag is never
+    # deleted until the new release passed smoke).
+    image: hr-manager-backend:${PILOT_RELEASE_TAG:-pilot-current}
+    build:
+      context: ../backend
+    environment:
+      APP_ENV: pilot
+      APP_DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required for the pilot}
+      # Loopback is served over plain HTTP; keep cookies SameSite+HttpOnly+CSRF
+      # but not Secure (see the security model above).
+      SESSION_COOKIE_SECURE: "false"
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hr_manager}
+      # Reported by /ops/status; the engine injects the release version/SHA
+      # of the installed payload so smoke checks can verify the running code.
+      RELEASE_SHA: ${RELEASE_SHA:-}
+      # One-shot first-run exchange (phase 12). The raw token exists only in
+      # the installer's state file and this environment — never on disk in
+      # git, never logged, never in a URL. Empty after the first run.
+      FIRST_RUN_TOKEN: ${FIRST_RUN_TOKEN:-}
+      FIRST_RUN_EXPIRES_AT: ${FIRST_RUN_EXPIRES_AT:-}
+      PILOT_SURNAME: ${PILOT_SURNAME:-}
+      PILOT_WORKING_MODE: ${PILOT_WORKING_MODE:-hr}
+      # Optional external channels are OFF by default in the pilot.
+      TELEGRAM_ENABLED: "false"
+      SMTP_ENABLED: "false"
+    ports: !reset []
+    # The pilot never auto-migrates at container start: the engine runs the
+    # one-shot, advisory-lock-guarded `alembic upgrade head` before starting
+    # the application (and again, exactly once, before an update switch).
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  frontend:
+    image: hr-manager-frontend:${PILOT_RELEASE_TAG:-pilot-current}
+    build:
+      context: ../frontend
+    ports:
+      # The ONLY externally published port: loopback frontend that proxies
+      # /api to the backend inside the Compose network.
+      - "127.0.0.1:${PILOT_HTTP_PORT:-8080}:8080"
+
+  worker:
+    image: hr-manager-backend:${PILOT_RELEASE_TAG:-pilot-current}
+    environment:
+      APP_ENV: pilot
+      APP_DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required for the pilot}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hr_manager}
+      NOTIFICATION_DEFAULT_TIMEZONE: ${NOTIFICATION_DEFAULT_TIMEZONE:-Europe/Moscow}
+      NOTIFICATION_QUIET_HOURS_START: ${NOTIFICATION_QUIET_HOURS_START:-21:00}
+      NOTIFICATION_QUIET_HOURS_END: ${NOTIFICATION_QUIET_HOURS_END:-08:00}
+      WORKER_POLL_INTERVAL_S: ${WORKER_POLL_INTERVAL_S:-2}
+      WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-120}
+      WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-5}
+      TELEGRAM_ENABLED: "false"
+      SMTP_ENABLED: "false"
+      TZ: UTC
+    ports: !reset []
+
+  backup:
+    image: hr-manager-backup:${PILOT_RELEASE_TAG:-pilot-current}
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile.backup
+    environment:
+      APP_ENV: pilot
+      APP_DEBUG: "false"
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hr_manager}
+      BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/postgres
+      BACKUP_DIR: /var/backups/hr-manager
+      BACKUP_STATE_FILE: /var/backups/hr-manager/state.json
+      # Encryption secrets come from the installer-generated environment only;
+      # the backup service refuses to run without a working 32-byte key.
+      BACKUP_KEY_ID: ${BACKUP_KEY_ID:?BACKUP_KEY_ID is required for the pilot}
+      BACKUP_ENC_KEY: ${BACKUP_ENC_KEY:?BACKUP_ENC_KEY is required for the pilot}
+      BACKUP_SCHEDULE_UTC: ${BACKUP_SCHEDULE_UTC:-02:00}
+      BACKUP_DRILL_INTERVAL_HOURS: ${BACKUP_DRILL_INTERVAL_HOURS:-168}
+      # The first backup runs right after install so the update gate always
+      # has an encrypted copy to verify before any migration.
+      BACKUP_ON_START: "1"
+      BACKUP_MIN_FREE_MB: ${BACKUP_MIN_FREE_MB:-512}
+      BACKUP_REASON: ${BACKUP_REASON:-scheduled backup}
+      TZ: UTC
+    ports: !reset []
+
+  # Dev-only SMTP sink: excluded from the pilot (SMTP is disabled there).
+  mailpit:
+    profiles: ["disabled"]

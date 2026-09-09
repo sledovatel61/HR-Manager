@@ -38,6 +38,13 @@ def bootstrap_admin(db: Session, settings: Settings) -> User | None:
     if existing:
         return None
 
+    # Phase 12: the local pilot never bootstraps an implicit administrator.
+    # Its single owner is created exclusively through the one-shot first-run
+    # exchange (POST /setup/first-run), so no weak or shared bootstrap
+    # credential exists on a pilot machine.
+    if settings.is_pilot:
+        return None
+
     username = settings.bootstrap_admin_username.strip()
     password = settings.bootstrap_admin_password
 
