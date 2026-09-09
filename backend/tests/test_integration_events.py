@@ -230,44 +230,59 @@ def test_concurrent_patch_cannot_lose_updates(
     assert pg_db.scalar(select(func.count()).select_from(EventHistory)) == 1
 
 
-def test_real_check_constraints_on_postgres(pg_client: TestClient, pg_db: Session) -> None:
-    """The migration's CHECK constraints hold at the database level."""
+def test_real_check_constraints_on_postgres(
+    pg_client: TestClient, pg_db: Session, pg_engine: Engine
+) -> None:
+    """The migration's CHECK constraints hold at the database level.
+
+    Each violation runs on its own fresh connection: PostgreSQL aborts the
+    transaction of a failed statement, and pg8000/PGlite desyncs the socket
+    framing on a second ROLLBACK of an already-rolled-back transaction, so
+    the connection is invalidated and closed instead of reused.
+    """
     hr1 = make_user(pg_db, username="hr1", role=UserRole.HR)
     candidate = make_candidate(pg_db, owner=hr1)
     _login(pg_client, "hr1")
 
-    # Blank title → ck_events_title_not_blank.
-    with pytest.raises(IntegrityError):
-        make_event(pg_db, candidate=candidate, author=hr1, assignee=hr1, title="   ")
-    pg_db.rollback()
-    # ends_at <= starts_at → ck_events_ends_after_starts.
-    start = utc_now() + timedelta(hours=1)
-    with pytest.raises(IntegrityError):
-        make_event(
-            pg_db,
-            candidate=candidate,
-            author=hr1,
-            assignee=hr1,
-            starts_at=start,
-            ends_at=start,
-        )
-    pg_db.rollback()
+    def _expect_violation(statement: str, params: dict) -> None:
+        conn = pg_engine.connect()
+        try:
+            with pytest.raises(IntegrityError):
+                conn.execute(text(statement), params)
+        finally:
+            conn.invalidate()
+            conn.close()
 
+    common = {
+        "candidate_id": candidate.id,
+        "author": hr1.id,
+        "assignee": hr1.id,
+    }
+    # Blank title → ck_events_title_not_blank.
+    _expect_violation(
+        "INSERT INTO events (id, candidate_id, author_user_id, assignee_user_id,"
+        " type, title, status, starts_at, version, created_at, updated_at)"
+        " VALUES (gen_random_uuid(), :candidate_id, :author, :assignee,"
+        " 'call', '   ', 'scheduled', now(), 1, now(), now())",
+        common,
+    )
+    # ends_at <= starts_at → ck_events_ends_after_starts.
+    _expect_violation(
+        "INSERT INTO events (id, candidate_id, author_user_id, assignee_user_id,"
+        " type, title, status, starts_at, ends_at, version, created_at,"
+        " updated_at) VALUES (gen_random_uuid(), :candidate_id, :author,"
+        " :assignee, 'call', 'x', 'scheduled', now() + interval '1 hour',"
+        " now() + interval '1 hour', 1, now(), now())",
+        common,
+    )
     # Invalid status values are rejected by the vocabulary check.
-    with pytest.raises(IntegrityError):
-        pg_db.execute(
-            text(
-                "INSERT INTO events (candidate_id, author_user_id, assignee_user_id, "
-                "type, title, status, starts_at) VALUES "
-                "(:candidate_id, :author, :assignee, 'call', 'x', 'done', now())"
-            ),
-            {
-                "candidate_id": candidate.id,
-                "author": hr1.id,
-                "assignee": hr1.id,
-            },
-        )
-    pg_db.rollback()
+    _expect_violation(
+        "INSERT INTO events (id, candidate_id, author_user_id, assignee_user_id,"
+        " type, title, status, starts_at, version, created_at, updated_at)"
+        " VALUES (gen_random_uuid(), :candidate_id, :author, :assignee,"
+        " 'call', 'x', 'done', now(), 1, now(), now())",
+        common,
+    )
 
 
 def test_history_is_paginated_and_visible_to_manager_on_postgres(
