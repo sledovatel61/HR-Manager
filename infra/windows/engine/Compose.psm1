@@ -1,4 +1,4 @@
-# Работа с Docker Compose: единый проект hr-manager-pilot, запуск/остановка/
+﻿# Работа с Docker Compose: единый проект hr-manager-pilot, запуск/остановка/
 # статус/готовность. Всё идёт через docker CLI (Invoke-HrmExternal) и
 # env-файл из защищённого каталога состояния.
 

@@ -1,4 +1,4 @@
-# Статические проверки движка и пилотного оверлея: парсер PowerShell,
+﻿# Статические проверки движка и пилотного оверлея: парсер PowerShell,
 # отсутствие секретов-литералов, единственная точка запуска процессов,
 # отсутствие битых символов, структура compose.pilot.yml (loopback-only).
 # НЕ трогают реальную машину — только читают файлы репозитория.
@@ -12,7 +12,10 @@ $script:EngineDir = Join-Path $RepoRoot "infra\windows\engine"
 $script:WindowsDir = Join-Path $RepoRoot "infra\windows"
 
 function Get-HrmEngineFiles {
-    $files = @(Get-ChildItem -Path $WindowsDir -Recurse -Include *.ps1, *.psm1 | ForEach-Object { $_.FullName })
+    $files = @(
+        Get-ChildItem -Path $WindowsDir -File -Filter *.ps1
+        Get-ChildItem -Path $EngineDir -File -Filter *.psm1
+    ) | ForEach-Object { $_.FullName }
     return $files
 }
 
@@ -83,11 +86,10 @@ Test-Case "разрешённые имена внешних команд — т�
 
 Test-Case "все действия ValidateSet реализованы в switch входной точки" {
     $entry = Get-Content -Path (Join-Path $WindowsDir "hr-manager.ps1") -Raw -Encoding UTF8
-    $vsMatch = [regex]::Match($entry, '\[ValidateSet\("([^"]+)"\)\]')
+    $vsMatch = [regex]::Match($entry, '\[ValidateSet\((.*?)\)\]', [System.Text.RegularExpressions.RegexOptions]::Singleline)
     Assert-HrmTrue $vsMatch.Success "не найден ValidateSet"
-    $actions = ($vsMatch.Groups[1].Value -split '",\s*"')
+    $actions = @([regex]::Matches($vsMatch.Groups[1].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
     foreach ($action in $actions) {
-        $action = $action.Trim().Trim('"')
         Assert-HrmContains $entry ('"' + $action + '" {') ("нет ветки switch для действия " + $action)
     }
     Assert-HrmContains $entry '#requires -Version 5.1' "нет требования PowerShell 5.1"

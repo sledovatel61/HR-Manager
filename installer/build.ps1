@@ -1,4 +1,4 @@
-# Сборка HR Manager Setup.exe из исходников репозитория.
+﻿# Сборка HR Manager Setup.exe из исходников репозитория.
 #
 # Инструментальная цепочка ЗАКРЕПЛЕНА (см. installer/README.md):
 #   Inno Setup 6.7.3, официальный установщик с GitHub Releases.

@@ -230,6 +230,32 @@ stop/restart/update), внешние SMTP/Telegram выключены, mailpit �
    `Start-Process`; в RDP/без браузера — ссылка дублируется в
    `first-run-url.txt` (защищённый файл).
 
+## Release-candidate hardening
+
+При финальном сравнительном ревью PR №20 и №22 выбран PR №22 как основа.
+В отдельной ветке кандидата исправлены обнаруженные на реальной Windows
+PowerShell 5.1 несовместимости и дефекты тестов/установщика:
+
+- всем PowerShell-файлам добавлен UTF-8 BOM для корректного разбора Windows
+  PowerShell 5.1; исправлены интерполяция `$name:`, доступ к отсутствующим
+  свойствам под `StrictMode` и запуск процессов без недоступного в .NET
+  Framework свойства `ProcessStartInfo.ArgumentList`;
+- исправлены генерация длины секретов, возобновление обновления с фазы
+  `migrate`, диагностика недоступной БД и Windows-совместимость тестов;
+- исправлен `InitializeWizard` Inno Setup: поля фамилии и часового пояса теперь
+  создаются через `TInputQueryWizardPage.Add` до обращения к `Values[0]`;
+- `lint-engine.py` корректно исключает каталог тестов и на Windows;
+- backend-контейнер явно использует `C.UTF-8` (`LANG`/`LC_ALL`);
+- в CI добавлен `windows-installer`: тесты на Windows PowerShell 5.1 и
+  PowerShell 7, структурный lint, сборка Setup.exe, silent install/uninstall и
+  публикация exe/манифеста.
+
+Локально подтверждено: 28/28 PowerShell-тестов, shell preflight, структурный
+lint, сборка Inno Setup 6.7.3, совпадение SHA256 с release manifest и silent
+install/uninstall. Полный сценарий с контейнерами не запускался: Docker Desktop
+на машине проверки был остановлен. Windows CI требует доверенного push с правом
+`workflows: write`.
+
 ## Handoff
 
 - **Документация:** `installer/README.md` (сборка, хеши, подпись),

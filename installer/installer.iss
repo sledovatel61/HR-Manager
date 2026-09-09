@@ -105,6 +105,7 @@ begin
     CustomMessage('SurnamePageCaption'),
     CustomMessage('SurnamePageDescription'),
     'Фамилия:');
+  SurnamePage.Add('Фамилия:', False);
   SurnamePage.Values[0] := '';
 
   TimezonePage := CreateInputQueryPage(
@@ -112,6 +113,7 @@ begin
     CustomMessage('TimezonePageCaption'),
     CustomMessage('TimezonePageDescription'),
     'Часовой пояс (IANA):');
+  TimezonePage.Add('Часовой пояс (IANA):', False);
   TimezonePage.Values[0] := 'Europe/Moscow';
 end;
 

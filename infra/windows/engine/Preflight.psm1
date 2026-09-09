@@ -1,4 +1,4 @@
-# Честная предполётная проверка: система, Docker, порты, место, конфигурация.
+﻿# Честная предполётная проверка: система, Docker, порты, место, конфигурация.
 # Ничего не «соглашается» за пользователя молча: каждая проверка возвращает
 # понятный результат, а отказ — точную причину.
 
@@ -105,10 +105,9 @@ function Test-HrmComposeVersion {
 }
 
 function Test-HrmPortFree {
-
+    param([int]$Port = 0)
     $override = Get-HrmPreflightOverrideResult "port"
     if ($null -ne $override) { return $override }
-    param([int]$Port = 0)
     $port = Get-HrmPort $Port
     $listeners = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($listeners) {
@@ -118,10 +117,9 @@ function Test-HrmPortFree {
 }
 
 function Test-HrmStateDirWritable {
-
+    param([string]$StateDir)
     $override = Get-HrmPreflightOverrideResult "state_dir"
     if ($null -ne $override) { return $override }
-    param([string]$StateDir)
     try {
         if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
         $probe = Join-Path $StateDir ".write-probe"
@@ -135,11 +133,10 @@ function Test-HrmStateDirWritable {
 }
 
 function Test-HrmFreeSpace {
-
+    param([string]$Path, [long]$MinFreeMb = 5120)
     $override = Get-HrmPreflightOverrideResult "space"
     if ($null -ne $override) { return $override }
     # Порог свободного места на диске установки (по умолчанию 5 ГБ).
-    param([string]$Path, [long]$MinFreeMb = 5120)
     $drive = (Split-Path -Qualifier $Path)
     $psDrive = Get-PSDrive -Name ($drive.TrimEnd(":")) -ErrorAction SilentlyContinue
     if ($null -eq $psDrive) {
@@ -153,11 +150,10 @@ function Test-HrmFreeSpace {
 }
 
 function Test-HrmConfigFiles {
-
+    param([string]$InstallDir, [string]$StateDir)
     $override = Get-HrmPreflightOverrideResult "config"
     if ($null -ne $override) { return $override }
     # Существующая конфигурация (повторная установка/обновление) валидна.
-    param([string]$InstallDir, [string]$StateDir)
     $composeFile = Join-Path $InstallDir "infra\compose.pilot.yml"
     if (-not (Test-Path $composeFile)) {
         return [pscustomobject]@{ Name = "config"; Passed = $false; Message = "Файл конфигурации не найден: $composeFile" }

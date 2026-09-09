@@ -115,7 +115,7 @@ def main() -> int:
         re.compile(r"[^0-9a-fA-F][0-9a-fA-F]{32}[^0-9a-fA-F]"),
     ]
     for path in files:
-        if "/tests/" in str(path):
+        if WINDOWS / "tests" in path.parents:
             continue  # тесты намеренно содержат примеры секретов
         text = path.read_text(encoding="utf-8")
         for pattern in patterns:

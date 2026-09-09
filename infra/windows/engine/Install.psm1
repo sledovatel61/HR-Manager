@@ -1,4 +1,4 @@
-# Установка, запуск/остановка/статус, открытие, удаление и возобновление.
+﻿# Установка, запуск/остановка/статус, открытие, удаление и возобновление.
 
 Set-StrictMode -Version 2.0
 
@@ -27,7 +27,7 @@ function Copy-HrmSnapshot {
         $source = Join-Path $SourceDir $name
         if (-not (Test-Path $source)) {
             if ($name -eq "release.json") { continue }
-            throw "В исходном каталоге нет $name: $SourceDir"
+            throw "В исходном каталоге нет ${name}: $SourceDir"
         }
         $destination = Join-Path $InstallDir $name
         if (Test-Path $destination) { Remove-Item $destination -Recurse -Force }
@@ -77,6 +77,7 @@ function Install-HrmApp {
     # --- Первичная установка ---
     Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port -SkipCompose
     Initialize-HrmStateDir $StateDir
+    Protect-HrmFile $StateDir $StateDir
     # Файл ввода первого запуска (если его записал мастер установки)
     # тоже защищается ACL — фамилия владельца не должна читаться другими
     # пользователями машины.

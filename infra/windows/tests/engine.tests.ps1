@@ -1,4 +1,4 @@
-# Поведенческие тесты движка с моком Invoke-HrmExternal/Invoke-HrmHttp:
+﻿# Поведенческие тесты движка с моком Invoke-HrmExternal/Invoke-HrmHttp:
 # реальная машина (Docker, реестр, сеть, браузер) НЕ затрагивается.
 # Секреты, установка/обновление/удаление/диагностика/первый запуск.
 
@@ -55,9 +55,10 @@ Write-Host "== Секреты =="
 
 Test-Case "секреты уникальны между установками и неизменны при повторах" {
     Initialize-HrmTestEngine
-    $a = Join-Path ([System.IO.Path]::GetTempPath()) "hrm-sec-a"
-    $b = Join-Path ([System.IO.Path]::GetTempPath()) "hrm-sec-b"
-    Remove-Item $a, $b -Recurse -Force -ErrorAction SilentlyContinue
+    New-HrmMockWorld | Out-Null
+    $suffix = [System.Guid]::NewGuid().ToString("N")
+    $a = Join-Path ([System.IO.Path]::GetTempPath()) ("hrm-sec-a-" + $suffix)
+    $b = Join-Path ([System.IO.Path]::GetTempPath()) ("hrm-sec-b-" + $suffix)
     Initialize-HrmStateDir $a | Out-Null
     Initialize-HrmStateDir $b | Out-Null
     $pa = Get-HrmSecret $a "HRM_POSTGRES_PASSWORD"
@@ -81,6 +82,7 @@ Test-Case "секреты уникальны между установками �
 
 Test-Case "pilot.env: токен обмена есть до создания владельца и retired-заглушка после" {
     Initialize-HrmTestEngine
+    New-HrmMockWorld | Out-Null
     $state = Get-HrmTestStateDir
     Initialize-HrmStateDir $state | Out-Null
     $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080
@@ -89,12 +91,12 @@ Test-Case "pilot.env: токен обмена есть до создания в�
     Assert-HrmContains $env "HRM_EXCHANGE_TOKEN=" "нет токена обмена в pilot.env"
     Assert-HrmContains $env "HRM_RELEASE_SHA=snapshot-sha-0013" "нет release sha"
     Assert-HrmContains $env "HRM_PILOT_PORT=8080" "нет порта"
-    Assert-HrmNotContains $env "BOOTSTRAP_ADMIN_PASSWORD=" "имя переменной в pilot.env не совпадает с оверлеем"
+    Assert-HrmFalse ([regex]::IsMatch($env, '(?m)^BOOTSTRAP_ADMIN_PASSWORD=')) "имя переменной в pilot.env не совпадает с оверлеем"
     Set-HrmInstallRecord $state @{ pilot_created = $true; release_sha = "snapshot-sha-0013"; port = 8080 }
     $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080
     $env2 = Get-Content (Get-HrmEnvFile $state) -Raw
     Assert-HrmContains $env2 "HRM_EXCHANGE_TOKEN=retired-" "после создания владельца нет retired-заглушки"
-    $realToken = ($env -split "`n" | Where-Object { $_ -like "HRM_EXCHANGE_TOKEN=*" }) -replace "HRM_EXCHANGE_TOKEN=", ""
+    $realToken = (($env -split "`n" | Where-Object { $_ -like "HRM_EXCHANGE_TOKEN=*" }) -replace "HRM_EXCHANGE_TOKEN=", "").Trim()
     Assert-HrmNotContains $env2 $realToken "старый токен остался в pilot.env после создания владельца"
 }
 
@@ -179,7 +181,7 @@ Test-Case "установка: секреты, env-файл, claim по loopback
     Assert-HrmEqual "127.0.0.1" $claim.Headers["X-Real-IP"] "claim не помечен loopback"
     Assert-HrmEqual "Иванова" $claim.Body.surname "фамилия не из файла ввода"
     Assert-HrmEqual "hr" $claim.Body.working_mode "режим не из файла ввода"
-    $envToken = ((Get-Content (Get-HrmEnvFile $state) -Raw) -split "`n" | Where-Object { $_ -like "HRM_EXCHANGE_TOKEN=*" }) -replace "HRM_EXCHANGE_TOKEN=", ""
+    $envToken = (((Get-Content (Get-HrmEnvFile $state) -Raw) -split "`n" | Where-Object { $_ -like "HRM_EXCHANGE_TOKEN=*" }) -replace "HRM_EXCHANGE_TOKEN=", "").Trim()
     Assert-HrmEqual $envToken $claim.Body.exchange_token "токен обмена в claim не совпадает с env-файлом"
 
     # Compose: стабильное имя проекта + env-файл состояния.
@@ -345,6 +347,7 @@ Test-Case "обновление: smoke несовпадения версии →
     $releaseDir = Join-Path $t.Root "релиз 6"
     New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0019"
     # Работающий бэкенд отдаёт старую версию — дрейф.
+    $t.World.SimulateStaleRelease = $true
     $t.World.OpsBody.release_sha = "snapshot-sha-0013"
     Assert-HrmThrows "дрейф версии не остановил обновление" {
         Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state
