@@ -347,7 +347,8 @@ function Read-HrmManifestJson {
 function Get-HrmCanonicalBytes {
     # Канонический payload: фиксированный порядок полей, "имя:значение"
     # через LF, UTF-8, завершающий перевод строки. Зеркало Python-контракта.
-    param([hashtable]$Manifest)
+    # Параметр без типа: OrderedDictionary не приводится к Hashtable.
+    param($Manifest)
     $allowed = @{}
     foreach ($field in $script:ManifestFields) { $allowed[$field[0]] = $field[1] }
     $allowed["signature"] = "obj"
@@ -376,12 +377,13 @@ function Test-HrmChannelManifest {
     # URL/размер, подпись доверенным (не отозванным) ключом из набора.
     # Возвращает проверенный ordered-манифест (с signature) или бросает
     # исключение с безопасным кодом в $_.Exception.Data["Code"].
-    param([hashtable]$Manifest, [hashtable]$TrustedKeys)
+    param($Manifest, [hashtable]$TrustedKeys)
     function New-HrmChannelError {
+        # Имя $channelError, а не $error: $Error — автопеременная только для чтения.
         param([string]$Code, [string]$Message)
-        $error = New-Object System.Exception ($Message)
-        $error.Data["Code"] = $Code
-        throw $error
+        $channelError = New-Object System.Exception ($Message)
+        $channelError.Data["Code"] = $Code
+        throw $channelError
     }
     foreach ($field in $script:ManifestFields) {
         if (-not $Manifest.Contains($field[0])) {

@@ -86,7 +86,8 @@ function Get-HrmInstalledVersion {
 
 function Assert-HrmChannelPolicy {
     # Fail closed: downgrade, та же версия с другим SHA, minimum_supported.
-    param([hashtable]$Manifest, [string]$InstalledVersion, [string]$InstalledSha)
+    # Параметр без типа: OrderedDictionary не приводится к Hashtable.
+    param($Manifest, [string]$InstalledVersion, [string]$InstalledSha)
     $available = [string]$Manifest["version"]
     $comparison = Compare-HrmSemVer $available $InstalledVersion
     if ($comparison -lt 0) {
@@ -262,7 +263,7 @@ function Invoke-HrmChannelOnce {
             $outcome = Invoke-HrmChannelInstall -InstallDir $InstallDir -StateDir $StateDir -ManifestPath $manifestPath -PackagePath $packagePath -JobId $jobId
             $resultVersion = $outcome.version
             $resultSha = $outcome.release_sha
-            Write-HrmLog "info" "Канал: установка завершена ({0})." -f $outcome.version
+            Write-HrmLog "info" ("Канал: установка завершена ({0})." -f $outcome.version)
         }
         catch {
             # Phase 12 update engine выполнил rollback сам; отчёт — честный.

@@ -151,10 +151,12 @@ function Write-HrmPilotEnv {
         ("HRM_BACKUP_KEY_ID={0}" -f $secrets["HRM_BACKUP_KEY_ID"]),
         ("HRM_RELEASE_SHA={0}" -f $ReleaseSha),
         ("HRM_PILOT_PORT={0}" -f $port),
-        ("UPDATE_ENGINE_TOKEN={0}" -f $engineToken),
+        ("HRM_UPDATE_ENGINE_TOKEN={0}" -f $engineToken),
         ("HRM_STAGING_DIR={0}" -f (Get-HrmStagingHostDir)),
         ("HRM_UPDATE_CHANNEL_URL={0}" -f $channel.url),
-        ("HRM_UPDATE_CHANNEL_PUBLIC_KEYS={0}" -f ('"{0}"' -f ($keysJson -replace '"', '\"'))),
+        # Кавычки JSON экранируются literal-заменой: -replace использует
+        # regex-синтаксис replacement и удалил бы обратный слэш.
+        ("HRM_UPDATE_CHANNEL_PUBLIC_KEYS=`"{0}`"" -f ([Regex]::Replace($keysJson, '"', '\"'))),
         ("HRM_UPDATE_CHECK_MIN_INTERVAL={0}" -f $channel.check_min_interval_seconds)
     )
     $envFile = Get-HrmEnvFile $StateDir

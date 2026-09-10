@@ -116,13 +116,10 @@ function Start-HrmApp {
     Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
     Start-HrmStack $InstallDir $StateDir
     Wait-HrmReady (Get-HrmBaseUrl $port)
-    # Наблюдатель канала обновлений: фоновый опрос и выполнение ЯВНО
-    # поставленной команды установки (в неинтерактивном режиме — только
-    # одноразовый цикл, тесты вызывают channel напрямую).
-    if (-not (Test-HrmInteractive)) {
-        Invoke-HrmChannelOnce -InstallDir $InstallDir -StateDir $StateDir
-    }
-    else {
+    # Наблюдатель канала обновлений (Phase 13) — только интерактивно:
+    # в неинтерактивном/тестовом режиме канал не трогается (тесты вызывают
+    # -Action channel напрямую).
+    if (Test-HrmInteractive) {
         Start-HrmChannelWatcherProcess -InstallDir $InstallDir -StateDir $StateDir
     }
     Write-HrmLog "info" ("Приложение запущено: {0}" -f (Get-HrmBaseUrl $port))

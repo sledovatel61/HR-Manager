@@ -72,7 +72,7 @@ function Initialize-HrmTestEngine {
         $TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM тест движка " + [System.Guid]::NewGuid().ToString("N").Substring(0, 8))
     }
     $engineDir = Join-Path $PSScriptRoot "..\engine"
-    foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install")) {
+    foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install", "Crypto", "Channel")) {
         Import-Module (Join-Path $engineDir "$module.psm1") -Force -ErrorAction Stop
     }
     $env:HRM_NONINTERACTIVE = "1"

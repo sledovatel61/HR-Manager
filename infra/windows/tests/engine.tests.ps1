@@ -113,7 +113,7 @@ Test-Case "pilot.env: токен обмена есть до создания в�
     Assert-HrmContains $env "HRM_EXCHANGE_TOKEN=" "нет токена обмена в pilot.env"
     Assert-HrmContains $env "HRM_RELEASE_SHA=snapshot-sha-0013" "нет release sha"
     Assert-HrmContains $env "HRM_PILOT_PORT=8080" "нет порта"
-    Assert-HrmContains $env "UPDATE_ENGINE_TOKEN=" "нет токена движка канала в pilot.env"
+    Assert-HrmContains $env "HRM_UPDATE_ENGINE_TOKEN=" "нет токена движка канала в pilot.env"
     Assert-HrmContains $env "HRM_STAGING_DIR=" "нет staging-каталога в pilot.env"
     Assert-HrmContains $env "HRM_UPDATE_CHANNEL_URL=" "нет URL канала в pilot.env"
     Assert-HrmFalse ([regex]::IsMatch($env, '(?m)^BOOTSTRAP_ADMIN_PASSWORD=')) "имя переменной в pilot.env не совпадает с оверлеем"
