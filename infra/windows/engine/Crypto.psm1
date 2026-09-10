@@ -93,15 +93,28 @@ function Invoke-HrmEdDouble {
 
 function Invoke-HrmEdScalarMult {
     # [k]B через binary double-and-add от старших битов.
+    # Биты извлекаются ТОЛЬКО статическими методами BigInteger
+    # (op_RightShift/op_BitwiseAnd/IsOne): PS 5.1 показывала
+    # значение-зависимое поведение для -shr/%/-eq на BigInteger
+    # (одни скаляры считались верно, другие давали пустой результат).
     param($Scalar, $Point)
     $result = $null
     for ($bit = 255; $bit -ge 0; $bit--) {
         if ($null -ne $result) { $result = Invoke-HrmEdDouble $result }
-        if (($Scalar -shr $bit) % 2 -eq 1) {
+        $shifted = [System.Numerics.BigInteger]::op_RightShift($Scalar, $bit)
+        $masked = [System.Numerics.BigInteger]::op_BitwiseAnd($shifted, [System.Numerics.BigInteger]::One)
+        if ($masked.IsOne) {
             $result = if ($null -eq $result) { , $Point } else { Invoke-HrmEdAdd $result $Point }
         }
     }
-    if ($null -eq $result) { throw "Пустой результат скалярного умножения." }
+    if ($null -eq $result) {
+        $debugBits = 0
+        for ($b = 0; $b -lt 256; $b++) {
+            $dbShift = [System.Numerics.BigInteger]::op_RightShift($Scalar, $b)
+            if ([System.Numerics.BigInteger]::op_BitwiseAnd($dbShift, [System.Numerics.BigInteger]::One).IsOne) { $debugBits++ }
+        }
+        throw ("Пустой результат скалярного умножения (scalar=" + [string]$Scalar + "; bits=" + [string]$debugBits + ").")
+    }
     return , $result
 }
 
@@ -117,7 +130,7 @@ function ConvertTo-HrmEdPoint {
     for ($i = 0; $i -lt 32; $i++) { $yLittle[$i] = $yBytes[31 - $i] }
     $yHex = (($yLittle | ForEach-Object { $_.ToString("x2") }) -join "")
     $y = [System.Numerics.BigInteger]::Parse($yHex, "AllowHexSpecifier")
-    if ($y -ge $script:EdP) { throw "Некaноническая точка (y >= p)." }
+    if ([System.Numerics.BigInteger]::Compare($y, $script:EdP) -ge 0) { throw "Некaноническая точка (y >= p)." }
     # x^2 = (y^2 - 1) / (d*y^2 + 1)
     $y2 = [System.Numerics.BigInteger]::Remainder($y * $y, $script:EdP)
     $num = [System.Numerics.BigInteger]::Remainder($y2 - 1, $script:EdP)
@@ -125,16 +138,19 @@ function ConvertTo-HrmEdPoint {
     $denInv = Invoke-HrmModPow $den ($script:EdP - 2) $script:EdP
     $x2 = [System.Numerics.BigInteger]::Remainder($num * $denInv, $script:EdP)
     $x = Invoke-HrmModPow $x2 (($script:EdP + 3) / 8) $script:EdP
-    if ([System.Numerics.BigInteger]::Remainder($x * $x - $x2, $script:EdP) -ne 0) {
+    if (([System.Numerics.BigInteger]::Remainder($x * $x - $x2, $script:EdP)).IsZero -eq $false) {
         $x = [System.Numerics.BigInteger]::Remainder($x * $script:EdI, $script:EdP)
     }
-    if ([System.Numerics.BigInteger]::Remainder($x * $x - $x2, $script:EdP) -ne 0) {
+    if (([System.Numerics.BigInteger]::Remainder($x * $x - $x2, $script:EdP)).IsZero -eq $false) {
         throw "Точка не лежит на кривой."
     }
-    if (($x % 2 -eq 1) -ne $sign) {
+    # Чётность x — статическим API: PS 5.1 `%`/-eq на BigInteger
+    # давал значение-зависимые результаты.
+    $xOdd = [System.Numerics.BigInteger]::op_BitwiseAnd($x, [System.Numerics.BigInteger]::One).IsOne
+    if ($xOdd -ne $sign) {
         $x = [System.Numerics.BigInteger]::Remainder($script:EdP - $x, $script:EdP)
     }
-    if ($x -eq 0 -and $sign) { throw "Нулевая точка с установленным битом знака." }
+    if ($x.IsZero -and $sign) { throw "Нулевая точка с установленным битом знака." }
     # extended: x, y, z=1, t=x*y
     return , @($x, $y, [System.Numerics.BigInteger]::One, [System.Numerics.BigInteger]::Remainder($x * $y, $script:EdP))
 }
@@ -175,7 +191,7 @@ function Test-HrmEd25519Signature {
     [Array]::Copy($sigBytes, 0, $rBytes, 0, 32)
     [Array]::Copy($sigBytes, 32, $sBytes, 0, 32)
     $s = ConvertFrom-HrmLittleEndian $sBytes
-    if ($s -ge $script:EdL) { throw "Некaнонический S (>= L)." }
+    if ([System.Numerics.BigInteger]::Compare($s, $script:EdL) -ge 0) { throw "Некaнонический S (>= L)." }
     try {
         $pointA = ConvertTo-HrmEdPoint $publicBytes
     }
@@ -200,7 +216,14 @@ function Test-HrmEd25519Signature {
     $rhsX = [System.Numerics.BigInteger]::Remainder($rhs[0] * $sB[2], $script:EdP)
     $lhsY = [System.Numerics.BigInteger]::Remainder($sB[1] * $rhs[2], $script:EdP)
     $rhsY = [System.Numerics.BigInteger]::Remainder($rhs[1] * $sB[2], $script:EdP)
-    return (($lhsX -eq $rhsX) -and ($lhsY -eq $rhsY))
+    if (-not ([System.Numerics.BigInteger]::Equals($lhsX, $rhsX) -and [System.Numerics.BigInteger]::Equals($lhsY, $rhsY))) {
+        # Диагностика в тексте исключения: аннотации CI — единственный
+        # читаемый канал на GitHub-hosted Windows runner в этой инфраструктуре.
+        throw ("Подпись не совпала [diag: s=" + [string]$s + "; h=" + [string]$h +
+            "; sB=" + [string]$sB[0] + "," + [string]$sB[1] + "," + [string]$sB[2] + "," + [string]$sB[3] +
+            "; rhs=" + [string]$rhs[0] + "," + [string]$rhs[1] + "," + [string]$rhs[2] + "," + [string]$rhs[3] + "]")
+    }
+    return $true
 }
 
 # --- SemVer --------------------------------------------------------------------
