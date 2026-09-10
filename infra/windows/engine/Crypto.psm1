@@ -129,7 +129,9 @@ function ConvertTo-HrmEdPoint {
     $yLittle = New-Object byte[] 32
     for ($i = 0; $i -lt 32; $i++) { $yLittle[$i] = $yBytes[31 - $i] }
     $yHex = (($yLittle | ForEach-Object { $_.ToString("x2") }) -join "")
-    $y = [System.Numerics.BigInteger]::Parse($yHex, "AllowHexSpecifier")
+    # "0"+hex: BigInteger.Parse с AllowHexSpecifier трактует hex со старшим
+    # байтом >= 0x80 как отрицательное двух-дополнительное число (.NET).
+    $y = [System.Numerics.BigInteger]::Parse("0" + $yHex, "AllowHexSpecifier")
     if ([System.Numerics.BigInteger]::Compare($y, $script:EdP) -ge 0) { throw "Некaноническая точка (y >= p)." }
     # x^2 = (y^2 - 1) / (d*y^2 + 1)
     $y2 = [System.Numerics.BigInteger]::Remainder($y * $y, $script:EdP)
@@ -161,7 +163,21 @@ function ConvertFrom-HrmLittleEndian {
     for ($i = 0; $i -lt $Bytes.Length; $i++) { $reversed[$i] = $Bytes[$Bytes.Length - 1 - $i] }
     $hex = (($reversed | ForEach-Object { $_.ToString("x2") }) -join "")
     if (-not $hex) { return [System.Numerics.BigInteger]::Zero }
-    return [System.Numerics.BigInteger]::Parse($hex, "AllowHexSpecifier")
+    # "0"+hex: Parse с AllowHexSpecifier трактует hex со старшим байтом
+    # >= 0x80 как отрицательное двух-дополнительное число (.NET) — сдвиг
+    # битов/сравнения на отрицательных скалярах дают неверный результат.
+    return [System.Numerics.BigInteger]::Parse("0" + $hex, "AllowHexSpecifier")
+}
+
+function Get-HrmPositiveRemainder {
+    # Remainder в [0, mod): .NET BigInteger.Remainder сохраняет знак
+    # делимого, а сравнение представителей требует канонического вида.
+    param($Value, $Mod)
+    $r = [System.Numerics.BigInteger]::Remainder($Value, $Mod)
+    if ([System.Numerics.BigInteger]::Compare($r, [System.Numerics.BigInteger]::Zero) -lt 0) {
+        return [System.Numerics.BigInteger]::Add($r, $Mod)
+    }
+    return $r
 }
 
 function Get-HrmEdBasePoint {
@@ -212,10 +228,10 @@ function Test-HrmEd25519Signature {
     $rPoint = ConvertTo-HrmEdPoint $rBytes
     $hA = Invoke-HrmEdScalarMult $h $pointA
     $rhs = Invoke-HrmEdAdd $rPoint $hA
-    $lhsX = [System.Numerics.BigInteger]::Remainder($sB[0] * $rhs[2], $script:EdP)
-    $rhsX = [System.Numerics.BigInteger]::Remainder($rhs[0] * $sB[2], $script:EdP)
-    $lhsY = [System.Numerics.BigInteger]::Remainder($sB[1] * $rhs[2], $script:EdP)
-    $rhsY = [System.Numerics.BigInteger]::Remainder($rhs[1] * $sB[2], $script:EdP)
+    $lhsX = Get-HrmPositiveRemainder ($sB[0] * $rhs[2]) $script:EdP
+    $rhsX = Get-HrmPositiveRemainder ($rhs[0] * $sB[2]) $script:EdP
+    $lhsY = Get-HrmPositiveRemainder ($sB[1] * $rhs[2]) $script:EdP
+    $rhsY = Get-HrmPositiveRemainder ($rhs[1] * $sB[2]) $script:EdP
     if (-not ([System.Numerics.BigInteger]::Equals($lhsX, $rhsX) -and [System.Numerics.BigInteger]::Equals($lhsY, $rhsY))) {
         # Диагностика в тексте исключения: аннотации CI — единственный
         # читаемый канал на GitHub-hosted Windows runner в этой инфраструктуре.
