@@ -27,13 +27,18 @@ $script:UpdatePhases = @("prepare", "backup", "build", "switch", "migrate", "smo
 $script:ExpectedHeadRevision = "0013"
 
 function Get-HrmImageIds {
-    # Текущие ID образов пилота (для возврата).
+    # Закрепляем текущие образы отдельными тегами ДО сборки. BuildKit может
+    # удалить прежний нетегированный image ID, когда частично перезаписывает
+    # :pilot во время неудачной multi-service сборки. Стабильный :previous
+    # остаётся доступен для rollback даже в этом случае.
     param()
     $ids = @{}
     foreach ($image in @("hr-manager-pilot-backend:pilot", "hr-manager-pilot-frontend:pilot", "hr-manager-pilot-backup:pilot")) {
         $inspect = Invoke-HrmDocker @("image", "inspect", "-f", "{{.Id}}", $image) -IgnoreExitCode
         if ($inspect.ExitCode -eq 0 -and $inspect.Stdout) {
-            $ids[$image] = $inspect.Stdout.Trim()
+            $previous = $image -replace ':pilot$', ':previous'
+            Invoke-HrmDocker @("tag", $inspect.Stdout.Trim(), $previous) | Out-Null
+            $ids[$image] = $previous
         }
     }
     return $ids
@@ -76,9 +81,11 @@ function Invoke-HrmBackupGate {
     # Валидный шифрованный бэкап + проверка целостности перед миграцией.
     param([string]$InstallDir, [string]$StateDir)
     Write-HrmLog "info" "Бэкап перед обновлением…"
-    Invoke-HrmCompose $InstallDir $StateDir @("run", "--rm", "backup", "python", "-m", "app.cli", "backup-now", "--as-scheduler", "--reason", "pre-update backup") | Out-Null
+    # The backup image has `backup-scheduler` as ENTRYPOINT. Use its public
+    # operations instead of appending a second executable to that entrypoint.
+    Invoke-HrmCompose $InstallDir $StateDir @("run", "--rm", "-e", "BACKUP_REASON=pre-update backup", "backup", "oneshot") | Out-Null
     Write-HrmLog "info" "Проверка целостности бэкапа (--deep)…"
-    $check = Invoke-HrmCompose $InstallDir $StateDir @("run", "--rm", "backup", "python", "-m", "app.cli", "backup-check", "--deep", "--as-scheduler") -IgnoreExitCode
+    $check = Invoke-HrmCompose $InstallDir $StateDir @("run", "--rm", "backup", "check") -IgnoreExitCode
     if ($check.ExitCode -ne 0) {
         throw "Бэкап не прошёл проверку целостности — обновление остановлено (данные не тронуты)."
     }
@@ -114,6 +121,11 @@ function Update-HrmApp {
     if ($null -eq $record) { throw "Установка не найдена. Выполните -Action install." }
     $port = [int]$record.port
     $baseUrl = Get-HrmBaseUrl $port
+
+    # Re-render the protected env before the backup gate. Besides keeping the
+    # current release/port authoritative, this upgrades legacy phase-12
+    # backup-key encoding before the backup container reads it.
+    $null = Write-HrmPilotEnv $StateDir ([string]$record.release_sha) $port
 
     if (-not (Test-HrmUpdateLockAvailable $StateDir)) {
         throw "Обновление уже выполняется (блокировка update.lock). Подождите или запустите -Action resume."
@@ -152,10 +164,12 @@ function Update-HrmApp {
 
         if ($phase -eq "build") {
             Write-HrmLog "info" "Сборка новых образов (работающее приложение не останавливается)…"
-            # Сборка идёт по временному compose-файлу обновляемого снимка.
-            $newCompose = Join-Path $ReleaseDir "infra\compose.pilot.yml"
+            # Сборка идёт по базовому compose-файлу и пилотному overlay из
+            # обновляемого снимка. Overlay намеренно не является автономным.
+            $newBaseCompose = Join-Path $ReleaseDir "infra\docker-compose.yml"
+            $newPilotCompose = Join-Path $ReleaseDir "infra\compose.pilot.yml"
             $envFile = Get-HrmEnvFile $StateDir
-            Invoke-HrmDocker @("compose", "--project-name", "hr-manager-pilot", "--env-file", $envFile, "-f", $newCompose, "build", "--pull=false") | Out-Null
+            Invoke-HrmDocker @("compose", "--project-name", "hr-manager-pilot", "--env-file", $envFile, "-f", $newBaseCompose, "-f", $newPilotCompose, "build", "--pull=false") | Out-Null
             Set-HrmUpdateJournal $StateDir "switch" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }
             $phase = "switch"
         }
@@ -216,6 +230,10 @@ function Update-HrmApp {
             Write-HrmLog "info" "Возврат к предыдущей рабочей версии (без даунгрейда БД)…"
             Invoke-HrmRollbackImages $previousIds
             Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
+            # Keep the journal for diagnostics/resume, but release the lock:
+            # rollback has completed and a corrected release may be retried.
+            $lock = Get-HrmUpdateLock $StateDir
+            if (Test-Path $lock) { Remove-Item $lock -Force }
             Write-HrmLog "info" "Предыдущая версия восстановлена."
         }
         else {

@@ -129,12 +129,45 @@ Test-Case 'пилотный оверлей требует все обязате�
     foreach ($required in @("HRM_POSTGRES_PASSWORD", "HRM_SIGNING_KEY", "HRM_BOOTSTRAP_ADMIN_PASSWORD", "HRM_EXCHANGE_TOKEN", "HRM_BACKUP_KEY", "HRM_BACKUP_KEY_ID")) {
         Assert-HrmContains $overlay ('${' + $required + ':?') ("обязательная переменная " + $required + " не затребована")
     }
+    $signingKeyUses = ([regex]::Matches($overlay, 'SECRET_KEY: \$\{HRM_SIGNING_KEY:\?')).Count
+    Assert-HrmEqual 3 $signingKeyUses "SECRET_KEY обязателен для backend, worker и backup"
+}
+
+Test-Case "backend видит состояние бэкапов только для чтения" {
+    $overlay = Get-Content -Path (Join-Path $RepoRoot "infra\compose.pilot.yml") -Raw -Encoding UTF8
+    Assert-HrmContains $overlay "BACKUP_STATE_FILE: /var/backups/hr-manager/state.json" "backend не настроен на состояние бэкапов"
+    Assert-HrmContains $overlay "pilot_backups:/var/backups/hr-manager:ro" "backend не подключает backup volume только для чтения"
 }
 
 Test-Case "комментарий-заголовок оверлея описывает локальную модель доверия" {
     $overlay = Get-Content -Path (Join-Path $RepoRoot "infra\compose.pilot.yml") -Raw -Encoding UTF8
     Assert-HrmContains $overlay "127.0.0.1" "заголовок не описывает loopback"
     Assert-HrmContains $overlay "SESSION_COOKIE_SECURE" "нет строки о локальной модели Secure-кук"
+}
+
+Test-Case "движок всегда объединяет базовый compose и пилотный overlay" {
+    $compose = Get-Content -Path (Join-Path $EngineDir "Compose.psm1") -Raw -Encoding UTF8
+    $preflight = Get-Content -Path (Join-Path $EngineDir "Preflight.psm1") -Raw -Encoding UTF8
+    $update = Get-Content -Path (Join-Path $EngineDir "Update.psm1") -Raw -Encoding UTF8
+    foreach ($text in @($compose, $preflight, $update)) {
+        Assert-HrmContains $text 'infra\docker-compose.yml' "не подключён базовый compose-файл"
+        Assert-HrmContains $text 'infra\compose.pilot.yml' "не подключён пилотный overlay"
+    }
+}
+
+Test-Case "frontend повторно разрешает адрес backend после пересоздания контейнера" {
+    $nginx = Get-Content -Path (Join-Path $RepoRoot "frontend\nginx.conf") -Raw -Encoding UTF8
+    Assert-HrmContains $nginx "resolver 127.0.0.11" "не настроен встроенный DNS Docker"
+    Assert-HrmContains $nginx 'set $backend_upstream http://backend:8000;' "backend задан статически"
+    Assert-HrmContains $nginx 'proxy_pass $backend_upstream;' "proxy_pass не использует динамическое разрешение"
+    Assert-HrmContains $nginx 'rewrite ^/api/(.*)$ /$1 break;' "при динамическом proxy_pass потеряна очистка /api"
+}
+
+Test-Case "деинсталлятор удаляет обновлённые файлы приложения, но не StateDir" {
+    $installer = Get-Content -Path (Join-Path $RepoRoot "installer\installer.iss") -Raw -Encoding UTF8
+    Assert-HrmContains $installer "[UninstallDelete]" "нет очистки файлов, заменённых update-пайплайном"
+    Assert-HrmContains $installer 'Type: filesandordirs; Name: "{app}"' "каталог приложения не очищается целиком"
+    Assert-HrmNotContains $installer 'Type: filesandordirs; Name: "{localappdata}\HRManager"' "деинсталлятор не должен удалять StateDir"
 }
 
 Write-Host ("Статические проверки: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

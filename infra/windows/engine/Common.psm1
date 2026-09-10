@@ -213,8 +213,8 @@ function Invoke-HrmOpenBrowser {
         # Неинтерактивно: одноразовая ссылка — всегда в защищённый файл.
         $stateDir = if ($StateDir) { $StateDir } else { Get-HrmStateDir }
         $file = Get-HrmSetupUrlFile $stateDir
-        Protect-HrmFile $stateDir $file
         Set-Content -Path $file -Value $Url -Encoding UTF8
+        Protect-HrmFile $stateDir $file
         if ($open) {
             # Установщик (-OpenBrowser / HRM_OPEN_BROWSER=1): и файл, и браузер.
             Start-Process $Url
@@ -233,7 +233,18 @@ function Protect-HrmFile {
     param([string]$StateDir, [string]$Path)
     if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    Invoke-HrmExternal -Name "icacls.exe" -Arguments @($Path, "/inheritance:r", "/grant:r", ("{0}:(OI)(CI)F" -f $identity)) | Out-Null
+    # (OI)(CI) are inheritance flags for a directory. Applied to a regular
+    # file they create an inherit-only ACE, leaving the file itself unreadable
+    # after /inheritance:r. This used to make atomically replaced state files
+    # (notably secrets.json and update-journal.json) fail with Access Denied.
+    $isDirectory = (Test-Path -LiteralPath $Path -PathType Container)
+    $grant = if ($isDirectory) {
+        "{0}:(OI)(CI)F" -f $identity
+    }
+    else {
+        "{0}:F" -f $identity
+    }
+    Invoke-HrmExternal -Name "icacls.exe" -Arguments @($Path, "/inheritance:r", "/grant:r", $grant) | Out-Null
 }
 
 function Set-HrmJsonFile {

@@ -66,10 +66,16 @@ export default function FirstRunSetup({
     let cancelled = false;
     void (async () => {
       try {
-        const [data, zones] = await Promise.all([previewFetcher(ticket), listTimezones()]);
+        // The timezone catalogue belongs to authenticated preferences. During
+        // first-run there is no session yet, so a 401 here must not block the
+        // owner form. The ticket preview already supplies a validated default.
+        const [data, zones] = await Promise.all([
+          previewFetcher(ticket),
+          listTimezones().catch(() => null),
+        ]);
         if (cancelled) return;
         setPreview(data);
-        setTimezones(zones.timezones);
+        setTimezones(zones?.timezones ?? [data.timezone]);
         setTimezone(data.timezone);
         setPhase("form");
       } catch (caught) {

@@ -63,6 +63,19 @@ describe("FirstRunSetup", () => {
     expect(screen.getByRole("button", { name: "Завершить настройку" })).toBeInTheDocument();
   });
 
+  it("opens the form before login when the authenticated timezone catalogue returns 401", async () => {
+    stubSetupApi({
+      timezones: Response.json({ detail: "Требуется вход в систему." }, { status: 401 }),
+    });
+
+    render(<FirstRunSetup ticket={TICKET} onComplete={vi.fn()} />);
+
+    expect(await screen.findByLabelText(/Пароль владельца/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Часовой пояс/)).toHaveValue("Europe/Moscow");
+    expect(screen.queryByText(/Требуется вход в систему/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Завершить настройку" })).toBeEnabled();
+  });
+
   it("rejects passwords shorter than 12 characters client-side", async () => {
     stubSetupApi({});
     const onComplete = vi.fn();
