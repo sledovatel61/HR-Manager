@@ -122,6 +122,20 @@ Test-Case "Ed25519: эталонный вектор RFC 8032 §7.1 TEST 1 (пу�
     Assert-HrmTrue $result "подпись RFC 8032 не прошла проверку"
 }
 
+Test-Case "little-endian: старший байт >= 0x80 даёт положительный BigInteger" {
+    Initialize-HrmTestEngine
+    New-HrmMockWorld | Out-Null
+    # .NET BigInteger.Parse(hex, AllowHexSpecifier) трактует hex со старшим
+    # байтом >= 0x80 как двух-дополнительное отрицательное число; конвертация
+    # обязана возвращать положительное (иначе биты скаляра читаются неверно).
+    $bytes = New-Object byte[] 32
+    $bytes[31] = 0x9f
+    $bytes[0] = 0x01
+    $value = ConvertFrom-HrmLittleEndian $bytes
+    Assert-HrmTrue ([System.Numerics.BigInteger]::Compare($value, [System.Numerics.BigInteger]::Zero) -gt 0) "скаляр отрицательный при старшем байте 0x9f"
+    Assert-HrmTrue ([System.Numerics.BigInteger]::op_BitwiseAnd($value, [System.Numerics.BigInteger]::One).IsOne) "младший бит не прочитан"
+}
+
 Test-Case "manifest: канонические байты совпадают с golden-fixture" {
     Initialize-HrmTestEngine
     New-HrmMockWorld | Out-Null
