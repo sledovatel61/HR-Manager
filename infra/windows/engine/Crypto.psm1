@@ -87,7 +87,8 @@ function Invoke-HrmEdDouble {
     $B = [System.Numerics.BigInteger]::Remainder($P[1] * $P[1], $script:EdP)
     $C = [System.Numerics.BigInteger]::Remainder(2 * $P[2] * $P[2], $script:EdP)
     $H = [System.Numerics.BigInteger]::Remainder($A + $B, $script:EdP)
-    $E = [System.Numerics.BigInteger]::Remainder($H - (($P[0] + $P[1]) * ($P[0] + $P[1]) - $A - $B), $script:EdP)
+    # HWCD 2008 (twisted Edwards, a=-1): E = H - (X1+Y1)^2.
+    $E = [System.Numerics.BigInteger]::Remainder($H - ($P[0] + $P[1]) * ($P[0] + $P[1]), $script:EdP)
     $G = [System.Numerics.BigInteger]::Remainder($A - $B, $script:EdP)
     $F = [System.Numerics.BigInteger]::Remainder($C + $G, $script:EdP)
     $x3 = [System.Numerics.BigInteger]::Remainder($E * $F, $script:EdP)
