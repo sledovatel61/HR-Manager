@@ -31,22 +31,44 @@ def fail(message: str) -> None:
 
 
 def _strip_ps_strings(text: str) -> str:
-    # PowerShell: '...' — литерал ('' — экранированный апостроф);
-    # внутри одинарных кавычек скобки не учитываются.
+    # PowerShell: '...' ('' — экранированный апостроф) и "..." (``"``);
+    # комментарии #... тоже исключаются — скобки внутри не считаются.
     out: list[str] = []
-    in_string = False
+    in_single = False
+    in_double = False
+    in_comment = False
     i = 0
     while i < len(text):
         ch = text[i]
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+                out.append("\n")
+            i += 1
+            continue
+        if ch == "#" and not in_single and not in_double:
+            in_comment = True
+            i += 1
+            continue
         if ch == "'":
-            if in_string and i + 1 < len(text) and text[i + 1] == "'":
+            if in_single and i + 1 < len(text) and text[i + 1] == "'":
                 i += 2
                 continue
-            in_string = not in_string
+            if not in_double:
+                in_single = not in_single
             out.append(" ")
             i += 1
             continue
-        if in_string:
+        if ch == '"':
+            if in_double and i + 1 < len(text) and text[i + 1] == '"':
+                i += 2
+                continue
+            if not in_single:
+                in_double = not in_double
+            out.append(" ")
+            i += 1
+            continue
+        if in_single or in_double:
             out.append(" ")
         else:
             out.append(ch)
@@ -117,6 +139,9 @@ def main() -> int:
     for path in files:
         if WINDOWS / "tests" in path.parents:
             continue  # тесты намеренно содержат примеры секретов
+        if path.name == "Crypto.psm1":
+            # Публичные константы кривой Ed25519 (RFC 8032) — не секреты.
+            continue
         text = path.read_text(encoding="utf-8")
         for pattern in patterns:
             if re.search(pattern, text):

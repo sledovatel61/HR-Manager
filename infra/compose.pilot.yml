@@ -68,6 +68,14 @@ services:
       # is stored by the backend; the raw token exists only in the
       # ACL-protected local env file of the engine.
       PILOT_BOOTSTRAP_EXCHANGE_TOKEN: ${HRM_EXCHANGE_TOKEN:?HRM_EXCHANGE_TOKEN is required for the pilot}
+      # Phase 13: update channel (server-owned config from the engine's
+      # pilot.env; the staging bind mount is the ONLY host path exposed to
+      # the container — never a Docker socket or a command surface).
+      UPDATE_CHANNEL_URL: ${HRM_UPDATE_CHANNEL_URL:-}
+      UPDATE_CHANNEL_PUBLIC_KEYS: ${HRM_UPDATE_CHANNEL_PUBLIC_KEYS:-}
+      UPDATE_ENGINE_TOKEN: ${HRM_UPDATE_ENGINE_TOKEN:?HRM_UPDATE_ENGINE_TOKEN is required for the pilot}
+      UPDATE_STAGING_DIR: /updates
+      UPDATE_CHECK_MIN_INTERVAL_SECONDS: ${HRM_UPDATE_CHECK_MIN_INTERVAL:-300}
       # External channels: OFF by default, nothing to configure.
       TELEGRAM_ENABLED: "false"
       TELEGRAM_BOT_TOKEN: ""
@@ -81,6 +89,9 @@ services:
     ports: !reset []
     volumes:
       - pilot_backups:/var/backups/hr-manager:ro
+      # Verified update packages land here (server download -> host dir via
+      # the bind mount); the engine re-verifies and extracts on the host.
+      - ${HRM_STAGING_DIR:?HRM_STAGING_DIR is required for the pilot}:/updates
 
   frontend:
     image: hr-manager-pilot-frontend:pilot
