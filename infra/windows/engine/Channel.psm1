@@ -269,7 +269,8 @@ function Invoke-HrmChannelOnce {
             # Phase 12 update engine выполнил rollback сам; отчёт — честный.
             $resultState = "rolled_back"
             $errorCode = "update_failed"
-            $errorDetail = Redact-HrmText $_.Exception.Message
+            $stackDetail = if ($_.ScriptStackTrace) { [string]$_.ScriptStackTrace } else { "" }
+            $errorDetail = Redact-HrmText (($_.Exception.Message) + " [stack: " + $stackDetail + "]")
             Write-HrmLog "error" ("Канал: установка не удалась, откат выполнен: {0}" -f $errorDetail)
         }
         $report = @{
