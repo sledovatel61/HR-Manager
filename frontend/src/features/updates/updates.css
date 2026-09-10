@@ -1,0 +1,93 @@
+/* Обновления Windows-пилота (Phase 13). */
+
+.updates-panel h2 {
+  margin: 0 0 12px;
+  font-size: 1.15rem;
+}
+
+.update-status-row {
+  margin-bottom: 12px;
+}
+
+.update-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  background: rgba(148, 163, 184, 0.14);
+  color: var(--text-muted, #64748b);
+}
+
+.update-pill.ok {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--ok, #15803d);
+}
+
+.update-pill.warn {
+  background: rgba(251, 191, 36, 0.14);
+  color: var(--checking, #b45309);
+}
+
+.update-facts {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.update-facts > div {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 8px;
+}
+
+.update-facts dt {
+  color: var(--text-muted, #6b7280);
+  font-size: 0.85rem;
+}
+
+.update-facts dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.update-sha {
+  color: var(--text-muted, #6b7280);
+  font-size: 0.85rem;
+}
+
+.update-notes {
+  white-space: pre-wrap;
+}
+
+.update-result {
+  margin: 10px 0;
+  font-size: 0.9rem;
+}
+
+.update-result.ok {
+  color: var(--success, #15803d);
+}
+
+.update-result.warn {
+  color: var(--danger, #b91c1c);
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .updates-panel .status-pill,
+  .update-result {
+    transition: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .update-facts > div {
+    grid-template-columns: 1fr;
+  }
+}

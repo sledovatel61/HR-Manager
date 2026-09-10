@@ -35,6 +35,8 @@ import type {
   ReminderStatus,
   SetupPreview,
   SetupState,
+  UpdateInstallResult,
+  UpdateStatus,
   AnalyticsKpiReport,
   AnalyticsQuery,
   AuditEvent,
@@ -182,6 +184,26 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   return data as T;
+}
+
+/** Phase 13: update channel status (state machine + versions, no secrets). */
+export async function fetchUpdateStatus(): Promise<UpdateStatus> {
+  return request<UpdateStatus>("/updates/status");
+}
+
+/** Check the signed channel manifest (server verifies signature + policy). */
+export async function checkUpdates(): Promise<UpdateStatus> {
+  return request<UpdateStatus>("/updates/check", { method: "POST" });
+}
+
+/** Download the package into the server staging (size/SHA256 checked). */
+export async function downloadUpdate(): Promise<UpdateStatus> {
+  return request<UpdateStatus>("/updates/download", { method: "POST" });
+}
+
+/** Queue an install for the Windows engine (existing Phase 12 updater). */
+export async function requestUpdateInstall(): Promise<UpdateInstallResult> {
+  return request<UpdateInstallResult>("/updates/install", { method: "POST" });
 }
 
 /** Fetch the backend health report, or null when the backend is unreachable. */
