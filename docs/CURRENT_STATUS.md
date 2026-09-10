@@ -1,8 +1,8 @@
 # Текущее состояние и handoff
 
-> Фазы 0–11 приняты. Phase 11 влита через PR #18 merge-коммитом
-> `a6ac73cb797919383b80ce65b1614cd6e4dad47f`. Ветка агента 5
-> `arena/01a081aa-hr-manager` сохранена для продолжения работы над Phase 12.
+> Фазы 0–12 приняты. Принятый baseline Phase 12 опубликован в ветке
+> `phase12/windows-acceptance-final`; до merge в `main` Phase 13 должна
+> начинаться именно от неё.
 
 ## Что принято
 
@@ -70,8 +70,28 @@ request/reminder через существующий outbox, send-time revalidat
 stage/scheduled rules, durable dedupe и append-only история. Полный отчёт:
 [phase-11-report-arena.md](phase-11-report-arena.md).
 
+## Результат Phase 12
+
+- PR реализации: https://github.com/sledovatel61/HR-Manager/pull/22.
+- Windows installer `0.13.0`, PowerShell engine, pilot Compose, первый запуск,
+  update/rollback/resume, diagnostics и uninstall реализованы.
+- На реальной Windows с Docker Desktop успешно проверены trusted update,
+  намеренно сломанный update с автоматическим rollback и install/uninstall.
+- Uninstall удаляет приложение и контейнеры, но сохраняет StateDir,
+  PostgreSQL/backup volumes и зашифрованные backup-файлы.
+- SHA256 принятого installer:
+  `a9670b3921bd218f27cd571d7eba21775ba951c697d41b06f5cd798650e56a05`.
+- Подробный результат: [phase-12-local-acceptance.md](phase-12-local-acceptance.md).
+
+## Ограничение локальной проверки
+
+Профильные backend-тесты нативно на Windows блокируются Unix-only модулем
+`fcntl`. Backend в финальном acceptance hardening не менялся. Linux backend,
+PostgreSQL integration и Compose должны подтверждаться CI точного SHA; это
+ограничение нельзя выдавать за локальный passed.
+
 ## Следующая фаза
 
-Следующая работа — Phase 12. Её продуктовый контракт должен быть согласован
-отдельно. Продолжать работу следует в сохранённой ветке агента 5
-`arena/01a081aa-hr-manager`, предварительно синхронизировав её с `main`.
+Phase 13 добавляет безопасный подписанный канал доставки обновлений поверх
+принятого update engine, не создавая второй механизм обновления. Полный контракт:
+[`prompts/PHASE_13_PROMPT.md`](../prompts/PHASE_13_PROMPT.md).
