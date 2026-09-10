@@ -301,7 +301,8 @@ Test-Case "наблюдатель: команда install → повторная
     Invoke-HrmChannelOnce -InstallDir $install -StateDir $state | Out-Null
     $channelWorld = $global:HRM_ChannelWorld
     Assert-HrmEqual 1 $channelWorld.Reports.Count "отчёт серверу не отправлен"
-    Assert-HrmEqual "installed" ([string]$channelWorld.Reports[0].Body.state) "итог не installed"
+    $reportDetail = if ($channelWorld.Reports[0].Body.error_detail) { [string]$channelWorld.Reports[0].Body.error_detail } else { "" }
+    Assert-HrmEqual "installed" ([string]$channelWorld.Reports[0].Body.state) ("итог не installed (detail: " + $reportDetail + ")")
     Assert-HrmEqual "0.14.0" ([string]$channelWorld.Reports[0].Body.installed_version) "версия в отчёте"
     Assert-HrmEqual ("2" * 40) ([string]$channelWorld.Reports[0].Body.installed_release_sha) "sha в отчёте"
     Assert-HrmEqual "job-test-1" ([string]$channelWorld.Reports[0].Body.job_id) "job_id в отчёте"
@@ -326,9 +327,10 @@ Test-Case "наблюдатель: провал update → отчёт rolled_bac
     Invoke-HrmChannelOnce -InstallDir $install -StateDir $state | Out-Null
     $channelWorld = $global:HRM_ChannelWorld
     Assert-HrmEqual 1 $channelWorld.Reports.Count "отчёт не отправлен"
+    $reportDetail = if ($channelWorld.Reports[0].Body.error_detail) { [string]$channelWorld.Reports[0].Body.error_detail } else { "" }
     Assert-HrmEqual "rolled_back" ([string]$channelWorld.Reports[0].Body.state) "итог не rolled_back"
     Assert-HrmEqual "update_failed" ([string]$channelWorld.Reports[0].Body.error_code) "код ошибки"
-    Assert-HrmEqual 6 $t.World.TagCount "откат к прежним образам не выполнен"
+    Assert-HrmEqual 6 $t.World.TagCount ("откат к прежним образам не выполнен (detail: " + $reportDetail + ")")
     Assert-HrmEqual ("3" * 40) (Get-HrmInstallRecord $state).release_sha "версия изменилась при провале"
 }
 

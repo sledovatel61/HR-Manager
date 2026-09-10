@@ -269,7 +269,8 @@ function Invoke-HrmChannelOnce {
             # Phase 12 update engine выполнил rollback сам; отчёт — честный.
             $resultState = "rolled_back"
             $errorCode = "update_failed"
-            Write-HrmLog "error" ("Канал: установка не удалась, откат выполнен: {0}" -f (Redact-HrmText $_.Exception.Message))
+            $errorDetail = Redact-HrmText $_.Exception.Message
+            Write-HrmLog "error" ("Канал: установка не удалась, откат выполнен: {0}" -f $errorDetail)
         }
         $report = @{
             job_id = $jobId
@@ -277,6 +278,7 @@ function Invoke-HrmChannelOnce {
             installed_version = $resultVersion
             installed_release_sha = $resultSha
             error_code = $errorCode
+            error_detail = $errorDetail
         }
         $reportResult = Invoke-HrmHttp -Uri "$baseUrl/api/updates/engine-report" -Method "POST" -Body $report -Headers $headers
         Write-HrmLog "info" ("Канал: отчёт серверу ({0})." -f $resultState)

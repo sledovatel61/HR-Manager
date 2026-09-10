@@ -1125,6 +1125,9 @@ class UpdateEngineReportRequest(BaseModel):
     installed_version: str = ""
     installed_release_sha: str = ""
     error_code: str | None = None
+    # Безопасная детализация для оператора: движок обязан присылать
+    # только отредактированный текст (без путей, URL, подписей, секретов).
+    error_detail: str | None = None
 
 
 class SetupStateOut(BaseModel):
