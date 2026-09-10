@@ -361,7 +361,9 @@ function Get-HrmCanonicalBytes {
         $name = $field[0]
         if (-not $Manifest.Contains($name)) { throw "Отсутствует обязательное поле: $name" }
         $value = [string]$Manifest[$name]
-        if ($value -match "[\r\n]" -or ($value.ToCharArray() | Where-Object { [int]$_ -lt 32 }).Count -gt 0) {
+        # @(...): в StrictMode 2.0 у скалярного результата pipeline нет .Count.
+        $controls = @($value.ToCharArray() | Where-Object { [int]$_ -lt 32 })
+        if ($value -match "[\r\n]" -or $controls.Count -gt 0) {
             throw "Поле $name содержит управляющие символы."
         }
         if ($field[1] -eq "int") {

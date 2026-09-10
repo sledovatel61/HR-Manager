@@ -115,7 +115,9 @@ Test-Case "Ed25519: эталонный вектор RFC 8032 §7.1 TEST 1 (пу�
     $pkBytes = ConvertFrom-HrmHex $pkHex
     $pkB64 = ConvertTo-HrmBase64 $pkBytes
     $sigHex = "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
-    $message = [byte[]]@()
+    # Типизированная переменная: пустой нетипизированный массив PS 5.1
+    # не может привязать к параметру [byte[]].
+    [byte[]]$message = @()
     $result = Test-HrmEd25519Signature -PublicKeyBase64 $pkB64 -Message $message -SignatureHex $sigHex
     Assert-HrmTrue $result "подпись RFC 8032 не прошла проверку"
 }
