@@ -9,7 +9,7 @@ param([string]$HarnessPath = $PSScriptRoot)
 $script:Testdata = Join-Path $PSScriptRoot "..\..\..\infra\release\testdata"
 
 function Get-HrmFixturePath { param([string]$Name) return (Join-Path $script:Testdata $Name) }
-function Get-HrmFixtureText { param([string]$Name) return (Get-Content (Get-HrmFixturePath $Name) -Raw -Encoding UTF8) }
+function Get-HrmFixtureText { param([string]$Name) return ((Get-Content (Get-HrmFixturePath $Name) -Raw -Encoding UTF8) -replace "`r", "") }
 
 function New-HrmChannelWorld {
     # Мок-мир канала: docker-моки из общей обвязки + HTTP-контракт сервера.

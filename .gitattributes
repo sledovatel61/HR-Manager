@@ -16,3 +16,9 @@ infra/docker-compose.yml text eol=lf
 infra/compose.prod.yml text eol=lf
 infra/docker-compose.proxy.yml text eol=lf
 infra/nginx/default.conf.template text eol=lf
+
+# Phase 13: channel fixtures (golden canonical bytes, signed manifests,
+# attack packages) MUST stay byte-exact on every checkout. -text disables
+# any CRLF conversion (core.autocrlf on Windows would otherwise turn the
+# LF golden files into CRLF and break exact-byte comparisons/verification).
+infra/release/testdata/** -text
