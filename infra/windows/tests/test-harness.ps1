@@ -21,6 +21,13 @@ function Test-Case {
         $msg = ("{0}: {1}" -f $Name, $_.Exception.Message)
         $global:HRM_TestFailures += $msg
         Write-Host ("  [FAIL] $Name : {0}" -f $_.Exception.Message) -ForegroundColor Red
+        # GitHub-аннотация: имя проваленного кейса + стек видны в check-runs
+        # даже когда лог-приёмник недоступен.
+        $stack = $_.ScriptStackTrace
+        if (-not $stack) { $stack = "(без стектрейса)" }
+        $flat = ($msg + " || " + $stack) -replace "[`r`n]+", " | "
+        $title = $Name -replace "[`r`n:]+", " "
+        Write-Host ("::error title={0}::{1}" -f $title, $flat)
     }
 }
 
