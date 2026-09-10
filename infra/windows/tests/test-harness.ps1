@@ -228,11 +228,11 @@ function New-HrmMockWorld {
             }
             if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "run")) {
                 $joined = ($Arguments -join " ")
-                if ($joined -match "backup-now") {
+                if ($joined -match "backup-now|\bbackup oneshot\b") {
                     $global:HRM_MockWorld.BackupNowCount++
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "backup ok"; Stderr = "" }
                 }
-                if ($joined -match "backup-check") {
+                if ($joined -match "backup-check|\bbackup check\b") {
                     if ($global:HRM_MockWorld.BackupCheckOk) {
                         return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "integrity ok"; Stderr = "" }
                     }

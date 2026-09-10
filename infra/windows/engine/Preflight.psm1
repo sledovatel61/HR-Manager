@@ -154,14 +154,20 @@ function Test-HrmConfigFiles {
     $override = Get-HrmPreflightOverrideResult "config"
     if ($null -ne $override) { return $override }
     # Существующая конфигурация (повторная установка/обновление) валидна.
-    $composeFile = Join-Path $InstallDir "infra\compose.pilot.yml"
-    if (-not (Test-Path $composeFile)) {
-        return [pscustomobject]@{ Name = "config"; Passed = $false; Message = "Файл конфигурации не найден: $composeFile" }
+    $composeFiles = @(
+        (Join-Path $InstallDir "infra\docker-compose.yml"),
+        (Join-Path $InstallDir "infra\compose.pilot.yml")
+    )
+    foreach ($composeFile in $composeFiles) {
+        if (-not (Test-Path $composeFile)) {
+            return [pscustomobject]@{ Name = "config"; Passed = $false; Message = "Файл конфигурации не найден: $composeFile" }
+        }
     }
     $args = @("compose", "--project-name", "hr-manager-pilot")
     $envFile = Get-HrmEnvFile $StateDir
     if (Test-Path $envFile) { $args += @("--env-file", $envFile) }
-    $args += @("-f", $composeFile, "config", "--quiet")
+    foreach ($composeFile in $composeFiles) { $args += @("-f", $composeFile) }
+    $args += @("config", "--quiet")
     $check = Invoke-HrmExternal -Name "docker.exe" -Arguments $args -IgnoreExitCode
     if ($check.ExitCode -ne 0) {
         return [pscustomobject]@{ Name = "config"; Passed = $false; Message = "Конфигурация невалидна: " + (Redact-HrmText $check.Stderr.Trim()) }

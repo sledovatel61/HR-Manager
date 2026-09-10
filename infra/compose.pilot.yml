@@ -59,6 +59,11 @@ services:
       SESSION_COOKIE_SECURE: "false"
       DATABASE_URL: postgresql+psycopg://hr_manager:${HRM_POSTGRES_PASSWORD:?HRM_POSTGRES_PASSWORD is required}@db:5432/hr_manager
       RELEASE_SHA: ${HRM_RELEASE_SHA:-}
+      # The API reports backup freshness from the scheduler state. Mount the
+      # shared volume read-only: the backend must observe, but never modify,
+      # encrypted backup artifacts.
+      BACKUP_DIR: /var/backups/hr-manager
+      BACKUP_STATE_FILE: /var/backups/hr-manager/state.json
       # One-time local first-run exchange (phase 12). Only the SHA-256 hash
       # is stored by the backend; the raw token exists only in the
       # ACL-protected local env file of the engine.
@@ -74,6 +79,8 @@ services:
       SMTP_USERNAME: ""
       SMTP_PASSWORD: ""
     ports: !reset []
+    volumes:
+      - pilot_backups:/var/backups/hr-manager:ro
 
   frontend:
     image: hr-manager-pilot-frontend:pilot
@@ -110,6 +117,7 @@ services:
     environment:
       APP_ENV: pilot
       APP_DEBUG: "false"
+      SECRET_KEY: ${HRM_SIGNING_KEY:?HRM_SIGNING_KEY is required for the pilot}
       BOOTSTRAP_ADMIN_PASSWORD: ${HRM_BOOTSTRAP_ADMIN_PASSWORD:?HRM_BOOTSTRAP_ADMIN_PASSWORD is required for the pilot}
       DATABASE_URL: postgresql+psycopg://hr_manager:${HRM_POSTGRES_PASSWORD:?HRM_POSTGRES_PASSWORD is required}@db:5432/hr_manager
       # The official postgres image creates the POSTGRES_USER as superuser,

@@ -81,6 +81,12 @@ Filename: "powershell.exe"; \
   Flags: runhidden; \
   RunOnceId: "HRMUninstallStop"
 
+[UninstallDelete]
+; Штатное обновление заменяет файлы снимка уже после установки, поэтому Inno
+; не считает их исходными файлами пакета. После остановки стека удаляем только
+; каталог программы; StateDir и именованные Docker volumes намеренно вне {app}.
+Type: filesandordirs; Name: "{app}"
+
 [Code]
 var
   RolePage: TInputOptionWizardPage;

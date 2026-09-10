@@ -78,6 +78,15 @@ function Start-HrmFirstRun {
     $baseUrl = Get-HrmBaseUrl $Port
     $record = Get-HrmInstallRecord $StateDir
     if ($null -ne $record -and $record.pilot_created) {
+        # Repair stale artifacts left by an interrupted/older first-run flow.
+        # The database is authoritative: once the owner exists, no raw
+        # exchange token or setup URL/input should remain on disk.
+        Clear-HrmExchangeToken $StateDir
+        foreach ($path in @((Get-HrmInputFile $StateDir), (Get-HrmSetupUrlFile $StateDir))) {
+            if (Test-Path $path) { Remove-Item $path -Force }
+        }
+        $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $Port
+        Invoke-HrmCompose $InstallDir $StateDir @("up", "-d") | Out-Null
         Write-HrmLog "info" "Владелец уже создан — первый запуск не требуется."
         return
     }
@@ -92,6 +101,10 @@ function Start-HrmFirstRun {
         # Обмен закрыт сервером: владелец есть. Фиксируем и убираем токен
         # из env (bootstrap больше не нужен; пользователи уже существуют).
         Set-HrmInstallRecord $StateDir @{ pilot_created = $true }
+        Clear-HrmExchangeToken $StateDir
+        foreach ($path in @((Get-HrmInputFile $StateDir), (Get-HrmSetupUrlFile $StateDir))) {
+            if (Test-Path $path) { Remove-Item $path -Force }
+        }
         $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $Port
         Invoke-HrmCompose $InstallDir $StateDir @("up", "-d") | Out-Null
         Write-HrmLog "info" "Владелец уже существует; первый запуск пропущен."

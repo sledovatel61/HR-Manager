@@ -53,6 +53,26 @@ function Assert-HrmNoSecretInArgs {
 
 Write-Host "== Секреты =="
 
+Test-Case "ACL использует наследуемые права только для каталога, а прямые — для файла" {
+    Initialize-HrmTestEngine
+    $world = New-HrmMockWorld
+    $state = Get-HrmTestStateDir
+    New-Item -ItemType Directory -Path $state -Force | Out-Null
+    $file = Join-Path $state "protected.json"
+    Set-Content -Path $file -Value "{}" -Encoding UTF8
+
+    Protect-HrmFile $state $state
+    Protect-HrmFile $state $file
+
+    $directoryCall = @($world.IcaclsArgs | Where-Object { $_[0] -eq $state } | Select-Object -Last 1)
+    $fileCall = @($world.IcaclsArgs | Where-Object { $_[0] -eq $file } | Select-Object -Last 1)
+    Assert-HrmEqual 1 $directoryCall.Count "нет вызова ACL для каталога"
+    Assert-HrmEqual 1 $fileCall.Count "нет вызова ACL для файла"
+    Assert-HrmTrue ($directoryCall[0][3] -match ':\(OI\)\(CI\)F$') "каталог не выдаёт наследуемые права"
+    Assert-HrmTrue ($fileCall[0][3] -match ':F$') "файл не выдаёт прямые права"
+    Assert-HrmNotContains $fileCall[0][3] "(OI)" "файлу ошибочно выданы только наследуемые права"
+}
+
 Test-Case "секреты уникальны между установками и неизменны при повторах" {
     Initialize-HrmTestEngine
     New-HrmMockWorld | Out-Null
@@ -74,7 +94,9 @@ Test-Case "секреты уникальны между установками �
     $keyId = Get-HrmSecret $a "HRM_BACKUP_KEY_ID"
     Assert-HrmTrue ($keyId -match "^pilot-[0-9a-f]{8}$") "неверный формат HRM_BACKUP_KEY_ID: $keyId"
     Assert-HrmEqual 64 (Get-HrmSecret $a "HRM_SIGNING_KEY").Length "длина ключа подписи"
-    Assert-HrmEqual 64 (Get-HrmSecret $a "HRM_BACKUP_KEY").Length "длина ключа бэкапов"
+    $backupKey = Get-HrmSecret $a "HRM_BACKUP_KEY"
+    Assert-HrmEqual 44 $backupKey.Length "длина base64 ключа бэкапов"
+    Assert-HrmEqual 32 ([Convert]::FromBase64String($backupKey)).Length "ключ бэкапов должен декодироваться в 32 байта"
     Assert-HrmEqual 32 (Get-HrmSecret $a "HRM_POSTGRES_PASSWORD").Length "длина пароля БД"
     Assert-HrmEqual 32 (Get-HrmSecret $a "HRM_BOOTSTRAP_ADMIN_PASSWORD").Length "длина bootstrap-пароля"
     Assert-HrmEqual 32 (Get-HrmSecret $a "HRM_EXCHANGE_TOKEN").Length "длина токена обмена"
@@ -213,6 +235,10 @@ Test-Case "повторный запуск: существующая устан�
     Assert-HrmEqual "v1" $marker "повторный запуск перезаписал установленный снимок"
     $record = Get-HrmInstallRecord $state
     Assert-HrmTrue $record.pilot_created "владелец не зафиксирован после 409"
+    $secrets = Get-HrmJsonFile (Get-HrmSecretsFile $state)
+    Assert-HrmTrue ([string]::IsNullOrEmpty([string]$secrets.HRM_EXCHANGE_TOKEN)) "сырой токен обмена не удалён после 409"
+    Assert-HrmFalse (Test-Path (Get-HrmInputFile $state)) "файл ввода первого запуска не удалён"
+    Assert-HrmFalse (Test-Path (Get-HrmSetupUrlFile $state)) "URL первого запуска не удалён"
     $env = Get-Content (Get-HrmEnvFile $state) -Raw
     Assert-HrmContains $env "HRM_EXCHANGE_TOKEN=retired-" "токен обмена не заменён заглушкой после 409"
 }
@@ -250,7 +276,7 @@ Test-Case "обновление: полный путь prepare→done, журн�
     Assert-HrmEqual 1 $t.World.BackupNowCount "бэкап перед миграцией не создан"
     Assert-HrmEqual 1 $t.World.AlembicUpgradeCount "alembic upgrade не выполнялся ровно один раз"
     Assert-HrmTrue ($t.World.BuildCount -ge 1) "новые образы не собирались"
-    Assert-HrmEqual 0 $t.World.TagCount "откат не должен был запускаться"
+    Assert-HrmEqual 3 $t.World.TagCount "предыдущие образы не закреплены до сборки"
     $record = Get-HrmInstallRecord $state
     Assert-HrmEqual "snapshot-sha-0014" $record.release_sha "новая версия не зафиксирована"
     Assert-HrmFalse (Test-Path (Get-HrmUpdateJournal $state)) "журнал обновления не очищен"
@@ -300,7 +326,7 @@ Test-Case "обновление: невалидный бэкап останав�
     Assert-HrmThrows "невалидный бэкап не остановил обновление" {
         Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state
     }
-    Assert-HrmEqual 3 $t.World.TagCount "предыдущие образы не восстановлены (тегов мало)"
+    Assert-HrmEqual 6 $t.World.TagCount "предыдущие образы не закреплены и не восстановлены"
     Assert-HrmTrue (Test-Path (Get-HrmUpdateJournal $state)) "журнал прерванного обновления не сохранён"
     Assert-HrmEqual "snapshot-sha-0013" (Get-HrmInstallRecord $state).release_sha "версия изменилась при провале"
     Assert-HrmEqual 0 $t.World.AlembicUpgradeCount "миграция не должна была выполняться"
@@ -352,7 +378,7 @@ Test-Case "обновление: smoke несовпадения версии →
     Assert-HrmThrows "дрейф версии не остановил обновление" {
         Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state
     }
-    Assert-HrmEqual 3 $t.World.TagCount "откат образов не выполнен"
+    Assert-HrmEqual 6 $t.World.TagCount "закрепление и откат образов не выполнены"
     Assert-HrmEqual "snapshot-sha-0013" (Get-HrmInstallRecord $state).release_sha "версия изменилась при провале smoke"
 }
 
@@ -368,7 +394,7 @@ Test-Case "обновление: дрейф миграций в smoke → отк
     Assert-HrmThrows "дрейф миграций не остановил обновление" {
         Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state
     }
-    Assert-HrmEqual 3 $t.World.TagCount "откат образов не выполнен при дрейфе миграций"
+    Assert-HrmEqual 6 $t.World.TagCount "закрепление и откат образов не выполнены при дрейфе миграций"
 }
 
 Test-Case "обновление: worker-check не проходит → откат" {
@@ -383,7 +409,7 @@ Test-Case "обновление: worker-check не проходит → отка
     Assert-HrmThrows "worker-check не остановил обновление" {
         Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state
     }
-    Assert-HrmEqual 3 $t.World.TagCount "откат образов не выполнен при провале worker-check"
+    Assert-HrmEqual 6 $t.World.TagCount "закрепление и откат образов не выполнены при провале worker-check"
 }
 
 Write-Host "== Удаление =="

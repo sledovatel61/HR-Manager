@@ -7,9 +7,12 @@ Set-StrictMode -Version 2.0
 $script:ProjectName = "hr-manager-pilot"
 $script:ExpectedHeadRevision = "0013"
 
-function Get-HrmComposeFile {
+function Get-HrmComposeFiles {
     param([string]$InstallDir)
-    return (Join-Path $InstallDir "infra\compose.pilot.yml")
+    return @(
+        (Join-Path $InstallDir "infra\docker-compose.yml"),
+        (Join-Path $InstallDir "infra\compose.pilot.yml")
+    )
 }
 
 function Get-HrmComposeArgs {
@@ -19,7 +22,9 @@ function Get-HrmComposeArgs {
     $composeArgs += ("--project-name", $script:ProjectName)
     $envFile = Get-HrmEnvFile $StateDir
     if (Test-Path $envFile) { $composeArgs += ("--env-file", $envFile) }
-    $composeArgs += ("-f", (Get-HrmComposeFile $InstallDir))
+    foreach ($composeFile in (Get-HrmComposeFiles $InstallDir)) {
+        $composeArgs += ("-f", $composeFile)
+    }
     return , $composeArgs
 }
 
@@ -35,7 +40,18 @@ function Test-HrmComposeRunning {
     $ps = Invoke-HrmCompose $InstallDir $StateDir @("ps", "--format", "json") -IgnoreExitCode
     if ($ps.ExitCode -ne 0) { return $false }
     try {
-        $items = $ps.Stdout | ConvertFrom-Json
+        # Compose v2 may emit either one JSON array or newline-delimited JSON
+        # objects. Windows PowerShell 5.1 cannot parse several top-level JSON
+        # values in one ConvertFrom-Json call, so handle both formats.
+        $items = @()
+        try { $items = @($ps.Stdout | ConvertFrom-Json -ErrorAction Stop) }
+        catch {
+            foreach ($line in ($ps.Stdout -split "`r?`n")) {
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $items += ($line | ConvertFrom-Json -ErrorAction Stop)
+                }
+            }
+        }
         if ($null -eq $items) { return $false }
         $running = @($items | Where-Object { $_.State -eq "running" -or $_.State -like "Up*" })
         return ($running.Count -gt 0)

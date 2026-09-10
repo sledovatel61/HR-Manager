@@ -9,7 +9,7 @@ $script:SecretNames = @(
     "HRM_POSTGRES_PASSWORD",   # 32 hex — пароль БД
     "HRM_SIGNING_KEY",         # 64 hex — подпись сессий/CSRF
     "HRM_BOOTSTRAP_ADMIN_PASSWORD", # 32 hex — запасной bootstrap-пароль (не используется при токене)
-    "HRM_BACKUP_KEY",          # 64 hex — ключ шифрования бэкапов (в контейнер как BACKUP_ENC_KEY)
+    "HRM_BACKUP_KEY",          # base64 от 32 байт — AES-256 ключ бэкапов
     "HRM_BACKUP_KEY_ID",       # строка — идентификатор ключа бэкапа
     "HRM_EXCHANGE_TOKEN"       # одноразовый токен первого запуска (гасится после claim)
 )
@@ -55,6 +55,22 @@ function Get-HrmSecret {
     if ($map.ContainsKey($Name)) {
         $value = $map[$Name]
         if (-not [string]::IsNullOrEmpty($value)) {
+            # Ранние сборки phase 12 сохраняли backup key как 64 hex, хотя
+            # backend-контракт BACKUP_ENC_KEY требует base64 от 32 байт.
+            # Конвертируем те же байты один раз (это не ротация ключа).
+            if ($Name -eq "HRM_BACKUP_KEY" -and $value -match "^[0-9a-fA-F]{64}$") {
+                $bytes = New-Object byte[] 32
+                for ($i = 0; $i -lt 32; $i++) {
+                    $bytes[$i] = [Convert]::ToByte($value.Substring($i * 2, 2), 16)
+                }
+                $value = [Convert]::ToBase64String($bytes)
+                $file = Get-HrmSecretsFile $StateDir
+                $data = Get-HrmJsonFile $file
+                $merged = [ordered]@{}
+                foreach ($prop in $data.PSObject.Properties) { $merged[$prop.Name] = $prop.Value }
+                $merged[$Name] = $value
+                Set-HrmJsonFile $StateDir "secrets.json" $merged
+            }
             Register-HrmSecret $value
             return $value
         }
@@ -63,7 +79,11 @@ function Get-HrmSecret {
         "HRM_POSTGRES_PASSWORD" { New-HrmHex 16 }
         "HRM_SIGNING_KEY" { New-HrmHex 32 }
         "HRM_BOOTSTRAP_ADMIN_PASSWORD" { New-HrmHex 16 }
-        "HRM_BACKUP_KEY" { New-HrmHex 32 }
+        "HRM_BACKUP_KEY" {
+            $bytes = New-Object byte[] 32
+            [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+            [Convert]::ToBase64String($bytes)
+        }
         "HRM_BACKUP_KEY_ID" { "pilot-" + (New-HrmHex 4) }
         "HRM_EXCHANGE_TOKEN" { New-HrmHex 16 }
     }
