@@ -1,4 +1,4 @@
-# Криптография канала обновлений (Phase 13) для Windows PowerShell 5.1+.
+﻿# Криптография канала обновлений (Phase 13) для Windows PowerShell 5.1+.
 #
 # Ed25519 (RFC 8032 §5.1.7) реализована на System.Numerics.BigInteger +
 # SHA-512 средствами .NET Framework: клиент проверяет detached-подпись
