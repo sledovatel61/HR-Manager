@@ -477,9 +477,9 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
 - В репозитории нет секретов и персональных данных; `.env`, дампы и backup
   игнорируются git'ом.
 - Пользователи, роли, сессии, аудит, кандидаты, события, аналитика,
-  эксплуатационный контур, коммуникации, версионируемые списки документов и
-  ограниченные личные правила реализованы. Следующий этап — Phase 12 после
-  согласования отдельного продуктового контракта.
+  эксплуатационный контур, коммуникации, версионируемые списки документов,
+  ограниченные личные правила и локальный Windows-пилот реализованы. Следующий
+  этап — Phase 13: безопасный канал доставки обновлений.
 
 ## Документация
 
@@ -493,6 +493,8 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
 - [`prompts/PHASE_3_PROMPT.md`](prompts/PHASE_3_PROMPT.md) — исторический промпт базы кандидатов;
 - [`prompts/PHASE_11_PROMPT.md`](prompts/PHASE_11_PROMPT.md) — историческое задание этапа 11;
 - [`docs/phase-12-report-arena.md`](docs/phase-12-report-arena.md) — отчёт этапа 12 (Windows-пилот);
+- [`docs/phase-12-local-acceptance.md`](docs/phase-12-local-acceptance.md) — итоговая локальная приёмка Windows;
+- [`prompts/PHASE_13_PROMPT.md`](prompts/PHASE_13_PROMPT.md) — задание этапа 13;
 - [`design/IMPLEMENTATION_GUIDE.md`](design/IMPLEMENTATION_GUIDE.md) — план
   переноса дизайна «Живая воронка» в production.
 
@@ -525,3 +527,15 @@ Windows-пилот: графический установщик `HR Manager Setu
 `pilot_full_access`, режим работы — поле профиля), пилотный Compose-оверлей
 с публикацией только на `127.0.0.1` и миграция `0013`. Отчёт:
 [`docs/phase-12-report-arena.md`](docs/phase-12-report-arena.md).
+
+Финальная локальная приёмка на реальной Windows подтвердила trusted update,
+автоматический rollback намеренно сломанного обновления и uninstall с
+сохранением StateDir, PostgreSQL/backup volumes и зашифрованных backup-файлов.
+Подробности и SHA256 установщика:
+[`docs/phase-12-local-acceptance.md`](docs/phase-12-local-acceptance.md).
+
+## Phase 13 — следующий этап
+
+Подписанный manifest канала обновлений, безопасная загрузка/staging,
+административный UI и release pipeline поверх уже принятого update/rollback:
+[`prompts/PHASE_13_PROMPT.md`](prompts/PHASE_13_PROMPT.md).
