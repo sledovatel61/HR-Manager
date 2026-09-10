@@ -208,8 +208,12 @@ function Invoke-HrmChannelInstall {
         throw "Внутренний release_sha не совпадает с manifest."
     }
     # Существующий Phase 12 update engine (backup gate → smoke → rollback).
-    Write-HrmLog "info" ("Канал: установка проверенного релиза {0} (sha {1})…" -f $manifest["version"], ([string]$manifest["release_sha"]).Substring(0, 12))
-    Update-HrmApp -ReleaseDir $expanded -InstallDir $InstallDir -StateDir $StateDir
+    $null = Write-HrmLog "info" ("Канал: установка проверенного релиза {0} (sha {1})…" -f $manifest["version"], ([string]$manifest["release_sha"]).Substring(0, 12))
+    # $null =: update engine пишет журнал в success stream (Write-Output).
+    # Без захвата его строки попали бы в возврат этой функции и упаковали
+    # hashtable результата в массив — StrictMode дал бы PropertyNotFoundException
+    # на $outcome.version у вызывающего.
+    $null = Update-HrmApp -ReleaseDir $expanded -InstallDir $InstallDir -StateDir $StateDir
     return @{
         version = [string]$manifest["version"]
         release_sha = [string]$manifest["release_sha"]
@@ -259,6 +263,7 @@ function Invoke-HrmChannelOnce {
         $resultVersion = $installedVersion
         $resultSha = $installedSha
         $errorCode = ""
+        $errorDetail = ""
         try {
             $outcome = Invoke-HrmChannelInstall -InstallDir $InstallDir -StateDir $StateDir -ManifestPath $manifestPath -PackagePath $packagePath -JobId $jobId
             $resultVersion = $outcome.version
