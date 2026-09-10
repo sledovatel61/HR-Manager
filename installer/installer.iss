@@ -71,6 +71,14 @@ Filename: "powershell.exe"; \
   StatusMsg: "Установка HR Manager (сборка образов может занять несколько минут)…"; \
   Flags: postinstall nowait skipifsilent
 
+; Наблюдатель канала обновлений (Phase 13): фоновый опрос и выполнение
+; только явно поставленной команды установки. Фоновая установка не
+; запускается никогда.
+Filename: "powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action channel -Watch -InstallDir ""{app}"""; \
+  WorkingDir: "{app}"; \
+  Flags: postinstall nowait runhidden skipifsilent
+
 [UninstallRun]
 ; Контейнеры останавливаются; данные Postgres и зашифрованные бэкапы
 ; СОХРАНЯЮТСЯ (тома pilot_pgdata/pilot_backups). Docker Desktop и WSL2

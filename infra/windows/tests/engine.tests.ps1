@@ -86,8 +86,8 @@ Test-Case "секреты уникальны между установками �
     Assert-HrmFalse ($pa -eq $pb) "пароли БД разных установок совпали"
     $pa2 = Get-HrmSecret $a "HRM_POSTGRES_PASSWORD"
     Assert-HrmEqual $pa $pa2 "секрет перегенерирован при повторном чтении"
-    # Все шесть секретов существуют.
-    foreach ($name in @("HRM_POSTGRES_PASSWORD", "HRM_SIGNING_KEY", "HRM_BOOTSTRAP_ADMIN_PASSWORD", "HRM_BACKUP_KEY", "HRM_BACKUP_KEY_ID", "HRM_EXCHANGE_TOKEN")) {
+    # Все семь секретов существуют.
+    foreach ($name in @("HRM_POSTGRES_PASSWORD", "HRM_SIGNING_KEY", "HRM_BOOTSTRAP_ADMIN_PASSWORD", "HRM_BACKUP_KEY", "HRM_BACKUP_KEY_ID", "HRM_EXCHANGE_TOKEN", "HRM_UPDATE_ENGINE_TOKEN")) {
         $value = Get-HrmSecret $a $name
         Assert-HrmTrue (-not [string]::IsNullOrEmpty($value)) "секрет $name пуст"
     }
@@ -113,6 +113,9 @@ Test-Case "pilot.env: токен обмена есть до создания в�
     Assert-HrmContains $env "HRM_EXCHANGE_TOKEN=" "нет токена обмена в pilot.env"
     Assert-HrmContains $env "HRM_RELEASE_SHA=snapshot-sha-0013" "нет release sha"
     Assert-HrmContains $env "HRM_PILOT_PORT=8080" "нет порта"
+    Assert-HrmContains $env "UPDATE_ENGINE_TOKEN=" "нет токена движка канала в pilot.env"
+    Assert-HrmContains $env "HRM_STAGING_DIR=" "нет staging-каталога в pilot.env"
+    Assert-HrmContains $env "HRM_UPDATE_CHANNEL_URL=" "нет URL канала в pilot.env"
     Assert-HrmFalse ([regex]::IsMatch($env, '(?m)^BOOTSTRAP_ADMIN_PASSWORD=')) "имя переменной в pilot.env не совпадает с оверлеем"
     Set-HrmInstallRecord $state @{ pilot_created = $true; release_sha = "snapshot-sha-0013"; port = 8080 }
     $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080

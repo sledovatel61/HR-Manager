@@ -11,7 +11,7 @@ $testsDir = $PSScriptRoot
 $harness = Join-Path $testsDir "test-harness.ps1"
 
 $exitCode = 0
-foreach ($file in @("static.tests.ps1", "engine.tests.ps1")) {
+foreach ($file in @("static.tests.ps1", "engine.tests.ps1", "channel.tests.ps1")) {
     $path = Join-Path $testsDir $file
     & (Resolve-Path $path).Path -HarnessPath $testsDir
     if (-not $?) { $exitCode = 1 }

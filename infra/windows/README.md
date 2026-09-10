@@ -195,6 +195,41 @@ infra\windows\tests\run-tests.ps1` (Windows PowerShell 5.1 и pwsh; в CI —
 `python3 infra/windows/tests/lint-engine.py` (приближение; авторитетная —
 `run-tests.ps1`).
 
+## Канал обновлений (Phase 13)
+
+Подписанный канал доставки обновлений поверх существующего update engine.
+Полный контракт — `infra/release/README.md` (JSON-манифест, канонизация,
+Ed25519, ротация ключей, сборка release).
+
+- **Роли:** бэкенд (контейнер) проверяет подписанный manifest доверенными
+  ключами серверной конфигурации (`UPDATE_CHANNEL_URL`,
+  `UPDATE_CHANNEL_PUBLIC_KEYS` — из `pilot.env`) и скачивает пакет в
+  bind-mounted staging (`/updates` → `%LOCALAPPDATA%\HRManagerStaging`,
+  ACL-защищён, отделён от каталога секретов и от backup volume).
+- **Движок-наблюдатель:** опрашивает `GET /api/updates/engine-state` по
+  loopback с машинным токеном (`HRM_UPDATE_ENGINE_TOKEN`, секрет из
+  `secrets.json`), получив команду `install` — ПОВТОРНО проверяет manifest
+  (Ed25519, `engine/Crypto.psm1`, RFC 8032), размер/SHA256 пакета,
+  безопасно распаковывает (Zip Slip/absolute/UNC/ADS/symlink/backslash/
+  лишний корень/executables — `Expand-HrmPackage`) и вызывает
+  существующий `Update-HrmApp` (бэкап-ворота → миграция → smoke →
+  rollback). Результат (`installed`/`rolled_back`/`restart_required`)
+  честно сообщается в `/updates/engine-report`.
+- **Фоновая проверка** допустима (`/updates/engine-check`, сервер
+  троттлит интервалом `check_min_interval_seconds`); **фоновая установка
+  не запускается никогда** — только явная команда администратора из UI.
+- **Локальный путь `-Action update -ReleaseDir`** полностью сохранён.
+- Команды администратора:
+  - `-Action channel` — один цикл наблюдателя;
+  - `-Action channel -Watch` — блокирующий цикл (запускается `start` и
+    установщиком отдельным скрытым процессом; `stop`/`uninstall` его
+    останавливают);
+  - `-Action channel-config -SetUrl <https> -KeysJson <файл>` — ротация/
+    отзыв доверенных ключей и смена URL канала (изменения попадают в
+    `pilot.env` при следующей записи).
+- UI: раздел «Обновления» в администрировании (проверка/скачивание/
+  установка, честные состояния и итоги, без URL/путей/секретов).
+
 ## Модель доверия loopback (кратко)
 
 Пилот обслуживает обычный `http://127.0.0.1` — трафик не покидает машину,
