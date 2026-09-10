@@ -19,7 +19,11 @@ function Get-HrmSha256Bytes {
 
 function Get-HrmSha256Hex {
     param([byte[]]$Data)
-    return ((Get-HrmSha256Bytes $Data | ForEach-Object { $_.ToString("x2") }) -join "")
+    # В переменную, а не напрямую в pipeline: результат функции — массив
+    # одним объектом (защита `,` от разворачивания), pipeline не перечислит
+    # его — $_ оказался бы byte[], и .ToString("x2") упал бы с MethodException.
+    $bytes = Get-HrmSha256Bytes $Data
+    return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
 }
 
 function Get-HrmSha512Bytes {
