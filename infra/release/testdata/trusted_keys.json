@@ -1,0 +1,10 @@
+{
+  "pilot-test-key": {
+    "key": "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM=",
+    "revoked": false
+  },
+  "pilot-revoked-key": {
+    "key": "D83KWJq/Tb9ETFv8x2gNe7DvOfZM0vMY4YKH+aQVvy0=",
+    "revoked": true
+  }
+}
