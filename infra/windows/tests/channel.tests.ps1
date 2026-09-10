@@ -115,7 +115,7 @@ Test-Case "Ed25519: эталонный вектор RFC 8032 §7.1 TEST 1 (пу�
     $pkBytes = ConvertFrom-HrmHex $pkHex
     $pkB64 = ConvertTo-HrmBase64 $pkBytes
     $sigHex = "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
-    $message = New-Object byte[] 0
+    $message = [byte[]]@()
     $result = Test-HrmEd25519Signature -PublicKeyBase64 $pkB64 -Message $message -SignatureHex $sigHex
     Assert-HrmTrue $result "подпись RFC 8032 не прошла проверку"
 }
@@ -208,8 +208,8 @@ Test-Case "SemVer: общая таблица случаев (единая с Pyt
     New-HrmMockWorld | Out-Null
     $cases = Get-HrmJsonFile (Get-HrmFixturePath "semver_cases.json")
     foreach ($case in $cases) {
-        $got = Compare-HrmSemVer ([string]$case[0]) ([string]$case[1])
-        Assert-HrmEqual ([int]$case[2]) $got ("SemVer {0} vs {1}" -f $case[0], $case[1])
+        $got = Compare-HrmSemVer ([string]($case[0])) ([string]($case[1]))
+        Assert-HrmEqual ([int]($case[2])) $got ("SemVer {0} vs {1}" -f $case[0], $case[1])
     }
 }
 
@@ -303,14 +303,16 @@ Test-Case "наблюдатель: провал update → отчёт rolled_bac
     $t = New-HrmChannelWorld -QueueInstall "yes"
     $state = Get-HrmTestStateDir
     $install = Get-HrmTestInstallDir
-    # Smoke провалится: работающая версия не совпадёт с релизом.
+    # Smoke провалится: работающая версия не совпадёт с релизом
+    # (SimulateStaleRelease: мок не подменяет release_sha после миграции).
+    $t.World.SimulateStaleRelease = $true
     $t.World.OpsBody.release_sha = "3" * 40
     Invoke-HrmChannelOnce -InstallDir $install -StateDir $state | Out-Null
     $channelWorld = $global:HRM_ChannelWorld
     Assert-HrmEqual 1 $channelWorld.Reports.Count "отчёт не отправлен"
     Assert-HrmEqual "rolled_back" ([string]$channelWorld.Reports[0].Body.state) "итог не rolled_back"
     Assert-HrmEqual "update_failed" ([string]$channelWorld.Reports[0].Body.error_code) "код ошибки"
-    Assert-HrmEqual 3 $t.World.TagCount "откат к прежним образам не выполнен"
+    Assert-HrmEqual 6 $t.World.TagCount "откат к прежним образам не выполнен"
     Assert-HrmEqual ("3" * 40) (Get-HrmInstallRecord $state).release_sha "версия изменилась при провале"
 }
 
