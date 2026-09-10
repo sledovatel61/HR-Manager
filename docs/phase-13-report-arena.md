@@ -5,8 +5,11 @@
   без продолжения ветки Phase 12 новыми коммитами поверх чужих)
 - **Baseline SHA (на старте):** `7343025dcc5f33ea5f6298b014b646cddd0ffdc8`
   (= `phase12/windows-acceptance-final`, локально принятая Phase 12)
-- **Final code SHA:** см. PR-комментарий (docs-коммит поверх кода)
-- **PR:** (см. комментарий)
+- **Final code SHA:** `e626794fb8f46a9652061aefd81c9b7e48d854a1`
+  (полностью зелёный CI: run 34502728837,
+  https://github.com/sledovatel61/HR-Manager/actions/runs/34502728837)
+- **PR:** #23 → `phase12/windows-acceptance-final`
+  (https://github.com/sledovatel61/HR-Manager/pull/23)
 - **Миграции БД:** новых миграций **нет** (промпт: по умолчанию не
   требуется; состояние канала — server-owned в памяти + host-файлы
   движка, честно возвращается в `idle` после перезапуска)
@@ -321,9 +324,54 @@ PS 5.1-дефекты (все покрыты в CI на точном SHA):
    канонических байтов расходилось невидимо. Исправлено двусторонне:
    `Get-HrmFixtureText` нормализует `\r`, а `.gitattributes` фиксирует
    `infra/release/testdata/** -text` (byte-exact на любом checkout).
+7. Знаковое чтение hex в .NET: `BigInteger.Parse(hex, "AllowHexSpecifier")`
+   трактует старший байт ≥ 0x80 как two's-complement отрицательный
+   (RFC-вектор R = 0xe5…, A = 0xd7…, h = 0x9f…; в диагностике CI h и
+   координаты приходили отрицательными). Исправление: каждый динамический
+   разбор hex-литерала теперь добавляет префикс `"0"`; регрессионный тест
+   «little-endian: старший байт ≥ 0x80» закреплён в channel.tests.ps1.
+8. `BigInteger.Remainder` сохраняет знак делимого — сравнение верификации
+   сравнивало конгруэнтные противоположные представители. Добавлена
+   `Get-HrmPositiveRemainder` (нормализация в [0, p)); финальное равенство
+   Ed25519 сравнивает `(sB.x·rhs.z) mod p == (rhs.x·sB.z) mod p` и
+   y-аналог через нормализованных представителей. Критический путь
+   использует только статические API BigInteger (`op_RightShift`,
+   `op_BitwiseAnd`, `IsOne`/`IsZero`, `Compare`, `Equals`) — поведение
+   PS-операторов `-shr`/`%`/`-eq` на BigInteger не участвует.
+9. Диагностический канал: отчёт движка серверу теперь несёт опциональное
+   `error_detail` (сообщение исключения + `ScriptStackTrace`, без
+   секретов — через `Redact-HrmText`); schema бэкенда расширена
+   (`UpdateEngineReportRequest.error_detail`), watcher-тесты встраивают
+   detail в текст провала. Это позволило локализовать оба оставшихся
+   дефекта (ниже) по аннотациям CI без лог-приёмника.
+10. `Get-HrmSha256Hex`: функция возвращала массив байтов одной защитой
+    `,` — pipeline доставлял весь `byte[]` ОДНИМ объектом, и
+    `$_.ToString("x2")` в `ForEach-Object` бросал `MethodException`
+    («Cannot find an overload for "ToString" and the argument count:
+    "1"») на PS 5.1. Исправление: хэш-байты присваиваются переменной до
+    перечисления (переменная в pipeline перечисляется поэлементно). Это
+    был пре-пин сбой, объяснявший оба падавших watcher-теста.
+11. Захват success-stream: `Update-HrmApp` пишет журнал через
+    `Write-Output` — строки лога попадали в возврат
+    `Invoke-HrmChannelInstall`, упаковывая итоговый hashtable в массив;
+    `$outcome.version` у вызывающего давал `PropertyNotFoundException`
+    («The property 'version' cannot be found on this object», StrictMode).
+    Исправление: `$null =` перед `Write-HrmLog` и перед
+    `Update-HrmApp` в канале установки (присваивание поглощает весь
+    вывод вызова; исключения по-прежнему пробрасываются). Заодно
+    инициализирован `$errorDetail = ""` в успешной ветке отчёта —
+    иначе StrictMode бросил бы на неприсвоенной переменной.
+12. Итог: run 34502728837 на `e626794` — все пять джобов зелёные
+    (backend integration, backend checks, frontend checks, Windows
+    engine tests + installer smoke, compose stack smoke); оба
+    watcher-теста («отчёт installed» и «отчёт rolled_back») проходят,
+    installer smoke (silent install/uninstall) проходит.
 
 ## Handoff
 
+- **Статус на handoff:** CI полностью зелёный на `e626794` (run
+  34502728837); Windows-джоб включает оба watcher-теста и installer
+  smoke. PR #23 готов к приёмке владельцем; мерж — только владелец.
 - Выпуск: `infra/release/README.md` (генерация ключей, сборка пакета,
   подпись, verification, публикация). После выпуска — внести публичный
   ключ в конфигурацию канала и обновить `ExpectedHeadRevision` при новых
