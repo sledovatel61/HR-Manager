@@ -82,20 +82,13 @@ function Invoke-HrmEdAdd {
 }
 
 function Invoke-HrmEdDouble {
+    # Удвоение через полную (complete) формулу сложения HWCD: для a=-1
+    # закон сложения полон и не имеет исключительных точек. Отдельная
+    # специализированная формула удвоения давала неверный результат
+    # (поймано в CI через RFC-вектор и fixture-подпись; доказано
+    # пошаговой эмуляцией арифметики).
     param($P)
-    $A = [System.Numerics.BigInteger]::Remainder($P[0] * $P[0], $script:EdP)
-    $B = [System.Numerics.BigInteger]::Remainder($P[1] * $P[1], $script:EdP)
-    $C = [System.Numerics.BigInteger]::Remainder(2 * $P[2] * $P[2], $script:EdP)
-    $H = [System.Numerics.BigInteger]::Remainder($A + $B, $script:EdP)
-    # HWCD 2008 (twisted Edwards, a=-1): E = H - (X1+Y1)^2.
-    $E = [System.Numerics.BigInteger]::Remainder($H - ($P[0] + $P[1]) * ($P[0] + $P[1]), $script:EdP)
-    $G = [System.Numerics.BigInteger]::Remainder($A - $B, $script:EdP)
-    $F = [System.Numerics.BigInteger]::Remainder($C + $G, $script:EdP)
-    $x3 = [System.Numerics.BigInteger]::Remainder($E * $F, $script:EdP)
-    $y3 = [System.Numerics.BigInteger]::Remainder($G * $H, $script:EdP)
-    $t3 = [System.Numerics.BigInteger]::Remainder($E * $H, $script:EdP)
-    $z3 = [System.Numerics.BigInteger]::Remainder($F * $G, $script:EdP)
-    return , @($x3, $y3, $z3, $t3)
+    return Invoke-HrmEdAdd $P $P
 }
 
 function Invoke-HrmEdScalarMult {
@@ -164,9 +157,11 @@ function Get-HrmEdBasePoint {
 
 function Test-HrmEd25519Signature {
     # Проверка detached Ed25519-подписи (RFC 8032 §5.1.7).
+    # $Message без Mandatory: пустое сообщение — валидный вход (RFC 8032
+    # §7.1 TEST 1), а PS не привязывает пустой массив к Mandatory-параметру.
     param(
         [Parameter(Mandatory = $true)][string]$PublicKeyBase64,
-        [Parameter(Mandatory = $true)][byte[]]$Message,
+        [byte[]]$Message = @(),
         [Parameter(Mandatory = $true)][string]$SignatureHex
     )
     if ($SignatureHex.Length -ne 128 -or $SignatureHex -notmatch "^[0-9a-f]+$") {
