@@ -121,6 +121,8 @@ def test_pilot_overlay_requires_generated_secrets(pilot_overlay: dict[str, Any])
         "${HRM_EXCHANGE_TOKEN:?",
         "${HRM_BACKUP_KEY:?",
         "${HRM_BACKUP_KEY_ID:?",
+        "${HRM_UPDATE_ENGINE_TOKEN:?",
+        "${HRM_STAGING_DIR:?",
     ):
         assert required in rendered, required
 
@@ -150,6 +152,24 @@ def test_pilot_overlay_needs_compose_v2_24_like_production() -> None:
     text = PILOT_OVERLAY.read_text()
     assert "!reset" in text
     assert "2.24" in text
+
+
+def test_pilot_overlay_update_channel_surface(pilot_overlay: dict[str, Any]) -> None:
+    """Phase 13: канал обновлений — только staging bind mount + токен движка;
+    никаких docker.sock/командных сокетов в контейнер."""
+    backend = pilot_overlay["services"]["backend"]
+    env = _env_map(backend)
+    assert "UPDATE_ENGINE_TOKEN" in env
+    assert "UPDATE_STAGING_DIR" in env and env["UPDATE_STAGING_DIR"] == "/updates"
+    assert "UPDATE_CHANNEL_URL" in env
+    assert "UPDATE_CHANNEL_PUBLIC_KEYS" in env
+    volumes = backend.get("volumes", [])
+    assert any((isinstance(volume, str) and volume.endswith(":/updates")) for volume in volumes), (
+        "нет bind mount staging /updates"
+    )
+    joined = str(volumes)
+    assert "docker.sock" not in joined
+    assert "named.pipe" not in joined.lower()
 
 
 def test_production_overlay_untouched_by_pilot(prod_overlay: dict[str, Any]) -> None:
