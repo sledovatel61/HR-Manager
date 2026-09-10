@@ -218,6 +218,30 @@ class Settings(BaseSettings):
         default=60, validation_alias="PILOT_EXCHANGE_TTL_MINUTES"
     )
     pilot_ticket_ttl_minutes: int = Field(default=15, validation_alias="PILOT_TICKET_TTL_MINUTES")
+    # Phase 13: update channel (server-owned configuration; the client never
+    # sends URLs, paths, commands, manifest payloads or release SHAs).
+    # JSON map {key_id: {"key": "<base64 ed25519 public key>", "revoked": bool}}
+    update_channel_public_keys: str = Field(
+        default="{}", validation_alias="UPDATE_CHANNEL_PUBLIC_KEYS"
+    )
+    # Stable channel manifest URL (HTTPS). Empty = channel disabled (UI says
+    # "не настроен"). preview_channel_url is only served in non-production.
+    update_channel_url: str = Field(default="", validation_alias="UPDATE_CHANNEL_URL")
+    update_preview_channel_url: str = Field(
+        default="", validation_alias="UPDATE_PREVIEW_CHANNEL_URL"
+    )
+    # Minimum interval between network checks (seconds).
+    update_check_min_interval_seconds: int = Field(
+        default=300, validation_alias="UPDATE_CHECK_MIN_INTERVAL_SECONDS"
+    )
+    # Machine token that the Windows engine presents on the engine endpoints.
+    update_engine_token: str = Field(default="", validation_alias="UPDATE_ENGINE_TOKEN")
+    # Installed build facts, provided by the engine in the pilot env file.
+    update_installed_version: str = Field(default="", validation_alias="UPDATE_INSTALLED_VERSION")
+    update_installed_sha: str = Field(default="", validation_alias="UPDATE_INSTALLED_SHA")
+    # Staging directory for verified packages (never inside user data or the
+    # backup volume; empty = system temp under the host temp root).
+    update_staging_dir: str = Field(default="", validation_alias="UPDATE_STAGING_DIR")
     # Rate limiting of the first-run claim/preview/redeem endpoints
     # (per client IP, in-memory sliding window).
     pilot_setup_rate_limit: int = Field(default=30, validation_alias="PILOT_SETUP_RATE_LIMIT")

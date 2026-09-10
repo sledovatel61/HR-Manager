@@ -1069,13 +1069,62 @@ class AccessGrantList(BaseModel):
 class AccessGrantRequest(BaseModel):
     """Grant or revoke explicitly confirmed access."""
 
-    scope: Literal["pilot_full_access", "document_lists_manage", "candidate_documents_all"] = (
-        "pilot_full_access"
-    )
+    scope: Literal[
+        "pilot_full_access",
+        "document_lists_manage",
+        "candidate_documents_all",
+        "update_channel_manage",
+    ] = "pilot_full_access"
 
     user_id: UUID
     revoke: bool = False
     revoke_reason: str | None = Field(default=None, max_length=500)
+
+
+class UpdateStatusResponse(BaseModel):
+    """Состояние канала обновлений (никогда не содержит URL, путей, секретов)."""
+
+    state: str
+    installed_version: str
+    installed_release_sha: str
+    available_version: str | None = None
+    available_release_sha: str | None = None
+    available_published_at: str | None = None
+    notes_ru: str | None = None
+    download_progress: int | None = None
+    last_check_at: str | None = None
+    last_check_ok: bool | None = None
+    error_code: str | None = None
+    last_result: str | None = None
+    channel_configured: bool = True
+
+
+class UpdateInstallResponse(BaseModel):
+    """Ответ на запрос установки (идемпотентно: job_id уникален на операцию)."""
+
+    state: str
+    job_id: str | None = None
+    message: str | None = None
+
+
+class UpdateEnginePollResponse(BaseModel):
+    """Ответ движку: ожидающие команды и проверенные артефакты staging."""
+
+    actions: list[str]
+    job_id: str | None = None
+    release_dir: str | None = None
+    manifest_path: str | None = None
+    error_code: str | None = None
+
+
+class UpdateEngineReportRequest(BaseModel):
+    """Отчёт движка после update (результаты, версии и безопасный код ошибки)."""
+
+    job_id: str | None = None
+    state: str = "failed"
+    installed_version: str = ""
+    installed_release_sha: str = ""
+    error_code: str | None = None
 
 
 class SetupStateOut(BaseModel):

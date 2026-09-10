@@ -124,16 +124,19 @@ def _clean_login_limiter() -> Iterator[None]:
     from app.routers.candidate_messages import reset_candidate_message_limiters
     from app.routers.integrations import reset_integration_limiters
     from app.routers.setup import reset_first_run_limiter
+    from app.routers.updates import reset_update_limiters
 
     reset_login_limiter()
     reset_integration_limiters()
     reset_candidate_message_limiters()
     reset_first_run_limiter()
+    reset_update_limiters()
     yield
     reset_login_limiter()
     reset_integration_limiters()
     reset_candidate_message_limiters()
     reset_first_run_limiter()
+    reset_update_limiters()
 
 
 @pytest.fixture()
