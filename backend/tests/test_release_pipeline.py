@@ -12,8 +12,11 @@ import json
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
@@ -168,12 +171,128 @@ def test_publish_fail_closed_without_trust_store(tmp_path: Path) -> None:
     assert result.returncode != 0
 
 
+def _workflow_data() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _resolve_release_script() -> str:
+    """run-скрипт шага «Resolve release facts» channel-джоба (точная копия)."""
+    data = _workflow_data()
+    jobs = data["jobs"]
+    for step in jobs["channel-release"]["steps"]:
+        if step.get("name") == "Resolve release facts (protected SemVer tag or owner dispatch)":
+            return step["run"]
+    raise AssertionError("resolve release step не найден в workflow")
+
+
+def _run_resolve_script(
+    script: str, tmp_path: Path, version: str, notes: str
+) -> subprocess.CompletedProcess:
+    """Реальное исполнение resolve-скрипта bash'ем с поддельным GITHUB_OUTPUT.
+
+    INPUT_SHA — текущий HEAD тестового репозитория (checkout внутри скрипта
+    становится no-op); атакующие/валидные notes передаются через env, как
+    в настоящем workflow_dispatch.
+    """
+    import os
+    import shutil
+
+    if shutil.which("bash") is None:
+        pytest.skip("bash требуется для исполняемого теста resolve-шага")
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    output_file = tmp_path / "github-output.txt"
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", str(tmp_path)),
+        "EVENT_NAME": "workflow_dispatch",
+        "GITHUB_REF_NAME": "arena/01a084e4-hr-manager",
+        "INPUT_VERSION": version,
+        "INPUT_SHA": head_sha,
+        "INPUT_NOTES": notes,
+        "GITHUB_OUTPUT": str(output_file),
+        "GITHUB_REPOSITORY": "sledovatel61/HR-Manager",
+    }
+    return subprocess.run(
+        ["bash", "-c", script], cwd=REPO, env=env, capture_output=True, text=True, timeout=120
+    )
+
+
+@contextmanager
+def _git_checkout_safe_restore() -> Iterator[None]:
+    """Скрипт может перевести репозиторий в detached HEAD (checkout no-op
+    по SHA); после теста восстанавливаем ветку."""
+    branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=REPO, capture_output=True, text=True
+    ).stdout.strip()
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True
+    ).stdout.strip()
+    try:
+        yield
+    finally:
+        restore = head if branch == "HEAD" else branch
+        subprocess.run(["git", "checkout", "-q", restore], cwd=REPO, check=True)
+
+
+def test_dispatch_notes_crlf_rejected_before_output(tmp_path: Path) -> None:
+    """CR/LF в notes_ru отклоняются fail closed ДО записи в $GITHUB_OUTPUT:
+    поддельные строки-выводы (sha/tag/version/notes) не появляются."""
+    script = _resolve_release_script()
+    evil_sha = "d" * 40
+    payloads = [
+        f"Заметка релиза\nsha={evil_sha}",
+        "Заметка релиза\rtag=v9.9.9",
+        "Заметка релиза\nversion=9.9.9\nnotes=подделка",
+    ]
+    for payload in payloads:
+        with _git_checkout_safe_restore():
+            result = _run_resolve_script(script, tmp_path, "0.14.0", payload)
+        assert result.returncode != 0, f"CR/LF не отклонён: {payload!r}"
+        assert "single line" in result.stderr
+        output_file = tmp_path / "github-output.txt"
+        content = output_file.read_text(encoding="utf-8") if output_file.exists() else ""
+        # Ни одной строки-вывода (в т.ч. подмешанных ключей) — отказ до записи.
+        assert "sha=" not in content
+        assert "tag=" not in content
+        assert "version=" not in content
+        assert "notes=" not in content
+
+
+def test_dispatch_valid_single_line_russian_note_preserved(tmp_path: Path) -> None:
+    """Валидная однострочная русская заметка сохраняется без изменений,
+    и никакие лишние ключи-выводы не появляются."""
+    script = _resolve_release_script()
+    note = "Исправлены ошибки канала обновлений (Windows-пилот)"
+    with _git_checkout_safe_restore():
+        result = _run_resolve_script(script, tmp_path, "0.14.0", note)
+    assert result.returncode == 0, result.stderr
+    lines = (tmp_path / "github-output.txt").read_text(encoding="utf-8").splitlines()
+    values: dict[str, str] = {}
+    for line in lines:
+        key, _, value = line.partition("=")
+        assert key not in values, f"дублирующийся ключ-вывод: {key!r}"
+        values[key] = value
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert values["version"] == "0.14.0"
+    assert values["sha"] == head_sha
+    assert values["notes"] == note  # русская заметка сохранена без изменений
+    assert values["tag"] == "v0.14.0"
+    assert values["package_url"].startswith(
+        "https://github.com/sledovatel61/HR-Manager/releases/download/v0.14.0/"
+    )
+    assert len(lines) == 5  # ровно ожидаемые ключи, ничего подмешанного
+
+
 def test_workflow_yaml_security_invariants() -> None:
     assert WORKFLOW.exists(), (
         "workflow должен находиться в .github/workflows/ "
         "(или, до переноса владельцем, в review-artifacts/)"
     )
-    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    data = _workflow_data()
     # PyYAML 6 читает ключ `on:` как boolean True (YAML 1.1); GitHub Actions
     # парсит YAML 1.2, где `on` остаётся строкой.
     triggers = data["on"] if "on" in data else data[True]
@@ -213,5 +332,15 @@ def test_workflow_yaml_security_invariants() -> None:
     # Тег/релиз создаётся --target на тот же SHA, из которого собрано.
     assert "gh release create" in channel_steps
     assert "--target" in channel_steps
+    # Реальная fail-closed логика CR/LF: отклонение notes происходит ДО
+    # записи notes в $GITHUB_OUTPUT (исполняемо проверяется отдельными
+    # тестами test_dispatch_notes_crlf_rejected_before_output и
+    # test_dispatch_valid_single_line_russian_note_preserved).
+    resolve_script = _resolve_release_script()
+    assert 'reject_newline "$notes" "notes_ru"' in resolve_script
+    assert "*$'\\r'*|*$'\\n'*" in resolve_script
+    reject_idx = resolve_script.index('reject_newline "$notes" "notes_ru"')
+    write_idx = resolve_script.index('echo "notes=$notes" >> "$GITHUB_OUTPUT"')
+    assert reject_idx < write_idx
     # Deploy/rollback workflow не затронут.
     assert (REPO / ".github" / "workflows" / "release.yml").exists()
