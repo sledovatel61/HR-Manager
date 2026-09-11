@@ -228,11 +228,13 @@ Docs: `docs/phase-14-runbook.md` (новый), `docs/CURRENT_STATUS.md`.
 
 ## 8. Доработка (hardening) поверх PR #25, baseline `1c6961f`
 
-Дата: 2026-09-11. Два отдельных commit в этой же ветке/PR #25 (история не
+Дата: 2026-09-11. Три отдельных commit в этой же ветке/PR #25 (история не
 переписывалась): (1) hardening — `b900819c3dd006556b98062cbed713e563f2d1bc`;
-(2) follow-up фикс предсуществующего (baseline `1c6961f`) синтаксического
-бага PowerShell-тестов — SHA в заголовке PR (голова ветки). CI-факты —
-в §8.7a.
+(2) `c8f1da4866bb4543f6da44941ce86b390319740f` — фикс предсуществующего
+(baseline `1c6961f`) синтаксического бага PowerShell-тестов; (3) **финальный
+SHA `e95b701151c4bd71d6d289c4f6504df432e44505`** — фикс 5 латентных
+провалов Windows-тестов, которые вскрылись после (2). Все запушены;
+CI-факты — в §8.7a (на финальном SHA все 5 джоб зелёные).
 
 ### 8.1 Главная цель
 
@@ -336,34 +338,61 @@ JSON-отчёт; TSA-сервер: rejection на мусор, roundtrip чере
 3. **Manual Windows 10/11 lifecycle acceptance** (runbook §5–§6) и реальная
    production-подпись PFX — не выполнялись и не заявляются как выполненные.
 
-### 8.7a CI на финальных SHA (facts)
+### 8.7a CI на SHA доработки (facts)
 
-Run #171 (CI, commit `b900819`, run 34605147118):
+**Финальный SHA `e95b701` — run #173 (34610978203), все джобы зелёные:**
 
-| Джоба | Результат |
-|---|---|
-| Backend checks | **pass** (включает 37 новых тестов authenticode_verify + asn1crypto из requirements-dev) |
-| Backend integration tests (PostgreSQL) | **pass** |
-| Frontend checks | **pass** |
-| Compose stack smoke test (dev + prod overlay) | **pass** |
-| Windows engine tests + installer smoke | **fail** — предсуществующий баг baseline (см. ниже) |
+| Джоба | Результат | Ссылка |
+|---|---|---|
+| Backend checks | **pass** (включая 37 новых тестов authenticode_verify + asn1crypto из requirements-dev) | [job](https://github.com/sledovatel61/HR-Manager/actions/runs/34610978203/job/103301104424) |
+| Backend integration tests (PostgreSQL) | **pass** | [job](https://github.com/sledovatel61/HR-Manager/actions/runs/34610978203/job/103301104435) |
+| Frontend checks | **pass** | [job](https://github.com/sledovatel61/HR-Manager/actions/runs/34610978203/job/103301104175) |
+| Compose stack smoke test (dev + prod overlay) | **pass** | [job](https://github.com/sledovatel61/HR-Manager/actions/runs/34610978203/job/103302021533) |
+| Windows engine tests + installer smoke | **pass** (1m18s; впервые выполнены ВСЕ Test-Case'ы channel.tests.ps1 + сборка installer + silent install/uninstall smoke) | [job](https://github.com/sledovatel61/HR-Manager/actions/runs/34610978203/job/103301103963) |
 
-Windows-джоба падала на `b900819` с ParseException в
-`infra/windows/tests/channel.tests.ps1:436` — синтаксическая опечатка
-`[Convert]::ToBase64String(, (New-Object byte[] 31))` из baseline-коммита
-`1c6961f` (файл в доработке не менялся). Тот же падёж — на baseline: run
-#162 (34595151615), CI Failure, идентичная ошибка. Test-Case'ы
-channel.tests.ps1 из-за этого ни разу не выполнялись; на `b900819` это НЕ
-регрессия. Follow-up commit чинит опечатку (убрана ведущая запятая) — после
-него Test-Case'ы channel.tests.ps1 впервые выполнятся в CI. Прогон CI на
-fix-коммите: не завершён на момент сдачи (push-токен сессии истёк;
-см. Handoff) — владельцу перезапустить/проверить checks на голове ветки.
+Промежуточные SHA (полная история, ничего не скрыто):
+
+- **`b900819` — run #171 (34605147118):** Backend / integration / Frontend /
+  Compose — pass; Windows — **fail**: ParseException в
+  `channel.tests.ps1:436` — предсуществующая (baseline `1c6961f`,
+  идентичный падёж в run #162 / 34595151615) синтаксическая опечатка
+  `[Convert]::ToBase64String(, (New-Object byte[] 31))`; из-за неё файл
+  НИКОГДА не парсился и его Test-Case'ы не выполнялись с baseline. НЕ
+  регрессия доработки (infra/windows/ в доработке не менялся).
+- **`c8f1da4` — run #172 (34609345691):** Backend / integration / Frontend /
+  Compose — pass; Windows — **fail (29s)**: после фиксa опечатки впервые
+  выполнились Test-Case'ы channel.tests.ps1 и вскрылись **5 латентных
+  провалов**, замаскированных с baseline (PS 5.1-специфика и дефекты
+  фикстур, не регрессия доработки):
+  1. тестовая фикстура `New-HrmTestTrustStoreJson` строила вложенные записи
+     hashtable'ом — в PS 5.1 `PSObject.Properties` не раскрывает ключи
+     словаря, валидатор видел записи без key/revoked (плюс аналогичное
+     место в утверждениях теста Import);
+  2. `Import-HrmTrustStore` возвращал массив `[лог, bool]` — `Write-HrmLog`
+     пишет в success stream (нарушен контракт «чистый bool»; фикс —
+     `$null = Write-HrmLog` по образцу уже существующего паттерна в том же
+     файле; продакшн-вызов в Install.psm1 и так был защитён);
+  3. мок не моделировал серверный троттлинг `engine-check`
+     (backend: `update_check_min_interval_seconds=300` возвращает состояние
+     без выполнения проверки) — счётчик «фоновых проверок» задваивался;
+  4. кастомный мок теста «сбой facts» не обслуживал `/api/ops/status`
+     (fallback отдавал строку) — StrictMode падал на `$ops.release_sha` в
+     update-smoke → «rolled_back» вместо «installed».
+  Коммит `e95b701` чинит все 5 (детали — в сообщении коммита); верификация —
+  CI run #173 (локально pwsh недоступен: CDN песочницы блокирует
+  release-assets).
 
 ### 8.7 Skipped / not validated (честный список)
 
-- PostgreSQL integration (105), Compose stack/pilot-drill, frontend (не
-  затронут), PowerShell-тесты — локально не запускались (окружение); CI на
-  exact SHA — у владельца после переноса workflow (прав нет).
+- PostgreSQL integration (105), Compose stack — локально не запускались
+  (Docker в песочнице недоступен), но прошли в CI на финальном SHA;
+  frontend не затронут (CI pass); PowerShell-тесты — локально не
+  запускались (pwsh недоступен), прошли в CI Windows-джобе на финальном
+  SHA. Джоба `pilot-drill` (живой Compose drill) в CI этой ветки НЕ
+  запускалась — она существует только в phase14-версии workflow
+  (review-artifacts + патч; право на .github/workflows у App отсутствует);
+  локально drill не прогонялся (Docker недоступен) — **not validated**,
+  drill не упрощён и не подменён pytest-набором.
 - `sign-installer.ps1`: правки (env-override TSA, экспорт публичного PEM)
   проверены ревью и структурой, локального pwsh нет — runtime-прогон в CI.
 - Ветка `arena/01a08fef-hr-manager` не содержит изменений
@@ -373,8 +402,7 @@ fix-коммите: не завершён на момент сдачи (push-т�
   checks на `b900819` подтверждает юнит-тесты независимого верификатора, но
   НЕ подтверждает новые гейт-шаги workflow (они исполняются только после
   переноса workflow владельцем).
-- Push-токен GitHub-приложения сессии истёк ПОСЛЕ пуша hardening-коммита и
-  постинга комментария в PR (push `b900819` и комментарий прошли успешно);
-  follow-up fix-коммит с фиксом channel.tests.ps1 подготовлен локально и
-  требует пуша после переподключения GitHub (Arena). Проверки на fix-SHA
-  не завершены — считать их incomplete до зелёного CI.
+- Push-токен GitHub-приложения сессии кратковременно истёк после пуша
+  hardening-коммита; после переподключения GitHub (Arena) все три коммита
+  доработки запушены, CI на финальном SHA `e95b701` — полностью зелёный
+  (см. §8.7a).
