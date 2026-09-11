@@ -257,13 +257,39 @@ def test_host_report_requires_engine_token(readiness_client: TestClient) -> None
 def test_host_report_rejects_unknown_fields_and_records_facts(
     readiness_client: TestClient, readiness_db: Session
 ) -> None:
+    # extra="forbid": неизвестные поля/опечатки отклоняются (422), произвольные host facts не допускаются
     with_payload = readiness_client.post(
         "/updates/engine-host-report",
         json={**host_report(), "secret": "leak-me", "state_dir_path": "C:/secret"},
         headers={"X-Engine-Token": ENGINE_TOKEN},
     )
-    assert with_payload.status_code == 200
-    assert with_payload.json()["status"] == "accepted"
+    assert with_payload.status_code == 422, with_payload.text
+    assert "secret" in with_payload.text or "extra" in with_payload.text.lower()
+
+    # Опечатка в известном поле тоже должна быть отклонена, а не проигнорирована
+    typo = readiness_client.post(
+        "/updates/engine-host-report",
+        json={**host_report(), "free_space_mbb": 123},
+        headers={"X-Engine-Token": ENGINE_TOKEN},
+    )
+    assert typo.status_code == 422, typo.text
+
+    # Вложенные неизвестные поля тоже отклоняются (extra=forbid на PilotHost* моделях)
+    nested = readiness_client.post(
+        "/updates/engine-host-report",
+        json={**host_report(), "windows": {**host_report()["windows"], "secret": "leak"}},
+        headers={"X-Engine-Token": ENGINE_TOKEN},
+    )
+    assert nested.status_code == 422, nested.text
+
+    # Валидный отчёт всё ещё принимается и не допускает произвольные facts в readiness response
+    ok = readiness_client.post(
+        "/updates/engine-host-report",
+        json=host_report(),
+        headers={"X-Engine-Token": ENGINE_TOKEN},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["status"] == "accepted"
 
     make_user(readiness_db, "admin", UserRole.ADMIN, scope="update_channel_manage")
     headers = login(readiness_client, "admin")
@@ -278,6 +304,7 @@ def test_host_report_rejects_unknown_fields_and_records_facts(
     rendered = json.dumps(body, ensure_ascii=False)
     assert "leak-me" not in rendered
     assert "C:/secret" not in rendered
+    # readiness response — server-owned verdict, не содержит произвольных host facts (только коды/статусы, без путей/секретов)
 
 
 def test_open_port_and_low_disk_are_fail(

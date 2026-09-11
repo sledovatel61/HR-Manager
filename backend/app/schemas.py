@@ -1544,7 +1544,7 @@ class CandidateMessageCancelOut(BaseModel):
 class PilotHostWindows(BaseModel):
     """Факты о Windows-хосте из отчёта движка (без секретов и путей)."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     version: str = Field(default="", max_length=120)
     build: int | None = None
@@ -1552,7 +1552,7 @@ class PilotHostWindows(BaseModel):
 
 
 class PilotHostDocker(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     cli_ok: bool = False
     daemon_ok: bool = False
@@ -1560,7 +1560,7 @@ class PilotHostDocker(BaseModel):
 
 
 class PilotHostCompose(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     ok: bool = False
     version: str = Field(default="", max_length=60)
@@ -1569,7 +1569,7 @@ class PilotHostCompose(BaseModel):
 class PilotHostPort(BaseModel):
     """Один опубликованный порт: сервис + адрес привязки (без URL)."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     service: str = Field(default="", max_length=60)
     host_ip: str = Field(default="", max_length=60)
@@ -1579,7 +1579,7 @@ class PilotHostPort(BaseModel):
 class PilotHostDirs(BaseModel):
     """Только флаги о каталогах; сами пути в отчёт не попадают."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     configured: bool = False
     acl_restricted: bool | None = None
@@ -1590,11 +1590,11 @@ class PilotHostDirs(BaseModel):
 class UpdateEngineHostReportRequest(BaseModel):
     """Отчёт движка о Windows-хосте для readiness (движковая аутентификация).
 
-    ``extra="ignore"``: на сервер попадают ТОЛЬКО поля этой схемы, поэтому
-    случайный секрет/путь из окружения движка не окажется в диагностике.
+    ``extra="forbid"``: неизвестные поля/опечатки отклоняются (422) — произвольные
+    host facts не попадут в readiness, только строго валидированная схема.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: int = 1
     generated_at: str | None = Field(default=None, max_length=40)

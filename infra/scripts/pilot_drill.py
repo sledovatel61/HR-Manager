@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Phase 14: автоматизированный end-to-end pilot drill.
+"""Phase 14: автоматизированный pilot drill (aggregator) + live Compose E2E.
+
+Этот скрипт — aggregated pytest/PowerShell drill (дополнительный слой), НЕ полный
+live E2E. Полный live Docker Compose E2E серверного контура — отдельный скрипт
+`pilot_drill_live_compose.py` (изолированный project, health/readiness, synthetic
+data, backup/restore, signed channel, tamper checks, restart, cleanup). Здесь
+он вызывается как шаг `live-compose` и его вердикт включается в общий отчёт.
+Классификация покрытия явная: pytest — не live E2E, Windows — separate/manual.
 
 Скрипт НЕ подменяет приёмку поиском строк: каждый шаг запускает реальные
 компоненты проекта (release-политику на ephemeral сертификате, сетевую
 политику канала с отказами на подделках, readiness API и — где доступно —
-Windows-движок и PostgreSQL-интеграцию) и агрегирует честный результат.
+Windows-движок, PostgreSQL и live Compose) и агрегирует честный результат.
 
 Принципы:
 
@@ -14,6 +21,7 @@ Windows-движок и PostgreSQL-интеграцию) и агрегирует
 * шаг, который невозможно выполнить в текущем контуре, помечается
   ``skipped`` с причиной — никогда не ``passed``;
 * fail → non-zero exit code + машиночитаемый JSON + краткий Markdown.
+* skipped mandatory → incomplete (skipped != passed).
 
 Примеры:
 
@@ -32,6 +40,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -121,6 +130,12 @@ STEPS: dict[str, Step] = {
         kind="powershell",
         requires="Windows PowerShell 5.1+/pwsh и infra/windows/tests/run-tests.ps1",
     ),
+    "live-compose": Step(
+        id="live-compose",
+        title="Live Compose isolated drill (Postgres/backend/frontend/backup, bootstrap, backup/restore, signed channel, tamper, restart, cleanup)",
+        kind="live-compose",
+        requires="Docker Compose v2.24+ (live E2E; skipped → incomplete, не passed)",
+    ),
 }
 
 
@@ -186,6 +201,55 @@ def _run_powershell(step: Step, secrets: list[str]) -> StepResult:
     return StepResult(step, "failed", summary, duration, "run-tests.ps1 вернул non-zero код")
 
 
+def _run_live_compose(step: Step, secrets: list[str]) -> StepResult:
+    # Вызывает изолированный live Compose drill как подпроцесс и парсит его JSON-отчёт.
+    # Если Docker недоступен, подпроцесс вернёт skipped/incomplete — это корректно, не passed.
+    tmp = Path(tempfile.mkdtemp(prefix="hrm-drill-agg-"))
+    out_json = tmp / "pilot-drill-live.json"
+    out_dir = tmp / "out"
+    command = [sys.executable, str(REPO_ROOT / "infra" / "scripts" / "pilot_drill_live_compose.py"), "--out-dir", str(out_dir), "--json-out", str(out_json)]
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, timeout=1800)
+    except subprocess.TimeoutExpired:
+        return StepResult(step, "failed", "timeout", time.monotonic() - started, "live Compose drill не уложился в 30 минут")
+    duration = time.monotonic() - started
+    output = _mask((completed.stdout or "") + (completed.stderr or ""), secrets)
+    for marker in SECRET_MARKERS:
+        if marker in output:
+            return StepResult(step, "failed", "secret material in output", duration, "вывод live drill содержит приватный материал")
+    # Попытка прочитать JSON-отчёт, даже если процесс вернул non-zero (incomplete/failed — тоже валидный результат)
+    if out_json.exists():
+        try:
+            data = json.loads(out_json.read_text(encoding="utf-8"))
+            verdict = data.get("verdict", "unknown")
+            # Считаем статистику по шагам
+            steps = data.get("steps", [])
+            passed = sum(1 for s in steps if s.get("status") == "passed")
+            skipped = sum(1 for s in steps if s.get("status") == "skipped")
+            failed = sum(1 for s in steps if s.get("status") == "failed")
+            summary = f"live verdict={verdict} ({passed} passed, {failed} failed, {skipped} skipped)"
+            if verdict == "passed" and completed.returncode == 0:
+                return StepResult(step, "passed", summary, duration)
+            if verdict == "incomplete":
+                return StepResult(step, "skipped", summary, duration, data.get("evidence", {}).get("note", step.requires) or step.requires)
+            if verdict == "failed":
+                return StepResult(step, "failed", summary, duration, "live drill вернул failed")
+            # Fallback: если verdict не распознан, смотрим на returncode
+            if completed.returncode == 0:
+                return StepResult(step, "passed", summary, duration)
+            return StepResult(step, "failed", summary, duration, output[:500])
+        except Exception as exc:  # pragma: no cover
+            return StepResult(step, "failed", f"bad live json: {exc}", duration, output[:500])
+    # Нет JSON — считаем по returncode
+    if completed.returncode != 0 and "no Docker" in output:
+        return StepResult(step, "skipped", "no Docker", duration, step.requires)
+    summary = output.strip().splitlines()[-1][:120] if output.strip() else f"exit {completed.returncode}"
+    if completed.returncode == 0:
+        return StepResult(step, "passed", summary, duration)
+    return StepResult(step, "failed", summary, duration, output[:500])
+
+
 def _environment(database_url: str | None) -> dict[str, str]:
     env = dict(os.environ)
     # CI не должен использовать production secrets; drill не читает их вовсе.
@@ -214,11 +278,21 @@ def _verdict(results: list[StepResult]) -> str:
 
 def _markdown(report: dict) -> str:
     lines = [
-        "# Pilot drill (Phase 14)",
+        "# Pilot drill (Phase 14) — aggregator",
         "",
         f"* Сформирован: {report['generated_at']}",
         f"* Контур: {report['contour']}",
         f"* Вердикт автоматизированной части: **{report['verdict']}**",
+        "",
+        "## Классификация покрытия",
+        "",
+        "* **Live Compose / server-side E2E (изолированный):** шаг `live-compose` (`infra/scripts/pilot_drill_live_compose.py`) — единственный источник live E2E; pytest — дополнительный слой.",
+        "* **Windows engine (PowerShell):** шаг `windows-engine` — separate, требует Windows.",
+        "* **Windows installer (Inno Setup):** separate — требует Windows и Setup.exe.",
+        "* **Manual Windows 10/11 acceptance:** обязательна (clean install / update / rollback / uninstall) — не `passed` без выполнения на реальной машине.",
+        "",
+        "Не утверждается, что Windows install/update/rollback/uninstall проверен, если он не выполнялся.",
+        "Не называть запуск `pytest` полным E2E.",
         "",
         "| Шаг | Итог | Сводка | Комментарий |",
         "| --- | --- | --- | --- |",
@@ -239,6 +313,7 @@ def _markdown(report: dict) -> str:
         "",
         "Секреты, ключи и PII в отчёт не попадают: вывод шагов маскируется, приватный",
         "материал в перехваченном выводе означает провал шага.",
+        "Полный live E2E — `infra/scripts/pilot_drill_live_compose.py` (`pilot-drill-live.json/md`).",
         "",
     ]
     return "\n".join(lines)
@@ -264,6 +339,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if step.kind == "powershell":
             results.append(_run_powershell(step, secrets))
+        elif step.kind == "live-compose":
+            results.append(_run_live_compose(step, secrets))
         else:
             results.append(_run_pytest(step, env, secrets))
         print(f"[{results[-1].status}] {step.id}: {results[-1].summary}", flush=True)

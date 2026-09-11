@@ -505,3 +505,95 @@ def test_embedded_trust_store_must_match_release_store(
     result = _run_production(tmp_path, production_inputs, [])
     assert result.returncode != 0
     assert "embedded_trust_store_mismatch" in result.stderr
+
+
+def test_forged_attestation_does_not_allow_publish_unsigned_or_modified_installer(
+    production_inputs: dict, tmp_path: Path
+) -> None:
+    """Поддельная attestation (заявляет подпись) не позволяет опубликовать неподписанный/изменённый installer.
+
+    Production-режим fail-closed: даже если attestation JSON подделан и утверждает
+    authenticode_present=true, публикация должна отказать, потому что:
+    - SHA256 installer'а не совпадёт с фактическим (installer_changed_after_signing), или
+    - независимая проверка цепочки/издателя/TSA не пройдёт (untrusted_root/publisher_mismatch/missing_timestamp).
+    """
+    # 1. Неподписанный installer, но attestation подделана как «подписанная».
+    unsigned_installer = tmp_path / "unsigned-forged.exe"
+    unsigned_installer.write_bytes(make_test_pe())  # без Authenticode-подписи
+    forged_sha = hashlib.sha256(unsigned_installer.read_bytes()).hexdigest()
+    # Поддельная attestation: заявляет, что installer подписан и проверен, с чужим thumbprint
+    forged_attestation = dict(production_inputs["attestation"])
+    forged_attestation["installer_sha256"] = forged_sha
+    forged_attestation["authenticode_present"] = True
+    forged_attestation["signtool_verify_ok"] = True
+    forged_attestation["timestamp_present"] = True
+    forged_attestation["publisher"] = PUBLISHER
+    forged_attestation["signer_thumbprint_sha256"] = "f" * 64  # поддельный thumbprint
+    # Попытка publish с неподписанным файлом и поддельной attestation — должна отказать
+    tmp_forged = tmp_path / "forged1"
+    tmp_forged.mkdir()
+    # Копируем attestation в ожидаемый путь для _run_production
+    # Используем overwrite для подмены installer_sha и thumbprint, но также подменим сам installer на неподписанный
+    result_unsigned = _run_production(
+        tmp_forged,
+        {**production_inputs, "installer": unsigned_installer},
+        [],
+        overwrite={
+            "installer_sha256": forged_sha,
+            "signer_thumbprint_sha256": "f" * 64,
+            "authenticode_present": True,
+            "signtool_verify_ok": True,
+            "timestamp_present": True,
+        },
+    )
+    # Должен отказать: независимая проверка подписи не пройдёт (installer unsigned → верификация Authenticode упадёт)
+    assert result_unsigned.returncode != 0
+    assert any(
+        code in result_unsigned.stderr
+        for code in (
+            "installer_unsigned",
+            "signtool_verification_failed",
+            "untrusted_root",
+            "digest_mismatch",
+            "unsigned",
+            "bad_signature",
+        )
+    ), result_unsigned.stderr
+
+    # 2. Подписанный installer, но после подписи файл изменён, а attestation подделана под оригинальный SHA
+    signed = production_inputs["installer"]
+    tampered = tmp_path / "tampered-forged.exe"
+    data = bytearray(signed.read_bytes())
+    data[100] ^= 0xFF  # портим байт после подписи
+    tampered.write_bytes(bytes(data))
+    # Поддельная attestation утверждает старый SHA (до изменения)
+    original_sha = production_inputs["attestation"]["installer_sha256"]
+    result_tampered = _run_production(
+        tmp_path / "forged2",
+        {**production_inputs, "installer": tampered},
+        [],
+        overwrite={"installer_sha256": original_sha},
+    )
+    assert result_tampered.returncode != 0
+    assert "installer_changed_after_signing" in result_tampered.stderr
+
+    # 3. Подписанный чужим сертификатом, но attestation подделана под доверенный корень/издатель
+    foreign = create_test_authority("Поддельный издатель")
+    foreign_installer = tmp_path / "foreign-forged.exe"
+    foreign_installer.write_bytes(sign_test_pe(make_test_pe(), foreign))
+    foreign_sha = hashlib.sha256(foreign_installer.read_bytes()).hexdigest()
+    result_foreign = _run_production(
+        tmp_path / "forged3",
+        {**production_inputs, "installer": foreign_installer},
+        [],
+        overwrite={
+            "installer_sha256": foreign_sha,
+            "publisher": PUBLISHER,  # поддельная attestation лжёт, что издатель — ожидаемый
+            "signer_thumbprint_sha256": foreign.leaf_certificate.fingerprint(
+                __import__("cryptography").hazmat.primitives.hashes.SHA256()
+            ).hex(),
+        },
+    )
+    # Должен отказать из-за цепочки, не доводящейся до доверенного корня или несоответствия издателя
+    assert result_foreign.returncode != 0
+    assert any(code in result_foreign.stderr for code in ("untrusted_root", "publisher_mismatch", "signtool_verification_failed")), result_foreign.stderr
