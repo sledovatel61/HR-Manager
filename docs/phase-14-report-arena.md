@@ -17,8 +17,9 @@
 * **Branch (live E2E, this report)**: `arena/01a08ff0-hr-manager-live-e2e`
   (ветка продолжения Phase 14 с live Compose E2E), branched from `b339b0d`,
   Final SHA (код, зелёный HEAD, this branch) `fac9c8fd2dc3f7839ac690bb0d6b675745b2bc8f`
-  (exact final SHA, см. §5; docs-sync HEAD — следующий коммит после этого).
-  Отдельная ветка/PR для честного сравнения (не редактировать PR #24 параллельно).
+  (exact final SHA зелёного кода; см. §5), docs-sync HEAD — текущий HEAD этой
+  ветки (exact 40-char SHA, см. `git rev-parse HEAD` и PR head). Отдельная
+  ветка/PR для честного сравнения (не редактировать PR #24 параллельно).
 * **PR (live E2E)**: https://github.com/sledovatel61/HR-Manager/pull/25 (создаётся из `arena/01a08ff0-hr-manager-live-e2e`)
 
 ## 1. Что сделано по пунктам промпта
