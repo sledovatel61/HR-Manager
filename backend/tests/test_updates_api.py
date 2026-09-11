@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from threading import Thread
 from typing import cast
 
 import pytest
@@ -347,7 +348,8 @@ def test_full_flow_check_download_install_report(
     # Повторный install — 409 (идемпотентность/блокировка).
     assert channel_client.post("/updates/install", headers=headers).status_code == 409
 
-    # Движок: первый опрос получает команду, второй — пусто.
+    # Движок: опрос получает команду; повторный опрос ДО отчёта получает
+    # ту же команду с тем же job_id (re-delivery: опрос не подтверждение).
     engine_headers = {"X-Engine-Token": "engine-token-0123456789abcdef"}
     poll = channel_client.get("/updates/engine-state", headers=engine_headers)
     assert poll.status_code == 200
@@ -355,7 +357,9 @@ def test_full_flow_check_download_install_report(
     assert poll.json()["job_id"] == job_id
     assert poll.json()["release_dir"] == str(target)
     poll2 = channel_client.get("/updates/engine-state", headers=engine_headers)
-    assert poll2.json()["actions"] == []
+    assert poll2.json()["actions"] == ["install"]
+    assert poll2.json()["job_id"] == job_id
+    assert poll2.json()["release_dir"] == str(target)
 
     # Отчёт об успехе.
     report = channel_client.post(
@@ -373,6 +377,11 @@ def test_full_flow_check_download_install_report(
     assert body["state"] == "up_to_date"
     assert body["installed_version"] == "0.14.0"
     assert body["last_result"] == "updated"
+
+    # Terminal report прекращает выдачу команды.
+    poll3 = channel_client.get("/updates/engine-state", headers=engine_headers)
+    assert poll3.json()["actions"] == []
+    assert poll3.json()["job_id"] is None
 
     # Повторный отчёт без job (сброс) не должен менять состояние в худшую сторону.
     status_now = channel_client.get("/updates/status", headers=headers).json()
@@ -410,6 +419,308 @@ def test_rollback_report_state(
     assert body["state"] == "failed"
     assert body["last_result"] == "rolled_back"
     monkeypatch.undo()
+
+
+def _install_and_poll(
+    channel_client: TestClient,
+    headers: dict,
+    engine_headers: dict,
+    tmp_path: Path,
+) -> dict:
+    """Полный путь до active install job: check → download → install → poll."""
+    monkeypatch = pytest.MonkeyPatch()
+    valid = fixture("manifest.valid.json")
+    _mock_verified(monkeypatch, valid)
+    _mock_download(monkeypatch, tmp_path)
+    channel_client.post("/updates/check", headers=headers)
+    channel_client.post("/updates/download", headers=headers)
+    install = channel_client.post("/updates/install", headers=headers).json()
+    poll = channel_client.get("/updates/engine-state", headers=engine_headers).json()
+    monkeypatch.undo()
+    assert install["state"] == "installing"
+    assert poll["actions"] == ["install"]
+    assert poll["job_id"] == install["job_id"]
+    return {"install": install, "poll": poll}
+
+
+# --- Восстанавливаемая доставка и строгая корреляция report ---------------------------
+
+
+def test_report_without_job_id_is_422(channel_client: TestClient) -> None:
+    headers = {"X-Engine-Token": "engine-token-0123456789abcdef"}
+    response = channel_client.post(
+        "/updates/engine-report",
+        headers=headers,
+        json={
+            "state": "installed",
+            "installed_version": "0.14.0",
+            "installed_release_sha": "2" * 40,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_report_with_unknown_job_409_and_state_untouched(
+    channel_client: TestClient, db_session: Session, tmp_path: Path
+) -> None:
+    user = make_user(db_session, "admin", UserRole.ADMIN)
+    grant(db_session, user, "update_channel_manage")
+    headers = login(channel_client, "admin")
+    engine_headers = {"X-Engine-Token": "engine-token-0123456789abcdef"}
+    world = _install_and_poll(channel_client, headers, engine_headers, tmp_path)
+    response = channel_client.post(
+        "/updates/engine-report",
+        headers=engine_headers,
+        json={
+            "job_id": "0" * 16,
+            "state": "installed",
+            "installed_version": "0.14.0",
+            "installed_release_sha": "2" * 40,
+        },
+    )
+    assert response.status_code == 409
+    # Состояние не изменилось: команда всё ещё выдаётся с настоящим job_id.
+    status_body = channel_client.get("/updates/status", headers=headers).json()
+    assert status_body["state"] == "installing"
+    poll = channel_client.get("/updates/engine-state", headers=engine_headers).json()
+    assert poll["actions"] == ["install"]
+    assert poll["job_id"] == world["install"]["job_id"]
+
+
+def test_report_without_active_job_409(
+    channel_client: TestClient, db_session: Session, tmp_path: Path
+) -> None:
+    user = make_user(db_session, "admin", UserRole.ADMIN)
+    grant(db_session, user, "update_channel_manage")
+    headers = login(channel_client, "admin")
+    engine_headers = {"X-Engine-Token": "engine-token-0123456789abcdef"}
+    # Сначала завершаем единственную операцию, затем шлём stale report.
+    world = _install_and_poll(channel_client, headers, engine_headers, tmp_path)
+    done = channel_client.post(
+        "/updates/engine-report",
+        headers=engine_headers,
+        json={
+            "job_id": world["install"]["job_id"],
+            "state": "installed",
+            "installed_version": "0.14.0",
+            "installed_release_sha": "2" * 40,
+        },
+    )
+    assert done.status_code == 200
+    stale = channel_client.post(
+        "/updates/engine-report",
+        headers=engine_headers,
+        json={
+            "job_id": "1" * 16,
+            "state": "installed",
+            "installed_version": "0.14.0",
+            "installed_release_sha": "2" * 40,
+        },
+    )
+    assert stale.status_code == 409
+    # State не ухудшен.
+    assert channel_client.get("/updates/status", headers=headers).json()["state"] == "up_to_date"
+
+
+def test_report_retry_is_idempotent_and_audited_once(
+    channel_client: TestClient, db_session: Session, tmp_path: Path
+) -> None:
+    user = make_user(db_session, "admin", UserRole.ADMIN)
+    grant(db_session, user, "update_channel_manage")
+    headers = login(channel_client, "admin")
+    engine_headers = {"X-Engine-Token": "engine-token-0123456789abcdef"}
+    world = _install_and_poll(channel_client, headers, engine_headers, tmp_path)
+    payload = {
+        "job_id": world["install"]["job_id"],
+        "state": "installed",
+        "installed_version": "0.14.0",
+        "installed_release_sha": "2" * 40,
+    }
+    first = channel_client.post("/updates/engine-report", headers=engine_headers, json=payload)
+    assert first.status_code == 200
+    second = channel_client.post("/updates/engine-report", headers=engine_headers, json=payload)
+    assert second.status_code == 200
+    assert second.json()["state"] == "up_to_date"
+    reported = (
+        db_session.execute(
+            select(AuditEvent).where(AuditEvent.action == AuditAction.UPDATE_ENGINE_REPORTED)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(reported) == 1  # повтор не создаёт второй audit side effect
+    # Lock освобождён ровно один раз: новый check проходит (acquire удался),
+    # и, поскольку версия уже 0.14.0, честно даёт up_to_date.
+    monkeypatch = pytest.MonkeyPatch()
+    valid = fixture("manifest.valid.json")
+    _mock_verified(monkeypatch, valid)
+    check = channel_client.post("/updates/check", headers=headers)
+    assert check.status_code == 200
+    assert check.json()["state"] == "up_to_date"
+    monkeypatch.undo()
+
+
+def test_conflicting_report_retry_409(
+    channel_client: TestClient, db_session: Session, tmp_path: Path
+) -> None:
+    user = make_user(db_session, "admin", UserRole.ADMIN)
+    grant(db_session, user, "update_channel_manage")
+    headers = login(channel_client, "admin")
+    engine_headers = {"X-Engine-Token": "engine-token-0123456789abcdef"}
+    world = _install_and_poll(channel_client, headers, engine_headers, tmp_path)
+    job_id = world["install"]["job_id"]
+    done = channel_client.post(
+        "/updates/engine-report",
+        headers=engine_headers,
+        json={
+            "job_id": job_id,
+            "state": "installed",
+            "installed_version": "0.14.0",
+            "installed_release_sha": "2" * 40,
+        },
+    )
+    assert done.status_code == 200
+    conflicting = channel_client.post(
+        "/updates/engine-report",
+        headers=engine_headers,
+        json={
+            "job_id": job_id,
+            "state": "rolled_back",
+            "installed_version": "0.13.0",
+            "installed_release_sha": INSTALLED_SHA,
+            "error_code": "update_failed",
+        },
+    )
+    assert conflicting.status_code == 409
+    # Исходный результат не ухудшен.
+    assert channel_client.get("/updates/status", headers=headers).json()["state"] == "up_to_date"
+
+
+def test_report_restart_required_state(
+    channel_client: TestClient, db_session: Session, tmp_path: Path
+) -> None:
+    user = make_user(db_session, "admin", UserRole.ADMIN)
+    grant(db_session, user, "update_channel_manage")
+    headers = login(channel_client, "admin")
+    engine_headers = {"X-Engine-Token": "engine-token-0123456789abcdef"}
+
+    world = _install_and_poll(channel_client, headers, engine_headers, tmp_path)
+    response = channel_client.post(
+        "/updates/engine-report",
+        headers=engine_headers,
+        json={
+            "job_id": world["install"]["job_id"],
+            "state": "restart_required",
+            "installed_version": "0.14.0",
+            "installed_release_sha": "2" * 40,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["state"] == "restart_required"
+    assert response.json()["last_result"] == "restart_required"
+    # Команда больше не выдаётся.
+    poll = channel_client.get("/updates/engine-state", headers=engine_headers).json()
+    assert poll["actions"] == []
+
+
+def test_report_failed_state(
+    channel_client: TestClient, db_session: Session, tmp_path: Path
+) -> None:
+    user = make_user(db_session, "admin", UserRole.ADMIN)
+    grant(db_session, user, "update_channel_manage")
+    headers = login(channel_client, "admin")
+    engine_headers = {"X-Engine-Token": "engine-token-0123456789abcdef"}
+
+    world = _install_and_poll(channel_client, headers, engine_headers, tmp_path)
+    response = channel_client.post(
+        "/updates/engine-report",
+        headers=engine_headers,
+        json={
+            "job_id": world["install"]["job_id"],
+            "state": "failed",
+            "installed_version": "",
+            "installed_release_sha": "",
+            "error_code": "engine_failed",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["state"] == "failed"
+    assert response.json()["error_code"] == "engine_failed"
+    assert response.json()["last_result"] == "failed"
+
+
+def test_report_invalid_result_fields_are_422(
+    channel_client: TestClient, db_session: Session, tmp_path: Path
+) -> None:
+    user = make_user(db_session, "admin", UserRole.ADMIN)
+    grant(db_session, user, "update_channel_manage")
+    headers = login(channel_client, "admin")
+    engine_headers = {"X-Engine-Token": "engine-token-0123456789abcdef"}
+    world = _install_and_poll(channel_client, headers, engine_headers, tmp_path)
+    # installed без release_sha — 422; rolled_back без error_code — 422.
+    missing_sha = channel_client.post(
+        "/updates/engine-report",
+        headers=engine_headers,
+        json={
+            "job_id": world["install"]["job_id"],
+            "state": "installed",
+            "installed_version": "0.14.0",
+            "installed_release_sha": "",
+        },
+    )
+    assert missing_sha.status_code == 422
+    missing_code = channel_client.post(
+        "/updates/engine-report",
+        headers=engine_headers,
+        json={"job_id": world["install"]["job_id"], "state": "rolled_back"},
+    )
+    assert missing_code.status_code == 422
+    # Активная операция не пострадала.
+    poll = channel_client.get("/updates/engine-state", headers=engine_headers).json()
+    assert poll["actions"] == ["install"]
+    assert poll["job_id"] == world["install"]["job_id"]
+
+
+def test_concurrent_identical_reports_single_apply(
+    channel_client: TestClient, db_session: Session, tmp_path: Path
+) -> None:
+    user = make_user(db_session, "admin", UserRole.ADMIN)
+    grant(db_session, user, "update_channel_manage")
+    headers = login(channel_client, "admin")
+    engine_headers = {"X-Engine-Token": "engine-token-0123456789abcdef"}
+    world = _install_and_poll(channel_client, headers, engine_headers, tmp_path)
+    payload = {
+        "job_id": world["install"]["job_id"],
+        "state": "installed",
+        "installed_version": "0.14.0",
+        "installed_release_sha": "2" * 40,
+    }
+    results: list[int] = []
+
+    def send() -> None:
+        response = channel_client.post(
+            "/updates/engine-report", headers=engine_headers, json=payload
+        )
+        results.append(response.status_code)
+
+    threads = [Thread(target=send) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    # Ровно одно применение (200 от APPLIED/DUPLICATE, 409 — только если
+    # запрос попал между снятием активной операции и записью last_job).
+    assert all(code in (200, 409) for code in results)
+    assert any(code == 200 for code in results)
+    reported = (
+        db_session.execute(
+            select(AuditEvent).where(AuditEvent.action == AuditAction.UPDATE_ENGINE_REPORTED)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(reported) == 1  # один audit side effect
+    assert channel_client.get("/updates/status", headers=headers).json()["state"] == "up_to_date"
 
 
 # --- Движковые эндпоинты -----------------------------------------------------------

@@ -64,7 +64,8 @@
 # 1. Один раз у владельца: генерация ключевой пары
 python infra/release/sign_channel.py --gen-key --key-out release-key.hex
 #    → публичный ключ печатается; его добавить в UPDATE_CHANNEL_PUBLIC_KEYS
-#      (конфигурация сервера) и в secret RELEASE_SIGNING_PRIVATE_KEY.
+#      (конфигурация сервера) и в environment-секрет
+#      UPDATE_CHANNEL_SIGNING_KEY (см. update-channel.yml).
 
 # 2. Сборка пакета из снимка (installer/build.ps1 готовит staging/app)
 python infra/release/build_package.py --snapshot installer/staging/app \
@@ -78,13 +79,35 @@ python infra/release/sign_channel.py --manifest manifest.json \
 
 # 4. Независимая проверка тем же публичным ключом, что встроен в клиент
 python infra/release/verify_channel.py --manifest manifest.signed.json \
-    --public-key <base64> 
+    --public-key <base64>
 ```
 
-Полный pipeline — в GitHub Actions (см. `.github/workflows/release.yml`
-в отчёте Phase 13: рабочий патч для владельца; выпуск выполняется только
-владельцем по защищённому SemVer-тегу, отсутствующий signing secret =
-ошибка, unsigned stable manifest не публикуется никогда).
+## Полный pipeline — GitHub Actions
+
+Исполняемый workflow: `.github/workflows/update-channel.yml`
+(вся политика — в `infra/release/publish_channel.py`; workflow — тонкая
+обвязка, шаги 1–4 выше выполняет скрипт, а не копипаст команд).
+
+- Запуск: защищённый SemVer-тег `v<major>.<minor>.<patch>` (tag protection
+  rules владельца: только `v*`) или ручной `workflow_dispatch` владельца.
+- Шаг сборки поднимает installer (Windows, закреплённый Inno Setup
+  6.7.3) и детерминированный пакет (`build_package.py`), генерирует
+  `release.json`/внутренний manifest и внешний `update-channel.json`.
+- Подпись — только ключом из environment `update-channel-signing`
+  (секреты: `UPDATE_CHANNEL_SIGNING_KEY`, `UPDATE_CHANNEL_KEY_ID`,
+  `UPDATE_CHANNEL_PUBLIC_KEYS` — тот же trust store, что в конфигурации
+  сервера). PR/fork-код не имеет доступа к секретам (нет триггера
+  `pull_request`, environment с protection rules).
+- Fail closed: нет/неверен signing secret → pipeline падает ДО создания
+  unsigned manifest; независимая проверка подписи публичным ключом
+  клиента + размер/SHA256 пакета — обязательный шаг до публикации.
+- Публикация: immutable GitHub Release (draft для ревью владельца) с
+  пакетом, `update-channel.json`, `SHA256SUMS` и installer'ом, плюс
+  build provenance (attestation). Развёртывание серверной части —
+  отдельный `release.yml` (deploy/rollback), без регрессии Phase 7/12.
+- `package_url` детерминированный: `https://github.com/<owner>/<repo>/releases/download/v<version>/hr-manager-windows-<version>.zip`
+  (активы релиза неизменяемы после загрузки; клиент дополнительно
+  проверяет подпись и SHA256).
 
 ## Ротация и отзыв ключей
 

@@ -43,7 +43,12 @@ from app.schemas import (
     UpdateStatusResponse,
 )
 from app.update_channel_contract import ChannelError
-from app.update_state import UpdateChannelError, UpdateState, UpdateStateStore
+from app.update_state import (
+    ReportOutcome,
+    UpdateChannelError,
+    UpdateState,
+    UpdateStateStore,
+)
 
 router = APIRouter(prefix="/updates", tags=["updates"])
 
@@ -407,16 +412,16 @@ def engine_state(
         store.set_engine_installed(header_version, header_sha)
     actions = store.engine_pending_actions()
     if actions:
-        response = UpdateEnginePollResponse(
+        # Доставка с re-delivery: опрос НЕ считается подтверждением —
+        # команда с тем же неизменным job_id и server-owned путями выдаётся
+        # повторно до terminal report (движок идемпотентен/resume-safe).
+        return UpdateEnginePollResponse(
             actions=actions,
             job_id=store.install_job_id(),
             release_dir=store.downloaded_dir(),
             manifest_path=store.manifest_path(),
             error_code=None,
         )
-        # Команда выдаётся ровно одному опросу (идемпотентность доставки).
-        store.clear_pending_actions()
-        return response
     return UpdateEnginePollResponse(actions=[], job_id=None, release_dir=None, error_code=None)
 
 
@@ -465,26 +470,37 @@ def engine_report(
     _engine_token_check(request)
     store = _store(request)
     settings = _settings(request)
-    expected_job = store.install_job_id()
-    if expected_job and payload.job_id and payload.job_id != expected_job:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Несовпадение job_id.")
-    if payload.state == "installed":
-        store.set_installed(payload.installed_version, payload.installed_release_sha)
-    elif payload.state == "restart_required":
-        store.set_engine_restart_required(payload.installed_version, payload.installed_release_sha)
-    elif payload.state == "rolled_back":
-        store.set_rolled_back(payload.error_code or UpdateChannelError.UPGRADE_FAILED)
-    else:
-        store.engine_failed(payload.error_code or UpdateChannelError.ENGINE_FAILED)
-    store.release_install_action()
-    record_event(
-        db,
-        AuditAction.UPDATE_ENGINE_REPORTED,
-        details=(
-            f"state={payload.state} version={payload.installed_version} "
-            f"sha={(payload.installed_release_sha or '')[:12]} "
-            f"code={payload.error_code or 'none'}"
-        ),
-        commit=True,
+    outcome = store.apply_engine_report(
+        payload.job_id,
+        payload.state,
+        payload.installed_version,
+        payload.installed_release_sha,
+        payload.error_code,
     )
+    if outcome == ReportOutcome.NO_ACTIVE_JOB:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Нет активной операции установки для отчёта."
+        )
+    if outcome == ReportOutcome.WRONG_JOB:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Несовпадение job_id с активной операцией."
+        )
+    if outcome == ReportOutcome.CONFLICT:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Противоречащий повтор отчёта для завершённого job."
+        )
+    if outcome == ReportOutcome.APPLIED:
+        # Lock освобождается ровно один раз и только владельцем активной
+        # операции; повторные (DUPLICATE) отчёты его не трогают.
+        store.release_install_action()
+        record_event(
+            db,
+            AuditAction.UPDATE_ENGINE_REPORTED,
+            details=(
+                f"state={payload.state} version={payload.installed_version} "
+                f"sha={(payload.installed_release_sha or '')[:12]} "
+                f"code={payload.error_code or 'none'}"
+            ),
+            commit=True,
+        )
     return _snapshot_response(store, settings)

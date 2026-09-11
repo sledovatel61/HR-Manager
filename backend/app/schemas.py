@@ -10,7 +10,15 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from app.models import (
     AuditAction,
@@ -23,6 +31,7 @@ from app.models import (
     PilotWorkingMode,
     UserRole,
 )
+from app.update_channel_contract import RELEASE_SHA_RE
 from app.utils import normalize_phone
 
 
@@ -1118,16 +1127,35 @@ class UpdateEnginePollResponse(BaseModel):
 
 
 class UpdateEngineReportRequest(BaseModel):
-    """Отчёт движка после update (результаты, версии и безопасный код ошибки)."""
+    """Отчёт движка после update (результаты, версии и безопасный код ошибки).
 
-    job_id: str | None = None
-    state: str = "failed"
+    job_id обязателен: terminal report принимается только для активной
+    install operation с точным совпадением job_id. state валидируется
+    перечислением; поля результата проверяются по типу результата.
+    """
+
+    job_id: str = Field(min_length=1, max_length=128)
+    state: Literal["installed", "restart_required", "rolled_back", "failed"] = "failed"
     installed_version: str = ""
     installed_release_sha: str = ""
     error_code: str | None = None
     # Безопасная детализация для оператора: движок обязан присылать
     # только отредактированный текст (без путей, URL, подписей, секретов).
+    # Не возвращается в ответах и не пишется в аудит.
     error_detail: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_result_fields(self) -> "UpdateEngineReportRequest":
+        if self.state in ("installed", "restart_required"):
+            if not self.installed_version.strip():
+                raise ValueError(f"state={self.state} требует installed_version")
+            if not RELEASE_SHA_RE.match(self.installed_release_sha or ""):
+                raise ValueError(
+                    f"state={self.state} требует installed_release_sha (40 hex)"
+                )
+        if self.state in ("rolled_back", "failed") and not (self.error_code or "").strip():
+            raise ValueError(f"state={self.state} требует error_code")
+        return self
 
 
 class SetupStateOut(BaseModel):

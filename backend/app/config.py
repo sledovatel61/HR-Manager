@@ -234,6 +234,12 @@ class Settings(BaseSettings):
     update_check_min_interval_seconds: int = Field(
         default=300, validation_alias="UPDATE_CHECK_MIN_INTERVAL_SECONDS"
     )
+    # Comma-separated hostnames allowed for the channel network policy
+    # (manifest + package, every redirect hop checked BEFORE the request).
+    # Empty = the built-in default list. Never includes user-supplied values.
+    update_channel_allowed_hosts: str = Field(
+        default="", validation_alias="UPDATE_CHANNEL_ALLOWED_HOSTS"
+    )
     # Machine token that the Windows engine presents on the engine endpoints.
     update_engine_token: str = Field(default="", validation_alias="UPDATE_ENGINE_TOKEN")
     # Installed build facts, provided by the engine in the pilot env file.
