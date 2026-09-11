@@ -478,8 +478,9 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
   игнорируются git'ом.
 - Пользователи, роли, сессии, аудит, кандидаты, события, аналитика,
   эксплуатационный контур, коммуникации, версионируемые списки документов,
-  ограниченные личные правила и локальный Windows-пилот реализованы. Следующий
-  этап — Phase 13: безопасный канал доставки обновлений.
+  ограниченные личные правила, локальный Windows-пилот и безопасный канал
+  доставки обновлений реализованы. Следующий этап — Phase 14:
+  эксплуатационная готовность и ограниченный запуск пилота.
 
 ## Документация
 
@@ -493,8 +494,11 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
 - [`prompts/PHASE_3_PROMPT.md`](prompts/PHASE_3_PROMPT.md) — исторический промпт базы кандидатов;
 - [`prompts/PHASE_11_PROMPT.md`](prompts/PHASE_11_PROMPT.md) — историческое задание этапа 11;
 - [`docs/phase-12-report-arena.md`](docs/phase-12-report-arena.md) — отчёт этапа 12 (Windows-пилот);
+- [`docs/phase-13-report-arena.md`](docs/phase-13-report-arena.md) — отчёт этапа 13 (канал обновлений);
 - [`docs/phase-12-local-acceptance.md`](docs/phase-12-local-acceptance.md) — итоговая локальная приёмка Windows;
 - [`prompts/PHASE_13_PROMPT.md`](prompts/PHASE_13_PROMPT.md) — задание этапа 13;
+- [`docs/phase-13-local-acceptance.md`](docs/phase-13-local-acceptance.md) — итоговая локальная приёмка этапа 13;
+- [`prompts/PHASE_14_PROMPT.md`](prompts/PHASE_14_PROMPT.md) — контракт следующего этапа;
 - [`design/IMPLEMENTATION_GUIDE.md`](design/IMPLEMENTATION_GUIDE.md) — план
   переноса дизайна «Живая воронка» в production.
 
@@ -516,6 +520,16 @@ grant включает оба). Согласия email/Telegram подключа
 Подробные API/миграционные решения, проверки, границы совместимости и handoff:
 [`docs/phase-11-report-arena.md`](docs/phase-11-report-arena.md).
 
+## Phase 13 — принято (в ветке-базе Phase 12)
+
+Безопасный канал доставки обновлений Windows-пилота: подписанный release
+manifest (detached Ed25519 над каноническим payload), проверка публичным
+ключом на сервере и на host, HTTPS-загрузка со staging через
+bind-mounted каталог, защита от downgrade/подмены/Zip Slip, серверные
+состояния и админ-раздел «Обновления», повторное использование Phase 12
+backup/rollback/resume. Детали: [`docs/phase-13-report-arena.md`](docs/phase-13-report-arena.md),
+[`infra/release/README.md`](infra/release/README.md).
+
 ## Phase 12 — принято
 
 Windows-пилот: графический установщик `HR Manager Setup.exe` (Inno Setup
@@ -534,8 +548,10 @@ Windows-пилот: графический установщик `HR Manager Setu
 Подробности и SHA256 установщика:
 [`docs/phase-12-local-acceptance.md`](docs/phase-12-local-acceptance.md).
 
-## Phase 13 — следующий этап
+## Phase 13 — реализовано
 
-Подписанный manifest канала обновлений, безопасная загрузка/staging,
-административный UI и release pipeline поверх уже принятого update/rollback:
-[`prompts/PHASE_13_PROMPT.md`](prompts/PHASE_13_PROMPT.md).
+Подписанный manifest канала обновлений (Ed25519), безопасная
+загрузка/staging, административный UI «Обновления» и release pipeline
+поверх уже принятого update/rollback Phase 12. Задание:
+[`prompts/PHASE_13_PROMPT.md`](prompts/PHASE_13_PROMPT.md); отчёт:
+[`docs/phase-13-report-arena.md`](docs/phase-13-report-arena.md).

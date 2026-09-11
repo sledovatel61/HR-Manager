@@ -37,7 +37,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet("install", "start", "stop", "status", "open", "update",
-        "uninstall", "diagnostics", "resume", "help")]
+        "uninstall", "diagnostics", "resume", "channel", "channel-config", "help")]
     [string]$Action = "help",
 
     # Обновление: доверенный каталог релиза (trust boundary — см. README).
@@ -67,14 +67,22 @@ param(
     [switch]$PurgeData,
 
     # diagnostics: вывод в формате JSON.
-    [switch]$Json
+    [switch]$Json,
+
+    # channel: один цикл наблюдателя; -Watch запускает блокирующий цикл.
+    [switch]$Watch,
+
+    # channel-config: смена URL канала (-SetUrl) или набора доверенных ключей
+    # (-KeysJson <файл JSON {kid:{key,revoked}}>) — ротация/отзыв ключей.
+    [string]$SetUrl,
+    [string]$KeysJson
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
 $script:EngineDir = Join-Path $PSScriptRoot "engine"
-foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install")) {
+foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install", "Crypto", "Channel")) {
     Import-Module (Join-Path $script:EngineDir "$module.psm1") -Force -ErrorAction Stop
 }
 
@@ -95,8 +103,11 @@ function Show-HrmUsage {
         "  diagnostics    Агрегированная диагностика (с редакцией секретов; -Json)",
         "  uninstall      Удалить приложение (данные сохраняются; -PurgeData удаляет)",
         "  resume         Продолжить прерванную операцию (после перезагрузки/UAC)",
+        "  channel        Цикл канала обновлений (-Watch — блокирующий наблюдатель)",
+        "  channel-config Правка канала: -SetUrl <https>, -KeysJson <файл ключей>",
         "",
         "Параметры: -SourceDir, -InstallDir, -StateDir, -Port, -NonInteractive, -OpenBrowser",
+        "           -ReleaseDir, -Watch, -SetUrl, -KeysJson",
         "Полная документация: infra/windows/README.md"
     )
     $lines | ForEach-Object { Write-Output $_ }
@@ -131,6 +142,32 @@ try {
         }
         "resume" {
             Resume-HrmOperation -InstallDir $InstallDir -StateDir $StateDir
+        }
+        "channel" {
+            if ($Watch) {
+                Start-HrmChannelWatch -InstallDir $InstallDir -StateDir $StateDir
+            }
+            else {
+                Invoke-HrmChannelOnce -InstallDir $InstallDir -StateDir $StateDir
+            }
+        }
+        "channel-config" {
+            if (-not $SetUrl -and -not $KeysJson) {
+                throw "Укажите -SetUrl или -KeysJson (см. help)."
+            }
+            $keys = $null
+            if ($KeysJson) {
+                $keysData = Get-HrmJsonFile $KeysJson
+                if ($null -eq $keysData) { throw "Не удалось прочитать -KeysJson: $KeysJson" }
+                $keys = @{}
+                foreach ($prop in $keysData.PSObject.Properties) {
+                    $entry = $prop.Value
+                    if ($null -eq $entry.key) { throw "В -KeysJson нет key для $($prop.Name)" }
+                    $keys[$prop.Name] = @{ key = [string]$entry.key; revoked = [bool]$entry.revoked }
+                }
+            }
+            Set-HrmChannelConfig -StateDir $StateDir -Url $SetUrl -PublicKeys $keys
+            Write-HrmLog "info" "Конфигурация канала обновлена."
         }
     }
     exit 0

@@ -11,7 +11,8 @@ $script:SecretNames = @(
     "HRM_BOOTSTRAP_ADMIN_PASSWORD", # 32 hex — запасной bootstrap-пароль (не используется при токене)
     "HRM_BACKUP_KEY",          # base64 от 32 байт — AES-256 ключ бэкапов
     "HRM_BACKUP_KEY_ID",       # строка — идентификатор ключа бэкапа
-    "HRM_EXCHANGE_TOKEN"       # одноразовый токен первого запуска (гасится после claim)
+    "HRM_EXCHANGE_TOKEN",      # одноразовый токен первого запуска (гасится после claim)
+    "HRM_UPDATE_ENGINE_TOKEN"  # 32 hex — машинный токен движка канала обновлений
 )
 
 function Initialize-HrmStateDir {
@@ -86,6 +87,7 @@ function Get-HrmSecret {
         }
         "HRM_BACKUP_KEY_ID" { "pilot-" + (New-HrmHex 4) }
         "HRM_EXCHANGE_TOKEN" { New-HrmHex 16 }
+        "HRM_UPDATE_ENGINE_TOKEN" { New-HrmHex 16 }
     }
     $file = Get-HrmSecretsFile $StateDir
     $data = Get-HrmJsonFile $file
@@ -135,6 +137,11 @@ function Write-HrmPilotEnv {
         $exchange = "retired-" + (New-HrmHex 16)
     }
     $port = Get-HrmPort $Port
+    $engineToken = Get-HrmSecret $StateDir "HRM_UPDATE_ENGINE_TOKEN"
+    # Конфигурация канала обновлений (Phase 13) — серверная/host-конфигурация
+    # из channel.json; staging-каталог host отделён от каталога секретов.
+    $channel = Get-HrmChannelConfig $StateDir
+    $keysJson = ($channel.public_keys | ConvertTo-Json -Compress)
     $lines = @(
         ("HRM_POSTGRES_PASSWORD={0}" -f $secrets["HRM_POSTGRES_PASSWORD"]),
         ("HRM_SIGNING_KEY={0}" -f $secrets["HRM_SIGNING_KEY"]),
@@ -143,7 +150,14 @@ function Write-HrmPilotEnv {
         ("HRM_BACKUP_KEY={0}" -f $secrets["HRM_BACKUP_KEY"]),
         ("HRM_BACKUP_KEY_ID={0}" -f $secrets["HRM_BACKUP_KEY_ID"]),
         ("HRM_RELEASE_SHA={0}" -f $ReleaseSha),
-        ("HRM_PILOT_PORT={0}" -f $port)
+        ("HRM_PILOT_PORT={0}" -f $port),
+        ("HRM_UPDATE_ENGINE_TOKEN={0}" -f $engineToken),
+        ("HRM_STAGING_DIR={0}" -f (Get-HrmStagingHostDir)),
+        ("HRM_UPDATE_CHANNEL_URL={0}" -f $channel.url),
+        # Кавычки JSON экранируются literal-заменой: -replace использует
+        # regex-синтаксис replacement и удалил бы обратный слэш.
+        ("HRM_UPDATE_CHANNEL_PUBLIC_KEYS=`"{0}`"" -f ([Regex]::Replace($keysJson, '"', '\"'))),
+        ("HRM_UPDATE_CHECK_MIN_INTERVAL={0}" -f $channel.check_min_interval_seconds)
     )
     $envFile = Get-HrmEnvFile $StateDir
     Set-Content -Path $envFile -Value $lines -Encoding UTF8

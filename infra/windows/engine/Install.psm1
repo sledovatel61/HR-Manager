@@ -116,6 +116,12 @@ function Start-HrmApp {
     Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
     Start-HrmStack $InstallDir $StateDir
     Wait-HrmReady (Get-HrmBaseUrl $port)
+    # Наблюдатель канала обновлений (Phase 13) — только интерактивно:
+    # в неинтерактивном/тестовом режиме канал не трогается (тесты вызывают
+    # -Action channel напрямую).
+    if (Test-HrmInteractive) {
+        Start-HrmChannelWatcherProcess -InstallDir $InstallDir -StateDir $StateDir
+    }
     Write-HrmLog "info" ("Приложение запущено: {0}" -f (Get-HrmBaseUrl $port))
 }
 
@@ -124,6 +130,7 @@ function Stop-HrmApp {
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     if (-not (Get-HrmInstallRecord $StateDir)) { throw "Установка не найдена." }
+    Stop-HrmChannelWatch -StateDir $StateDir
     if (Test-HrmComposeRunning $InstallDir $StateDir) {
         Stop-HrmStack $InstallDir $StateDir
     }
@@ -188,6 +195,7 @@ function Remove-HrmApp {
         Write-HrmLog "info" "Установка не найдена — удалять нечего."
         return
     }
+    Stop-HrmChannelWatch -StateDir $StateDir
     if (Test-HrmComposeRunning $InstallDir $StateDir) {
         Stop-HrmStack $InstallDir $StateDir
     }

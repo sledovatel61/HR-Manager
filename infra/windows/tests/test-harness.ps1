@@ -21,6 +21,13 @@ function Test-Case {
         $msg = ("{0}: {1}" -f $Name, $_.Exception.Message)
         $global:HRM_TestFailures += $msg
         Write-Host ("  [FAIL] $Name : {0}" -f $_.Exception.Message) -ForegroundColor Red
+        # GitHub-аннотация: имя проваленного кейса + стек видны в check-runs
+        # даже когда лог-приёмник недоступен.
+        $stack = $_.ScriptStackTrace
+        if (-not $stack) { $stack = "(без стектрейса)" }
+        $flat = ($msg + " || " + $stack) -replace "[`r`n]+", " | "
+        $title = $Name -replace "[`r`n:]+", " "
+        Write-Host ("::error title={0}::{1}" -f $title, $flat)
     }
 }
 
@@ -72,7 +79,7 @@ function Initialize-HrmTestEngine {
         $TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM тест движка " + [System.Guid]::NewGuid().ToString("N").Substring(0, 8))
     }
     $engineDir = Join-Path $PSScriptRoot "..\engine"
-    foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install")) {
+    foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install", "Crypto", "Channel")) {
         Import-Module (Join-Path $engineDir "$module.psm1") -Force -ErrorAction Stop
     }
     $env:HRM_NONINTERACTIVE = "1"

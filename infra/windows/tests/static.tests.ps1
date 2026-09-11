@@ -46,6 +46,7 @@ Test-Case "нет секретов-литералов (пароли разраб
     $hex = "[^0-9a-fA-F]([0-9a-fA-F]{32}|[0-9a-fA-F]{64})[^0-9a-fA-F]"
     foreach ($file in Get-HrmEngineFiles) {
         if ($file -match "tests\\") { continue } # тесты содержат примеры секретов
+        if ($file -match "Crypto\.psm1$") { continue } # публичные константы RFC 8032, не секреты
         $text = Get-Content -Path $file -Raw -Encoding UTF8
         foreach ($pattern in $patterns) {
             if ($text -match $pattern) {
@@ -137,6 +138,16 @@ Test-Case "backend видит состояние бэкапов только д�
     $overlay = Get-Content -Path (Join-Path $RepoRoot "infra\compose.pilot.yml") -Raw -Encoding UTF8
     Assert-HrmContains $overlay "BACKUP_STATE_FILE: /var/backups/hr-manager/state.json" "backend не настроен на состояние бэкапов"
     Assert-HrmContains $overlay "pilot_backups:/var/backups/hr-manager:ro" "backend не подключает backup volume только для чтения"
+}
+
+Test-Case "пилотный оверлей: канал обновлений требует токен движка и staging bind mount" {
+    $overlay = Get-Content -Path (Join-Path $RepoRoot "infra\compose.pilot.yml") -Raw -Encoding UTF8
+    Assert-HrmContains $overlay '${HRM_UPDATE_ENGINE_TOKEN:?' "нет обязательного токена движка канала"
+    Assert-HrmContains $overlay '${HRM_STAGING_DIR:?' "нет обязательного staging-каталога"
+    Assert-HrmContains $overlay ":/updates" "нет bind mount /updates"
+    Assert-HrmContains $overlay "UPDATE_STAGING_DIR: /updates" "нет UPDATE_STAGING_DIR"
+    # Никаких docker.sock/командных сокетов в контейнер.
+    Assert-HrmNotContains $overlay "docker.sock" "Docker socket в оверлее"
 }
 
 Test-Case "комментарий-заголовок оверлея описывает локальную модель доверия" {

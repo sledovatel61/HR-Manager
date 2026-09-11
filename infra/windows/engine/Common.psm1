@@ -226,6 +226,23 @@ function Invoke-HrmOpenBrowser {
     Start-Process $Url
 }
 
+function Start-HrmChannelWatcherProcess {
+    # Отдельный скрытый процесс наблюдателя канала обновлений (Phase 13).
+    param([string]$InstallDir = "", [string]$StateDir = "")
+    if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $entry = Join-Path (Split-Path $PSScriptRoot -Parent) "hr-manager.ps1"
+    $arguments = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", ('"{0}"' -f $entry),
+        "-Action", "channel", "-Watch",
+        "-InstallDir", ('"{0}"' -f $InstallDir),
+        "-StateDir", ('"{0}"' -f $StateDir)
+    )
+    Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+    Write-HrmLog "info" "Канал: запущен процесс наблюдателя."
+}
+
 # --- Защита файлов состояния --------------------------------------------------
 
 function Protect-HrmFile {

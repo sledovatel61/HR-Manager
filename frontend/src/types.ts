@@ -673,6 +673,29 @@ export interface QueueDiagnostics {
   worker: { alive: boolean; last_seen_at?: string; processed_total?: number; failed_total?: number };
 }
 
+/** Phase 13: Windows pilot update channel status (never URLs/paths/secrets). */
+export interface UpdateStatus {
+  state: string;
+  installed_version: string;
+  installed_release_sha: string;
+  available_version: string | null;
+  available_release_sha: string | null;
+  available_published_at: string | null;
+  notes_ru: string | null;
+  download_progress: number | null;
+  last_check_at: string | null;
+  last_check_ok: boolean | null;
+  error_code: string | null;
+  last_result: string | null;
+  channel_configured: boolean;
+}
+
+export interface UpdateInstallResult {
+  state: string;
+  job_id: string | null;
+  message: string | null;
+}
+
 export interface SetupState {
   pilot_exists: boolean;
   pilot_grant_active: boolean;

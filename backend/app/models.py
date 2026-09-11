@@ -181,6 +181,15 @@ class AuditAction(StrEnum):
     PILOT_OWNER_CLAIMED = "pilot_owner_claimed"
     PILOT_OWNER_CREATED = "pilot_owner_created"
     PILOT_SETUP_REJECTED = "pilot_setup_rejected"
+    # Phase 13: Windows pilot update channel.
+    UPDATE_CHECK_STARTED = "update_check_started"
+    UPDATE_CHECK_SUCCEEDED = "update_check_succeeded"
+    UPDATE_CHECK_FAILED = "update_check_failed"
+    UPDATE_DOWNLOAD_STARTED = "update_download_started"
+    UPDATE_DOWNLOAD_SUCCEEDED = "update_download_succeeded"
+    UPDATE_DOWNLOAD_FAILED = "update_download_failed"
+    UPDATE_INSTALL_REQUESTED = "update_install_requested"
+    UPDATE_ENGINE_REPORTED = "update_engine_reported"
 
 
 class CandidateStage(StrEnum):
@@ -1146,6 +1155,7 @@ class AccessGrantScope(StrEnum):
     PILOT_FULL_ACCESS = "pilot_full_access"
     DOCUMENT_LISTS_MANAGE = "document_lists_manage"
     CANDIDATE_DOCUMENTS_ALL = "candidate_documents_all"
+    UPDATE_CHANNEL_MANAGE = "update_channel_manage"
 
 
 _NOTIFICATION_TYPES = [member.value for member in NotificationType]
