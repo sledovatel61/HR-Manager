@@ -73,3 +73,10 @@ mypy_path = "."
 # pytest fixtures do not need complete signature annotations.
 module = ["tests.conftest"]
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+# asn1crypto не поставляет py.typed; используется независимым
+# Authenticode-верификатором (infra/release) и его тестами, поведение
+# проверяется в рантайме тестами backend/tests/test_authenticode_verify.py.
+module = ["asn1crypto.*"]
+ignore_missing_imports = true

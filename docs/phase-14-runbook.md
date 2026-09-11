@@ -17,9 +17,28 @@ Windows-приёмка НЕ выполнялись** (нет сертифика�
 | Криптография канала (Ed25519, canonical bytes, RFC 8032) | backend suite + `infra/windows/tests/run-tests.ps1` | — |
 | Publish pipeline (fail-closed, trust store, SHA256SUMS) | `tests/test_release_pipeline.py` | — |
 | Authenticode-контракт (fail-closed политика) | `tests/test_installer_signing.py` + CI `windows-installer` (test-режим, ephemeral cert) | production-подпись реальным сертификатом |
+| Независимая Authenticode-проверка фактических байтов PE (без доверия манифесту) | `tests/test_authenticode_verify.py` + гейт в workflow: в installer-джобе сразу после подписи и в channel-джобе непосредственно перед публикацией | владелец может повторить: `authenticode_verify.py release-gate` (§3.3) |
 | Серверный e2e (first-run, бэкап, канал, отказы) | джоба `pilot-drill` (живой Compose) | — |
 | Установка/обновление/rollback на Windows-машине | — | §5 этого runbook |
 | Uninstall без purge / purge / переустановка | — | §6 |
+
+**Классификация уровней проверки** (чтобы не пере- и не до-оценивать):
+
+1. **Automated live Compose drill** (`infra/scripts/pilot-drill.sh`, джоба
+   `pilot-drill`): живые backend/frontend/worker/PostgreSQL/backup/channel в
+   отдельном compose-проекте, 19 стадий, синтетика через API, бэкап+restore,
+   signed channel, tamper-сценарии, restart-переживаемость, отчёты
+   JSON+Markdown, non-zero exit при провале. Это **серверный** drill в Linux
+   — он НЕ является и не заявляется как полный Windows E2E.
+2. **Automated Windows tests**: `infra/windows/tests/run-tests.ps1` (движок
+   обновлений/rollback/uninstall-логика, Pester-style контракты) и CI-джоба
+   `windows-installer` (сборка+подпись+signtool verify в test-режиме с
+   эфемерным сертификатом и локальным RFC 3161 TSA). Реального установщика
+   на реальной Windows-машине эти тесты не касаются.
+3. **Manual Windows 10/11 lifecycle acceptance** (только владелец, §5–§6):
+   установка, first-run, обновление, rollback, uninstall без purge, purge,
+   переустановка — на реальной пилотной машине. НЕ выполнялось и не
+   заявляется.
 
 CI не содержит production secrets и не может подтвердить production-подпись:
 это делает только владелец в environment `installer-signing`.
@@ -39,17 +58,34 @@ CI не содержит production secrets и не может подтверд�
      `INSTALLER_AUTHENTICODE_PFX_BASE64`, `INSTALLER_AUTHENTICODE_PFX_PASSWORD`,
      `INSTALLER_AUTHENTICODE_TIMESTAMP_URL` (RFC 3161, например
      `http://timestamp.digicert.com`), `INSTALLER_AUTHENTICODE_PUBLISHER`
-     (Subject сертификата, сверяется после подписи);
+     (Subject сертификата, сверяется после подписи), а также для
+     независимого гейта (публичный материал, приватных ключей НЕТ):
+     `INSTALLER_AUTHENTICODE_ROOT_PEM` — PEM root CA production-цепочки
+     (якорь доверия независимой проверки фактических байтов exe), и по
+     желанию `INSTALLER_AUTHENTICODE_TSA_ROOT_PEM` — PEM root CA
+     timestamp-сервера (по умолчанию — root'ы подписанта);
+   - те же три значения (`INSTALLER_AUTHENTICODE_PUBLISHER`,
+     `INSTALLER_AUTHENTICODE_ROOT_PEM`,
+     `INSTALLER_AUTHENTICODE_TSA_ROOT_PEM`) добавить и в environment
+     `update-channel-signing`: финальный independent-гейт выполняется в
+     джобе публикации непосредственно перед `gh release create`;
    - protection: required reviewers (только владелец).
    - Проверка pipeline: `installer_signing.py verify-manifest --mode production`
      отклоняет неподписанный/просроченный по timestamp/чужой publisher/
-     тестовый сертификат выпуск (fail closed).
+     тестовый сертификат выпуск (fail closed). Поверх контракта манифеста
+     работает НЕЗАВИСИМЫЙ гейт `infra/release/authenticode_verify.py
+     release-gate` (см. §3): он не доверяет манифесту и проверяет сами байты
+     PE — без `INSTALLER_AUTHENTICODE_ROOT_PEM` production-публикация
+     отказывает.
 3. **Защита тегов**: tag protection rules — шаблон `v*`, писать могут только
    владелец/CI. SemVer-тег `v*` запускает `update-channel.yml` в production-
    режиме подписи (без выбора); dispatch — только владельцу.
 4. Workflow permissions уже минимальны (`contents: read` у installer-джоба,
-   `contents: write + id-token + attestations` только у channel-джоба),
-   actions/checkout/setup-python запинены, concurrency — immutable assets.
+   `contents: write + id-token + attestations` только у channel-джоба).
+   ВСЕ сторонние actions закреплены полными commit SHA (checkout v4.4.0,
+   setup-python v5.6.0, setup-node v4.4.0, upload/download-artifact v4,
+   attest-build-provenance v2.4.0) — плавающих тегов в signing/release
+   джобах нет; concurrency — immutable assets.
 
 ## 2. Ceremony ключа подписи канала (Ed25519)
 
@@ -84,20 +120,32 @@ CI не содержит production secrets и не может подтверд�
      (`sign-installer.ps1 -Mode production`; секреты только через env),
      проверяется `signtool verify /pa /all`, publisher, timestamp,
      пересчитывается SHA256 в `release-manifest.json`, контракт проверяется
-     `installer_signing.py verify-manifest --mode production`;
+     `installer_signing.py verify-manifest --mode production`. Сразу после
+     этого — НЕЗАВИСИМЫЙ гейт `authenticode_verify.py release-gate` по
+     фактическим байтам подписанного exe (доверие только явным root'ам из
+     секретов; манифест — provenance, не источник истины). Installer после
+     подписания НЕ пересобирается и не модифицируется;
    - канал: пакет детерминирован, manifest подписан Ed25519-ключом из
      секрета, проверен независимо публичным ключом клиента; встроенный
      trust store сверяется побайтово с trust store релиза
      (`trust_store_mismatch` блокирует выпуск); `trust-store.json` публикуется
      в SHA256SUMS;
-   - publication: immutable GitHub Release (draft) с `--target <SHA>`,
-     provenance attestation пакета.
+   - publication: скачанный из артефакта installer проходит тот же
+     независимый гейт ещё раз — непосредственно перед созданием GitHub
+     Release (подмена/модификация байтов между подписью и публикацией
+     невозможна незамеченной); затем immutable GitHub Release (draft) с
+     `--target <SHA>`, provenance attestation пакета.
 3. **Независимая проверка владельцем перед promotion** (на своей машине):
    - `sha256sum -c SHA256SUMS` по всем артефактам релиза;
    - `python infra/release/verify_channel.py --manifest update-channel.json
      --public-key <pub>` — Ed25519-подпись;
    - `python infra/release/installer_signing.py verify-manifest
      --manifest release-manifest.json --mode production --exe-dir .`;
+   - `python infra/release/authenticode_verify.py release-gate
+     --exe HR-Manager-Setup-X.Y.Z.exe --manifest release-manifest.json
+     --expected-publisher "<Subject>" --mode production
+     --trusted-root <root.pem>` — та же независимая проверка байтов, что в
+     pipeline (добавьте `--timestamproot <tsa-root.pem>` при отдельном TSA);
    - `signtool verify /pa /all HR-Manager-Setup-X.Y.Z.exe` (на Windows);
    - сверить `gh api repos/.../attestations` с ожидаемым subject.
 4. **Promotion**: `gh release edit vX.Y.Z --draft=false` (только владелец).

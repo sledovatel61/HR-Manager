@@ -22,6 +22,8 @@
 #                CI/fixture-прогона контракта. Тестовый сертификат помечается
 #                certificate_kind=test-self-signed и НИКОГДА не проходит
 #                production-политику (infra/release/installer_signing.py).
+#                HRM_SIGNING_TIMESTAMP_URL в test-режиме позволяет указать
+#                локальный эфемерный RFC 3161 TSA (drill_tsa_server.py).
 #   disabled   — подпись не выполняется (локальные сборки; статус честно
 #                остаётся unsigned, production-выпуск это отклонит).
 #
@@ -135,6 +137,7 @@ Write-Host ("Подписываем: {0}" -f $setupExe.Name)
 
 $thumbprint = ""
 $certificateKind = ""
+$signerCert = $null
 $timestampUrl = ""
 $expectedPublisher = ""
 $storeLocation = "Cert:\CurrentUser\My"
@@ -158,6 +161,7 @@ try {
         # Пароль — SecureString в процессе, НЕ в аргументах какой-либо команды.
         $securePassword = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
         $imported = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation $storeLocation -Password $securePassword
+        $signerCert = $imported
         $thumbprint = $imported.Thumbprint
         $certificateKind = "production"
         Write-Host "Сертификат production импортирован в хранилище пользователя (пароль не покидал процесс)."
@@ -166,9 +170,13 @@ try {
         # test: ephemeral самоподписанный сертификат (только CI/fixture).
         $subject = "CN=HR Manager CI Test Signing"
         $testCert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation $storeLocation
+        $signerCert = $testCert
         $thumbprint = $testCert.Thumbprint
         $certificateKind = "test-self-signed"
-        $timestampUrl = "http://timestamp.digicert.com"
+        # CI может подставить локальный эфемерный RFC 3161 TSA
+        # (infra/scripts/drill_tsa_server.py) через HRM_SIGNING_TIMESTAMP_URL:
+        # контракт timestamp проверяется полностью, без внешней сети.
+        $timestampUrl = if ($env:HRM_SIGNING_TIMESTAMP_URL) { $env:HRM_SIGNING_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
         $expectedPublisher = $subject
         # Чтобы signtool verify /pa прошёл на тестовом раннере, сертификат
         # добавляется в Root/TrustedPublisher ТОЛЬКО этого ephemeral раннера.
@@ -214,6 +222,18 @@ try {
     if (-not $normalizedPublisher -or ($normalizedPublisher -ne $normalizedExpected -and -not $normalizedPublisher.StartsWith($normalizedExpected, [System.StringComparison]::OrdinalIgnoreCase))) {
         throw "publisher подписи не совпал с ожидаемым: '$normalizedPublisher'"
     }
+
+    # --- Публичный сертификат подписанта (PEM) для независимой проверки --------
+    # Сертификат и так встроен в подпись exe (public material, секретов нет):
+    # PEM выгружается рядом с манифестом, чтобы независимый верификатор
+    # (infra/release/authenticode_verify.py) в test-режиме мог проверить
+    # цепочку до фактического эфемерного корня, а не до системного хранилища.
+    $pemBody = [Convert]::ToBase64String(`
+        $signerCert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert),`
+        [System.Base64FormattingOptions]::InsertLineBreaks)
+    $signerPem = "-----BEGIN CERTIFICATE-----`n" + $pemBody + "`n-----END CERTIFICATE-----`n"
+    [System.IO.File]::WriteAllText((Join-Path $outputDir "signer-public.pem"), $signerPem, [System.Text.Encoding]::ASCII)
+    Write-Host "Публичный сертификат подписанта: installer/output/signer-public.pem"
 
     # --- Пересчёт SHA256 и перезапись манифеста ----------------------------------
 

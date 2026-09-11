@@ -225,3 +225,122 @@ Docs: `docs/phase-14-runbook.md` (новый), `docs/CURRENT_STATUS.md`.
   заполнение go/no-go (§8).
 - PR из `arena/01a08fef-hr-manager` в `main`; предыдущие PR/сессии не
   закрывались.
+
+## 8. Доработка (hardening) поверх PR #25, baseline `1c6961f`
+
+Дата: 2026-09-11. Отдельный commit в этой же ветке/PR #25 (финальный SHA —
+в заголовке PR и в описании коммита; история не переписывалась).
+
+### 8.1 Главная цель
+
+Публикация больше НЕ доверяет signing manifest/attestation и строковым
+полям о результате `signtool` как источнику истины: непосредственно перед
+publish выполняется независимая криптографическая Authenticode-проверка
+ФАКТИЧЕСКИХ байтов PE.
+
+### 8.2 Что добавлено/изменено
+
+| Файл | Суть |
+|---|---|
+| `infra/release/authenticode_verify.py` (новый, ~740 строк) | Независимый верификатор: PE-структура, certificate table (WIN_CERTIFICATE), CMS/PKCS#7, SPC_INDIRECT_DATA, digest образа с масками CheckSum/SecurityDir, signedAttrs (content-type/message-digest), подпись подписанта, цепочки до ЯВНЫХ корней (побайтово; никаких системных хранилищ), EKU Code Signing, publisher, RFC 3161 timestamp (messageImprint == хеш подписи, genTime как точка валидности цепочек, EKU Time Stamping у TSA, отдельные TSA-корни), SHA-256+ (SHA-1/MD5 запрещены), legacy MS timestamp отклонён. CLI: `verify` / `release-gate` (`--exe` путь ИЛИ байты; `--json`). Коды ошибок различимы (unsigned_pe, digest_mismatch, untrusted_root, tsa_untrusted, timestamp_invalid, sha1_forbidden, manifest_* и др.), всё fail-closed |
+| `infra/scripts/drill_tsa_server.py` (новый) | Эфемерный RFC 3161 TSA для CI/тестов: самоподписанный сертификат с EKU Time Stamping создаётся при старте (PEM+DER), HTTP `application/timestamp-query`→`timestamp-reply`, rejection на мусор/неизвестный digest. Используется windows-installer-джобой в test-режиме (`signtool /tr` на локальный TSA) и юнит-тестами |
+| `backend/tests/_authenticode_testkit.py` (новый) | Эфемерные CA/подписанты/TSA (RSA 2048, EKU) в памяти на время прогона; минимальный структурно-корректный PE32+; сборщик Authenticode-подписи (SPC, signedAttrs, RFC 3161 countersignature). Никаких production-ключей нигде |
+| `backend/tests/test_authenticode_verify.py` (новый) | 37 тестов: позитивные (production/test, путь==байты, отдельные TSA-корни, JSON-отчёт без key material) + все негативные сценарии ТЗ (см. §8.4) |
+| `installer/sign-installer.ps1` | test-режим: `HRM_SIGNING_TIMESTAMP_URL` позволяет подставить локальный эфемерный TSA (default — прежний публичный); после подписи выгружается ПУБЛИЧНЫЙ сертификат подписанта (`installer/output/signer-public.pem`, ASCII-PEM) для независимой проверки цепочки test-режима |
+| `review-artifacts/update-channel.phase14.yml` (+`.patch`) | (1) шаг вычисления режима подписи ДО подписи (push→production, fail-closed валидация, production требует TSA-URL); (2) локальный TSA в test-режиме + импорт его сертификата в Root раннера; (3) независимый гейт `authenticode_verify.py release-gate` сразу после подписи (до upload); (4) тот же гейт в channel-release над скачанным артефактом НЕПОСРЕДСТВЕННО перед `gh release create`; (5) ВСЕ сторонние actions запинены полными commit SHA (checkout v4.4.0, setup-python v5.6.0, upload-artifact v4.6.2, download-artifact v4.3.0, attest-build-provenance v2.4.0); (6) артефакт несёт публичные PEM (`signer-public.pem`, `tsa-cert.pem` в test-режиме) для гейта публикации |
+| `review-artifacts/ci.phase14.yml` (+`.patch`) | Пиннинг сторонних actions полными SHA (checkout, setup-python, setup-node, upload-artifact). Новые тесты исполняются в существующей backend-джобе (asn1crypto — из requirements-dev) |
+| `backend/requirements-dev.txt` | `asn1crypto==1.5.1` (пиннинг) |
+| `backend/pyproject.toml` | mypy-override для asn1crypto (нет py.typed) |
+| `backend/tests/test_release_pipeline.py` | Инварианты workflow расширены: режим до подписи, гейты до upload/до publish, fail-closed на отсутствие `INSTALLER_AUTHENTICODE_ROOT_PEM`, локальный TSA, порядок шагов |
+| `docs/phase-14-runbook.md` | Новые секреты гейта (ROOT_PEM/TSA_ROOT_PEM, публичный материал) в двух environments; независимый гейт в §3; команда владельцу; явная классификация уровней проверки (см. §8.6) |
+| `review-artifacts/README.md` | Описаны новые секреты, гейт, перечень негативных тестов |
+
+Installer после подписания не пересобирается и не модифицируется:
+единственный путь байтов exe — sign → gate → upload-artifact →
+download-artifact → gate → `gh release create` (оба гейта и сверка SHA256
+проверяют одни и те же байты).
+
+### 8.3 Негативные сценарии, покрытые тестами (37 passed)
+
+unsigned PE (`unsigned_pe`); non-PE/пустой (`not_pe`); модификация после
+подписи в заголовке и в теле (`digest_mismatch`); перенос подписи с другого
+файла (`digest_mismatch`); ложный digest в подписи (`digest_mismatch`);
+SHA-1 (`sha1_forbidden`); мусорный/обрезанный CMS
+(`bad_signature_structure`); чужой publisher (`publisher_mismatch`);
+недоверенный root подписанта (`untrusted_root`); подписант без EKU Code
+Signing (`eku_missing`); без timestamp (`timestamp_missing`); timestamp с
+чужим messageImprint (`timestamp_invalid`); повреждённый токен TSA
+(`timestamp_invalid`); недоверенный TSA (`tsa_untrusted`); TSA без EKU Time
+Stamping (`tsa_eku_missing`); legacy MS timestamp
+(`timestamp_legacy_unsupported`); цепочки вне срока на genTime
+(`certificate_expired`); пустые/мусорные корни (`bad_trust_root`);
+forged manifest над неподписанным exe (`unsigned_pe`); несовпадение SHA256 в
+манифесте (`manifest_sha_mismatch`); ложный publisher в манифесте
+(`manifest_publisher_mismatch`); тестовый сертификат в production-режиме
+(`untrusted_root`/`tsa_untrusted` + `manifest_mode_mismatch`); отсутствующий
+и битый манифест (`manifest_missing`/`manifest_invalid`); самосогласованный
+подделанный манифест над изменённым exe (`digest_mismatch`); CLI: exit 0/1 и
+JSON-отчёт; TSA-сервер: rejection на мусор, roundtrip через HTTP.
+
+### 8.4 Команды и результаты (локально, Debian 12, Python 3.11.2, venv)
+
+| Команда (cwd=`backend/`) | Результат |
+|---|---|
+| `pytest -m "not integration" -q` | **707 passed, 105 deselected** (на `1c6961f` собрано/пройдено 670: `--collect-only` 670/775; +37 новых тестов authenticode_verify, включая параметризованные 2×TSA-EKU) |
+| `pytest tests/test_authenticode_verify.py -q` | **37 passed** |
+| `pytest tests/test_release_pipeline.py -q` | **16 passed** (включая byte-exact применение обоих `.patch`) |
+| `ruff check .` / `ruff format --check .` | чисто |
+| `mypy app tests` | **Success: no issues in 107 source files** |
+| `git diff --check` | чисто |
+| `git apply --check review-artifacts/*.phase14.patch` | оба применяются |
+
+### 8.5 Threat model (дополнение к §6)
+
+- Подделанный signing manifest/attestation (утверждает «подписан»,
+  корректный SHA256, production) — бессмысленен: гейт проверяет сами байты
+  PE, манифест используется только как provenance (сверка полей).
+- Подмена/модификация exe между подписью и публикацией (в т.ч. пересборка
+  или подмена артефакта) — digest образа не сойдётся (`digest_mismatch`)
+  на гейте перед `gh release create`.
+- Перенос валидной подписи с другого файла — digest считается по маскам
+  (CheckSum, SecurityDir) от фактического образа → отказ.
+- Компрометация плавающего тега action'а в signing/release джобах —
+  исключена пиннингом полных commit SHA.
+- Подмена корней доверия: production-гейт берёт корни ТОЛЬКО из
+  owner-секретов environment'ов; их отсутствие — отказ публикации; в
+  test-режиме корни — фактические эфемерные сертификаты раннера/артефакта,
+  production-политика их не принимает.
+- TSA-атаки: недоверенный TSA, TSA без EKU Time Stamping, чужой
+  messageImprint, legacy MS timestamp, genTime вне срока сертификатов —
+  отдельные коды отказа.
+- Production PFX/private keys — только в environment `installer-signing`
+  (required reviewers, без веток PR); в репозитории/фикстурах/логах/
+  артефактах отсутствуют (фикстуры эфемерные, создаёт тест-кит в памяти;
+  `signer-public.pem`/`tsa-cert.pem` — публичный материал).
+
+### 8.6 Классификация уровней проверки (не переоцениваем)
+
+1. **Automated live Compose drill** (`pilot-drill.sh`, 19 стадий) — живой
+   серверный стек в Linux. Запуск локально невозможен (Docker в песочнице
+   недоступен) — **not validated локально**, не упрощён и не подменён
+   pytest-набором; CI-джоба `pilot-drill` — в phase14-патче для владельца.
+   Это НЕ полный Windows E2E и так не заявляется.
+2. **Automated Windows tests**: `infra/windows/tests/run-tests.ps1` (31
+   Test-Case, не запускались локально — нет pwsh) и CI-джоба
+   `windows-installer` (сборка+подпись+гейт в test-режиме с локальным TSA) —
+   по phase14-патчу; в CI этой ветки НЕ запускались (права на
+   `.github/workflows` у GitHub App нет — см. §5.0).
+3. **Manual Windows 10/11 lifecycle acceptance** (runbook §5–§6) и реальная
+   production-подпись PFX — не выполнялись и не заявляются как выполненные.
+
+### 8.7 Skipped / not validated (честный список)
+
+- PostgreSQL integration (105), Compose stack/pilot-drill, frontend (не
+  затронут), PowerShell-тесты — локально не запускались (окружение); CI на
+  exact SHA — у владельца после переноса workflow (прав нет).
+- `sign-installer.ps1`: правки (env-override TSA, экспорт публичного PEM)
+  проверены ревью и структурой, локального pwsh нет — runtime-прогон в CI.
+- Ветка `arena/01a08fef-hr-manager` не содержит изменений
+  `.github/workflows/*` (заблокировано правами App): все CI-изменения — в
+  `review-artifacts/` (+ проверяемые патчи); зелёные checks старых workflow
+  НЕ являются evidence новых джоб/гейтов.

@@ -576,11 +576,36 @@ def test_workflow_yaml_phase14_signing_invariants() -> None:
     upload_index = names.index("Upload signed installer artifact")
     assert sign_index < upload_index
     # Тег v* => всегда production (fail closed на отсутствие сертификата);
-    # выбор пользователя попадает только в env, не в run-блок.
+    # выбор пользователя попадает только в env, не в run-блок. Режим вычисляет
+    # отдельный шаг ДО подписи: push => production, dispatch => только
+    # production|test, production требует TSA-URL из секрета (fail closed).
     sign_step = installer_job["steps"][sign_index]
     sign_run = sign_step.get("run", "")
     assert "${{ inputs." not in sign_run, "user input inlined in run block"
-    assert "github.event_name == 'push' && 'production'" in json.dumps(sign_step["env"])
+    resolve_index = names.index("Resolve signing mode and timestamp source (fail closed)")
+    resolve_step = installer_job["steps"][resolve_index]
+    resolve_run = resolve_step.get("run", "")
+    assert resolve_index < sign_index, "режим подписи вычисляется до подписи"
+    assert 'mode="production"' in resolve_run, "тег v* обязан давать production"
+    assert "PROD_TIMESTAMP_URL:?" in resolve_run, "production без TSA-URL отказывает"
+    assert "${{ inputs." not in resolve_run, "user input inlined in run block"
+    assert "steps.signing.outputs.mode" in json.dumps(sign_step["env"])
+    # Timestamp в test-режиме — локальный эфемерный RFC 3161 TSA.
+    assert "drill_tsa_server.py" in installer_text
+
+    # Независимая проверка фактических байтов PE — ПОСЛЕ подписи, до upload.
+    gate_index = names.index("Independent Authenticode gate on signed bytes (fail closed)")
+    assert sign_index < gate_index < upload_index
+    gate_step = installer_job["steps"][gate_index]
+    gate_run = gate_step.get("run", "")
+    assert "authenticode_verify.py" in gate_run
+    assert "release-gate" in gate_run
+    # Production-гейт отказывает без явного доверенного root'а.
+    assert "INSTALLER_AUTHENTICODE_ROOT_PEM" in json.dumps(gate_step["env"])
+    assert "INSTALLER_AUTHENTICODE_ROOT_PEM is required" in gate_run
+    # Манифест не может заменить проверку байтов: гейт всегда запускается
+    # с --trusted-root (production) или с фактическими корнями раннера (test).
+    assert "--trusted-root" in gate_run
 
     # Trust store встраивается из защищённого входа и проверяется дважды.
     assert "secrets.INSTALLER_TRUST_STORE" in installer_text
@@ -591,9 +616,27 @@ def test_workflow_yaml_phase14_signing_invariants() -> None:
     # Побайтовая сверка встроенного trust store с trust store канала —
     # ДО публикации релиза.
     channel_names = [step.get("name", "") for step in signing_job["steps"]]
-    assert channel_names.index(
+    verify_index = channel_names.index(
         "Verify installer signing contract and embedded trust store (fail closed)"
-    ) < channel_names.index("Publish immutable GitHub Release (draft, assets verified above)")
+    )
+    publish_index = channel_names.index(
+        "Publish immutable GitHub Release (draft, assets verified above)"
+    )
+    assert verify_index < publish_index
+    # Независимый Authenticode-гейт — НЕПОСРЕДСТВЕННО перед публикацией:
+    # публикация не доверяет манифесту/attestation как источнику истины.
+    gate_index = channel_names.index(
+        "Independent Authenticode release gate (immediately before publish, fail closed)"
+    )
+    assert verify_index < gate_index < publish_index
+    channel_gate = signing_job["steps"][gate_index]
+    channel_gate_run = channel_gate.get("run", "")
+    assert "authenticode_verify.py release-gate" in channel_gate_run
+    assert "SIGNER_ROOT_PEM:?secret INSTALLER_AUTHENTICODE_ROOT_PEM" in channel_gate_run, (
+        "нет root'а — нет публикации"
+    )
+    # В test-режиме корни приезжают артефактом (публичные эфемерные сертификаты).
+    assert "signer-public.pem" in channel_gate_run
     # trust-store.json публикуется как артефакт релиза.
     assert "dist/channel/trust-store.json" in channel_text
 
