@@ -433,7 +433,7 @@ Test-Case "trust store: не-base64 и не-32-байтовые ключи от�
     Assert-HrmThrows "некорректный base64 ключ принят" { Test-HrmTrustStoreObject $bad1 }
     # 31 байт -> base64 не соответствует формату 32-байтового ключа
     # (43 символа + '='); 33 байта — тоже. Оба варианта обязаны отклоняться.
-    $shortKey = [Convert]::ToBase64String(, (New-Object byte[] 31))
+    $shortKey = [Convert]::ToBase64String((New-Object byte[] 31))
     $bad2 = New-HrmTestTrustStoreJson -Keys @{ "pilot-test-key" = @{ key = $shortKey; revoked = $false } }
     Assert-HrmThrows "31-байтовый ключ принят" { Test-HrmTrustStoreObject $bad2 }
 }

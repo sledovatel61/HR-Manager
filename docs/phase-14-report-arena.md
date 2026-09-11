@@ -228,8 +228,11 @@ Docs: `docs/phase-14-runbook.md` (новый), `docs/CURRENT_STATUS.md`.
 
 ## 8. Доработка (hardening) поверх PR #25, baseline `1c6961f`
 
-Дата: 2026-09-11. Отдельный commit в этой же ветке/PR #25 (финальный SHA —
-в заголовке PR и в описании коммита; история не переписывалась).
+Дата: 2026-09-11. Два отдельных commit в этой же ветке/PR #25 (история не
+переписывалась): (1) hardening — `b900819c3dd006556b98062cbed713e563f2d1bc`;
+(2) follow-up фикс предсуществующего (baseline `1c6961f`) синтаксического
+бага PowerShell-тестов — SHA в заголовке PR (голова ветки). CI-факты —
+в §8.7a.
 
 ### 8.1 Главная цель
 
@@ -333,6 +336,29 @@ JSON-отчёт; TSA-сервер: rejection на мусор, roundtrip чере
 3. **Manual Windows 10/11 lifecycle acceptance** (runbook §5–§6) и реальная
    production-подпись PFX — не выполнялись и не заявляются как выполненные.
 
+### 8.7a CI на финальных SHA (facts)
+
+Run #171 (CI, commit `b900819`, run 34605147118):
+
+| Джоба | Результат |
+|---|---|
+| Backend checks | **pass** (включает 37 новых тестов authenticode_verify + asn1crypto из requirements-dev) |
+| Backend integration tests (PostgreSQL) | **pass** |
+| Frontend checks | **pass** |
+| Compose stack smoke test (dev + prod overlay) | **pass** |
+| Windows engine tests + installer smoke | **fail** — предсуществующий баг baseline (см. ниже) |
+
+Windows-джоба падала на `b900819` с ParseException в
+`infra/windows/tests/channel.tests.ps1:436` — синтаксическая опечатка
+`[Convert]::ToBase64String(, (New-Object byte[] 31))` из baseline-коммита
+`1c6961f` (файл в доработке не менялся). Тот же падёж — на baseline: run
+#162 (34595151615), CI Failure, идентичная ошибка. Test-Case'ы
+channel.tests.ps1 из-за этого ни разу не выполнялись; на `b900819` это НЕ
+регрессия. Follow-up commit чинит опечатку (убрана ведущая запятая) — после
+него Test-Case'ы channel.tests.ps1 впервые выполнятся в CI. Прогон CI на
+fix-коммите: не завершён на момент сдачи (push-токен сессии истёк;
+см. Handoff) — владельцу перезапустить/проверить checks на голове ветки.
+
 ### 8.7 Skipped / not validated (честный список)
 
 - PostgreSQL integration (105), Compose stack/pilot-drill, frontend (не
@@ -343,4 +369,12 @@ JSON-отчёт; TSA-сервер: rejection на мусор, roundtrip чере
 - Ветка `arena/01a08fef-hr-manager` не содержит изменений
   `.github/workflows/*` (заблокировано правами App): все CI-изменения — в
   `review-artifacts/` (+ проверяемые патчи); зелёные checks старых workflow
-  НЕ являются evidence новых джоб/гейтов.
+  НЕ являются evidence новых джоб/гейтов. В частности, зелёный Backend
+  checks на `b900819` подтверждает юнит-тесты независимого верификатора, но
+  НЕ подтверждает новые гейт-шаги workflow (они исполняются только после
+  переноса workflow владельцем).
+- Push-токен GitHub-приложения сессии истёк ПОСЛЕ пуша hardening-коммита и
+  постинга комментария в PR (push `b900819` и комментарий прошли успешно);
+  follow-up fix-коммит с фиксом channel.tests.ps1 подготовлен локально и
+  требует пуша после переподключения GitHub (Arena). Проверки на fix-SHA
+  не завершены — считать их incomplete до зелёного CI.
