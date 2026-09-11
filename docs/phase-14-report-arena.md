@@ -12,10 +12,10 @@
 * **Branch**: `arena/01a08ff0-hr-manager` (ветка сессии; отдельную
   `arena/phase-14-*` создать нельзя — сессия жёстко привязана к этой ветке,
   поэтому вся работа и PR идут из неё). Merge выполняет владелец.
-* **Final SHA**: последний коммит ветки `arena/01a08ff0-hr-manager` (он же head
-  PR; SHA каждой итерации — в истории коммитов и в checks PR). Все CI-проверки
-  Phase 14 запускаются именно на этом SHA.
-* **PR**: см. секцию checks в PR к ветке `arena/01a08ff0-hr-manager`.
+* **Final SHA (код)**: `7beb84e083a742b94ca3d57ed58ff81aedb681b0` — на нём
+  зелёными прошли все job'ы CI (см. §5). После него в ветку добавлен только
+  этот документационный апдейт; head ветки = последний коммит (см. PR).
+* **PR**: https://github.com/sledovatel61/HR-Manager/pull/24
 
 ## 1. Что сделано по пунктам промпта
 
@@ -198,11 +198,27 @@ Python 3.11.2 вместо CI 3.12 (CI остаётся контрактом). �
 точном SHA: jobs `backend`, `integration`, `stack`, `windows-installer`,
 `channel-release-policy`.
 
+**CI на final SHA `7beb84e` (run
+[34595185553](https://github.com/sledovatel61/HR-Manager/actions/runs/34595185553)):**
+все job'ы зелёные — Backend checks (2m35s, Python 3.12: ruff/mypy/pytest +
+`check_env.sh`), Backend integration tests PostgreSQL (1m58s), Frontend checks
+(50s: lint/typecheck/160 tests/build/audit), Compose stack smoke dev+prod (1m45s),
+Windows engine tests + installer smoke (1m0s: PowerShell-тесты движка, включая
+новые host-report тесты, сборка Setup.exe, silent install/uninstall).
+
 **Ручная Windows-приёмка:** не выполнялась (нет Windows-машины) — это явный
 owner-action, статус `passed` ей не присваивался. Чек-лист и процедура — в
 `docs/runbook-pilot-release.md` (раздел 10).
 
 ## 5. CI на точном SHA
+
+**Результаты CI на final SHA:** все job'ы зелёные (run 34595185553):
+`Backend checks`, `Backend integration tests (PostgreSQL)`, `Frontend checks`,
+`Compose stack smoke test (dev + prod overlay)`,
+`Windows engine tests + installer smoke`. Тем самым подтверждены на Python 3.12
+и реальном PostgreSQL/Compose именно те проверки, которые локально выполнить
+было нельзя. Job'ы `channel-release-policy` и drill-шаги появятся после
+переноса workflow-артефактов владельцем (ниже).
 
 **Важное ограничение платформы:** GitHub App сессии не имеет разрешения
 `workflows`, поэтому изменения `.github/workflows/` в ветку не пушатся
@@ -214,7 +230,7 @@ review-artifacts: `review-artifacts/ci.phase14.yml(.patch)` и
 ещё не запускаются, при этом сам код политики покрыт backend-тестами и
 локальным drill. Это же ограничение действовало для Phase 13.
 
-* Запланированный (после переноса owner-ом) workflow `CI`
+* Запланированный (после переноса владельцем) workflow `CI`
   (`.github/workflows/ci.yml`): backend (ruff/mypy/pytest +
   drill-отчёт), integration (PostgreSQL + drill backup/restore), frontend,
   stack (Compose dev/prod/proxy), windows-installer (движок + installer +
