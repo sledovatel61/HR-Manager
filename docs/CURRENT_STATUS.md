@@ -1,8 +1,7 @@
 # Текущее состояние и handoff
 
-> Фазы 0–12 приняты. Принятый baseline Phase 12 опубликован в ветке
-> `phase12/windows-acceptance-final`; до merge в `main` Phase 13 должна
-> начинаться именно от неё.
+> Фазы 0–13 приняты. Phase 13 завершена в PR #23; точные результаты локальной
+> приёмки находятся в `docs/phase-13-local-acceptance.md`.
 
 ## Что принято
 
@@ -90,8 +89,22 @@ stage/scheduled rules, durable dedupe и append-only история. Полны�
 PostgreSQL integration и Compose должны подтверждаться CI точного SHA; это
 ограничение нельзя выдавать за локальный passed.
 
+## Результат Phase 13
+
+- PR: https://github.com/sledovatel61/HR-Manager/pull/23.
+- Reviewed SHA до owner-handoff:
+  `ac4e7ec302915e36ec614893ebd4559020cea903`.
+- Добавлены detached Ed25519 manifest, HTTPS download/staging, строгая SemVer-
+  политика, административный UI и fail-closed release pipeline поверх Phase 12.
+- Workflow перенесён владельцем из проверенного артефакта в
+  `.github/workflows/update-channel.yml`; production signing secrets в git не
+  добавлялись.
+- Полная матрица результатов и честные ограничения:
+  [phase-13-local-acceptance.md](phase-13-local-acceptance.md).
+
 ## Следующая фаза
 
-Phase 13 добавляет безопасный подписанный канал доставки обновлений поверх
-принятого update engine, не создавая второй механизм обновления. Полный контракт:
-[`prompts/PHASE_13_PROMPT.md`](../prompts/PHASE_13_PROMPT.md).
+Phase 14 доводит технически готовый Windows-контур до ограниченного безопасного
+пилота: production release signing, end-to-end release/upgrade drill,
+предпусковая диагностика, restore/rollback и операторский runbook. Полный
+контракт: [`prompts/PHASE_14_PROMPT.md`](../prompts/PHASE_14_PROMPT.md).

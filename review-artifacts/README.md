@@ -172,7 +172,8 @@ backup — зелёные).
 - `ci.agent-2.phase8.patch` — минимальный diff от текущего
   `.github/workflows/ci.yml`.
 
-Перенос владельцем (однократно; учётка с правом записи workflows):
+Перенос владельцем выполнен при финальной приёмке. Воспроизводимая команда для
+аудита или восстановления:
 
 ```bash
 git fetch origin
@@ -224,7 +225,7 @@ git commit -m "ci: phase 13 update channel release workflow"
 git push
 ```
 
-После переноса создать environment `update-channel-signing` с protection
+Перед production-выпуском создать environment `update-channel-signing` с protection
 rules (ветки main; НЕ разрешать PR) и секретами
 `UPDATE_CHANNEL_SIGNING_KEY` (64 hex Ed25519), `UPDATE_CHANNEL_KEY_ID`,
 `UPDATE_CHANNEL_PUBLIC_KEYS` (тот же JSON trust store, что у сервера), а

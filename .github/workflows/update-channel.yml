@@ -1,0 +1,297 @@
+# Phase 13: update channel release pipeline (Windows pilot).
+#
+# Собирает release channel только для ЗАЩИЩЁННЫХ SemVer-тегов `v*` (или
+# ручного dispatch владельца): детерминированный пакет + внешний
+# update-channel.json, подписанный Ed25519-ключом ИЗ SECRET, независимая
+# проверка подписи тем публичным ключом, которому доверяет production-клиент,
+# затем — публикация immutable артефактов (GitHub Release + SHA256SUMS +
+# provenance). Существующий deploy/rollback workflow (release.yml) НЕ
+# затрагивается: развёртывание серверной части и публикация канала
+# Windows-пилота — раздельные цепочки без регрессии Phase 7/12.
+#
+# Секреты живут в environment `update-channel-signing` (создать владельцу;
+# НЕ включать в настройках environment ветки PR):
+#   UPDATE_CHANNEL_SIGNING_KEY — закрытый Ed25519-ключ (64 hex или PEM);
+#   UPDATE_CHANNEL_KEY_ID      — key_id подписи (напр. pilot-release-2026);
+#   UPDATE_CHANNEL_PUBLIC_KEYS — trust store production-клиента, тот же JSON
+#                                {key_id: {key, revoked}}, что в
+#                                UPDATE_CHANNEL_PUBLIC_KEYS сервера.
+# Fail closed: без signing key (или с неверным) pipeline падает ДО создания
+# unsigned manifest — см. infra/release/publish_channel.py.
+#
+# Production signing secret НЕ доступен коду из PR/fork: триггеров
+# pull_request нет, signing выполняется только внутри environment-джоба.
+#
+# Dispatch-безопасность: при ручном запуске release_sha обязателен,
+# проверяется (40 hex, существует в репозитории), checkout выполняется по
+# нему, и сборка начинается только если HEAD == release_sha; релиз/тег
+# создаётся `--target` на тот же SHA. Все входные значения dispatch
+# попадают в shell-скрипты ТОЛЬКО через env (никаких inline-expressions
+# от пользователя) — shell injection исключён. Перед записью в
+# $GITHUB_OUTPUT version/sha/notes_ru валидируются fail closed на CR/LF:
+# многострочное значение не может подмешать поддельные строки-выводы
+# (например sha=<другой SHA>).
+#
+# Защита тегов (владелец): tag protection rules — разрешить только `v*`
+# (SemVer), писать теги может только владелец/CI.
+name: Update channel release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer release (например 0.14.0)"
+        required: true
+      release_sha:
+        description: "Полный Git commit (40 hex)"
+        required: true
+      notes_ru:
+        description: "Примечания к релизу (одна строка)"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  # Порог поддержки канала: менять владельцу при поднятии планки
+  # (аналог ExpectedHeadRevision в Windows-движке).
+  MINIMUM_SUPPORTED_VERSION: "0.13.0"
+
+jobs:
+  windows-installer:
+    name: Build Windows installer (pinned toolchain)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and verify release commit
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          reject_newline() {
+            case "$1" in
+              *$'\r'*|*$'\n'*)
+                echo "error: $2 must be a single line (CR/LF rejected)" >&2
+                exit 2
+                ;;
+            esac
+          }
+          if [ "$EVENT_NAME" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            sha="$(git rev-parse HEAD)"
+          else
+            version="$INPUT_VERSION"
+            sha="$INPUT_SHA"
+          fi
+          # Fail closed ДО записи в $GITHUB_OUTPUT: CR/LF дали бы возможность
+          # подмешать поддельные строки-выводы (например sha=<другой SHA>).
+          reject_newline "$version" "version"
+          reject_newline "$sha" "release_sha"
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "error: version must be SemVer x.y.z" >&2; exit 2; }
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "$sha" | grep -Eq '^[0-9a-fA-F]{40}$' || {
+              echo "error: release_sha must be a full 40-char git SHA" >&2; exit 2; }
+            git cat-file -e "$sha^{commit}" || {
+              echo "error: release_sha does not exist in the repository" >&2; exit 2; }
+            git checkout -q "$sha"
+          fi
+          [ "$(git rev-parse HEAD)" = "$sha" ] || {
+            echo "error: checkout HEAD != release_sha" >&2; exit 2; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build installer (Inno Setup 6.7.3, SHA256 pinned in build.ps1)
+        shell: powershell
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version $env:VERSION
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hr-manager-windows-setup
+          path: installer/output/*.exe
+          if-no-files-found: error
+
+  channel-release:
+    name: Build, sign, verify and publish update channel
+    needs: windows-installer
+    runs-on: ubuntu-latest
+    environment: update-channel-signing
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release facts (protected SemVer tag or owner dispatch)
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SHA: ${{ inputs.release_sha }}
+          INPUT_NOTES: ${{ inputs.notes_ru }}
+        run: |
+          set -euo pipefail
+          reject_newline() {
+            case "$1" in
+              *$'\r'*|*$'\n'*)
+                echo "error: $2 must be a single line (CR/LF rejected)" >&2
+                exit 2
+                ;;
+            esac
+          }
+          notes=""
+          if [ "$EVENT_NAME" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            sha="$(git rev-parse HEAD)"
+          else
+            version="$INPUT_VERSION"
+            sha="$INPUT_SHA"
+            notes="$INPUT_NOTES"
+          fi
+          # Fail closed ДО любой записи в $GITHUB_OUTPUT: многострочные
+          # version/sha/notes могли бы добавить поддельные строки-выводы
+          # (например sha=<другой SHA>, tag=<чужой тег>).
+          reject_newline "$version" "version"
+          reject_newline "$sha" "release_sha"
+          reject_newline "$notes" "notes_ru"
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "error: version must be SemVer x.y.z" >&2; exit 2; }
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "$sha" | grep -Eq '^[0-9a-fA-F]{40}$' || {
+              echo "error: release_sha must be a full 40-char git SHA" >&2; exit 2; }
+            git cat-file -e "$sha^{commit}" || {
+              echo "error: release_sha does not exist in the repository" >&2; exit 2; }
+            git checkout -q "$sha"
+          fi
+          # Сборка и manifest — строго из подтверждённого SHA.
+          [ "$(git rev-parse HEAD)" = "$sha" ] || {
+            echo "error: checkout HEAD != release_sha" >&2; exit 2; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "notes=$notes" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          # Immutable URL пакета (детерминированный: известен до публикации;
+          # активы GitHub Release неизменяемы после загрузки).
+          echo "package_url=https://github.com/${GITHUB_REPOSITORY}/releases/download/v$version/hr-manager-windows-$version.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Mandatory CI checks must be green for the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=20" \
+            --jq '.workflow_runs[] | select(.name=="CI" and .status=="completed" and .conclusion=="success") | .head_sha' | head -1)"
+          [ -n "$runs" ] || { echo "error: no successful CI run for ${SHA}; release refused" >&2; exit 1; }
+          echo "CI is green for ${SHA}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install channel tooling (pinned)
+        run: pip install cryptography==50.0.1
+
+      - name: Prepare snapshot (backend + frontend + infra + release.json)
+        id: snapshot
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          snapshot="$(mktemp -d)/app"
+          mkdir -p "$snapshot"
+          cp -R backend "$snapshot/backend"
+          cp -R frontend "$snapshot/frontend"
+          cp -R infra "$snapshot/infra"
+          python3 - "$snapshot/release.json" <<'PY'
+          import json, os, sys
+          from datetime import UTC, datetime
+          with open(sys.argv[1], "w", encoding="utf-8") as fh:
+              json.dump({
+                  "version": os.environ["VERSION"],
+                  "release_sha": os.environ["SHA"],
+                  "built_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              }, fh, ensure_ascii=False)
+          PY
+          echo "snapshot=$snapshot" >> "$GITHUB_OUTPUT"
+
+      - name: Build package, sign manifest, verify with client-trusted key
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA: ${{ steps.release.outputs.sha }}
+          NOTES: ${{ steps.release.outputs.notes }}
+          PACKAGE_URL: ${{ steps.release.outputs.package_url }}
+          SNAPSHOT: ${{ steps.snapshot.outputs.snapshot }}
+          # Секреты environment update-channel-signing. Fail closed:
+          # publish_channel.py падает, если ключ или trust store отсутствуют.
+          SIGNING_KEY: ${{ secrets.UPDATE_CHANNEL_SIGNING_KEY }}
+          KEY_ID: ${{ secrets.UPDATE_CHANNEL_KEY_ID }}
+          TRUSTED_KEYS: ${{ secrets.UPDATE_CHANNEL_PUBLIC_KEYS }}
+        run: |
+          set -euo pipefail
+          : "${SIGNING_KEY:?UPDATE_CHANNEL_SIGNING_KEY secret is required}"
+          : "${KEY_ID:?UPDATE_CHANNEL_KEY_ID secret is required}"
+          : "${TRUSTED_KEYS:?UPDATE_CHANNEL_PUBLIC_KEYS secret is required}"
+          printf '%s' "$SIGNING_KEY" > /tmp/update-channel-signing.key
+          printf '%s' "$TRUSTED_KEYS" > /tmp/update-channel-trusted-keys.json
+          python3 infra/release/publish_channel.py \
+            --snapshot "$SNAPSHOT" \
+            --version "$VERSION" \
+            --release-sha "$SHA" \
+            --package-url "$PACKAGE_URL" \
+            --minimum-supported-version "$MINIMUM_SUPPORTED_VERSION" \
+            --notes-ru "$NOTES" \
+            --private-key /tmp/update-channel-signing.key \
+            --key-id "$KEY_ID" \
+            --public-keys-json /tmp/update-channel-trusted-keys.json \
+            --out-dir dist/channel
+          rm -f /tmp/update-channel-signing.key
+
+      - name: Attest package provenance (no signing secret involved)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/channel/hr-manager-windows-${{ steps.release.outputs.version }}.zip"
+
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hr-manager-windows-setup
+          path: dist/channel/installer
+
+      - name: Publish immutable GitHub Release (draft, assets verified above)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          SHA: ${{ steps.release.outputs.sha }}
+          NOTES: ${{ steps.release.outputs.notes }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          setup_exe="$(ls dist/channel/installer/HR-Manager-Setup-*.exe | head -1)"
+          [ -n "$setup_exe" ] || { echo "error: installer exe missing" >&2; exit 1; }
+          # Тег/релиз создаются --target на тот же SHA, из которого собрано.
+          gh release create "$TAG" \
+            --target "$SHA" \
+            --draft \
+            --title "HR Manager Windows pilot $VERSION" \
+            --notes "${NOTES:-$VERSION}" \
+            "dist/channel/hr-manager-windows-$VERSION.zip" \
+            "dist/channel/update-channel.json" \
+            "dist/channel/SHA256SUMS" \
+            "$setup_exe"

@@ -478,8 +478,9 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
   игнорируются git'ом.
 - Пользователи, роли, сессии, аудит, кандидаты, события, аналитика,
   эксплуатационный контур, коммуникации, версионируемые списки документов,
-  ограниченные личные правила и локальный Windows-пилот реализованы. Следующий
-  этап — Phase 13: безопасный канал доставки обновлений.
+  ограниченные личные правила, локальный Windows-пилот и безопасный канал
+  доставки обновлений реализованы. Следующий этап — Phase 14:
+  эксплуатационная готовность и ограниченный запуск пилота.
 
 ## Документация
 
@@ -496,6 +497,8 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
 - [`docs/phase-13-report-arena.md`](docs/phase-13-report-arena.md) — отчёт этапа 13 (канал обновлений);
 - [`docs/phase-12-local-acceptance.md`](docs/phase-12-local-acceptance.md) — итоговая локальная приёмка Windows;
 - [`prompts/PHASE_13_PROMPT.md`](prompts/PHASE_13_PROMPT.md) — задание этапа 13;
+- [`docs/phase-13-local-acceptance.md`](docs/phase-13-local-acceptance.md) — итоговая локальная приёмка этапа 13;
+- [`prompts/PHASE_14_PROMPT.md`](prompts/PHASE_14_PROMPT.md) — контракт следующего этапа;
 - [`design/IMPLEMENTATION_GUIDE.md`](design/IMPLEMENTATION_GUIDE.md) — план
   переноса дизайна «Живая воронка» в production.
 
