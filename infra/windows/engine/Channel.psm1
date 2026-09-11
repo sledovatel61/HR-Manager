@@ -104,11 +104,13 @@ function Import-HrmTrustStore {
     $validated = Test-HrmTrustStoreObject $data
     $configFile = Get-HrmChannelConfigFile $StateDir
     if (Test-Path $configFile) {
-        Write-HrmLog "info" "Конфигурация канала уже существует — встроенный trust store не перезаписывает её."
+        # $null =: Write-HrmLog пишет в success stream; без захвата строки
+        # попали бы в возврат функции и нарушали бы контракт «чистый bool».
+        $null = Write-HrmLog "info" "Конфигурация канала уже существует — встроенный trust store не перезаписывает её."
         return $false
     }
     Set-HrmChannelConfig -StateDir $StateDir -PublicKeys $validated.keys
-    Write-HrmLog "info" ("Импортирован встроенный trust store ({0} ключ(ей))." -f $validated.keys.Count)
+    $null = Write-HrmLog "info" ("Импортирован встроенный trust store ({0} ключ(ей))." -f $validated.keys.Count)
     return $true
 }
 

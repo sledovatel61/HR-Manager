@@ -43,6 +43,7 @@ function New-HrmChannelWorld {
     $global:HRM_ChannelWorld = [pscustomobject]@{
         Reports = @()
         EngineCheckCount = 0
+        LastEngineCheckAt = $null
         QueueInstall = $QueueInstall
         EngineCheckState = $EngineCheckState
         Facts = @()
@@ -73,7 +74,15 @@ function New-HrmChannelWorld {
             return @{ StatusCode = 200; Body = [pscustomobject]@{ actions = @(); job_id = $null; release_dir = $null; manifest_path = $null; error_code = $null } }
         }
         if ($Uri -like "*/api/updates/engine-check") {
-            $w.EngineCheckCount++
+            # Зеркало серверного контракта: backend троттлит повторные проверки
+            # (update_check_min_interval_seconds, default 300) и на запрос раньше
+            # интервала возвращает текущее состояние БЕЗ выполнения проверки.
+            $now = [datetime]::UtcNow
+            $throttled = ($null -ne $w.LastEngineCheckAt) -and (($now - $w.LastEngineCheckAt).TotalSeconds -lt 300)
+            if (-not $throttled) {
+                $w.LastEngineCheckAt = $now
+                $w.EngineCheckCount++
+            }
             return @{ StatusCode = 200; Body = [pscustomobject]@{ state = $w.EngineCheckState; available_version = $null } }
         }
         if ($Uri -like "*/api/updates/engine-report") {
@@ -386,11 +395,18 @@ Write-Host "== Trust store и факты readiness (Phase 14) =="
 
 function New-HrmTestTrustStoreJson {
     # Валидный production trust store как PSCustomObject (как из JSON).
+    # ВЛОЖЕННЫЕ записи тоже PSCustomObject: в Windows PowerShell 5.1
+    # PSObject.Properties hashtable'а не раскрывает ключи словаря, и
+    # валидатор движка видел бы записи без key/revoked.
     param([hashtable]$Keys = @{ "pilot-test-key" = @{ key = "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM="; revoked = $false } })
+    $keysObj = [pscustomobject]@{}
+    foreach ($keyId in $Keys.Keys) {
+        $keysObj | Add-Member -MemberType NoteProperty -Name $keyId -Value ([pscustomobject]$Keys[$keyId])
+    }
     return [pscustomobject]@{
         schema_version = 1
         environment = "production"
-        keys = [pscustomobject]$Keys
+        keys = $keysObj
     }
 }
 
@@ -476,8 +492,11 @@ Test-Case "Import-HrmTrustStore: публикует только публичн�
     $imported = Import-HrmTrustStore -SnapshotDir $snapshotDir -StateDir $state
     Assert-HrmTrue $imported "импорт не выполнен"
     $config = Get-HrmChannelConfig $state
-    Assert-HrmEqual 2 @($config["public_keys"].PSObject.Properties).Count "ключи не импортированы"
-    $importedKey = $config["public_keys"].PSObject.Properties["pilot-test-key"].Value
+    # public_keys здесь — hashtable (его собирает Get-HrmChannelConfig), а в
+    # Windows PowerShell 5.1 PSObject.Properties не раскрывает ключи словаря —
+    # поэтому проверяем через индексатор hashtable, а не через свойства.
+    Assert-HrmEqual 2 $config["public_keys"].Count "ключи не импортированы"
+    $importedKey = $config["public_keys"]["pilot-test-key"]
     Assert-HrmEqual "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM=" $importedKey.key "материал ключа"
     # В опубликованной конфигурации нет private material и environment-полей.
     $configText = Get-Content $configFile -Raw -Encoding UTF8
@@ -626,6 +645,15 @@ Test-Case "наблюдатель: сбой отправки фактов не �
         if ($Uri -like "*/api/updates/engine-report") {
             $w.Reports += , @{ Body = $Body; Headers = $Headers }
             return @{ StatusCode = 200; Body = [pscustomobject]@{ state = "up_to_date" } }
+        }
+        # Update-smoke читает /api/ops/status (release_sha) и Wait-HrmReady —
+        # /api/health: без PSCustomObject-тел StrictMode падал на $ops.release_sha
+        # и установка откатывалась (итог rolled_back вместо installed).
+        if ($Uri -like "*/api/health") {
+            return @{ StatusCode = 200; Body = [pscustomobject]@{ status = "ok" } }
+        }
+        if ($Uri -like "*/api/ops/status") {
+            return @{ StatusCode = 200; Body = $global:HRM_MockWorld.OpsBody }
         }
         return @{ StatusCode = 200; Body = "ok" }
     }
