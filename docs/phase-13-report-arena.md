@@ -266,11 +266,17 @@ code SHA: `bc4e9d6…` (зелёный CI, run 34570110327). Что закрыт
    dispatch владельца, environment `update-channel-signing`, без триггера
    `pull_request`, attestation, публикация draft GitHub Release с
    неизменяемыми активами только после проверки; `release.yml`
-   deploy/rollback не тронут). **Пуш этого файла отклонён GitHub App
-   сессии** (нет права `workflows`; точная ошибка и применяемый патч —
-   `review-artifacts/`, см. «Ограничения»). Fixture-тесты happy
-   path/неверная подпись/fail-closed — `backend/tests/test_release_pipeline.py`
-   (без production secret, идут в существующем CI).
+   deploy/rollback не тронут). Dispatch-безопасность (по замечанию
+   оркестратора): `release_sha` валидируется (40 hex), проверяется его
+   существование (`git cat-file -e`), checkout выполняется по нему, сборка
+   идёт только при HEAD == release_sha, релиз создаётся `--target` на тот
+   же SHA; значения пользователя попадают в shell только через env.
+   **Пуш этого файла отклонён GitHub App сессии** (нет права `workflows`;
+   точная ошибка и применяемый патч — `review-artifacts/`, см.
+   «Ограничения»). Fixture-тесты happy path/неверная подпись/fail-closed
+   + инварианты workflow (включая dispatch-SHA и отсутствие inline-inputs)
+   — `backend/tests/test_release_pipeline.py` (без production secret, идут
+   в существующем CI).
 2. **[P1] Redirect до обращения** — `backend/app/channel.py`: авто-redirect
    отключён (`_NoAutoRedirectHandler`), каждый 3xx разбирается вручную,
    относительный `Location` резолвится через URL ответа, ПЕРЕД каждым
@@ -328,18 +334,23 @@ compose config` — зелёный CI job `Compose stack smoke test`.
 
 ## Ограничения
 
-1. **`update-channel.yml` не запушен этой сессией** (GitHub App без права
-   `workflows`). Точная ошибка push:
+1. **[P1, блокер для merge — действие владельца]** `update-channel.yml` не
+   запушен этой сессией (GitHub App без права `workflows`). Точная ошибка
+   push:
    `remote rejected … (refusing to allow a GitHub App to create or update
    workflow `.github/workflows/update-channel.yml` without `workflows`
-   permission)`. Перенос владельцем (однократно) — по
-   `review-artifacts/update-channel.patch` (проверен `git apply --check`),
-   затем создать environment `update-channel-signing` (секреты
-   `UPDATE_CHANNEL_SIGNING_KEY`/`UPDATE_CHANNEL_KEY_ID`/
-   `UPDATE_CHANNEL_PUBLIC_KEYS`, protection rules) и tag protection `v*`.
-   Инварианты workflow проверяются fixture-тестом на точной копии из
-   `review-artifacts/`. До переноса Definition of Done workflow-пункта
-   достигается владельцем, не этой сессией.
+   permission)`. Вердикт оркестратора подтверждает: пока файла нет в
+   `.github/workflows/`, GitHub Actions не исполняет release pipeline, и
+   PR не merge-ready, даже если GitHub показывает MERGEABLE (это лишь
+   отсутствие конфликта). Перенос владельцем (однократно) — по
+   `review-artifacts/update-channel.patch` (проверен `git apply --check`;
+   инструкция в `review-artifacts/README.md`), затем создать environment
+   `update-channel-signing` (секреты `UPDATE_CHANNEL_SIGNING_KEY`/
+   `UPDATE_CHANNEL_KEY_ID`/`UPDATE_CHANNEL_PUBLIC_KEYS`, protection
+   rules) и tag protection `v*`. Инварианты workflow (включая
+   dispatch-SHA и отсутствие inline-inputs) проверяются fixture-тестом
+   на точной копии из `review-artifacts/`; после переноса тот же тест
+   валидирует файл в `.github/workflows/`.
 
 2. **Real release не публиковался**: канал по умолчанию указывает на
    GitHub Releases (`update-channel.json` появится при первом выпуске);
@@ -432,11 +443,13 @@ PS 5.1-дефекты (все покрыты в CI на точном SHA):
 
 ## Handoff
 
-- **Статус на handoff:** CI полностью зелёный на `bc4e9d6` (run
-  34570110327, 5/5 job'ов): backend checks (вкл. 30 новых ревью-тестов),
-  PostgreSQL integration, frontend, Windows engine tests + installer
-  smoke (оба watcher-теста), compose stack smoke. PR #23 готов к
-  приёмке владельцем; мерж — только владелец.
+- **Статус на handoff:** четыре прикладных замечания закрыты и CI
+  полностью зелёный (run 34570110327 на `bc4e9d6`, 5/5 job'ов, плюс
+  финальный прогон после фикса dispatch — в PR-комментарии). Остаётся
+  один блокер: перенос `update-channel.yml` в `.github/workflows/`
+  владельцем (у GitHub App сессии нет права `workflows`). До этого
+  переноса PR не merge-ready (вердикт оркестратора); мерж — только
+  владелец.
 - **Владельцу перед выпуском:** перенести `review-artifacts/update-channel.patch`
   в `.github/workflows/` (у сессии нет права `workflows`), создать
   environment `update-channel-signing` (секреты

@@ -232,3 +232,14 @@ rules (ветки main; НЕ разрешать PR) и секретами
 fixture-тесты — в `infra/release/publish_channel.py` и
 `backend/tests/test_release_pipeline.py` (исполняются в существующем CI
 без production secret).
+
+Замечания оркестратора к dispatch учтены в этой версии workflow:
+`workflow_dispatch` больше не может собрать код одного коммита под
+release_sha другого — при ручном запуске `release_sha` валидируется
+(40 hex), проверяется его существование в репозитории (`git cat-file -e`),
+checkout выполняется по нему, и сборка стартует только при
+HEAD == release_sha; тег/релиз создаётся `--target` на тот же SHA. Все
+значения dispatch-пользователя попадают в shell-скрипты ТОЛЬКО через
+env (никаких inline-expressions в run-блоках — shell injection
+исключён). Эти инварианты закреплены тестом
+`test_workflow_yaml_security_invariants`.

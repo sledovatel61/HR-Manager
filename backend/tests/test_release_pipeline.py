@@ -195,5 +195,23 @@ def test_workflow_yaml_security_invariants() -> None:
     verify_index = names.index("Build package, sign manifest, verify with client-trusted key")
     publish_index = names.index("Publish immutable GitHub Release (draft, assets verified above)")
     assert verify_index < publish_index
+    # Dispatch-безопасность: release_sha валидируется (40 hex), проверяется
+    # его существование в репозитории, checkout выполняется по нему и HEAD
+    # сверяется с SHA до сборки (и installer-джоб, и channel-джоб).
+    installer_steps = json.dumps(jobs["windows-installer"]["steps"], ensure_ascii=False)
+    channel_steps = json.dumps(signing_job["steps"], ensure_ascii=False)
+    for text in (installer_steps, channel_steps):
+        assert "git cat-file -e" in text  # SHA существует в репозитории
+        assert "checkout HEAD != release_sha" in text  # сверка HEAD с SHA
+        assert "git checkout -q" in text  # checkout строго по SHA
+    # Значения dispatch-пользователя не попадают в shell напрямую — только
+    # через env (никаких inline-expressions от пользователя в run-блоках).
+    for step in jobs["windows-installer"]["steps"] + signing_job["steps"]:
+        run = step.get("run", "") if isinstance(step, dict) else ""
+        assert "${{ inputs." not in run, f"user input inlined in run block: {run[:80]}"
+        assert "${{ github.event_name }}" not in run
+    # Тег/релиз создаётся --target на тот же SHA, из которого собрано.
+    assert "gh release create" in channel_steps
+    assert "--target" in channel_steps
     # Deploy/rollback workflow не затронут.
     assert (REPO / ".github" / "workflows" / "release.yml").exists()
