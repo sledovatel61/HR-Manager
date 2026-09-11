@@ -42,6 +42,7 @@ function New-HrmChannelWorld {
     # HTTP-контракт сервера канала.
     $global:HRM_ChannelWorld = [pscustomobject]@{
         Reports = @()
+        HostReports = @()
         EngineCheckCount = 0
         QueueInstall = $QueueInstall
         EngineCheckState = $EngineCheckState
@@ -71,6 +72,10 @@ function New-HrmChannelWorld {
         if ($Uri -like "*/api/updates/engine-report") {
             $w.Reports += , @{ Body = $Body; Headers = $Headers }
             return @{ StatusCode = 200; Body = [pscustomobject]@{ state = "up_to_date" } }
+        }
+        if ($Uri -like "*/api/updates/engine-host-report") {
+            $w.HostReports += , @{ Uri = $Uri; Method = $Method; Body = $Body; Headers = $Headers }
+            return @{ StatusCode = 200; Body = [pscustomobject]@{ status = "accepted"; received_at = "2026-09-11T00:00:00Z" } }
         }
         if ($Uri -like "*/api/health") { return @{ StatusCode = 200; Body = [pscustomobject]@{ status = "ok" } } }
         if ($Uri -like "*/api/ops/status") {
@@ -384,8 +389,9 @@ Test-Case "хост-отчёт уходит на loopback с машинным т
     $token = Get-HrmSecret $state "HRM_UPDATE_ENGINE_TOKEN"
     $sent = Send-HrmHostReport -InstallDir $install -StateDir $state
     Assert-HrmTrue $sent "честный отчёт о хосте должен быть принят сервером"
-    $call = $t.World.HttpCalls | Where-Object { $_.Uri -like "*/api/updates/engine-host-report" } | Select-Object -First 1
-    Assert-HrmTrue ($null -ne $call) "POST /updates/engine-host-report не выполнен"
+    $channelWorld = $global:HRM_ChannelWorld
+    Assert-HrmEqual 1 $channelWorld.HostReports.Count "POST /updates/engine-host-report не выполнен"
+    $call = $channelWorld.HostReports[0]
     Assert-HrmEqual "POST" ([string]$call.Method) "метод хост-отчёта"
     Assert-HrmEqual $token ([string]$call.Headers["X-Engine-Token"]) "токен движка в заголовке"
     Assert-HrmNotContains ([string]$call.Uri) $token "токен не должен попадать в URL"
@@ -400,7 +406,9 @@ Test-Case "хост-отчёт не содержит секретов, токе�
     $state = Get-HrmTestStateDir
     $install = Get-HrmTestInstallDir
     Send-HrmHostReport -InstallDir $install -StateDir $state | Out-Null
-    $call = $t.World.HttpCalls | Where-Object { $_.Uri -like "*/api/updates/engine-host-report" } | Select-Object -First 1
+    $channelWorld = $global:HRM_ChannelWorld
+    Assert-HrmEqual 1 $channelWorld.HostReports.Count "хост-отчёт не записан мок-сервером"
+    $call = $channelWorld.HostReports[0]
     $rendered = ($call.Body | ConvertTo-Json -Compress -Depth 8)
     $secretValues = @()
     foreach ($prop in (Get-HrmJsonFile (Get-HrmSecretsFile $state)).PSObject.Properties) {
@@ -441,10 +449,10 @@ Test-Case "хост-отчёт не отправляется без install reco
     $t = New-HrmChannelWorld
     $state = Get-HrmTestStateDir
     Remove-Item (Get-HrmInstalledFile $state) -Force
-    $before = $t.World.HttpCalls.Count
+    $before = $global:HRM_ChannelWorld.HostReports.Count
     $sent = Send-HrmHostReport -InstallDir (Get-HrmTestInstallDir) -StateDir $state
     Assert-HrmEqual $false $sent "без установки отчёт отправлять нечему"
-    Assert-HrmEqual $before $t.World.HttpCalls.Count "без install record HTTP-вызовов быть не должно"
+    Assert-HrmEqual $before $global:HRM_ChannelWorld.HostReports.Count "без install record HTTP-вызовов быть не должно"
 }
 
 Write-Host ("Тесты канала: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

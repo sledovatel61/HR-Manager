@@ -349,7 +349,8 @@ function Send-HrmHostReport {
         return ($response.StatusCode -eq 200)
     }
     catch {
-        Write-HrmLog "info" ("Хост-отчёт не отправлен (сервер недоступен): {0}" -f (Redact-HrmText $_.Exception.Message))
+        # Write-HrmLog пишет в pipeline: без $null = функция вернула бы массив.
+        $null = Write-HrmLog "info" ("Хост-отчёт не отправлен (сервер недоступен): {0}" -f (Redact-HrmText $_.Exception.Message))
         return $false
     }
 }
