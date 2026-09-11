@@ -49,3 +49,5 @@ installer/staging/
 installer/output/
 installer/.cache/
 installer/release-manifest.json
+
+drill-live/

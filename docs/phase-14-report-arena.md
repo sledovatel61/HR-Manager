@@ -16,9 +16,9 @@
   (не полный Phase 14, см. provenance ниже).
 * **Branch (live E2E, this report)**: `arena/01a08ff0-hr-manager-live-e2e`
   (ветка продолжения Phase 14 с live Compose E2E), branched from `b339b0d`,
-  Final SHA (код, зелёный HEAD, this branch) `fac9c8fd2dc3f7839ac690bb0d6b675745b2bc8f`
+  Final SHA (код, зелёный HEAD, this branch) `633ec062f9cd5a4f9f96886a91fc64968bc2dff8`
   (exact final SHA зелёного кода; см. §5), docs-sync HEAD — текущий HEAD этой
-  ветки (exact 40-char SHA, см. `git rev-parse HEAD` и PR head). Отдельная
+  ветки `633ec062f9cd5a4f9f96886a91fc64968bc2dff8` (exact 40-char SHA, см. `git rev-parse HEAD` и PR head). Отдельная
   ветка/PR для честного сравнения (не редактировать PR #24 параллельно).
 * **PR (live E2E)**: https://github.com/sledovatel61/HR-Manager/pull/26 (создан из `arena/01a08ff0-hr-manager-live-e2e`)
 
@@ -197,6 +197,7 @@
 | `npm ci`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm audit --audit-level=high` | lint/typecheck/build OK; **160 tests passed**; **0 vulnerabilities** |
 | `python infra/windows/tests/lint-engine.py` | структурная проверка пройдена (16 файлов) |
 | `python infra/scripts/pilot_drill.py --out-dir drill` | **aggregator**: signature-policy 61 passed, channel-tamper-refusal 51 passed, readiness-api 18 passed; windows-engine и backup/restore — `skipped` (в контейнере нет PowerShell и PostgreSQL) → вердикт `incomplete`, exit 1 (не E2E, manual приёмка — отдельно) |
+| `python infra/scripts/pilot_drill_live_compose.py --out-dir drill-live` | **live Compose E2E**: 17 шагов `skipped` (no Docker in contour) → вердикт `incomplete`, exit 1; требуется Docker host (ubuntu-latest/owner) для happy-path (first-run/bootstrap, synthetic data, backup/restore, channel) — 401 только отдельный negative stage |
 | `git diff --check` | чисто (проверено перед коммитом) |
 
 **Локальные ограничения контура (честно):** нет Docker → `docker compose config -q`,
@@ -207,10 +208,10 @@ Python 3.11.2 вместо CI 3.12 (CI остаётся контрактом). �
 точном SHA: jobs `backend`, `integration`, `stack`, `windows-installer`,
 `channel-release-policy`.
 
-**CI на exact final SHA `d542390` (run
-[34595851080](https://github.com/sledovatel61/HR-Manager/actions/runs/34595851080)) и
-предыдущий зелёный `7beb84e` (run
-[34595185553](https://github.com/sledovatel61/HR-Manager/actions/runs/34595185553)):**
+**CI на exact final SHA `633ec06` (run
+[34620293977](https://github.com/sledovatel61/HR-Manager/actions/runs/34620293977)) и
+предыдущий зелёный `d542390` (run
+[34595851080](https://github.com/sledovatel61/HR-Manager/actions/runs/34595851080)):**
 на обоих SHA все *существующие* 5 jobs зелёные — Backend checks (Python 3.12:
 ruff/mypy/pytest + `check_env.sh`), Backend integration tests PostgreSQL,
 Frontend checks (lint/typecheck/160 tests/build/audit), Compose stack smoke
@@ -229,9 +230,9 @@ owner-action, статус `passed` ей не присваивался. Чек-�
 
 ## 5. CI на точном SHA (exact final SHA — что реально исполнялось)
 
-**Результаты CI на exact final SHA `d542390` (run
-[34595851080](https://github.com/sledovatel61/HR-Manager/actions/runs/34595851080)) и
-`7beb84e` (run [34595185553](https://github.com/sledovatel61/HR-Manager/actions/runs/34595185553)):**
+**Результаты CI на exact final SHA `633ec06` (run
+[34620293977](https://github.com/sledovatel61/HR-Manager/actions/runs/34620293977)) и
+`d542390` (run [34595851080](https://github.com/sledovatel61/HR-Manager/actions/runs/34595851080)):**
 все job'ы зелёные — `Backend checks`, `Backend integration tests (PostgreSQL)`,
 `Frontend checks`, `Compose stack smoke test (dev + prod overlay)`,
 `Windows engine tests + installer smoke`. Тем самым подтверждены на Python 3.12
@@ -243,7 +244,7 @@ owner-action, статус `passed` ей не присваивался. Чек-�
 они лишь review-artifacts для ручного переноса владельцем. Полный Phase 14
 набор (включая `channel-release-policy`, drill-шаги, ephemeral Authenticode
 проверки) **не** был исполнен в CI; он появится только после переноса
-workflow владельцем и нового прогона на exact final SHA `d542390` (или новее).
+workflow владельцем и нового прогона на exact final SHA `633ec06` (или новее).
 До переноса CI подтверждает только код политики (backend-тесты) и локальный
 drill, но не production-политику релиза.
 
