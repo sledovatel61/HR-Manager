@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import ssl
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 from app.config import Settings
 from app.update_channel_contract import ChannelError, parse_manifest_json, verify_signature
@@ -139,46 +141,129 @@ def _lookup_trusted_key(manifest: dict, trusted: dict[str, dict]) -> str:
     return entry["key"]
 
 
-def fetch_manifest_text(settings: Settings, preview: bool = False) -> str:
-    """Скачивание manifest: HTTPS, лимит redirect'ов, проверка host/scheme.
+def allowed_hosts(settings: Settings) -> list[str]:
+    """Явный список хостов политики канала из серверной конфигурации.
+
+    Непустая UPDATE_CHANNEL_ALLOWED_HOSTS полностью ЗАМЕНЯЕТ встроенный
+    список (никакого неявного объединения). Значения приходят только из
+    серверной конфигурации — клиент не может их задать.
+    """
+    configured = (settings.update_channel_allowed_hosts or "").strip()
+    if configured:
+        return [host.strip() for host in configured.split(",") if host.strip()]
+    return list(DEFAULT_ALLOWED_HOSTS)
+
+
+class _NoAutoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Автоматическое следование redirect ВЫКЛЮЧЕНО: каждый ответ 3xx
+    превращается в HTTPError с Location в headers — следующий запрос
+    выполняется только после явной проверки политики URL."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+
+
+def _assert_url_policy(parsed: urllib.parse.SplitResult, allowed: list[str]) -> None:
+    """Проверка политики ДО сетевого обращения. Сообщения — безопасные
+    коды, без URL/хостов (не попадают в логи/аудит/ответы)."""
+    if parsed.scheme != "https":
+        raise ChannelError("bad_url", "канал перешёл на незащищённую схему (требуется https)")
+    if parsed.hostname not in allowed:
+        raise ChannelError("bad_url", "хост канала не входит в политику разрешённых")
+
+
+def _build_opener(ssl_context: ssl.SSLContext | None) -> urllib.request.OpenerDirector:
+    context = ssl_context if ssl_context is not None else ssl.create_default_context()
+    return urllib.request.build_opener(
+        _NoAutoRedirectHandler(), urllib.request.HTTPSHandler(context=context)
+    )
+
+
+def _resolve_hop(url: str, response_url: str, location: str) -> str:
+    """Относительный Location разрешается через URL ответа, его выдавшего."""
+    return urllib.parse.urljoin(response_url or url, location)
+
+
+def _fetch_https(
+    opener: urllib.request.OpenerDirector,
+    url: str,
+    allowed: list[str],
+    *,
+    timeout: float,
+    offline_message: str,
+) -> Any:
+    """Общий HTTPS-цикл с ручной обработкой redirect: каждый hop проходит
+    _assert_url_policy ДО запроса; цепочка ограничена DOWNLOAD_MAX_REDIRECTS;
+    циклы (повтор URL) отклоняются; автоматический redirect отключён.
+    Возвращает открытый response (или None, если произошёл redirect).
+    """
+    current = url
+    visited: set[str] = set()
+    for _ in range(DOWNLOAD_MAX_REDIRECTS + 1):
+        parsed = urllib.parse.urlsplit(current)
+        _assert_url_policy(parsed, allowed)
+        if current in visited:
+            raise ChannelError("redirect_loop", "цикл redirect'ов канала")
+        visited.add(current)
+        request = urllib.request.Request(
+            current, headers={"User-Agent": "hr-manager-pilot-update/1.0"}
+        )
+        try:
+            response = opener.open(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            location = exc.headers.get("Location") if exc.headers else None
+            if exc.code in _REDIRECT_STATUSES and location:
+                current = _resolve_hop(current, exc.geturl(), location)
+                continue
+            raise ChannelError(offline_message, "сервер канала ответил ошибкой HTTP") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise ChannelError(
+                "channel_offline", f"канал недоступен: {exc.__class__.__name__}"
+            ) from exc
+        return response
+    raise ChannelError("redirect_limit", "превышен лимит redirect'ов канала")
+
+
+def fetch_manifest_text(
+    settings: Settings,
+    preview: bool = False,
+    ssl_context: ssl.SSLContext | None = None,
+) -> str:
+    """Скачивание manifest: HTTPS, проверка политики каждого redirect-хопа
+    ДО обращения, лимит цепочки, защита от циклов.
 
     Сетевые ошибки транслируются в ChannelError("channel_offline", ...) —
-    вызывающий код отличает offline от других отказов.
+    вызывающий код отличает offline от других отказов. ssl_context — тестовый
+    шов (в проде — системные корни доверия).
     """
     url = manifest_url(settings, preview)
     if not url:
         raise ChannelError("not_configured", "канал обновлений не настроен")
     if not url.startswith("https://"):
         raise ChannelError("bad_url", "URL канала обязан использовать https")
-    allowed = list(DEFAULT_ALLOWED_HOSTS)
-    context = ssl.create_default_context()
-    current = url
-    for _ in range(DOWNLOAD_MAX_REDIRECTS + 1):
-        parsed = urllib.parse.urlsplit(current)
-        if parsed.scheme != "https":
-            raise ChannelError("bad_url", f"канал перешёл на незащищённую схему: {parsed.scheme}")
-        if parsed.hostname not in allowed:
-            raise ChannelError("bad_url", f"хост канала {parsed.hostname!r} не входит в политику")
-        request = urllib.request.Request(
-            current, headers={"User-Agent": "hr-manager-pilot-update/1.0"}
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30, context=context) as response:
-                final = response.geturl()
-                if final != current:
-                    current = final
-                    continue
-                data = response.read(MANIFEST_MAX_BYTES + 1)
-                if len(data) > MANIFEST_MAX_BYTES:
-                    raise ChannelError("manifest_invalid", "manifest превышает лимит размера")
-                return data.decode("utf-8")
-        except ChannelError:
-            raise
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise ChannelError(
-                "channel_offline", f"канал недоступен: {exc.__class__.__name__}"
-            ) from exc
-    raise ChannelError("channel_offline", "превышен лимит redirect'ов канала")
+    opener = _build_opener(ssl_context)
+    with _fetch_https(
+        opener,
+        url,
+        allowed_hosts(settings),
+        timeout=30,
+        offline_message="manifest_invalid",
+    ) as response:
+        data = response.read(MANIFEST_MAX_BYTES + 1)
+        if len(data) > MANIFEST_MAX_BYTES:
+            raise ChannelError("manifest_invalid", "manifest превышает лимит размера")
+        return data.decode("utf-8")
 
 
 def verified_manifest(settings: Settings, preview: bool = False) -> dict:
@@ -201,91 +286,113 @@ def staging_root(settings: Settings) -> Path:
     return Path(tempfile.gettempdir()) / "hrm-update-staging"
 
 
-def _download_to_temp(manifest: dict, max_bytes: int) -> tuple[Path, int]:
+def _download_to_temp(
+    manifest: dict,
+    max_bytes: int,
+    allowed: list[str],
+    ssl_context: ssl.SSLContext | None = None,
+) -> tuple[Path, int]:
+    """Скачивание пакета во временный файл: та же политика redirect, что и
+    у manifest (каждый hop проверяется ДО запроса, loop/лимит — отказ).
+    Частичный файл никогда не считается релизом; при ошибке удаляется."""
     url = manifest["package_url"]
-    context = ssl.create_default_context()
-    request = urllib.request.Request(url, headers={"User-Agent": "hr-manager-pilot-update/1.0"})
-    allowed = list(DEFAULT_ALLOWED_HOSTS)
-    current = url
+    opener = _build_opener(ssl_context)
     temp_path: Path | None = None
     try:
-        for _ in range(DOWNLOAD_MAX_REDIRECTS + 1):
-            parsed = urllib.parse.urlsplit(current)
-            if parsed.scheme != "https" or parsed.hostname not in allowed:
-                raise ChannelError("bad_url", "пакет скачивается не по политике канала")
-            try:
-                with urllib.request.urlopen(
-                    request, timeout=DOWNLOAD_TIMEOUT_SECONDS, context=context
-                ) as response:
-                    final = response.geturl()
-                    if final != current:
-                        current = final
-                        request = urllib.request.Request(
-                            current, headers={"User-Agent": "hr-manager-pilot-update/1.0"}
-                        )
-                        continue
-                    if temp_path is None:
-                        fd, name = tempfile.mkstemp(prefix="hrm-update-", suffix=".zip.part")
-                        temp_path = Path(name)
-                        import os
-
-                        os.close(fd)
-                    declared = int(manifest["package_size"])
-                    total = 0
-                    with temp_path.open("wb") as out:
-                        while True:
-                            chunk = response.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            total += len(chunk)
-                            if total > max_bytes or total > declared + 1:
-                                raise ChannelError(
-                                    "download_failed", "пакет превышает объявленный размер"
-                                )
-                            out.write(chunk)
-                    if total != declared:
+        with _fetch_https(
+            opener,
+            url,
+            allowed,
+            timeout=DOWNLOAD_TIMEOUT_SECONDS,
+            offline_message="download_failed",
+        ) as response:
+            fd, name = tempfile.mkstemp(prefix="hrm-update-", suffix=".zip.part")
+            temp_path = Path(name)
+            os.close(fd)
+            declared = int(manifest["package_size"])
+            total = 0
+            with temp_path.open("wb") as out:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes or total > declared + 1:
                         raise ChannelError(
-                            "download_failed",
-                            f"размер не совпал: получено {total}, объявлено {declared}",
+                            "download_failed", "пакет превышает объявленный размер"
                         )
-                    return temp_path, total
-            except ChannelError:
-                raise
-            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                    out.write(chunk)
+            if total != declared:
                 raise ChannelError(
-                    "channel_offline", f"скачивание прервано: {exc.__class__.__name__}"
-                ) from exc
-        raise ChannelError("channel_offline", "превышен лимит redirect'ов пакета")
+                    "download_failed",
+                    f"размер не совпал: получено {total}, объявлено {declared}",
+                )
+            return temp_path, total
     except Exception:
         if temp_path is not None and temp_path.exists():
             temp_path.unlink(missing_ok=True)
         raise
 
 
-def download_package(settings: Settings, manifest: dict) -> Path:
+def _file_matches(path: Path, declared_size: int, sha256_hex: str) -> bool:
+    """Проверка существующего staging-файла по размеру и SHA256."""
+    try:
+        if path.stat().st_size != declared_size:
+            return False
+    except OSError:
+        return False
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            while True:
+                chunk = fh.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError:
+        return False
+    return digest.hexdigest() == sha256_hex
+
+
+def download_package(
+    settings: Settings,
+    manifest: dict,
+    ssl_context: ssl.SSLContext | None = None,
+) -> Path:
     """Скачивание пакета во временный файл с проверкой размера и SHA256,
-    затем атомарная публикация в staging. Частичный файл релизом не считается.
+    затем атомарная публикация в staging.
+
+    Существующий target переиспользуется ТОЛЬКО если он валиден (размер +
+    SHA256 против manifest); повреждённый/частичный target атомарно
+    заменяется новым проверенным файлом. Частичный файл релизом не
+    считается. ssl_context — тестовый шов.
     """
     declared = int(manifest["package_size"])
     if declared > DOWNLOAD_DEFAULT_MAX_BYTES:
         raise ChannelError("download_failed", "пакет превышает допустимый предел")
-    temp_path, _ = _download_to_temp(manifest, DOWNLOAD_DEFAULT_MAX_BYTES)
-    digest = hashlib.sha256()
-    with temp_path.open("rb") as fh:
-        while True:
-            chunk = fh.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    if digest.hexdigest() != manifest["package_sha256"]:
-        temp_path.unlink(missing_ok=True)
-        raise ChannelError("package_hash_mismatch", "SHA256 пакета не совпал с manifest")
     root = staging_root(settings)
     root.mkdir(parents=True, exist_ok=True)
     target = root / f"release-{manifest['release_sha'][:12]}.zip"
-    if target.exists():
-        # Повторный запуск после обрыва: staging уже готов — используем его.
-        temp_path.unlink(missing_ok=True)
+    if target.exists() and _file_matches(target, declared, manifest["package_sha256"]):
+        # Повторный запуск после обрыва: staging уже готов и валиден — reuse.
         return target
-    temp_path.replace(target)  # атомарная публикация
+    temp_path, _ = _download_to_temp(
+        manifest, DOWNLOAD_DEFAULT_MAX_BYTES, allowed_hosts(settings), ssl_context
+    )
+    try:
+        digest = hashlib.sha256()
+        with temp_path.open("rb") as fh:
+            while True:
+                chunk = fh.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        if digest.hexdigest() != manifest["package_sha256"]:
+            temp_path.unlink(missing_ok=True)
+            raise ChannelError("package_hash_mismatch", "SHA256 пакета не совпал с manifest")
+        temp_path.replace(target)  # атомарная публикация/замена
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        raise
     return target

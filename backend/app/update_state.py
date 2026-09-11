@@ -40,6 +40,16 @@ class UpdateState(StrEnum):
     MANUAL_ACTION_REQUIRED = "manual_action_required"
 
 
+class ReportOutcome(StrEnum):
+    """Результат приёма terminal report движка (безопасные значения)."""
+
+    APPLIED = "applied"
+    DUPLICATE = "duplicate"
+    CONFLICT = "conflict"
+    NO_ACTIVE_JOB = "no_active_job"
+    WRONG_JOB = "wrong_job"
+
+
 class UpdateChannelError(StrEnum):
     """Безопасные коды ошибок канала (без URL, путей и секретов)."""
 
@@ -108,6 +118,7 @@ class UpdateStateStore:
         self._downloaded_dir: str | None = None
         self._manifest_path: str | None = None
         self._engine_job_id: str | None = None
+        self._last_job: dict[str, str | None] | None = None
         self._action_lock = threading.Lock()
 
     # --- Чтение --------------------------------------------------------------
@@ -225,7 +236,9 @@ class UpdateStateStore:
 
     def engine_can_install(self) -> tuple[bool, str]:
         """Разрешение на установку: только после READY, без параллельных действий."""
-        if self._status.state != UpdateState.READY:
+        with self._lock:
+            state = self._status.state
+        if state != UpdateState.READY:
             return False, "пакет не готов к установке"
         if not self._action_lock.acquire(blocking=False):
             return False, "действие уже выполняется"
@@ -239,61 +252,102 @@ class UpdateStateStore:
                 self._status.installed_release_sha = sha
 
     def mark_installing(self, job_id: str) -> None:
-        self._engine_job_id = job_id
-        self._update(
-            state=UpdateState.INSTALLING,
-            error_code=None,
-            last_result=None,
-        )
+        with self._lock:
+            self._engine_job_id = job_id
+            self._status.state = UpdateState.INSTALLING
+            self._status.error_code = None
+            self._status.last_result = None
 
     def install_job_id(self) -> str | None:
-        return self._engine_job_id
+        with self._lock:
+            return self._engine_job_id
 
     def set_installed(self, version: str, release_sha: str) -> None:
-        self._downloaded_dir = None
-        self._manifest_path = None
-        self._engine_job_id = None
-        self._update(
-            state=UpdateState.UP_TO_DATE,
-            installed_version=version,
-            installed_release_sha=release_sha,
-            available_version=None,
-            available_release_sha=None,
-            available_published_at=None,
-            notes_ru=None,
-            last_check_at=utc_now().isoformat(),
-            last_check_ok=True,
-            last_result="updated",
-            error_code=None,
-        )
+        self._finish_transition("installed", version, release_sha, None)
 
     def set_rolled_back(self, error_code: str) -> None:
+        self._finish_transition("rolled_back", "", "", error_code)
+
+    def set_engine_restart_required(self, version: str, release_sha: str) -> None:
+        self._finish_transition("restart_required", version, release_sha, None)
+
+    def engine_failed(self, error_code: str) -> None:
+        self._finish_transition("failed", "", "", error_code)
+
+    def _finish_transition(
+        self, state: str, version: str, release_sha: str, error_code: str | None
+    ) -> None:
+        """Переход к терминальному состоянию (вызывается ПОД self._lock)."""
         self._downloaded_dir = None
         self._manifest_path = None
         self._engine_job_id = None
-        self._update(
-            state=UpdateState.FAILED,
-            error_code=error_code,
-            last_result="rolled_back",
-        )
+        self._pending_actions = []
+        current = self._status
+        if state == "installed":
+            current.state = UpdateState.UP_TO_DATE
+            current.installed_version = version
+            current.installed_release_sha = release_sha
+            current.available_version = None
+            current.available_release_sha = None
+            current.available_published_at = None
+            current.notes_ru = None
+            current.last_check_at = utc_now().isoformat()
+            current.last_check_ok = True
+            current.last_result = "updated"
+            current.error_code = None
+        elif state == "restart_required":
+            current.state = UpdateState.RESTART_REQUIRED
+            current.installed_version = version or current.installed_version
+            current.installed_release_sha = release_sha or current.installed_release_sha
+            current.last_result = "restart_required"
+            current.error_code = None
+        elif state == "rolled_back":
+            current.state = UpdateState.FAILED
+            current.error_code = error_code
+            current.last_result = "rolled_back"
+        else:
+            current.state = UpdateState.FAILED
+            current.error_code = error_code
+            current.last_result = "failed"
 
-    def set_engine_restart_required(self, version: str, release_sha: str) -> None:
-        self._engine_job_id = None
-        self._update(
-            state=UpdateState.RESTART_REQUIRED,
-            installed_version=version or self._status.installed_version,
-            installed_release_sha=release_sha or self._status.installed_release_sha,
-            last_result="restart_required",
-            error_code=None,
-        )
+    def apply_engine_report(
+        self, job_id: str, state: str, version: str, release_sha: str, error_code: str | None
+    ) -> ReportOutcome:
+        """Единственная точка приёма terminal report движка.
 
-    def engine_failed(self, error_code: str) -> None:
-        self._engine_job_id = None
-        self._update(
-            state=UpdateState.FAILED,
-            error_code=error_code,
-            last_result="failed",
-        )
+        Атомарно (под _lock): сопоставление с активной операцией, переход,
+        очистка pending-команд, запись последнего завершённого job'а для
+        идемпотентных повторов. Повтор с тем же результатом не меняет
+        состояние; противоречащий повтор отклоняется; lock освобождает
+        ТОЛЬКО вызывающий (и только для APPLIED).
+        """
+        with self._lock:
+            # Идемпотентный повтор терминального отчёта распознаётся до
+            # проверки активной операции: тот же job_id + тот же результат —
+            # 200 без побочных эффектов; противоречащий повтор — отказ.
+            last = self._last_job
+            if last is not None and last["job_id"] == job_id:
+                same = (
+                    last["state"] == state
+                    and last["installed_version"] == version
+                    and last["installed_release_sha"] == release_sha
+                    and (last["error_code"] or None) == (error_code or None)
+                )
+                return ReportOutcome.DUPLICATE if same else ReportOutcome.CONFLICT
+            active = self._engine_job_id
+            if active is None:
+                return ReportOutcome.NO_ACTIVE_JOB
+            if job_id != active:
+                return ReportOutcome.WRONG_JOB
+            self._finish_transition(state, version, release_sha, error_code)
+            self._last_job = {
+                "job_id": job_id,
+                "state": state,
+                "installed_version": version,
+                "installed_release_sha": release_sha,
+                "error_code": error_code or None,
+            }
+            return ReportOutcome.APPLIED
 
     def release_install_action(self) -> None:
         self._action_lock.release()
@@ -301,7 +355,8 @@ class UpdateStateStore:
     # --- Движок ---------------------------------------------------------------
 
     def engine_pending_actions(self) -> list[str]:
-        return list(self._pending_actions)
+        with self._lock:
+            return list(self._pending_actions)
 
     def add_pending_action(self, action: str) -> bool:
         """Команда UI -> движку (install). Возвращает False при дубликате."""
@@ -311,17 +366,14 @@ class UpdateStateStore:
             self._pending_actions.append(action)
             return True
 
-    def clear_pending_action(self, action: str) -> None:
-        with self._lock:
-            if action in self._pending_actions:
-                self._pending_actions.remove(action)
-
     def clear_pending_actions(self) -> None:
         with self._lock:
             self._pending_actions = []
 
     def downloaded_dir(self) -> str | None:
-        return self._downloaded_dir
+        with self._lock:
+            return self._downloaded_dir
+
 
 
 def is_installing_state(state: str) -> bool:
