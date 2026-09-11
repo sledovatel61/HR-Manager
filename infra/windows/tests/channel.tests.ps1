@@ -417,8 +417,8 @@ Test-Case "хост-отчёт не содержит секретов, токе�
     $allowed = @("schema_version", "generated_at", "engine_version", "app_state", "windows", "docker",
         "compose", "published_ports", "ports_observed", "free_space_mb", "state_dir", "staging",
         "installed_version", "installed_release_sha", "previous_images_present")
-    foreach ($prop in $call.Body.PSObject.Properties) {
-        Assert-HrmTrue ($allowed -contains $prop.Name) ("неизвестное поле отчёта: " + $prop.Name)
+    foreach ($key in @($call.Body.Keys)) {
+        Assert-HrmTrue ($allowed -contains $key) ("неизвестное поле отчёта: " + [string]$key)
     }
 }
 

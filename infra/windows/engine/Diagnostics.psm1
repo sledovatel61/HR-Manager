@@ -204,8 +204,9 @@ function Get-HrmDockerFacts {
 function Get-HrmComposeFacts {
     $probe = Test-HrmComposeVersion
     $version = ""
-    if ($probe.Message) {
-        $match = [regex]::Match([string]$probe.Message, "(\d+\.\d+\.\d+)")
+    $messageProperty = $probe.PSObject.Properties["Message"]
+    if ($null -ne $messageProperty -and $messageProperty.Value) {
+        $match = [regex]::Match([string]$messageProperty.Value, "(\d+\.\d+\.\d+)")
         if ($match.Success) { $version = $match.Groups[1].Value }
     }
     return @{ ok = [bool]$probe.Passed; version = $version }
@@ -230,13 +231,23 @@ function Get-HrmPublishedPortFacts {
     }
     $ports = @()
     foreach ($item in $items) {
-        if ($null -eq $item.Publishers) { continue }
-        foreach ($publisher in @($item.Publishers)) {
-            $hostIp = if ($publisher.URL) { [string]$publisher.URL } else { "" }
+        if ($null -eq $item) { continue }
+        # StrictMode 2.0: свойства читаем только через PSObject.Properties —
+        # Compose может не отдать Publishers, и обращение к ним обязано быть
+        # безопасным, а не исключением.
+        $publishersProperty = $item.PSObject.Properties["Publishers"]
+        if ($null -eq $publishersProperty) { continue }
+        $serviceProperty = $item.PSObject.Properties["Service"]
+        $service = if ($null -ne $serviceProperty) { [string]$serviceProperty.Value } else { "" }
+        foreach ($publisher in @($publishersProperty.Value)) {
+            if ($null -eq $publisher) { continue }
+            $urlProperty = $publisher.PSObject.Properties["URL"]
+            $hostIp = if ($null -ne $urlProperty -and $urlProperty.Value) { [string]$urlProperty.Value } else { "" }
+            $portProperty = $publisher.PSObject.Properties["PublishedPort"]
             $port = $null
-            if ($publisher.PublishedPort) { $port = [int]$publisher.PublishedPort }
+            if ($null -ne $portProperty -and $portProperty.Value) { $port = [int]$portProperty.Value }
             if (-not $hostIp -and $null -eq $port) { continue }
-            $ports += @{ service = [string]$item.Service; host_ip = $hostIp; port = $port }
+            $ports += @{ service = $service; host_ip = $hostIp; port = $port }
         }
     }
     $result["observed"] = $true
@@ -288,6 +299,17 @@ function Get-HrmHostReportPayload {
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
     $release = Get-HrmJsonFile (Join-Path $InstallDir "release.json")
+    # StrictMode 2.0: у JSON-объектов поля читаем через PSObject.Properties.
+    $releaseVersion = ""
+    if ($null -ne $release) {
+        $releaseProperty = $release.PSObject.Properties["version"]
+        if ($null -ne $releaseProperty -and $releaseProperty.Value) { $releaseVersion = [string]$releaseProperty.Value }
+    }
+    $recordSha = ""
+    if ($null -ne $record) {
+        $shaProperty = $record.PSObject.Properties["release_sha"]
+        if ($null -ne $shaProperty -and $shaProperty.Value) { $recordSha = [string]$shaProperty.Value }
+    }
     $published = Get-HrmPublishedPortFacts -InstallDir $InstallDir -StateDir $StateDir
     $staging = Get-HrmStagingHostDir
     return [ordered]@{
@@ -303,8 +325,8 @@ function Get-HrmHostReportPayload {
         free_space_mb = (Get-HrmFreeSpaceMb -Path $InstallDir)
         state_dir = (Get-HrmDirFacts -Path $StateDir)
         staging = (Get-HrmDirFacts -Path $staging)
-        installed_version = if ($release -and $release.version) { [string]$release.version } else { "" }
-        installed_release_sha = if ($record -and $record.release_sha) { [string]$record.release_sha } else { "" }
+        installed_version = $releaseVersion
+        installed_release_sha = $recordSha
         previous_images_present = (Get-HrmPreviousImagePresent)
     }
 }
@@ -318,7 +340,8 @@ function Send-HrmHostReport {
     if ($null -eq $record) { return $false }
     $token = Get-HrmSecret $StateDir "HRM_UPDATE_ENGINE_TOKEN"
     if ([string]::IsNullOrEmpty($token)) { return $false }
-    $port = if ($record.port) { [int]$record.port } else { Get-HrmPort }
+    $portProperty = $record.PSObject.Properties["port"]
+    $port = if ($null -ne $portProperty -and $portProperty.Value) { [int]$portProperty.Value } else { Get-HrmPort }
     $payload = Get-HrmHostReportPayload -InstallDir $InstallDir -StateDir $StateDir -AppState $AppState
     try {
         $response = Invoke-HrmHttp -Uri ("{0}/api/updates/engine-host-report" -f (Get-HrmBaseUrl $port)) `
