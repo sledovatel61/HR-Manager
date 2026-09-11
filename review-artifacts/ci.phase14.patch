@@ -1,0 +1,39 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 9db0562..7d85552 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -284,6 +284,34 @@ jobs:
+         if: always()
+         run: docker compose -f infra/docker-compose.yml down -v --remove-orphans
+ 
++  pilot-drill:
++    name: E2E pilot drill (Phase 14, synthetic data only)
++    runs-on: ubuntu-latest
++    timeout-minutes: 45
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++
++      - name: Run the pilot drill (live Compose stack, ephemeral keys)
++        run: |
++          set -euo pipefail
++          # Никаких production secrets: канал подписан fixture-ключом
++          # infra/release/testdata, TLS/секреты генерируются на месте и
++          # удаляются по завершении прогона.
++          sudo apt-get -qq update >/dev/null 2>&1 || true
++          infra/scripts/pilot-drill.sh
++
++      - name: Publish machine-readable drill reports (no secrets/PII)
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: pilot-drill-reports
++          path: |
++            /tmp/hrm-pilot-drill-*/pilot-drill.json
++            /tmp/hrm-pilot-drill-*/pilot-drill.md
++          if-no-files-found: warn
++
+   windows-installer:
+     name: Windows engine tests + installer smoke
+     runs-on: windows-latest

@@ -145,6 +145,10 @@ function New-HrmMockWorld {
         TagCount = 0
         BuildCount = 0
         SimulateStaleRelease = $false
+        # Phase 14: факты для readiness (пусто -> ветка «неожиданная команда»,
+        # т.е. exit 1, как в реальности при пустом выводе docker ps/images).
+        DockerPsPorts = ""
+        DockerImagesOutput = ""
     }
     $world.OpsBody = [pscustomobject]@{
         status = "ok"
@@ -247,6 +251,17 @@ function New-HrmMockWorld {
                 }
                 if ($joined -match "backup-list") {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "2026-09-09T01:00:00Z ok abc.enc"; Stderr = "" }
+                }
+            }
+            # Phase 14: факты readiness (Get-HrmEngineFacts).
+            if ($Arguments.Count -ge 1 -and $Arguments[0] -eq "ps") {
+                if ($global:HRM_MockWorld.DockerPsPorts) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.DockerPsPorts; Stderr = "" }
+                }
+            }
+            if ($Arguments.Count -ge 1 -and $Arguments[0] -eq "images") {
+                if ($global:HRM_MockWorld.DockerImagesOutput) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.DockerImagesOutput; Stderr = "" }
                 }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "image" -and $Arguments[1] -eq "inspect") {

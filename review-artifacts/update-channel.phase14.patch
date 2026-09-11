@@ -1,0 +1,255 @@
+diff --git a/.github/workflows/update-channel.yml b/.github/workflows/update-channel.yml
+index aa23499..a454cf9 100644
+--- a/.github/workflows/update-channel.yml
++++ b/.github/workflows/update-channel.yml
+@@ -1,4 +1,4 @@
+-# Phase 13: update channel release pipeline (Windows pilot).
++# Phase 13/14: update channel release pipeline (Windows pilot).
+ #
+ # Собирает release channel только для ЗАЩИЩЁННЫХ SemVer-тегов `v*` (или
+ # ручного dispatch владельца): детерминированный пакет + внешний
+@@ -9,13 +9,45 @@
+ # затрагивается: развёртывание серверной части и публикация канала
+ # Windows-пилота — раздельные цепочки без регрессии Phase 7/12.
+ #
+-# Секреты живут в environment `update-channel-signing` (создать владельцу;
++# Phase 14: ДВЕ НЕЗАВИСИМЫЕ подписи выпуска.
++#   1) Ed25519 channel-подпись manifest — обязательна (см. выше).
++#   2) Authenticode-подпись installer — режим задаётся явным выбором
++#      (тег v* => production, fail closed; dispatch => вход installer_signing).
++#      Сертификат и пароль живут в ОТДЕЛЬНОМ environment `installer-signing`
++#      и передаются sign-installer.ps1 ТОЛЬКО через env — никогда через
++#      аргументы CLI, логи или артефакты. Production-режим отказывает
++#      (fail closed), если сертификат не задан, installer не подписан,
++#      нет валидного RFC 3161 timestamp, publisher не совпал или
++#      signtool verify /pa /all не прошёл. Тестовый режим (ephemeral
++#      self-signed сертификат раннера) помечает манифест
++#      certificate_kind=test-self-signed и НИКОГДА не проходит
++#      production-политику (infra/release/installer_signing.py).
++#
++# Секреты environment `update-channel-signing` (создать владельцу;
+ # НЕ включать в настройках environment ветки PR):
+ #   UPDATE_CHANNEL_SIGNING_KEY — закрытый Ed25519-ключ (64 hex или PEM);
+ #   UPDATE_CHANNEL_KEY_ID      — key_id подписи (напр. pilot-release-2026);
+ #   UPDATE_CHANNEL_PUBLIC_KEYS — trust store production-клиента, тот же JSON
+ #                                {key_id: {key, revoked}}, что в
+ #                                UPDATE_CHANNEL_PUBLIC_KEYS сервера.
++# Секреты environment `installer-signing` (отдельный, для Authenticode):
++#   INSTALLER_TRUST_STORE         — тот же trust store ПОЛНОЙ схемой
++#                                   {schema_version:1, environment:"production",
++#                                   keys:{...}} (канонический JSON; embed в
++#                                   installer; сверяется с
++#                                   UPDATE_CHANNEL_PUBLIC_KEYS канала);
++#   INSTALLER_AUTHENTICODE_PFX_BASE64 / _PASSWORD / _TIMESTAMP_URL /
++#   _PUBLISHER — production-сертификат (необходимы в режиме production).
++#
++# Phase 14: доставка trust configuration. Публичный trust store релиза
++# встраивается и в installer (installer/build.ps1 -TrustStore), и в пакет
++# канала (release-trust-store.json в снимке); publish_channel.py блокирует
++# выпуск (trust_store_mismatch), если встроенный store не проходит строгую
++# схему infra/release/trust_store.py, расходится с trust store релиза или
++# не содержит неотозванный ключ подписи. Канал публикует trust-store.json
++# рядом с SHA256SUMS; целостность installer-копии сверяется по SHA256
++# перед публикацией релиза.
++#
+ # Fail closed: без signing key (или с неверным) pipeline падает ДО создания
+ # unsigned manifest — см. infra/release/publish_channel.py.
+ #
+@@ -50,6 +82,11 @@ on:
+       notes_ru:
+         description: "Примечания к релизу (одна строка)"
+         required: false
++      installer_signing:
++        description: "Режим Authenticode-подписи установщика"
++        type: choice
++        options: ["production", "test"]
++        default: "production"
+ 
+ permissions:
+   contents: read
+@@ -61,8 +98,11 @@ env:
+ 
+ jobs:
+   windows-installer:
+-    name: Build Windows installer (pinned toolchain)
++    name: Build and Authenticode-sign Windows installer
+     runs-on: windows-latest
++    environment: installer-signing
++    outputs:
++      signing_mode: ${{ steps.authsign.outputs.signing_mode }}
+     steps:
+       - uses: actions/checkout@v4
+         with:
+@@ -110,17 +150,71 @@ jobs:
+             echo "error: checkout HEAD != release_sha" >&2; exit 2; }
+           echo "version=$version" >> "$GITHUB_OUTPUT"
+ 
++      - name: Materialize public trust store from protected input
++        shell: powershell
++        env:
++          INSTALLER_TRUST_STORE: ${{ secrets.INSTALLER_TRUST_STORE }}
++        run: |
++          $ErrorActionPreference = "Stop"
++          if (-not $env:INSTALLER_TRUST_STORE) {
++            Write-Host "::error::secret INSTALLER_TRUST_STORE (environment installer-signing) is required: the installer must embed the release trust store"
++            exit 1
++          }
++          # Канонический байтовый образ (sort_keys, indent 2) — тот же, что
++          # генерирует channel-release из UPDATE_CHANNEL_PUBLIC_KEYS: SHA256
++          # обеих копий обязан совпасть перед публикацией.
++          $env:INSTALLER_TRUST_STORE | Out-File -Encoding utf8NoBOM -NoNewline "$env:RUNNER_TEMP\trust-input.json"
++          python - "$env:RUNNER_TEMP\trust-input.json" "$env:RUNNER_TEMP\release-trust-store.json" <<'PY'
++          import hashlib, json, sys
++          flat = json.loads(open(sys.argv[1], encoding="utf-8-sig").read())
++          canonical = json.dumps(
++              {"schema_version": 1, "environment": "production", "keys": flat},
++              ensure_ascii=False, sort_keys=True, indent=2,
++          ) + "\n"
++          open(sys.argv[2], "w", encoding="utf-8", newline="\n").write(canonical)
++          print("trust store sha256:", hashlib.sha256(canonical.encode("utf-8")).hexdigest())
++          PY
++          if ($LASTEXITCODE -ne 0) { throw "trust store canonicalization failed" }
++
+       - name: Build installer (Inno Setup 6.7.3, SHA256 pinned in build.ps1)
+         shell: powershell
+         env:
+           VERSION: ${{ steps.version.outputs.version }}
+-        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version $env:VERSION
++        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version $env:VERSION -TrustStore "$env:RUNNER_TEMP\release-trust-store.json"
++
++      - name: Sign installer (Authenticode, fail closed)
++        id: authsign
++        shell: powershell
++        env:
++          # Тег v* — всегда production (fail closed). Dispatch — явный выбор
++          # владельца; вход приходит только через env, не в run-блок.
++          SIGNING_MODE: ${{ github.event_name == 'push' && 'production' || inputs.installer_signing }}
++          HRM_SIGNING_PFX_BASE64: ${{ secrets.INSTALLER_AUTHENTICODE_PFX_BASE64 }}
++          HRM_SIGNING_PFX_PASSWORD: ${{ secrets.INSTALLER_AUTHENTICODE_PFX_PASSWORD }}
++          HRM_SIGNING_TIMESTAMP_URL: ${{ secrets.INSTALLER_AUTHENTICODE_TIMESTAMP_URL }}
++          HRM_SIGNING_PUBLISHER: ${{ secrets.INSTALLER_AUTHENTICODE_PUBLISHER }}
++        run: |
++          $ErrorActionPreference = "Stop"
++          if ($env:SIGNING_MODE -ne "production" -and $env:SIGNING_MODE -ne "test") {
++            throw "installer_signing must be production or test (got '$env:SIGNING_MODE')"
++          }
++          powershell -NoProfile -ExecutionPolicy Bypass -File installer/sign-installer.ps1 -Mode $env:SIGNING_MODE
++          if ($LASTEXITCODE -ne 0) { throw "sign-installer.ps1 failed (mode=$env:SIGNING_MODE)" }
++          # Независимая машинная проверка контракта подписи ПОСЛЕ подписи
++          # (production: signed + timestamp + publisher + signtool + SHA256).
++          python infra/release/installer_signing.py verify-manifest `
++            --manifest installer/release-manifest.json --mode $env:SIGNING_MODE `
++            --exe-dir installer/output
++          if ($LASTEXITCODE -ne 0) { throw "signing contract verification failed (mode=$env:SIGNING_MODE)" }
++          Add-Content -Path $env:GITHUB_OUTPUT -Value ("signing_mode=" + $env:SIGNING_MODE)
+ 
+-      - name: Upload installer artifact
++      - name: Upload signed installer artifact
+         uses: actions/upload-artifact@v4
+         with:
+           name: hr-manager-windows-setup
+-          path: installer/output/*.exe
++          path: |
++            installer/output/*.exe
++            installer/release-manifest.json
+           if-no-files-found: error
+ 
+   channel-release:
+@@ -207,13 +301,15 @@ jobs:
+       - name: Install channel tooling (pinned)
+         run: pip install cryptography==50.0.1
+ 
+-      - name: Prepare snapshot (backend + frontend + infra + release.json)
++      - name: Prepare snapshot (backend + frontend + infra + release.json + trust store)
+         id: snapshot
+         env:
+           VERSION: ${{ steps.release.outputs.version }}
+           SHA: ${{ steps.release.outputs.sha }}
++          TRUSTED_KEYS: ${{ secrets.UPDATE_CHANNEL_PUBLIC_KEYS }}
+         run: |
+           set -euo pipefail
++          : "${TRUSTED_KEYS:?UPDATE_CHANNEL_PUBLIC_KEYS secret is required}"
+           snapshot="$(mktemp -d)/app"
+           mkdir -p "$snapshot"
+           cp -R backend "$snapshot/backend"
+@@ -226,9 +322,23 @@ jobs:
+               json.dump({
+                   "version": os.environ["VERSION"],
+                   "release_sha": os.environ["SHA"],
+-                  "built_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
++                  "built_at": datetime.now(UTC).strftime("%%Y-%m-%dT%H:%M:%SZ"),
+               }, fh, ensure_ascii=False)
+           PY
++          # Phase 14: публичный trust store релиза встраивается в пакет
++          # (release-trust-store.json) тем же каноническим образом, что и в
++          # installer; publish_channel.py сверит его с --public-keys-json.
++          printf '%s' "$TRUSTED_KEYS" > "$RUNNER_TEMP/trusted-keys-input.json"
++          python3 - "$RUNNER_TEMP/trusted-keys-input.json" "$snapshot/release-trust-store.json" <<'PY'
++          import hashlib, json, os, sys
++          flat = json.loads(open(sys.argv[1], encoding="utf-8").read())
++          canonical = json.dumps(
++              {"schema_version": 1, "environment": "production", "keys": flat},
++              ensure_ascii=False, sort_keys=True, indent=2,
++          ) + "\n"
++          open(sys.argv[2], "w", encoding="utf-8", newline="\n").write(canonical)
++          print("embedded trust store sha256:", hashlib.sha256(canonical.encode("utf-8")).hexdigest())
++          PY
+           echo "snapshot=$snapshot" >> "$GITHUB_OUTPUT"
+ 
+       - name: Build package, sign manifest, verify with client-trusted key
+@@ -274,6 +384,48 @@ jobs:
+           name: hr-manager-windows-setup
+           path: dist/channel/installer
+ 
++      - name: Verify installer signing contract and embedded trust store (fail closed)
++        env:
++          SIGNING_MODE: ${{ needs.windows-installer.outputs.signing_mode }}
++          TRUSTED_KEYS: ${{ secrets.UPDATE_CHANNEL_PUBLIC_KEYS }}
++        run: |
++          set -euo pipefail
++          : "${SIGNING_MODE:?windows-installer must expose signing_mode}"
++          # 1) Криптографический контракт подписи (production: signed +
++          #    timestamp + publisher + signtool + пересчитанный SHA256 exe).
++          python3 infra/release/installer_signing.py verify-manifest \
++            --manifest dist/channel/installer/release-manifest.json \
++            --mode "$SIGNING_MODE"
++          # 2) Встроенный в installer trust store — ПОБАЙТОВО тот же, что
++          #    доверен каналу: подмена trust store блокирует публикацию.
++          python3 - dist/channel/installer/release-trust-store.json "$TRUSTED_KEYS" <<'PY'
++          import hashlib, json, sys
++          embedded = json.loads(open(sys.argv[1], encoding="utf-8-sig").read())
++          flat = json.loads(sys.argv[2])
++          canonical = json.dumps(
++              {"schema_version": 1, "environment": "production", "keys": flat},
++              ensure_ascii=False, sort_keys=True, indent=2,
++          ) + "\n"
++          actual = json.dumps(embedded, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
++          if actual != canonical:
++              print("error: installer trust store != channel trust store", file=sys.stderr)
++              sys.exit(1)
++          print("installer trust store sha256:", hashlib.sha256(canonical.encode("utf-8")).hexdigest())
++          PY
++          # 3) SHA256 подписанного exe из манифеста совпадает с загруженным
++          #    артефактом (нельзя подменить exe после подписи).
++          python3 - dist/channel/installer <<'PY'
++          import hashlib, json, sys
++          from pathlib import Path
++          manifest = json.loads((Path(sys.argv[1]) / "release-manifest.json").read_text(encoding="utf-8-sig"))
++          exe = Path(sys.argv[1]) / manifest["installer_exe"]["file"]
++          actual = hashlib.sha256(exe.read_bytes()).hexdigest()
++          if actual != manifest["installer_exe"]["sha256"].lower():
++              print(f"error: signed exe SHA256 mismatch: {actual}", file=sys.stderr)
++              sys.exit(1)
++          print("signed installer sha256:", actual)
++          PY
++
+       - name: Publish immutable GitHub Release (draft, assets verified above)
+         env:
+           GH_TOKEN: ${{ github.token }}
+@@ -293,5 +445,6 @@ jobs:
+             --notes "${NOTES:-$VERSION}" \
+             "dist/channel/hr-manager-windows-$VERSION.zip" \
+             "dist/channel/update-channel.json" \
++            "dist/channel/trust-store.json" \
+             "dist/channel/SHA256SUMS" \
+             "$setup_exe"

@@ -37,9 +37,12 @@ PACKAGE_URL = (
 )
 
 
-def _run_publish(tmp_path: Path, extra: list[str]) -> subprocess.CompletedProcess:
-    snapshot = tmp_path / "app"
-    shutil.copytree(TESTDATA / "snapshot", snapshot)
+def _run_publish(
+    tmp_path: Path, extra: list[str], snapshot_dir: Path | None = None
+) -> subprocess.CompletedProcess:
+    snapshot = snapshot_dir if snapshot_dir is not None else tmp_path / "app"
+    if snapshot_dir is None:
+        shutil.copytree(TESTDATA / "snapshot", snapshot)
     out_dir = tmp_path / "dist" / "channel"
     command = [
         sys.executable,
@@ -386,3 +389,250 @@ def test_workflow_yaml_security_invariants() -> None:
     assert reject_idx < write_idx
     # Deploy/rollback workflow не затронут.
     assert (REPO / ".github" / "workflows" / "release.yml").exists()
+
+
+# --- Phase 14: две подписи + trust store в workflow ------------------------------
+
+# GitHub App сессии не имеет права `workflows`: Phase 14-версия update-channel
+# workflow публикуется в review-artifacts/ и переносится владельцем. Тесты
+# проверяют её там; после переноса владельцем — автоматически in-tree.
+_PHASE14_MARKER = "installer-signing"
+_WORKFLOW_IN_TREE_P14 = REPO / ".github" / "workflows" / "update-channel.yml"
+_WORKFLOW_P14 = (
+    _WORKFLOW_IN_TREE_P14
+    if _WORKFLOW_IN_TREE_P14.exists()
+    and _PHASE14_MARKER in _WORKFLOW_IN_TREE_P14.read_text(encoding="utf-8")
+    else REPO / "review-artifacts" / "update-channel.phase14.yml"
+)
+
+
+def _phase14_workflow_data() -> dict:
+    assert _WORKFLOW_P14.exists(), (
+        "Phase 14 workflow не найден ни в .github/workflows/ (перенос владельца), "
+        "ни в review-artifacts/update-channel.phase14.yml"
+    )
+    return yaml.safe_load(_WORKFLOW_P14.read_text(encoding="utf-8"))
+
+
+# --- Phase 14: встроенный trust store в publish_channel -------------------------
+
+
+def _write_embedded_trust_store(snapshot: Path, payload: dict) -> None:
+    (snapshot / "release-trust-store.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _production_embedded() -> dict:
+    flat = json.loads((TESTDATA / "trusted_keys.json").read_text(encoding="utf-8"))
+    return {"schema_version": 1, "environment": "production", "keys": flat}
+
+
+def _publish_with_embedded(tmp_path: Path, embedded: dict) -> subprocess.CompletedProcess:
+    snapshot = tmp_path / "app"
+    shutil.copytree(TESTDATA / "snapshot", snapshot)
+    _write_embedded_trust_store(snapshot, embedded)
+    return _run_publish(
+        tmp_path,
+        ["--private-key", str(TESTDATA / "test_key.priv"), "--key-id", "pilot-test-key"],
+        snapshot_dir=snapshot,
+    )
+
+
+def test_publish_embedded_trust_store_published_and_checksummed(tmp_path: Path) -> None:
+    """Совпадающий встроенный trust store публикуется как trust-store.json."""
+    result = _publish_with_embedded(tmp_path, _production_embedded())
+    assert result.returncode == 0, result.stderr
+    out_dir = tmp_path / "dist" / "channel"
+    trust_path = out_dir / "trust-store.json"
+    assert trust_path.exists()
+    published = json.loads(trust_path.read_text(encoding="utf-8"))
+    assert published["environment"] == "production"
+    assert set(published["keys"]) == {"pilot-test-key", "pilot-revoked-key"}
+    # trust-store.json включён в SHA256SUMS с корректным hash.
+    import hashlib
+
+    trust_sha = hashlib.sha256(trust_path.read_bytes()).hexdigest()
+    sums = (out_dir / "SHA256SUMS").read_text(encoding="utf-8")
+    assert f"{trust_sha}  trust-store.json" in sums
+    # Внутри пакета встроенный store тоже детерминированно присутствует.
+    assert (tmp_path / "app" / "release-trust-store.json").exists()
+    # Никакого private material в опубликованном артефакте.
+    private_material = (TESTDATA / "test_key.priv").read_text(encoding="utf-8").strip()
+    assert private_material not in trust_path.read_text(encoding="utf-8")
+
+
+def test_publish_embedded_trust_store_mismatch_blocks_release(tmp_path: Path) -> None:
+    """Подмена встроенного trust store блокирует выпуск (fail closed)."""
+    embedded = _production_embedded()
+    embedded["keys"]["pilot-test-key"]["key"] = "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGAAA="
+    result = _publish_with_embedded(tmp_path, embedded)
+    assert result.returncode != 0
+    assert "trust_store_mismatch" in result.stderr
+    out_dir = tmp_path / "dist" / "channel"
+    assert not (out_dir / "update-channel.json").exists()
+    assert not (out_dir / "trust-store.json").exists()
+    assert not (out_dir / "SHA256SUMS").exists()
+
+
+def test_publish_embedded_trust_store_extra_key_blocks_release(tmp_path: Path) -> None:
+    """Лишний ключ во встроенном store ≠ release metadata → блокировка."""
+    embedded = _production_embedded()
+    embedded["keys"]["rogue-key"] = {
+        "key": "AdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM=",
+        "revoked": False,
+    }
+    result = _publish_with_embedded(tmp_path, embedded)
+    assert result.returncode != 0
+    assert "trust_store_mismatch" in result.stderr
+
+
+def test_publish_embedded_trust_store_private_material_blocks(tmp_path: Path) -> None:
+    """Private material в встроенном store — ошибка строгой схемы."""
+    embedded = _production_embedded()
+    embedded["keys"]["pilot-test-key"]["private"] = "f" * 64
+    result = _publish_with_embedded(tmp_path, embedded)
+    assert result.returncode != 0
+    assert "private_material" in result.stderr
+    assert not (tmp_path / "dist" / "channel" / "update-channel.json").exists()
+
+
+def test_publish_embedded_trust_store_test_env_never_production_root(tmp_path: Path) -> None:
+    """Dev/test store не становится молча production trust root."""
+    embedded = _production_embedded()
+    embedded["environment"] = "test"
+    result = _publish_with_embedded(tmp_path, embedded)
+    assert result.returncode != 0
+    assert "test_trust_store" in result.stderr
+
+
+def test_check_embedded_trust_store_defense_in_depth(tmp_path: Path) -> None:
+    """Прямые ветки unknown_key/revoked_key в _check_embedded_trust_store.
+
+    Через CLI эти ветки экранируются более ранними проверками (flat-проверка
+    ключа подписи, затем stores_match) — они защищают от регрессий порядка
+    проверок и вызываются здесь напрямую.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "publish_channel_module", RELEASE / "publish_channel.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    other_key = "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM="
+    snapshot = tmp_path / "app"
+    snapshot.mkdir()
+
+    # unknown_key: встроенный store совпадает с release store, но ключа
+    # подписи в обоих нет.
+    flat_without = {"another-key": {"key": other_key, "revoked": False}}
+    _write_embedded_trust_store(
+        snapshot, {"schema_version": 1, "environment": "production", "keys": flat_without}
+    )
+    with pytest.raises(module.ChannelError) as excinfo:
+        module._check_embedded_trust_store(snapshot, flat_without, "pilot-test-key")
+    assert excinfo.value.code == "unknown_key"
+
+    # revoked_key: совпадающие store, ключ подписи отозван в обоих.
+    flat_revoked = {
+        "pilot-test-key": {"key": other_key, "revoked": True},
+        "another-key": {"key": "D83KWJq/Tb9ETFv8x2gNe7DvOfZM0vMY4YKH+aQVvy0=", "revoked": False},
+    }
+    _write_embedded_trust_store(
+        snapshot, {"schema_version": 1, "environment": "production", "keys": flat_revoked}
+    )
+    with pytest.raises(module.ChannelError) as excinfo:
+        module._check_embedded_trust_store(snapshot, flat_revoked, "pilot-test-key")
+    assert excinfo.value.code == "revoked_key"
+
+
+# --- Phase 14: инварианты двух независимых подписей в workflow -------------------
+
+
+def test_workflow_yaml_phase14_signing_invariants() -> None:
+    """Authenticode-контракт workflow: fail-closed, secrets только в env,
+    production-режим на тегах, побайтовая сверка встроенного trust store,
+    публикация trust-store.json как артефакта канала."""
+    data = _phase14_workflow_data()
+    jobs = data["jobs"]
+    installer_job = jobs["windows-installer"]
+    signing_job = jobs["channel-release"]
+
+    # Authenticode-секреты — в ОТДЕЛЬНОМ environment installer-signing.
+    assert installer_job["environment"] == "installer-signing"
+    # Режим подписи экспортируется в channel-release (проверка той же политикой).
+    assert installer_job["outputs"]["signing_mode"]
+
+    installer_text = json.dumps(installer_job["steps"], ensure_ascii=False)
+    # Подпись выполняется sign-installer.ps1, production требует секреты.
+    assert "sign-installer.ps1" in installer_text
+    assert "secrets.INSTALLER_AUTHENTICODE_PFX_BASE64" in installer_text
+    # Проверка контракта ПОСЛЕ подписи — до upload артефакта.
+    names = [step.get("name", "") for step in installer_job["steps"]]
+    sign_index = names.index("Sign installer (Authenticode, fail closed)")
+    upload_index = names.index("Upload signed installer artifact")
+    assert sign_index < upload_index
+    # Тег v* => всегда production (fail closed на отсутствие сертификата);
+    # выбор пользователя попадает только в env, не в run-блок.
+    sign_step = installer_job["steps"][sign_index]
+    sign_run = sign_step.get("run", "")
+    assert "${{ inputs." not in sign_run, "user input inlined in run block"
+    assert "github.event_name == 'push' && 'production'" in json.dumps(sign_step["env"])
+
+    # Trust store встраивается из защищённого входа и проверяется дважды.
+    assert "secrets.INSTALLER_TRUST_STORE" in installer_text
+    assert "-TrustStore" in installer_text
+
+    channel_text = json.dumps(signing_job["steps"], ensure_ascii=False)
+    assert "secrets.UPDATE_CHANNEL_PUBLIC_KEYS" in channel_text
+    # Побайтовая сверка встроенного trust store с trust store канала —
+    # ДО публикации релиза.
+    channel_names = [step.get("name", "") for step in signing_job["steps"]]
+    assert channel_names.index(
+        "Verify installer signing contract and embedded trust store (fail closed)"
+    ) < channel_names.index("Publish immutable GitHub Release (draft, assets verified above)")
+    # trust-store.json публикуется как артефакт релиза.
+    assert "dist/channel/trust-store.json" in channel_text
+
+
+def test_workflow_phase14_patch_applies_byte_exact(tmp_path: Path) -> None:
+    """Phase 14-патч — полноценный unified diff: применение к базовому
+    workflow даёт byte-identical файл артефакта (инструкция переноса
+    владельцем воспроизводима и проверяема)."""
+    import shutil
+
+    if shutil.which("git") is None:
+        pytest.skip("git требуется для теста применения патча")
+    patch_path = REPO / "review-artifacts" / "update-channel.phase14.patch"
+    artifact_path = REPO / "review-artifacts" / "update-channel.phase14.yml"
+    patch_text = patch_path.read_text(encoding="utf-8")
+    assert "@@" in patch_text, "патч должен содержать unified hunk header (@@)"
+
+    # Мини-репозиторий с базовой (Phase 13) версией workflow.
+    workdir = tmp_path / "apply"
+    (workdir / ".github" / "workflows").mkdir(parents=True)
+    base = (
+        _WORKFLOW_IN_TREE_P14.read_text(encoding="utf-8") if _WORKFLOW_IN_TREE_P14.exists() else ""
+    )
+    if _PHASE14_MARKER in base:
+        pytest.skip("владелец уже перенёс Phase 14 workflow in-tree")
+    (workdir / ".github" / "workflows" / "update-channel.yml").write_text(base, encoding="utf-8")
+    checked = subprocess.run(
+        ["git", "apply", "--check", str(patch_path)],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+    )
+    assert checked.returncode == 0, checked.stderr
+    applied = subprocess.run(
+        ["git", "apply", str(patch_path)],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+    )
+    assert applied.returncode == 0, applied.stderr
+    result = (workdir / ".github" / "workflows" / "update-channel.yml").read_bytes()
+    assert result == artifact_path.read_bytes(), "применённый патч != артефакт"

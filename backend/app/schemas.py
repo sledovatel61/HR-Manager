@@ -1156,6 +1156,79 @@ class UpdateEngineReportRequest(BaseModel):
         return self
 
 
+class UpdateEngineFactsPort(BaseModel):
+    """Один опубликованный порт пилотного проекта (только факты, без путей)."""
+
+    host_ip: str = Field(min_length=1, max_length=45)
+    host_port: int = Field(ge=1, le=65535)
+    container: str = Field(min_length=1, max_length=64)
+
+
+class UpdateEngineFactsRequest(BaseModel):
+    """Факты host-стороны от Windows-движка (Phase 14, readiness).
+
+    Схема ЗАКРЫТА: неизвестные поля отклоняются (422) до записи. Все поля —
+    ограниченные enum/bool/int/фиксированные идентификаторы контейнеров, без
+    свободного текста: через отчёт невозможно протащить секрет, путь или PII.
+    Движок дополнительно пропускает значения через редакцию секретов.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    windows_version: Literal["windows_10", "windows_11", "other"] = "other"
+    windows_supported: bool = False
+    docker_state: Literal["ok", "daemon_down", "missing"] = "missing"
+    compose_version: str = Field(default="", max_length=32)
+    compose_ok: bool = False
+    published_ports: list[UpdateEngineFactsPort] = Field(default_factory=list, max_length=16)
+    disk_free_mb: int = Field(ge=0)
+    state_dir_acl_ok: bool = False
+    staging_writable: bool = False
+    staging_outside_state: bool = False
+    previous_images_present: bool = False
+    watcher_running: bool = False
+
+    @model_validator(mode="after")
+    def _validate_ports_shape(self) -> "UpdateEngineFactsRequest":
+        # host_ip — только IP-литерал (без имён/путей/userinfo).
+        for port in self.published_ports:
+            if not re.fullmatch(r"[0-9a-fA-F:.]+", port.host_ip):
+                raise ValueError("host_ip должен быть IP-литералом")
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", port.container):
+                raise ValueError("container должен быть простым идентификатором")
+        if not re.fullmatch(r"[A-Za-z0-9 .()_-]*", self.compose_version):
+            raise ValueError("compose_version содержит недопустимые символы")
+        return self
+
+
+class ReadinessCheckOut(BaseModel):
+    """Один пункт предпусковой проверки (server-owned, без секретов)."""
+
+    code: str
+    title_ru: str
+    state: Literal["pass", "warning", "fail"]
+    explanation_ru: str
+    action_ru: str
+    # Опциональные безопасные детали (например, key_id доверенных ключей).
+    details: list[str] = Field(default_factory=list, max_length=32)
+
+
+class ReadinessReportOut(BaseModel):
+    """Итог предпусковой проверки готовности пилота.
+
+    verdict: ``ready`` (готово) | ``ready_with_warnings`` (готово с
+    предупреждениями) | ``blocked`` (запуск запрещён). Никаких URL, путей,
+    секретов или PII — только серверные факты и русские объяснения.
+    """
+
+    verdict: Literal["ready", "ready_with_warnings", "blocked"]
+    verdict_ru: str
+    generated_at: str
+    release_version: str
+    release_sha: str
+    checks: list[ReadinessCheckOut]
+
+
 class SetupStateOut(BaseModel):
     """Honest setup status: what works, what is not configured."""
 

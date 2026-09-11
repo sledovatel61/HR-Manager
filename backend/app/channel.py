@@ -239,13 +239,15 @@ def fetch_manifest_text(
     settings: Settings,
     preview: bool = False,
     ssl_context: ssl.SSLContext | None = None,
+    timeout: float = 30.0,
 ) -> str:
     """Скачивание manifest: HTTPS, проверка политики каждого redirect-хопа
     ДО обращения, лимит цепочки, защита от циклов.
 
     Сетевые ошибки транслируются в ChannelError("channel_offline", ...) —
     вызывающий код отличает offline от других отказов. ssl_context — тестовый
-    шов (в проде — системные корни доверия).
+    шов (в проде — системные корни доверия). timeout переопределяется только
+    готовностной проверкой (короткий ожидание), рабочий путь канала — 30 с.
     """
     url = manifest_url(settings, preview)
     if not url:
@@ -257,7 +259,7 @@ def fetch_manifest_text(
         opener,
         url,
         allowed_hosts(settings),
-        timeout=30,
+        timeout=timeout,
         offline_message="manifest_invalid",
     ) as response:
         data = response.read(MANIFEST_MAX_BYTES + 1)

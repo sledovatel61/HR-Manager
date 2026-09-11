@@ -26,6 +26,279 @@ function Get-HrmStagingHostDir {
 }
 function Get-HrmChannelPidFile { param([string]$StateDir) return (Join-Path $StateDir "channel-watch.pid") }
 
+# --- Trust store (Phase 14) ----------------------------------------------------
+
+function Test-HrmTrustStoreObject {
+    # Строгая валидация ПУБЛИЧНОГО trust store (зеркало infra/release/trust_store.py).
+    # Отказ (throw) на: неизвестные/лишние поля, private material, не-base64
+    # или не-32-байтовые ключи, неверные типы, пустой набор, test-окружение
+    # (dev/test default никогда молча не становится production trust root).
+    # Возвращает нормализованный hashtable @{ environment; keys }.
+    param($Data)
+    if ($null -eq $Data) { throw "Trust store пуст." }
+    $names = @($Data.PSObject.Properties | ForEach-Object { $_.Name })
+    $expected = @("schema_version", "environment", "keys")
+    foreach ($name in $expected) {
+        if ($names -notcontains $name) { throw "Trust store: нет поля $name." }
+    }
+    foreach ($name in $names) {
+        if ($expected -notcontains $name) { throw "Trust store: неизвестное поле $name." }
+        $lowered = $name.ToLowerInvariant()
+        if (@("private", "priv", "secret", "seed", "signing_key", "password", "token") -contains $lowered) {
+            throw "Trust store: поле $name выглядит как закрытый материал."
+        }
+    }
+    if ([int]$Data.schema_version -ne 1) { throw "Trust store: schema_version должен быть 1." }
+    $environment = [string]$Data.environment
+    if ($environment -ne "production" -and $environment -ne "test") {
+        throw "Trust store: неизвестное environment '$environment'."
+    }
+    if ($environment -eq "test") {
+        throw "Trust store: test/fixture хранилище не может стать production trust root."
+    }
+    $keysData = $Data.keys
+    if ($null -eq $keysData) { throw "Trust store: keys отсутствует." }
+    $keyIds = @($keysData.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($keyIds.Count -eq 0) { throw "Trust store: keys пуст." }
+    $keys = @{}
+    foreach ($keyId in $keyIds) {
+        if ($keyId -notmatch "^[A-Za-z0-9._-]{1,64}$") { throw "Trust store: некорректный key_id '$keyId'." }
+        $entry = $keysData.PSObject.Properties[$keyId].Value
+        if ($null -eq $entry) { throw "Trust store: запись ключа '$keyId' пуста." }
+        $entryNames = @($entry.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($entryNames -notcontains "key" -or $entryNames -notcontains "revoked") {
+            throw "Trust store: запись '$keyId' должна содержать key и revoked."
+        }
+        if ($entryNames.Count -ne 2) { throw "Trust store: лишние поля в записи '$keyId'." }
+        $keyValue = [string]$entry.key
+        if ($keyValue -notmatch "^[A-Za-z0-9+/]{43}=$") {
+            throw "Trust store: ключ '$keyId' не является base64 32-байтовым Ed25519 публичным ключом."
+        }
+        try {
+            $bytes = [Convert]::FromBase64String($keyValue)
+            if ($bytes.Length -ne 32) { throw "len" }
+        }
+        catch { throw "Trust store: ключ '$keyId' не декодируется как 32 байта." }
+        $revokedValue = $entry.revoked
+        if ($null -eq $revokedValue -or $revokedValue.GetType().Name -ne "Boolean") {
+            throw "Trust store: revoked у '$keyId' должен быть true/false."
+        }
+        $keys[$keyId] = @{ key = $keyValue; revoked = [bool]$revokedValue }
+    }
+    $hasActive = $false
+    foreach ($value in $keys.Values) { if (-not $value.revoked) { $hasActive = $true } }
+    if (-not $hasActive) { throw "Trust store: нет ни одного неотозванного ключа." }
+    return @{ environment = $environment; keys = $keys }
+}
+
+function Import-HrmTrustStore {
+    # Импорт встроенного релизом trust store при первичной установке:
+    # публикуется ТОЛЬКО набор публичных ключей (без private material) в
+    # channel.json. Существующая конфигурация НИКОГДА не перезаписывается —
+    # ротация/отзыв, выполненные администратором, выигрывают.
+    # Возвращает $true, если хранилище импортировано.
+    param([string]$SnapshotDir, [string]$StateDir)
+    $storeFile = Join-Path $SnapshotDir "release-trust-store.json"
+    if (-not (Test-Path $storeFile)) { return $false }
+    $data = Get-HrmJsonFile $storeFile
+    $validated = Test-HrmTrustStoreObject $data
+    $configFile = Get-HrmChannelConfigFile $StateDir
+    if (Test-Path $configFile) {
+        Write-HrmLog "info" "Конфигурация канала уже существует — встроенный trust store не перезаписывает её."
+        return $false
+    }
+    Set-HrmChannelConfig -StateDir $StateDir -PublicKeys $validated.keys
+    Write-HrmLog "info" ("Импортирован встроенный trust store ({0} ключ(ей))." -f $validated.keys.Count)
+    return $true
+}
+
+# --- Факты host-стороны для предпусковой проверки (Phase 14) -------------------
+
+$script:EngineFactsCache = $null
+$script:EngineFactsCacheAt = [datetime]::MinValue
+$script:EngineFactsRefreshSeconds = 300
+
+function Get-HrmEngineFacts {
+    # Собирает redacted-факты машины для backend readiness-проверки.
+    # Только ограниченные значения (enum/bool/int/IP-литералы) — без путей,
+    # секретов и свободного текста; схема на сервере закрыта (extra=forbid).
+    param([string]$StateDir = "", [bool]$WatcherRunning = $false)
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+
+    # Windows 10/11 (Win11 = build 22000+, обе версии 10.0).
+    $windowsVersion = "other"
+    $windowsSupported = $false
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+        if ($null -ne $os) {
+            $parts = ([string]$os.Version).Split(".")
+            $build = if ($parts.Count -ge 3) { [int]$parts[2] } else { 0 }
+            $major = if ($parts.Count -ge 1) { [int]$parts[0] } else { 0 }
+            if ($major -eq 10 -and $build -ge 22000) { $windowsVersion = "windows_11"; $windowsSupported = $true }
+            elseif ($major -eq 10) { $windowsVersion = "windows_10"; $windowsSupported = $true }
+        }
+    }
+    catch { }
+
+    $dockerState = Get-HrmDockerState
+
+    # Compose: версия и соответствие >= 2.24.
+    $composeVersion = ""
+    $composeOk = $false
+    $composeOut = Invoke-HrmExternal -Name "docker.exe" -Arguments @("compose", "version", "--short") -IgnoreExitCode
+    if ($composeOut.ExitCode -eq 0 -and $composeOut.Stdout) {
+        $composeVersion = (($composeOut.Stdout -split "`n")[0]).Trim()
+        if ($composeVersion.Length -gt 32) { $composeVersion = $composeVersion.Substring(0, 32) }
+        $match = [regex]::Match($composeVersion, "v?(\d+)\.(\d+)\.(\d+)")
+        if ($match.Success) {
+            $composeOk = ([int]$match.Groups[1].Value -ge 2) -and ([int]$match.Groups[2].Value -ge 24)
+        }
+    }
+
+    # Опубликованные порты проекта: только факты (IP:порт -> контейнер).
+    $publishedPorts = @()
+    if ($dockerState -eq "ok") {
+        $ps = Invoke-HrmExternal -Name "docker.exe" -Arguments @("ps", "--filter", "name=hr-manager-pilot", "--format", "{{.Names}}|{{.Ports}}") -IgnoreExitCode
+        if ($ps.ExitCode -eq 0 -and $ps.Stdout) {
+            foreach ($line in ($ps.Stdout -split "`n")) {
+                $trimmed = $line.Trim()
+                if (-not $trimmed) { continue }
+                $pieces = $trimmed -split "\|", 2
+                if ($pieces.Count -lt 2) { continue }
+                $containerName = $pieces[0]
+                if ($containerName.Length -gt 64) { $containerName = $containerName.Substring(0, 64) }
+                foreach ($mapping in ($pieces[1] -split ",")) {
+                    $mapping = $mapping.Trim()
+                    if (-not $mapping) { continue }
+                    $arrow = $mapping.IndexOf("->")
+                    if ($arrow -lt 1) { continue }
+                    $hostPart = $mapping.Substring(0, $arrow)
+                    $lastColon = $hostPart.LastIndexOf(":")
+                    if ($lastColon -lt 1) { continue }
+                    $hostIp = $hostPart.Substring(0, $lastColon)
+                    $hostPortText = $hostPart.Substring($lastColon + 1)
+                    $hostIp = $hostIp.Trim("[", "]")
+                    $hostPort = 0
+                    if (-not [int]::TryParse($hostPortText, [ref]$hostPort)) { continue }
+                    if ($hostPort -lt 1 -or $hostPort -gt 65535) { continue }
+                    $publishedPorts += @{ host_ip = $hostIp; host_port = $hostPort; container = $containerName }
+                    if ($publishedPorts.Count -ge 16) { break }
+                }
+                if ($publishedPorts.Count -ge 16) { break }
+            }
+        }
+    }
+
+    # Свободное место на диске каталога состояния.
+    $diskFreeMb = 0
+    try {
+        $qualifier = (Split-Path -Qualifier $StateDir).TrimEnd(":")
+        $psDrive = Get-PSDrive -Name $qualifier -ErrorAction Stop
+        $diskFreeMb = [long]($psDrive.Free / 1MB)
+        if ($diskFreeMb -lt 0) { $diskFreeMb = 0 }
+    }
+    catch { $diskFreeMb = 0 }
+
+    # ACL каталога состояния: наследование выключено, единственная запись —
+    # текущий пользователь (так её оставляет Protect-HrmFile при установке).
+    $stateAclOk = $false
+    if (Test-Path $StateDir) {
+        $acl = Invoke-HrmExternal -Name "icacls.exe" -Arguments @($StateDir) -IgnoreExitCode
+        if ($acl.ExitCode -eq 0 -and $acl.Stdout) {
+            $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            $lines = @($acl.Stdout -split "`r?`n" | Where-Object { $_.Trim() })
+            if ($lines.Count -eq 1 -and $lines[0].StartsWith($identity)) {
+                $stateAclOk = $true
+            }
+        }
+    }
+
+    # Staging: доступен для записи и находится ВНЕ каталога состояния.
+    $staging = Get-HrmStagingHostDir
+    $stagingWritable = $false
+    try {
+        if (-not (Test-Path $staging)) { New-Item -ItemType Directory -Path $staging -Force | Out-Null }
+        $probe = Join-Path $staging (".facts-probe-" + [System.Guid]::NewGuid().ToString("N").Substring(0, 8))
+        Set-Content -Path $probe -Value "ok"
+        Remove-Item $probe -Force
+        $stagingWritable = $true
+    }
+    catch { $stagingWritable = $false }
+    $stagingOutsideState = $true
+    try {
+        $fullStaging = [System.IO.Path]::GetFullPath($staging)
+        $fullState = [System.IO.Path]::GetFullPath($StateDir)
+        if ($fullStaging.StartsWith($fullState, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $fullState.StartsWith($fullStaging, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $stagingOutsideState = $false
+        }
+    }
+    catch { $stagingOutsideState = $false }
+
+    # Возможность отката: закреплены ли предыдущие образы (:previous).
+    $previousImages = $false
+    if ($dockerState -eq "ok") {
+        $images = Invoke-HrmExternal -Name "docker.exe" -Arguments @("images", "--format", "{{.Repository}}:{{.Tag}}") -IgnoreExitCode
+        if ($images.ExitCode -eq 0 -and $images.Stdout) {
+            foreach ($line in ($images.Stdout -split "`n")) {
+                if ($line.Trim() -like "hr-manager-pilot-*:previous") { $previousImages = $true; break }
+            }
+        }
+    }
+
+    $facts = @{
+        windows_version = $windowsVersion
+        windows_supported = $windowsSupported
+        docker_state = $dockerState
+        compose_version = $composeVersion
+        compose_ok = $composeOk
+        published_ports = $publishedPorts
+        disk_free_mb = $diskFreeMb
+        state_dir_acl_ok = $stateAclOk
+        staging_writable = $stagingWritable
+        staging_outside_state = $stagingOutsideState
+        previous_images_present = $previousImages
+        watcher_running = $WatcherRunning
+    }
+    return $facts
+}
+
+function Reset-HrmEngineFactsCache {
+    # Тестовый шов: сброс кеша фактов перед проверкой цикла наблюдателя.
+    $script:EngineFactsCache = $null
+    $script:EngineFactsCacheAt = [datetime]::MinValue
+}
+
+function Send-HrmEngineFacts {
+    # Отправка фактов на сервер (loopback + машинный токен), с кешем на
+    # $script:EngineFactsRefreshSeconds секунд. Сбой отправки не мешает
+    # работе наблюдателя (сервер просто не получит свежие факты).
+    param([string]$InstallDir = "", [string]$StateDir, [bool]$WatcherRunning = $false)
+    $record = Get-HrmInstallRecord $StateDir
+    if ($null -eq $record) { return }
+    $now = Get-Date
+    if ($null -ne $script:EngineFactsCache -and (($now - $script:EngineFactsCacheAt).TotalSeconds -lt $script:EngineFactsRefreshSeconds)) {
+        return
+    }
+    $facts = Get-HrmEngineFacts -StateDir $StateDir -WatcherRunning $WatcherRunning
+    $script:EngineFactsCache = $facts
+    $script:EngineFactsCacheAt = $now
+    $port = if ($record.port) { [int]$record.port } else { Get-HrmPort }
+    $baseUrl = Get-HrmBaseUrl $port
+    $token = Get-HrmSecret $StateDir "HRM_UPDATE_ENGINE_TOKEN"
+    if ([string]::IsNullOrEmpty($token)) { return }
+    $headers = @{ "X-Engine-Token" = $token }
+    try {
+        $result = Invoke-HrmHttp -Uri "$baseUrl/api/updates/engine-facts" -Method "POST" -Body $facts -Headers $headers
+        if ($null -eq $result -or $result.StatusCode -ne 200) {
+            Write-HrmLog "info" "Канал: факты для проверки готовности не приняты сервером (не влияет на работу)."
+        }
+    }
+    catch {
+        Write-HrmLog "info" ("Канал: отправка фактов готовности не удалась: {0}" -f (Redact-HrmText $_.Exception.Message))
+    }
+}
+
 # --- Конфигурация канала -------------------------------------------------------
 
 function Get-HrmChannelConfig {
@@ -224,13 +497,24 @@ function Invoke-HrmChannelInstall {
 # --- Наблюдатель (loopback → бэкенд) ----------------------------------------------
 
 function Invoke-HrmChannelOnce {
-    # Один цикл: опрос engine-state, выполнение команды, отчёт; фоновая
-    # проверка — только через серверный /updates/engine-check (троттлинг).
-    param([string]$InstallDir = "", [string]$StateDir = "")
+    # Один цикл: факты для readiness (кеш 5 мин) → опрос engine-state,
+    # выполнение команды, отчёт; фоновая проверка — только через серверный
+    # /updates/engine-check (троттлинг).
+    param([string]$InstallDir = "", [string]$StateDir = "", [switch]$SkipFacts)
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
     if ($null -eq $record) { return }
+    # Факты host-стороны для предпусковой проверки готовности (Phase 14):
+    # redacted-отчёт по закрытой схеме; сбой не влияет на канал обновлений.
+    if (-not $SkipFacts) {
+        try {
+            Send-HrmEngineFacts -InstallDir $InstallDir -StateDir $StateDir -WatcherRunning $true
+        }
+        catch {
+            Write-HrmLog "info" ("Канал: не удалось собрать факты готовности: {0}" -f (Redact-HrmText $_.Exception.Message))
+        }
+    }
     $port = if ($record.port) { [int]$record.port } else { Get-HrmPort }
     $baseUrl = Get-HrmBaseUrl $port
     $token = Get-HrmSecret $StateDir "HRM_UPDATE_ENGINE_TOKEN"

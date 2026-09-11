@@ -86,6 +86,11 @@ function Install-HrmApp {
     if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
     Copy-HrmSnapshot $SourceDir $InstallDir
 
+    # Публичный trust store канала из релиза (Phase 14): импортируется один
+    # раз при первичной установке; существующая конфигурация канала (ротация/
+    # отзыв, выполненные администратором) никогда не перезаписывается.
+    $null = Import-HrmTrustStore -SnapshotDir $InstallDir -StateDir $StateDir
+
     $releaseSha = Get-HrmReleaseSha $InstallDir $StateDir
     Set-HrmInstallRecord $StateDir @{
         release_sha = $releaseSha

@@ -254,3 +254,33 @@ env (никаких inline-expressions в run-блоках — shell injection
 каталоге и сравнивает `read_bytes()` установленного
 `.github/workflows/update-channel.yml` с артефактом (патч содержит
 `@@`-hunk header; применение без hunk'а создавало бы пустой файл).
+
+## Phase 14 (Arena agent) — pilot readiness
+
+GitHub App не может пушить изменения `.github/workflows/*` (нет права
+`workflows`) — поэтому Phase 14-версии обоих workflow опубликованы здесь как
+точные копии + патчи. Владельцу необходимо перенести их в рабочий каталог
+(после merge PR Phase 14):
+
+| Файл | Назначение |
+|---|---|
+| `update-channel.phase14.yml` | полная Phase 14-версия `.github/workflows/update-channel.yml`: Authenticode-подпись installer (environment `installer-signing`, production-режим fail-closed на тегах `v*`), встраивание trust store, сверка подписи/trust store/SHA256 перед публикацией, `trust-store.json` в релизе |
+| `update-channel.phase14.patch` | unified diff `de131bf..phase14` для `git apply` из корня репозитория |
+| `ci.phase14.yml` | полная Phase 14-версия `.github/workflows/ci.yml`: добавлена джоба `pilot-drill` (e2e pilot drill, синтетика, без production secrets) |
+| `ci.phase14.patch` | unified diff `de131bf..phase14` для `git apply` из корня репозитория |
+
+Перенос (вариант A — патчи, из корня репозитория):
+
+```bash
+git apply review-artifacts/update-channel.phase14.patch
+git apply review-artifacts/ci.phase14.patch
+git commit -am "Move Phase 14 workflows in-tree (owner handoff)"
+```
+
+Вариант B — копирование файлов поверх `.github/workflows/`.
+
+Тесты (`backend/tests/test_release_pipeline.py`,
+`backend/tests/test_pilot_drill.py`) автоматически переключаются на in-tree
+версии после переноса (маркеры: `installer-signing` / `pilot-drill:`).
+До переноса джоба `pilot-drill` в CI не запускается — прогнать drill
+локально: `infra/scripts/pilot-drill.sh` (Docker Compose v2.24+).
