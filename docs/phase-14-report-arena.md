@@ -20,7 +20,7 @@
   (exact final SHA зелёного кода; см. §5), docs-sync HEAD — текущий HEAD этой
   ветки (exact 40-char SHA, см. `git rev-parse HEAD` и PR head). Отдельная
   ветка/PR для честного сравнения (не редактировать PR #24 параллельно).
-* **PR (live E2E)**: https://github.com/sledovatel61/HR-Manager/pull/25 (создаётся из `arena/01a08ff0-hr-manager-live-e2e`)
+* **PR (live E2E)**: https://github.com/sledovatel61/HR-Manager/pull/26 (создан из `arena/01a08ff0-hr-manager-live-e2e`)
 
 ## 1. Что сделано по пунктам промпта
 
