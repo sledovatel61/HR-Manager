@@ -510,12 +510,16 @@ def test_embedded_trust_store_must_match_release_store(
 def test_forged_attestation_does_not_allow_publish_unsigned_or_modified_installer(
     production_inputs: dict, tmp_path: Path
 ) -> None:
-    """Поддельная attestation (заявляет подпись) не позволяет опубликовать неподписанный/изменённый installer.
+    """Поддельная attestation (заявляет подпись) не позволяет
+    опубликовать неподписанный/изменённый installer.
 
-    Production-режим fail-closed: даже если attestation JSON подделан и утверждает
-    authenticode_present=true, публикация должна отказать, потому что:
-    - SHA256 installer'а не совпадёт с фактическим (installer_changed_after_signing), или
-    - независимая проверка цепочки/издателя/TSA не пройдёт (untrusted_root/publisher_mismatch/missing_timestamp).
+    Production-режим fail-closed: даже если attestation JSON подделан
+    и утверждает authenticode_present=true, публикация должна отказать,
+    потому что:
+    - SHA256 installer'а не совпадёт с фактическим
+      (installer_changed_after_signing), или
+    - независимая проверка цепочки/издателя/TSA не пройдёт
+      (untrusted_root/publisher_mismatch/missing_timestamp).
     """
     # 1. Неподписанный installer, но attestation подделана как «подписанная».
     unsigned_installer = tmp_path / "unsigned-forged.exe"
@@ -533,7 +537,7 @@ def test_forged_attestation_does_not_allow_publish_unsigned_or_modified_installe
     tmp_forged = tmp_path / "forged1"
     tmp_forged.mkdir()
     # Копируем attestation в ожидаемый путь для _run_production
-    # Используем overwrite для подмены installer_sha и thumbprint, но также подменим сам installer на неподписанный
+    # Используем overwrite для подмены installer_sha и thumbprint, но также подменим сам installer на неподписанный  # noqa: E501
     result_unsigned = _run_production(
         tmp_forged,
         {**production_inputs, "installer": unsigned_installer},
@@ -546,7 +550,7 @@ def test_forged_attestation_does_not_allow_publish_unsigned_or_modified_installe
             "timestamp_present": True,
         },
     )
-    # Должен отказать: независимая проверка подписи не пройдёт (installer unsigned → верификация Authenticode упадёт)
+    # Должен отказать: независимая проверка подписи не пройдёт (installer unsigned → верификация Authenticode упадёт)  # noqa: E501
     assert result_unsigned.returncode != 0
     assert any(
         code in result_unsigned.stderr
@@ -560,7 +564,7 @@ def test_forged_attestation_does_not_allow_publish_unsigned_or_modified_installe
         )
     ), result_unsigned.stderr
 
-    # 2. Подписанный installer, но после подписи файл изменён, а attestation подделана под оригинальный SHA
+    # 2. Подписанный installer, но после подписи файл изменён, а attestation подделана под оригинальный SHA  # noqa: E501
     signed = production_inputs["installer"]
     tampered = tmp_path / "tampered-forged.exe"
     data = bytearray(signed.read_bytes())
@@ -596,4 +600,7 @@ def test_forged_attestation_does_not_allow_publish_unsigned_or_modified_installe
     )
     # Должен отказать из-за цепочки, не доводящейся до доверенного корня или несоответствия издателя
     assert result_foreign.returncode != 0
-    assert any(code in result_foreign.stderr for code in ("untrusted_root", "publisher_mismatch", "signtool_verification_failed")), result_foreign.stderr
+    assert any(
+        code in result_foreign.stderr
+        for code in ("untrusted_root", "publisher_mismatch", "signtool_verification_failed")
+    ), result_foreign.stderr
