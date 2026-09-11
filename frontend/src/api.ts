@@ -37,6 +37,7 @@ import type {
   SetupState,
   UpdateInstallResult,
   UpdateStatus,
+  PilotReadiness,
   AnalyticsKpiReport,
   AnalyticsQuery,
   AuditEvent,
@@ -199,6 +200,11 @@ export async function checkUpdates(): Promise<UpdateStatus> {
 /** Download the package into the server staging (size/SHA256 checked). */
 export async function downloadUpdate(): Promise<UpdateStatus> {
   return request<UpdateStatus>("/updates/download", { method: "POST" });
+}
+
+/** Phase 14: server-owned read-only readiness report (admin + scope). */
+export async function fetchPilotReadiness(): Promise<PilotReadiness> {
+  return request<PilotReadiness>("/admin/ops/pilot-readiness");
 }
 
 /** Queue an install for the Windows engine (existing Phase 12 updater). */
@@ -825,11 +831,6 @@ export async function cancelCandidateMessage(
 
 // Phase 11 uses the same authenticated, CSRF-protected, same-origin client.
 export { request as documentRequest };
-
-/** Phase 14: pilot readiness (server-owned, redacted). */
-export async function fetchPilotReadiness(): Promise<import(\"./types\").PilotReadiness> {
-  return request<import(\"./types\").PilotReadiness>(\"/readiness/pilot\");
-}
 
 // --- Phase 12: local pilot first-run (Windows installer exchange) ------------
 

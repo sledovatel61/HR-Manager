@@ -86,36 +86,6 @@ function Install-HrmApp {
     if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
     Copy-HrmSnapshot $SourceDir $InstallDir
 
-    # Детерминированный trust store: если snapshot содержит trust_store.json,
-    # копируем его в channel.json (только если channel.json не настроен) — строго валидируем.
-    $embeddedTrust = Join-Path $InstallDir "trust_store.json"
-    if (Test-Path $embeddedTrust) {
-        $channelCfgPath = Join-Path $StateDir "channel.json"
-        $needChannelInit = $true
-        if (Test-Path $channelCfgPath) {
-            try {
-                $existing = Get-Content -Path $channelCfgPath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -ErrorAction Stop
-                if ($existing["public_keys"] -and $existing["public_keys"].Count -gt 0) { $needChannelInit = $false }
-            } catch { $needChannelInit = $true }
-        }
-        if ($needChannelInit) {
-            try {
-                $raw = Get-Content -Path $embeddedTrust -Raw -Encoding UTF8
-                $parsed = $raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop
-                foreach ($kid in $parsed.Keys) {
-                    if ($kid -match "private|priv|secret") { throw "embedded trust store содержит private материал" }
-                    $e = $parsed[$kid]
-                    if ($e -is [hashtable] -and ($e.ContainsKey("private") -or $e.ContainsKey("priv"))) { throw "embedded trust store содержит private" }
-                }
-                # Используем Set-HrmChannelConfig (включает строгую валидацию)
-                Set-HrmChannelConfig -StateDir $StateDir -PublicKeys $parsed
-                Write-HrmLog "info" "Trust store из installer встроен детерминированно (channel.json)"
-            } catch {
-                Write-Warning "Встроенный trust_store.json невалиден, пропускаем: $_"
-            }
-        }
-    }
-
     $releaseSha = Get-HrmReleaseSha $InstallDir $StateDir
     Set-HrmInstallRecord $StateDir @{
         release_sha = $releaseSha

@@ -22,6 +22,9 @@ dist/
 build/
 *.local
 
+# ---- Pilot drill reports (генерируются) ----
+drill/
+
 # ---- Databases, backups and dumps ----
 *.sqlite3
 *.sqlite

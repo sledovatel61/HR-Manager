@@ -1156,24 +1156,6 @@ class UpdateEngineReportRequest(BaseModel):
         return self
 
 
-class ReadinessCheckOut(BaseModel):
-    """Одна проверка готовности пилота (server-owned, без секретов)."""
-
-    code: str
-    status: Literal["pass", "warning", "fail"]
-    message_ru: str
-    next_action_ru: str
-    details: dict | None = None
-
-
-class ReadinessResponse(BaseModel):
-    """Ответ предпусковой диагностики (готово | с предупреждениями | запрещён)."""
-
-    verdict: Literal["ready", "ready_with_warnings", "blocked"]
-    generated_at: str
-    checks: list[ReadinessCheckOut]
-
-
 class SetupStateOut(BaseModel):
     """Honest setup status: what works, what is not configured."""
 
@@ -1554,3 +1536,117 @@ class CandidateMessageCancelOut(BaseModel):
 
     id: UUID
     status: str
+
+
+# --- Phase 14: готовность пилота (readiness) ---------------------------------
+
+
+class PilotHostWindows(BaseModel):
+    """Факты о Windows-хосте из отчёта движка (без секретов и путей)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    version: str = Field(default="", max_length=120)
+    build: int | None = None
+    product_name: str = Field(default="", max_length=120)
+
+
+class PilotHostDocker(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    cli_ok: bool = False
+    daemon_ok: bool = False
+    server_version: str = Field(default="", max_length=60)
+
+
+class PilotHostCompose(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ok: bool = False
+    version: str = Field(default="", max_length=60)
+
+
+class PilotHostPort(BaseModel):
+    """Один опубликованный порт: сервис + адрес привязки (без URL)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    service: str = Field(default="", max_length=60)
+    host_ip: str = Field(default="", max_length=60)
+    port: int | None = Field(default=None, ge=1, le=65535)
+
+
+class PilotHostDirs(BaseModel):
+    """Только флаги о каталогах; сами пути в отчёт не попадают."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    configured: bool = False
+    acl_restricted: bool | None = None
+    inside_state_dir: bool | None = None
+    inside_program_files: bool | None = None
+
+
+class UpdateEngineHostReportRequest(BaseModel):
+    """Отчёт движка о Windows-хосте для readiness (движковая аутентификация).
+
+    ``extra="ignore"``: на сервер попадают ТОЛЬКО поля этой схемы, поэтому
+    случайный секрет/путь из окружения движка не окажется в диагностике.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    schema_version: int = 1
+    generated_at: str | None = Field(default=None, max_length=40)
+    engine_version: str = Field(default="", max_length=60)
+    app_state: str = Field(default="", max_length=30)
+    windows: PilotHostWindows = Field(default_factory=PilotHostWindows)
+    docker: PilotHostDocker = Field(default_factory=PilotHostDocker)
+    compose: PilotHostCompose = Field(default_factory=PilotHostCompose)
+    published_ports: list[PilotHostPort] = Field(default_factory=list, max_length=50)
+    # False = движок не смог получить публикации (readiness честно предупреждает,
+    # а не считает пустой список доказательством loopback).
+    ports_observed: bool = False
+    free_space_mb: int | None = Field(default=None, ge=0)
+    state_dir: PilotHostDirs = Field(default_factory=PilotHostDirs)
+    staging: PilotHostDirs = Field(default_factory=PilotHostDirs)
+    installed_version: str = Field(default="", max_length=40)
+    installed_release_sha: str = Field(default="", max_length=40)
+    previous_images_present: bool | None = None
+
+
+class PilotHostReportAck(BaseModel):
+    """Подтверждение приёма host-отчёта (без эха содержимого)."""
+
+    status: Literal["accepted"] = "accepted"
+    received_at: str
+    schema_version: int = 1
+
+
+class PilotReadinessCheck(BaseModel):
+    """Одна серверная проверка готовности (формулировки принадлежат серверу)."""
+
+    code: str
+    title: str
+    state: Literal["pass", "warning", "fail"]
+    detail: str
+    action: str
+    evidence: dict | None = None
+
+
+class PilotReadinessCounts(BaseModel):
+    passed: int = Field(serialization_alias="pass", validation_alias="pass")
+    warning: int
+    fail: int
+
+
+class PilotReadinessResponse(BaseModel):
+    """Отчёт «Проверить готовность пилота» (redacted, server-owned)."""
+
+    generated_at: str
+    verdict: Literal["готово", "готово с предупреждениями", "запуск запрещён"]
+    counts: PilotReadinessCounts
+    host_evidence_age_seconds: int | None = None
+    host_evidence_fresh: bool = False
+    server_version: str
+    checks: list[PilotReadinessCheck]

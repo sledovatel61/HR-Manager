@@ -1,0 +1,245 @@
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -42,6 +42,22 @@
+         run: mypy app tests
+       - name: Unit tests
+         run: pytest -m "not integration" -v
++      - name: Phase 14 pilot drill (release policy + channel refusals + readiness)
++        working-directory: .
++        run: |
++          python infra/scripts/pilot_drill.py --out-dir drill \
++            --steps signature-policy,channel-tamper-refusal,readiness-api
++
++      - name: Upload pilot drill report
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: pilot-drill-backend
++          path: |
++            drill/pilot-drill.json
++            drill/pilot-drill.md
++          if-no-files-found: warn
++
+       - name: Production preflight script checks
+         working-directory: .
+         run: |
+@@ -194,6 +210,26 @@
+           BACKUP_PGDUMP_BIN: pg_dump
+           BACKUP_RESTORE_BIN: pg_restore
+         run: pytest -m integration -v
++      - name: Phase 14 pilot drill (encrypted backup + restore into isolated DB)
++        working-directory: .
++        env:
++          APP_ENV: test
++          TEST_DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/hr_manager_test
++          BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/postgres
++          BACKUP_PGDUMP_BIN: pg_dump
++          BACKUP_RESTORE_BIN: pg_restore
++        run: |
++          python infra/scripts/pilot_drill.py --out-dir drill \
++            --database-url "$TEST_DATABASE_URL" --steps backup-restore-isolated-db
++      - name: Upload pilot drill report (backup/restore)
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: pilot-drill-integration
++          path: |
++            drill/pilot-drill.json
++            drill/pilot-drill.md
++          if-no-files-found: warn
+ 
+   stack:
+     name: Compose stack smoke test (dev + prod overlay)
+@@ -290,13 +326,40 @@
+     steps:
+       - uses: actions/checkout@v4
+ 
++      - uses: actions/setup-python@v5
++        with:
++          python-version: ${{ env.PYTHON_VERSION }}
++          cache: pip
++          cache-dependency-path: backend/requirements*.txt
++
++      - name: Install cryptography for trust-store tooling (pinned)
++        run: pip install cryptography==50.0.1
++
+       - name: PowerShell engine tests (Windows PowerShell 5.1)
+         shell: powershell
+         run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
+ 
++      - name: Validate ephemeral CI trust store (Phase 14 contract)
++        shell: powershell
++        run: |
++          # CI НИКОГДА не использует production-секреты: только fixture-набор
++          # из testdata. Строгая схема проверяется тем же валидатором, что и
++          # в release-пайплайне.
++          python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json --require-unrevoked
++          $sha = (Get-FileHash -Path infra/release/testdata/trusted_keys.json -Algorithm SHA256).Hash.ToLowerInvariant()
++          echo "TRUST_STORE_SHA256=$sha" >> $env:GITHUB_ENV
++
+       - name: Build HR Manager Setup.exe
+         shell: powershell
+-        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0
++        run: |
++          powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 `
++            -TrustStoreFile infra/release/testdata/trusted_keys.json -TrustStoreSha256 $env:TRUST_STORE_SHA256
++
++      - name: Authenticode-sign with ephemeral test certificate (never production)
++        shell: powershell
++        run: |
++          powershell -NoProfile -ExecutionPolicy Bypass -File installer/sign.ps1 `
++            -Mode test -Version 0.13.0 -TrustStoreFile infra/release/testdata/trusted_keys.json
+ 
+       - name: Silent install and uninstall smoke
+         shell: powershell
+@@ -317,6 +380,22 @@
+             throw "Installed application files survived uninstall"
+           }
+ 
++      - name: Phase 14 pilot drill (Windows engine update/rollback/resume/uninstall)
++        shell: powershell
++        run: |
++          python infra/scripts/pilot_drill.py --out-dir drill --steps windows-engine
++          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
++
++      - name: Upload pilot drill report (Windows engine)
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: pilot-drill-windows
++          path: |
++            drill/pilot-drill.json
++            drill/pilot-drill.md
++          if-no-files-found: warn
++
+       - name: Upload installer artifacts
+         uses: actions/upload-artifact@v4
+         with:
+@@ -324,4 +403,127 @@
+           path: |
+             installer/output/*.exe
+             installer/release-manifest.json
++            installer/authenticode-attestation.json
++            installer/authenticode-roots.pem
+           if-no-files-found: error
++
++  channel-release-policy:
++    name: Release pipeline fail-closed policy (ephemeral test signature)
++    runs-on: ubuntu-latest
++    needs: [windows-installer]
++    steps:
++      - uses: actions/checkout@v4
++
++      - uses: actions/setup-python@v5
++        with:
++          python-version: ${{ env.PYTHON_VERSION }}
++
++      - name: Install tooling (pinned, same as release job)
++        run: pip install cryptography==50.0.1 pytest pyyaml
++
++      - name: Release tooling unit tests (contract, trust store, Authenticode)
++        run: |
++          pytest -q infra/release/test_channel_contract.py
++          pytest -q backend/tests/test_trust_store.py backend/tests/test_release_authenticode.py backend/tests/test_release_policy.py backend/tests/test_release_pipeline.py
++
++      - uses: actions/download-artifact@v4
++        with:
++          name: hr-manager-windows-setup
++          path: policy/installer
++
++      - name: Independent verification of the real signtool-produced signature
++        run: |
++          set -euo pipefail
++          setup_exe="$(ls policy/installer/output/HR-Manager-Setup-*.exe | head -1)"
++          python3 infra/release/authenticode.py verify \
++            --file "$setup_exe" \
++            --trust-roots policy/installer/authenticode-roots.pem \
++            --json-out policy/authenticode-verified.json
++          python3 - "$setup_exe" <<'PY'
++          import json, pathlib, subprocess, sys
++          setup = sys.argv[1]
++          report = json.loads(pathlib.Path("policy/authenticode-verified.json").read_text(encoding="utf-8"))
++          assert report["signed"] is True, report
++          assert report["chain_verified"] is True, report
++          assert report["digest_algorithm"] == "sha256", report
++          # Подпись Windows распознана независимой реализацией: подмена байта
++          # обязана ломать привязку файла к SpcIndirectDataContent.
++          tampered = pathlib.Path("policy/tampered.exe")
++          data = pathlib.Path(setup).read_bytes()
++          tampered.write_bytes(data + b"\x00")
++          result = subprocess.run(
++              [
++                  sys.executable,
++                  "infra/release/authenticode.py",
++                  "verify",
++                  "--file",
++                  str(tampered),
++                  "--trust-roots",
++                  "policy/installer/authenticode-roots.pem",
++              ],
++              capture_output=True,
++              text=True,
++          )
++          assert result.returncode != 0, "подделанный installer не может пройти проверку"
++          assert "digest_mismatch" in result.stderr, result.stderr
++          print("authenticode interop: real signtool signature verified; tamper rejected")
++          PY
++
++      - name: Production policy refuses the ephemeral test certificate
++        run: |
++          set -euo pipefail
++          setup_exe="$(ls policy/installer/output/HR-Manager-Setup-*.exe | head -1)"
++          snapshot="$(mktemp -d)/app"
++          mkdir -p "$snapshot"
++          cp -R backend "$snapshot/backend"
++          cp -R frontend "$snapshot/frontend"
++          cp -R infra "$snapshot/infra"
++          python3 - "$snapshot/release.json" <<'PY'
++          import json, sys
++          with open(sys.argv[1], "w", encoding="utf-8") as fh:
++              json.dump({"version": "0.14.0", "release_sha": "3" * 40}, fh)
++          PY
++          sha="$(printf '3%.0s' $(seq 1 40))"
++          run_publish() {
++            python3 infra/release/publish_channel.py \
++              --snapshot "$snapshot" --version 0.14.0 --release-sha "$sha" \
++              --package-url "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip" \
++              --minimum-supported-version 0.13.0 \
++              --private-key infra/release/testdata/test_key.priv \
++              --key-id pilot-test-key \
++              --out-dir policy/channel --release-mode production \
++              --installer "$setup_exe" \
++              --authenticode-roots policy/installer/authenticode-roots.pem \
++              --expected-publisher "HR Manager CI Test Publisher" \
++              --trust-store infra/release/testdata/trusted_keys.json \
++              --authenticode-attestation "$1"
++          }
++          # 1. Тестовая attestation (mode=test) не проходит production policy.
++          if run_publish policy/installer/authenticode-attestation.json 2>policy/error-1.txt; then
++            echo "test certificate must not pass production policy" >&2; exit 1
++          fi
++          grep -q "test_certificate_in_production" policy/error-1.txt
++          # 2. Даже если attestation подменить на production, независимая
++          #    проверка обязана заметить отсутствие метки времени: policy
++          #    выполняется на реальном signtool-выходе, а не на строках.
++          python3 - <<'PYPOLICY'
++          import json, pathlib
++          payload = json.loads(pathlib.Path("policy/installer/authenticode-attestation.json").read_text(encoding="utf-8"))
++          payload["mode"] = "production"
++          pathlib.Path("policy/forged-attestation.json").write_text(json.dumps(payload), encoding="utf-8")
++          PYPOLICY
++          if run_publish policy/forged-attestation.json 2>policy/error-2.txt; then
++            echo "unsigned-timestamp signature must not pass production policy" >&2; exit 1
++          fi
++          grep -q "missing_timestamp" policy/error-2.txt
++          echo "production policy is fail closed on the real signed installer"
++
++      - name: No secrets in produced reports
++        run: |
++          set -euo pipefail
++          for pattern in "PRIVATE KEY" "BEGIN RSA" "test_key.priv"; do
++            if grep -rIl -- "$pattern" policy/ 2>/dev/null; then
++              echo "secret-like material found in policy artifacts: $pattern" >&2; exit 1
++            fi
++          done
++          echo "reports carry no private material"

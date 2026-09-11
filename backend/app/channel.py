@@ -10,7 +10,6 @@ release SHA. Fail closed на каждом шаге: до распаковки �
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import ssl
 import tempfile
@@ -21,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.trust_store import parse_trust_store_text
 from app.update_channel_contract import ChannelError, parse_manifest_json, verify_signature
 
 # Лимиты канала (защита от аномальных/злонамеренных ответов).
@@ -105,93 +105,29 @@ def manifest_url(settings: Settings, preview: bool = False) -> str:
     return settings.update_channel_url
 
 
-def _is_valid_ed25519_pubkey_b64(value: str) -> bool:
-    import base64
-
-    try:
-        raw = base64.b64decode(value, validate=True)
-        return len(raw) == 32
-    except Exception:
-        return False
-
-
 def parse_trusted_keys(settings: Settings) -> dict[str, dict]:
-    """Разбор набора доверенных ключей {key_id: {key, revoked}} с фазой-14 строгостью.
+    """Разбор набора доверенных ключей {key_id: {key, revoked}}.
 
-    Fail closed:
-     - только публичные ключи, никакого private material;
-     - key_id формат, уникальность, base64 32 байта;
-     - отсутствие лишних полей;
-     - dev/test default не становится production trust root.
+    Phase 14: строгая валидация (схема, 32-байтный Ed25519 public key,
+    уникальные key_id, отсутствие приватного материала, отзыв fail closed)
+    живёт в ``app.trust_store`` — те же правила применяет release-пайплайн
+    через ``infra/release/trust_store.py``. Пустая строка означает «канал не
+    настроен»; неявного набора ключей по умолчанию здесь нет.
     """
-    import re
-
-    raw = settings.update_channel_public_keys.strip()
-    if not raw:
+    if not settings.update_channel_public_keys.strip():
         return {}
-    lower_raw = raw.lower()
-    if '"private"' in lower_raw or '"priv"' in lower_raw or "-----begin" in raw:
-        raise ChannelError("bad_key_set", "trust store содержит private материал")
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ChannelError("bad_key_set", f"некорректный JSON набора ключей: {exc}") from exc
-    if not isinstance(data, dict) or not data:
-        raise ChannelError("bad_key_set", "набор доверенных ключей пуст или не объект")
-    key_id_re = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-    for key_id, entry in data.items():
-        if not isinstance(key_id, str) or not key_id:
-            raise ChannelError("bad_key_set", "key_id должен быть непустой строкой")
-        if not key_id_re.match(key_id):
-            raise ChannelError("bad_key_set", f"key_id {key_id!r} имеет недопустимый формат")
-        if not isinstance(entry, dict):
-            raise ChannelError("bad_key_set", f"запись ключа {key_id!r} не объект")
-        allowed = {"key", "revoked"}
-        extra = set(entry.keys()) - allowed
-        if extra:
-            raise ChannelError(
-                "bad_key_set", f"ключ {key_id!r} содержит непредусмотренные поля: {', '.join(extra)}"
-            )
-        if any(k.lower() in ("private", "priv", "secret") for k in entry.keys()):
-            raise ChannelError("bad_key_set", f"ключ {key_id!r} содержит private материал")
-        if not isinstance(entry.get("key"), str) or not entry["key"]:
-            raise ChannelError("bad_key_set", f"у ключа {key_id!r} нет значения key")
-        if not isinstance(entry.get("revoked"), bool):
-            raise ChannelError("bad_key_set", f"у ключа {key_id!r} нет флага revoked")
-        if not _is_valid_ed25519_pubkey_b64(entry["key"]):
-            raise ChannelError(
-                "bad_key_set",
-                f"ключ {key_id!r} не является корректным Ed25519 публичным ключом (base64 32 байта)",
-            )
-        key_b64 = entry["key"]
-        if len(key_b64) == 64 and all(c in "0123456789abcdefABCDEF" for c in key_b64):
-            raise ChannelError("bad_key_set", f"ключ {key_id!r} похож на приватный hex")
-    if settings.environment in ("pilot", "production"):
-        if "pilot-test-key" in data and len(data) == 1 and not data["pilot-test-key"].get("revoked"):
-            raise ChannelError(
-                "bad_key_set", "production trust store содержит только тестовый ключ pilot-test-key"
-            )
-    return data
+    return parse_trust_store_text(settings.update_channel_public_keys)
 
 
-def trust_store_fingerprints(settings: Settings) -> list[dict]:
-    """Вернуть redacted список ключей: key_id, fingerprint, revoked (без секретов)."""
-    import base64
-    import hashlib
+def describe_trusted_keys(settings: Settings) -> list[dict[str, object]]:
+    """Безопасное описание доверенных ключей для диагностики (без секретов).
 
-    try:
-        data = parse_trusted_keys(settings)
-    except ChannelError:
-        return []
-    result = []
-    for key_id, entry in data.items():
-        try:
-            raw = base64.b64decode(entry["key"], validate=True)
-            fp = hashlib.sha256(raw).hexdigest()[:12]
-        except Exception:
-            fp = "invalid"
-        result.append({"key_id": key_id, "fingerprint": fp, "revoked": entry["revoked"]})
-    return result
+    Возвращаются только ``key_id``, публичный отпечаток и статус отзыва —
+    сам ключ в ответы не попадает.
+    """
+    from app.trust_store import describe_trust_store
+
+    return describe_trust_store(parse_trusted_keys(settings))
 
 
 def _lookup_trusted_key(manifest: dict, trusted: dict[str, dict]) -> str:

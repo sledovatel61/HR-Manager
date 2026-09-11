@@ -33,7 +33,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app import __version__, metrics
@@ -42,7 +42,15 @@ from app.backup import freshness_ok, load_state
 from app.backup_runner import RunnerConfig, run_backup, run_restore_drill
 from app.db import SessionLocal, get_db, probe_database
 from app.deps import require_roles
-from app.models import AuditAction, NotificationOutbox, User, UserRole
+from app.models import (
+    AccessGrant,
+    AccessGrantScope,
+    AuditAction,
+    NotificationOutbox,
+    User,
+    UserRole,
+)
+from app.readiness import build_readiness_report
 from app.schemas import (
     DatabaseHealth,
     OpsBackupHealthResponse,
@@ -55,6 +63,7 @@ from app.schemas import (
     OpsStatusResponse,
     OutboxActionOut,
     OutboxRetryRequest,
+    PilotReadinessResponse,
     QueueDiagnosticsOut,
 )
 from app.utils import utc_now
@@ -200,6 +209,68 @@ def ops_backup_health(request: Request, response: Response) -> OpsBackupHealthRe
     if not fresh:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return body
+
+
+def _pilot_readiness_admin(
+    request: Request,
+    current_user: User = Depends(_admin_only),
+    db: Session = Depends(get_db),
+) -> User:
+    """Admin + подтверждённый scope ``update_channel_manage``.
+
+    Read-only проверка готовности пилота — чувствительная операция: роль без
+    scope отклоняется (403), как и любой не-администратор.
+    """
+    granted = db.execute(
+        select(AccessGrant).where(
+            AccessGrant.user_id == current_user.id,
+            AccessGrant.scope == AccessGrantScope.UPDATE_CHANNEL_MANAGE,
+            AccessGrant.revoked_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if granted is None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Недостаточно прав: нужен подтверждённый scope update_channel_manage.",
+        )
+    return current_user
+
+
+@router.get(
+    "/admin/ops/pilot-readiness",
+    response_model=PilotReadinessResponse,
+    summary="Проверить готовность пилота (admin + update_channel_manage)",
+)
+def pilot_readiness(
+    request: Request,
+    current_user: User = Depends(_pilot_readiness_admin),
+    db: Session = Depends(get_db),
+) -> PilotReadinessResponse:
+    """Read-only отчёт о готовности пилота к первому запуску.
+
+    Сервер владеет списком проверок и формулировками; host-факты приходят
+    только из отчёта движка (с возрастом, иначе — warning). Никаких
+    автоматических «исправлений» здесь нет: только факты и следующий шаг.
+    """
+    settings = request.app.state.settings
+    engine = request.app.state.engine
+    store = request.app.state.host_evidence
+    host, age = store.latest()
+    report = build_readiness_report(
+        settings=settings, engine=engine, db=db, host=host, host_age_seconds=age
+    )
+    record_event(
+        db,
+        AuditAction.PILOT_READINESS_VIEWED,
+        actor=current_user,
+        details=(
+            f"verdict={report['verdict']} pass={report['counts']['pass']} "
+            f"warning={report['counts']['warning']} fail={report['counts']['fail']} "
+            f"host_fresh={report['host_evidence_fresh']}"
+        ),
+        commit=True,
+    )
+    return PilotReadinessResponse.model_validate(report)
 
 
 def _pgdump_available(settings: object) -> bool:

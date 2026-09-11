@@ -374,4 +374,77 @@ Test-Case "канал: хеш/размер пакета проверяются �
     Assert-HrmEqual 0 $t.World.AlembicUpgradeCount "миграция не должна была выполняться"
 }
 
+Write-Host "== Хост-отчёт для readiness (Phase 14) =="
+
+Test-Case "хост-отчёт уходит на loopback с машинным токеном и только в заголовке" {
+    Initialize-HrmTestEngine
+    $t = New-HrmChannelWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $token = Get-HrmSecret $state "HRM_UPDATE_ENGINE_TOKEN"
+    $sent = Send-HrmHostReport -InstallDir $install -StateDir $state
+    Assert-HrmTrue $sent "честный отчёт о хосте должен быть принят сервером"
+    $call = $t.World.HttpCalls | Where-Object { $_.Uri -like "*/api/updates/engine-host-report" } | Select-Object -First 1
+    Assert-HrmTrue ($null -ne $call) "POST /updates/engine-host-report не выполнен"
+    Assert-HrmEqual "POST" ([string]$call.Method) "метод хост-отчёта"
+    Assert-HrmEqual $token ([string]$call.Headers["X-Engine-Token"]) "токен движка в заголовке"
+    Assert-HrmNotContains ([string]$call.Uri) $token "токен не должен попадать в URL"
+    Assert-HrmEqual 1 ([int]$call.Body.schema_version) "schema_version отчёта"
+    Assert-HrmEqual "0.13.0" ([string]$call.Body.installed_version) "версия из release.json"
+    Assert-HrmTrue ([bool]$call.Body.ports_observed) "факт наблюдения портов должен быть явным"
+}
+
+Test-Case "хост-отчёт не содержит секретов, токенов и путей файловой системы" {
+    Initialize-HrmTestEngine
+    $t = New-HrmChannelWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Send-HrmHostReport -InstallDir $install -StateDir $state | Out-Null
+    $call = $t.World.HttpCalls | Where-Object { $_.Uri -like "*/api/updates/engine-host-report" } | Select-Object -First 1
+    $rendered = ($call.Body | ConvertTo-Json -Compress -Depth 8)
+    $secretValues = @()
+    foreach ($prop in (Get-HrmJsonFile (Get-HrmSecretsFile $state)).PSObject.Properties) {
+        if ($prop.Value) { $secretValues += [string]$prop.Value }
+    }
+    Assert-HrmTrue ($secretValues.Count -ge 1) "в тестовом StateDir должны быть секреты"
+    foreach ($secret in $secretValues) {
+        Assert-HrmNotContains $rendered $secret "секрет утёк в хост-отчёт"
+    }
+    Assert-HrmNotContains $rendered $state "путь StateDir утёк в хост-отчёт"
+    Assert-HrmNotContains $rendered $install "путь установки утёк в хост-отчёт"
+    Assert-HrmNotContains $rendered 'C:\' "в отчёте не должно быть путей"
+    # Разрешены только известные схеме поля.
+    $allowed = @("schema_version", "generated_at", "engine_version", "app_state", "windows", "docker",
+        "compose", "published_ports", "ports_observed", "free_space_mb", "state_dir", "staging",
+        "installed_version", "installed_release_sha", "previous_images_present")
+    foreach ($prop in $call.Body.PSObject.Properties) {
+        Assert-HrmTrue ($allowed -contains $prop.Name) ("неизвестное поле отчёта: " + $prop.Name)
+    }
+}
+
+Test-Case "хост-отчёт: недоступный сервер не ломает диагностику (офлайн)" {
+    Initialize-HrmTestEngine
+    $t = New-HrmChannelWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    # Сервер недоступен: любая HTTP-ошибка должна превратиться в $false.
+    Set-HrmHttpMock {
+        param($Uri, $Method, $Body, $Headers)
+        throw "сервер недоступен (офлайн-мок)"
+    }
+    $sent = Send-HrmHostReport -InstallDir $install -StateDir $state
+    Assert-HrmEqual $false $sent "офлайн не должен считаться успешной отправкой"
+}
+
+Test-Case "хост-отчёт не отправляется без install record" {
+    Initialize-HrmTestEngine
+    $t = New-HrmChannelWorld
+    $state = Get-HrmTestStateDir
+    Remove-Item (Get-HrmInstalledFile $state) -Force
+    $before = $t.World.HttpCalls.Count
+    $sent = Send-HrmHostReport -InstallDir (Get-HrmTestInstallDir) -StateDir $state
+    Assert-HrmEqual $false $sent "без установки отчёт отправлять нечему"
+    Assert-HrmEqual $before $t.World.HttpCalls.Count "без install record HTTP-вызовов быть не должно"
+}
+
 Write-Host ("Тесты канала: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

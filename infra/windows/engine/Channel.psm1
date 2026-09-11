@@ -63,39 +63,6 @@ function Set-HrmChannelConfig {
         [hashtable]$PublicKeys = $null,
         [int]$CheckMinIntervalSeconds = 0
     )
-    # Fail closed: строгая валидация trust store (только публичные ключи, без private/extra)
-    if ($null -ne $PublicKeys -and $PublicKeys.Count -gt 0) {
-        foreach ($kid in $PublicKeys.Keys) {
-            $entry = $PublicKeys[$kid]
-            if ($entry -is [hashtable]) {
-                foreach ($field in $entry.Keys) {
-                    if ($field -match "(?i)private|priv|secret") {
-                        throw "channel.json: ключ $kid содержит private материал ($field) — отклонено"
-                    }
-                }
-                if (-not $entry.ContainsKey("key") -or -not $entry.ContainsKey("revoked")) {
-                    throw "channel.json: ключ $kid должен содержать key и revoked"
-                }
-                $extra = @($entry.Keys | Where-Object { $_ -notin @("key","revoked") })
-                if ($extra.Count -gt 0) {
-                    throw "channel.json: ключ $kid содержит непредусмотренные поля: $($extra -join ',')"
-                }
-                $keyB64 = [string]$entry["key"]
-                if (-not $keyB64 -or $keyB64.Length -lt 20) { throw "channel.json: ключ $kid имеет некорректный base64" }
-                try {
-                    $raw = [Convert]::FromBase64String($keyB64)
-                    if ($raw.Length -ne 32) { throw "bad key length" }
-                } catch { throw "channel.json: ключ $kid не является корректным Ed25519 публичным ключом (base64 32 байта)" }
-            } else {
-                throw "channel.json: запись ключа $kid должна быть hashtable"
-            }
-        }
-        $active = @($PublicKeys.Keys | Where-Object { -not $PublicKeys[$_]["revoked"] })
-        if ($active.Count -eq 0) { throw "channel.json: нет активных ключей (все revoked)" }
-        if ($PublicKeys.ContainsKey("pilot-test-key") -and $PublicKeys.Count -eq 1 -and -not $PublicKeys["pilot-test-key"]["revoked"]) {
-            Write-Warning "channel.json содержит только pilot-test-key — production trust store должен быть заменён (fail closed для production)"
-        }
-    }
     $config = Get-HrmChannelConfig $StateDir
     if ($Url) {
         if (-not $Url.StartsWith("https://")) { throw "URL канала обязан использовать https." }

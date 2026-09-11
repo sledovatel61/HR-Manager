@@ -254,3 +254,42 @@ env (никаких inline-expressions в run-блоках — shell injection
 каталоге и сравнивает `read_bytes()` установленного
 `.github/workflows/update-channel.yml` с артефактом (патч содержит
 `@@`-hunk header; применение без hunk'а создавало бы пустой файл).
+
+## Phase 14 — pilot readiness (агент Arena, ветка `arena/01a08ff0-hr-manager`)
+
+| Файл | Назначение |
+|---|---|
+| `ci.phase14.yml` | полный `.github/workflows/ci.yml` после Phase 14: drill в jobs backend/integration/windows-installer |
+| `ci.phase14.patch` | патч (применяется `git apply -p1` из корня репозитория) |
+| `update-channel.phase14.yml` | полный `.github/workflows/update-channel.yml` после Phase 14: две независимые подписи, production fail-closed, environment `update-channel-signing` |
+| `update-channel.phase14.patch` | патч для того же файла |
+
+Причина: GitHub App `arena-ai-coding-agent[bot]`, публикующий ветки `arena/*`,
+не имеет разрешения `workflows`, поэтому проверенный контент workflow доставляется
+как review-artifact (см. «Статус workflow на GitHub» выше).
+
+Перенос (owner action):
+
+```bash
+git checkout -b apply/phase14-workflows <merge-коммит PR>
+git apply -p1 review-artifacts/ci.phase14.patch
+git apply -p1 review-artifacts/update-channel.phase14.patch
+git diff --stat   # ожидаются только .github/workflows/ci.yml и update-channel.yml
+git commit -m "Phase 14: enable pilot drill in CI and release fail-closed policy"
+```
+
+Либо простым копированием полных файлов:
+
+```bash
+cp review-artifacts/ci.phase14.yml .github/workflows/ci.yml
+cp review-artifacts/update-channel.phase14.yml .github/workflows/update-channel.yml
+```
+
+Контроль целостности (SHA256 полных файлов на момент публикации ветки):
+
+* `ci.phase14.yml` — `c76b9288bd4093a4d251ef33f0959da7b3ad2734ab4171584222d76d1d3335e8`
+* `update-channel.phase14.yml` — `594626ec55e1e648113bc18511c1c837c885e8551889a96dc6b55ab375af5a2b`
+
+Пока файлы не перенесены, GitHub Actions по ветке работает со старым набором
+jobs: новых drill-шагов и production-политики релиза в CI ещё нет (сам код
+политики протестирован в backend-наборе тестов).

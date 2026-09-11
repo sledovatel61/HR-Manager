@@ -1,22 +1,133 @@
-.readiness-panel { max-width: 820px; }
-.readiness-verdict { padding: 12px 16px; border-radius: 8px; margin: 12px 0 16px; border: 1px solid var(--border); }
-.readiness-verdict-ok { background: var(--success-bg, #e6f4ea); border-color: var(--success-border, #a3d9b1); }
-.readiness-verdict-warn { background: var(--warning-bg, #fef7e0); border-color: var(--warning-border, #f2c94c); }
-.readiness-verdict-fail { background: var(--danger-bg, #fdecea); border-color: var(--danger-border, #f5a3a3); }
-.readiness-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
-.readiness-check { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--surface); }
-.readiness-check:focus-visible { outline: 2px solid var(--focus, #2684ff); outline-offset: 2px; }
-.readiness-check-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.readiness-pill { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.02em; }
-.readiness-pill.ok { background: #e6f4ea; color: #1e7a34; }
-.readiness-pill.warn { background: #fef7e0; color: #7a5a00; }
-.readiness-pill.fail { background: #fdecea; color: #8a1c1c; }
-.readiness-code { font-size: 13px; color: var(--muted); }
-.readiness-message { margin: 4px 0 6px; }
-.readiness-action { margin: 0; font-size: 14px; }
-.readiness-details { margin-top: 8px; }
-.readiness-pre { font-size: 12px; background: var(--code-bg, #f5f5f5); padding: 8px; border-radius: 6px; overflow-x: auto; }
-.readiness-actions { margin-top: 16px; display: flex; gap: 8px; }
-.readiness-result { padding: 10px 12px; border-radius: 6px; }
-.readiness-result.fail { background: #fdecea; }
-.readiness-result.warn { background: #fef7e0; }
+/* «Проверка готовности пилота» (Phase 14). */
+
+.readiness-panel h2 {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+}
+
+.readiness-generated {
+  margin: 0 0 12px;
+  color: var(--text-muted, #6b7280);
+  font-size: 0.85rem;
+}
+
+.readiness-verdict {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.12);
+  font-size: 1rem;
+}
+
+.readiness-verdict:focus-visible {
+  outline: 2px solid var(--focus, #2563eb);
+  outline-offset: 2px;
+}
+
+.readiness-verdict.ok {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--ok, #15803d);
+}
+
+.readiness-verdict.warn {
+  background: rgba(251, 191, 36, 0.14);
+  color: var(--checking, #b45309);
+}
+
+.readiness-verdict.bad {
+  background: rgba(248, 113, 113, 0.14);
+  color: var(--danger, #b91c1c);
+}
+
+.readiness-message {
+  margin: 0 0 12px;
+}
+
+.readiness-message.warn {
+  color: var(--checking, #b45309);
+}
+
+.readiness-list {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.readiness-item {
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.readiness-item.fail {
+  border-color: rgba(248, 113, 113, 0.55);
+}
+
+.readiness-item.warning {
+  border-color: rgba(251, 191, 36, 0.55);
+}
+
+.readiness-item-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.readiness-item-title {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.readiness-pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+
+.readiness-pill.pass {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--ok, #15803d);
+}
+
+.readiness-pill.warning {
+  background: rgba(251, 191, 36, 0.14);
+  color: var(--checking, #b45309);
+}
+
+.readiness-pill.fail {
+  background: rgba(248, 113, 113, 0.14);
+  color: var(--danger, #b91c1c);
+}
+
+.readiness-detail {
+  margin: 8px 0 4px;
+}
+
+.readiness-action {
+  margin: 0;
+  color: var(--text-muted, #6b7280);
+  font-size: 0.9rem;
+}
+
+.readiness-action-label {
+  font-weight: 600;
+}
+
+.readiness-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.readiness-note {
+  margin: 0;
+  color: var(--text-muted, #6b7280);
+  font-size: 0.85rem;
+}

@@ -1,108 +1,260 @@
-# Phase 14 Report — `arena/01a08ff0-hr-manager` @ `de131bf53b`
+# Phase 14 — эксплуатационная готовность и ограниченный запуск Windows-пилота
 
-**Date:** 2026-09-11 (UTC) • **Agent:** Arena — attestable pilot hardening  
-**Branch:** `arena/01a08ff0-hr-manager` • **Base:** `de131bf53b484ef94642ba8dd0bbef826f3a77e3` (PR #23 handoff preserved)  
-**Stack:** Python 3.12 + Node 22.22.3 • **No new HR features/channels/telemetry/docker.sock/bypass** — hardening only.
+Отчёт coding-сессии Arena (самостоятельный агент). Phase 14 — hardening/acceptance:
+новых HR-функций, второго updater'а, автоустановки, telemetry SaaS, `docker.sock`
+и обхода проверки подписи не добавлялось.
 
-## 1. Требования ↔ Реализация
+* **Baseline**: `de131bf` (merge PR #22, содержит принятую Phase 13, включая
+  `.github/workflows/update-channel.yml`; `main` = `origin/main` на момент старта).
+  Merge PR #23 (`3f1ae7c`) в графе получения отсутствовал (grafted clone), но его
+  файлы уже входят в baseline-дерево — Phase 14 строилась от фактического
+  `origin/main`, а не от устаревшей ветки.
+* **Branch**: `arena/01a08ff0-hr-manager` (ветка сессии; отдельную
+  `arena/phase-14-*` создать нельзя — сессия жёстко привязана к этой ветке,
+  поэтому вся работа и PR идут из неё). Merge выполняет владелец.
+* **Final SHA**: последний коммит ветки `arena/01a08ff0-hr-manager` (он же head
+  PR; SHA каждой итерации — в истории коммитов и в checks PR). Все CI-проверки
+  Phase 14 запускаются именно на этом SHA.
+* **PR**: см. секцию checks в PR к ветке `arena/01a08ff0-hr-manager`.
 
-| # | Требование Phase 14 | Что сделано (файлы) | Fail-closed контракт |
-|---|---------------------|---------------------|----------------------|
-| **1** | Ed25519 обязателен, **Authenticode** опционально via GitHub Environment/Secret, после подписи пересчёт SHA256, верификация `signtool verify /pa /all` + Ed25519, pin actions/SHA, immutable assets, тест через эфемерный cert | `infra/release/authenticode.py` (signtool/osslsigncode/`.signed` marker, publisher+timestamp, fail-closed), `installer/build.ps1` (params TrustStoreJson/RequireAuthenticode, ветки sign via PFX base64 из env, ephemeral, verify + SHA256 recalc), `infra/release/publish_channel.py` (`--installer-path/--require-authenticode/--expected-publisher`, publish-channel verify), `.github/workflows/update-channel.yml` (concurrency, pinned actions `checkout 4.2.2/setup-python 5.3.0/upload 4.2.2/attest 2.4.0`, cryptography 46.0.3, windows job env `update-channel-signing`, validate trust → sign → verify → recalc SHA256SUMS, windows signed exe + .signed upload) | без подписи при `HRM_REQUIRE_AUTHENTICODE_SIGNING=1` — pipeline падает; после подписи — recalc + verify; PR-без-секрета использует ephemeral `.signed` только для теста контракта |
-| **2** | Trust-store distribution: только публичный набор, строгая схема, revoked, без private/PEM, ротация 2 ключа | `infra/release/validate_trust_store.py` (KEY_ID_RE, base64 32B, no extra, ≥1 active, `pilot-test-key` sole rejected when `--require-production`, fingerprint 12hex), `backend/app/channel.py` (`parse_trusted_keys` strict + `trust_store_fingerprints` redacted), `backend/app/readiness.py::_validate_trust_store_strict` + `_check_release_and_trust` (redacted keys), `infra/windows/engine/Channel.psm1` (`Set-HrmChannelConfig` strict — no private/extra/base64, 2-key rotation ok), `installer/build.ps1` + `infra/windows/engine/Install.psm1` (детерминированное встраивание `trust_store.json` → `channel.json` только если пусто, strict), `infra/release/publish_channel.py` (`_load_public_keys` strict + mismatch check embedded vs metadata) | private/PEM/extra → `bad_key_set` / `ValueError`; sole test key в pilot/production → `blocked` |
-| **3** | Admin read-only «Проверка готовности пилота» — pass/warning/fail, redacted, admin+scope, CSRF/audit, offline/SMTP/Telegram как warnings | `frontend/src/types.ts` (PilotReadiness/Check), `frontend/src/api.ts` (`fetchPilotReadiness` → `GET /readiness/pilot` same-origin+CSRF), `frontend/src/features/readiness/ReadinessPage.tsx` + `.css` (loading SkeletonRows, forbidden/offline/error/retry/empty, verdict pill, CheckRow redacted details, keyboard tabIndex, aria-live), `frontend/src/app-shell/Workspace.tsx`+`useWorkspaceSection.ts` (`readiness: #/readiness` для manager/admin), `backend/app/readiness.py:collect_readiness` (13 checks, server-owned, redacted details, verdict ready/ready_with_warnings/blocked), `backend/app/routers/readiness.py` (admin+scope guard), `infra/windows/engine/Diagnostics.psm1` (trust redacted + channel offline warning) | `warnings` не блокируют `fail` → `blocked`; `offline/SMTP/Telegram=warning` |
-| **4** | Reproducible e2e drill: clean install→synthetic→backup/restore→signed channel→data preservation→corrupted manifest/host reject→broken rollback→resume→uninstall no-purge→reinstall | `infra/pilot/drill.py` (idempotent, детерминирован: fixture `pilot-test-key` или ephemeral, 11 steps, verify Ed25519 + SHA256+size, host allow-list, authenticode ephemeral marker, broken pkg hash mismatch → rollback, staging reuse, uninstall purge check, secret-leak grep, private never in log) | любой `verify` fail → exit 2; частичный `.part` удаляется, reuse только при размере+SHA совпадении |
-| **5** | Runbook (1 оператор) + observability + go/no-go checklist | `docs/runbook.md` (preflight 30s, install, daily hrm, update/rollback, backup/drill, наблюдаемость /readiness+`hrm status`/ops, loopback+secrets table, evidence via drill), `docs/pilot/go-no-go.md` (9 блоков чеклиста, P1-P6 preflight, 4a blockers / 4b warnings, trust/security, backup/rollback/drill, Go/No-Go/Conditional решение), `infra/windows/engine/Diagnostics.psm1` extended (channel/trust) для `hrm status --json` | |
-| **6** | Обязательные тесты: счастливые + негативные, включая secret leakage | `backend/tests/test_phase14_hardening.py` (trust strict + private/extra/invalid/pem/sole-test/rotation, parse_trusted_keys production, fingerprint redaction, corrupted signature reject, evil host reject, readiness blocked/warning branches (trust fail, free_space fail, channel offline warning, rollback fail, smtp warning, no secrets leak), authenticode ephemeral/wrong publisher/missing, staging inside backup fail, deterministic publish, RBAC 401/403/admin), `frontend/src/features/readiness/ReadinessPage.test.tsx` (loading/verdict/ready_with_warnings/blocked, 403, offline retry, a11y aria-live/tabIndex, keyboard, redacted fingerprint) | grep private в `dist/channel/SHA256SUMS`/`update-channel.json` → fail |
+## 1. Что сделано по пунктам промпта
 
-## 2. Authenticode — модель безопасности (владелец настраивает)
+### 1.1 Две независимые подписи и production-политика
 
-*GitHub Environment `update-channel-signing`* (создаёт владелец, без веток PR):
-```
-UPDATE_CHANNEL_SIGNING_KEY        # Ed25519 private (64 hex / PEM) — Ed25519
-UPDATE_CHANNEL_KEY_ID             # напр. pilot-release-2026
-UPDATE_CHANNEL_PUBLIC_KEYS        # trust store JSON {key_id:{key,revoked}}
-AUTHENTICODE_CERTIFICATE_BASE64   # (опц) PFX base64 — Windows code signing
-AUTHENTICODE_PASSWORD             # (опц) пароль PFX
-HRM_REQUIRE_AUTHENTICODE_SIGNING  # 1 → fail closed если не подписан
-```
-*Поведение:* `installer/build.ps1 -RequireAuthenticode` (или env `HRM_REQUIRE_AUTHENTICODE_SIGNING=1`) → sign via `signtool sign /fd SHA256 /tr http://timestamp.digicert.com` (на Windows; в Linux CI — `osslsigncode` или ephemeral `.signed` marker). После подписи: пересчёт `(Get-FileHash).Hash` + `signtool verify /pa /all` + публикация SHA256SUMS заново. Тест PR-без-секрета: маркер `*.exe.signed` (`publisher=HR Manager`, `timestamp`) → `authenticode.py verify` (fail-closed контракт).
+* Ed25519-подпись канала остаётся обязательной; Authenticode её не заменяет.
+* `infra/release/authenticode.py` — независимый (без Windows/WinAPI) парсер PE,
+  PKCS#7, `SpcIndirectDataContent`, цепочки X.509, EKU, RFC3161 timestamp;
+  коды отказа: `not_pe`, `unsigned`, `bad_pkcs7`, `digest_mismatch`,
+  `missing_eku`, `publisher_mismatch`, `certificate_expired`, `untrusted_root`,
+  `missing_timestamp`.
+* `infra/release/sign_authenticode.py` — ephemeral тестовый CA и подпись
+  тестового PE для CI/fail-closed контракта без production secrets.
+* `installer/sign.ps1` — боевая подпись: PFX только из `RUNNER_TEMP`, пароль
+  только из `HRM_AUTHENTICODE_PFX_PASSWORD`, `signtool sign /fd SHA256 /tr /td
+  SHA256` + обязательный `signtool verify /pa /all`, проверка метки времени и
+  издателя, attestation/roots только с публичными фактами.
+* `installer/build.ps1` принимает trust store только как уже проверенный вход
+  (`-TrustStoreFile` + обязательный `-TrustStoreSha256`), отвергает private
+  material и встраивает набор в снимок и манифест.
+* `publish_channel.py --release-mode production` fail closed: отсутствие
+  installer/attestation/roots/издателя, неподписанный installer, отсутствующая
+  метка времени, несовпадение издателя, подмена файла после подписи,
+  недоверенный signing key, несовпадение встроенного trust store с релизным,
+  private material в пакете, тестовый сертификат в production.
+* `.github/workflows/update-channel.yml` переписан (доставлен как review-artifact
+  `review-artifacts/update-channel.phase14.yml` — см. ограничение ниже):
+  environment `update-channel-signing`, минимальные `permissions`, `concurrency`,
+  pinned actions, gate «CI зелёный на этом SHA», CR/LF-reject входов dispatch,
+  сборка строго из подтверждённого SHA, `--target $SHA` при создании релиза,
+  immutable draft-release, build-provenance attestation.
 
-## 3. Trust-store — схема и ротация
+### 1.2 Доставка trust configuration
 
-```json
-{
-  "pilot-test-key": { "key": "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM=", "revoked": false },
-  "pilot-release-2026": { "key": "<base64 32B pub>", "revoked": false }
-}
-```
-*Rules (fail closed):* `key_id` `^[A-Za-z0-9._-]{1,64}$`, только `{key,revoked}`, `key` base64 32 байта Ed25519 pub, `revoked` bool, private/PEM/лишние → reject, ≥1 active. Production guard: единственный `pilot-test-key` не является доверенным корнем (`--require-production`/ `environment==pilot|production` → `fail`). Ротация: добавьте `new-key` (`revoked:false`) рядом со старым, оттестируйте клиент с 2 ключами, затем `old: revoked:true` (двухключевое окно), потом удалите.
+* Один строгий контракт в трёх местах: `infra/release/trust_store.py`,
+  `backend/app/trust_store.py`, `installer/build.ps1`/`sign.ps1`.
+* Проверки: строгая схема `{key_id: {key, revoked}}`, уникальные `key_id`,
+  Ed25519 public key ровно 32 байта, `revoked`, отсутствие private material
+  (в т.ч. 64-hex), ограничение размера; diagnostics/attestation показывают
+  только `key_id`/fingerprint/status.
+* `assert_no_fixture_keys` не даёт fixture-ключам стать production-ключом;
+  dev/test-набор не может молча стать production trust root (production-релиз
+  требует явный trust store из защищённого входа).
+* Ротация — двухключевое окно, отзыв — fail closed (`revoked_key`); backend
+  намеренно принимает полностью отозванный набор (аварийное состояние,
+  канал честно отвечает «ключ отозван»), release-сборка такой набор не создаёт.
 
-## 4. Readiness — сигналы
+### 1.3 Readiness в приложении
 
-`GET /readiness/pilot` (admin + `pilot_full_access|update_channel_manage`, cookie+CSRF, audit). Offline/SMTP/Telegram → `warning` (не блок). Остальные `fail` → `blocked`. Details только `key_id/fingerprint/sha_short/age_hours` — ни PII ни private.
+* `GET /admin/ops/pilot-readiness` — admin + подтверждённый grant
+  `update_channel_manage`, read-only, аудит `pilot_readiness_viewed` только с
+  вердиктом и счётчиками.
+* `POST /updates/engine-host-report` (машинный токен движка, схема
+  `extra="ignore"`) принимает redacted-факты о хосте; хранилище — in-memory
+  (`app/host_evidence.py`, max age 24 ч).
+* `app/readiness.py` — server-owned проверки: host evidence, platform
+  (сборка Windows), docker daemon, compose, published ports (loopback),
+  disk space, rollback (образ `:previous`), staging, state_dir ACL, secrets,
+  database, migrations, worker, release version/SHA, trust store,
+  channel availability, SMTP/Telegram (только warning), backup freshness и
+  restore drill. Вердикт `готово | готово с предупреждениями | запуск запрещён`.
+* UI: раздел «Готовность пилота» (admin) с loading/empty/offline/error/retry,
+  состояниями `pass|warning|fail`, следующим действием, фокусом на вердикте
+  после повторной загрузки и клавиатурной доступностью.
+* Движок: `-Action diagnostics` отправляет хост-отчёт (best-effort, без путей
+  и секретов), поэтому readiness информативен без ручной работы с БД.
 
-Frontend навигация: `#/readiness` (`Готовность пилота`, иконка `shield`, manager/admin) с focus-ring и `role=status aria-live=polite`.
+### 1.4 Автоматизированный pilot drill
 
-## 5. Drill — команды воспроизведения
+* `infra/scripts/pilot_drill.py` запускает реальные компоненты (не поиск строк):
+  release-политику и обе подписи; отказы канала на подделках manifest/подписи/
+  пакета и запрещённых хостах; readiness API; backup+restore в изолированную БД
+  (PostgreSQL); Windows-движок (install/update/rollback/resume/uninstall).
+  Пишет `pilot-drill.json` + `pilot-drill.md`, маскирует DSN, падает non-zero
+  при провале и честно помечает недоступные в контуре шаги `skipped`
+  (никогда `passed`).
+* Drill встроен в CI-конфигурацию: backend job (политика/канал/readiness),
+  integration job (backup/restore на PostgreSQL), windows-installer job
+  (движок). Конфигурация доставляется review-artifact и активируется после
+  переноса владельцем (ограничение `workflows`-permission, см. §5). Разделение
+  «автоматизируемое в CI» / «ручная Windows-приёмка» зафиксировано в Markdown
+  отчёта и в runbook: ручная приёмка остаётся owner-action.
+* CI не использует production secrets: только fixture/testdata и ephemeral
+  тестовые ключ/сертификат.
 
-```bash
-# Полный репрод (без Docker/Windows — channel+backup+trust контракт):
-python infra/pilot/drill.py              # → == DRILL PASSED ==
-python infra/pilot/drill.py --keep-temp  # артефакты в /tmp/hrm-drill-*
-python infra/pilot/drill.py --quick
+### 1.5 Runbook, наблюдаемость, go/no-go
 
-# Trust & channel smoke:
-python infra/release/validate_trust_store.py --input trusted.json --require-production --show-fingerprints
-python infra/release/publish_channel.py --snapshot /tmp/app --version 0.14.0 --release-sha a… --package-url https://example.com/p.zip \
-  --private-key /tmp/signing.key --key-id pilot-test-key --public-keys-json trusted.json --out-dir dist/channel
-python infra/release/authenticode.py --installer installer/output/HR-Manager-Setup-0.13.0.exe --expected-publisher "HR Manager"
-# Детерминизм:
-zipinfo -v dist/channel/hr-manager-windows-*.zip | head
-sha256sum dist/channel/* installer/output/*
-grep -R -i "private" dist/channel/ installer/output/ && echo leak || echo "no leak"
-```
+* `docs/runbook-pilot-release.md`: подготовка Windows/Docker, установка, первый
+  вход, проверка loopback; owner-настройка environment, reviewers, secrets,
+  protected `v*`; церемония генерации/бэкапа/ротации/экстренного отзыва ключа;
+  выпуск, независимая проверка хешей/подписей/attestation и promotion;
+  backup/restore drill, update/rollback/resume, сбор redacted-диагностики;
+  RPO 26 ч / RTO 4 ч, ответственный, окно изменений, stop/rollback критерии;
+  uninstall с сохранением данных и полный purge; go/no-go checklist с полями
+  для даты, exact SHA/version и доказательств.
+* События release/update/rollback/restore различимы в существующих логах и
+  аудите, без PII/URL с credentials/ключей/токенов; внешней телеметрии нет.
 
-## 6. DoD — что выполнено и чем подтверждено
+### 1.6 Обязательные тесты
 
-| DoD пункт | Подтверждение |
-|-----------|---------------|
-| Ed25519 обязателен, Authenticode опц. через env/secret fail-closed, SHA256 после подписи, `signtool verify /pa /all` + Ed25519, pinned | `installer/build.ps1` + `infra/release/authenticode.py` + workflow pinned, ephemeral-тест `test_authenticode_*` |
-| Pinned toolchain/SHA/provider версионированы | workflow 4.2.2/5.3.0/4.2.2/2.4.0, cryptography 46.0.3, Inno 6.7.3 SHA 9c73c3…732 фиксированы |
-| Trust-store распределение | `validate_trust_store.py` строгий; `publish_channel.py` + `Install.psm1` + `Channel.psm1` сверяют; тест `test_validate_*`/`test_parse_*` |
-| «Готовность пилота» admin read-only (pass/warning/fail) без секретов | `ReadinessPage.tsx` + `useWorkspaceSection` + backend readiness, тесты `ReadinessPage.test.tsx` + `test_readiness_*` |
-| Reproducible drill | `infra/pilot/drill.py` (12 этапов), `test_channel_publish_integration_deterministic` |
-| Один runbook + observability + go/no-go | `docs/runbook.md`, `docs/pilot/go-no-go.md` (9 блоков, подпись) |
-| Обязательные тесты (happy + negative + секрет) | `backend/tests/test_phase14_hardening.py` (22 теста), frontend a11y, `grep -R private` |
-| Наземная безопасность (PR #23) | `update-channel.yml` без `pull_request` триггера, `contents: read` (windows) / `contents:write attestations:write id-token:write` только в signing среде, pinned, `backup-notice.yml` retention |
-| Offline/SMTP/Telegram = warning | `_check_smtp/_check_telegram/_check_channel` → warning, тест `test_readiness_channel_offline_is_warning_not_block` |
+| Файл | Тестов | Что доказывает |
+| --- | --- | --- |
+| `backend/tests/test_release_policy.py` | 16 | production fail closed на ephemeral сертификате, тестовый сертификат не проходит policy, подмена attestation/файла отклоняется |
+| `backend/tests/test_release_authenticode.py` | 15 | независимая проверка Authenticode: digest, EKU, цепочка, timestamp, издатель |
+| `backend/tests/test_trust_store.py` | 30 | строгая схема, private material, подмена/отзыв, согласие release- и backend-валидатора |
+| `backend/tests/test_readiness_api.py` | 18 | права (401/403/200), redaction и server-owned результат, host-факты, backup-состояния, «не подтверждено» → warning |
+| `frontend/src/features/readiness/PilotReadinessPage.test.tsx` | 8 | loading/empty/offline/error/retry, 403, вердикты, клавиатура, фокус |
+| `infra/windows/tests/channel.tests.ps1` (добавлено) | 4 | хост-отчёт: токен только в заголовке, отсутствие секретов/путей, офлайн, отсутствие install record |
 
-## 7. Известные ограничения / действия владельца
+## 2. Threat model (кратко)
 
-* Production Authenticode: загрузите реальный EV/OV PFX как `AUTHENTICODE_CERTIFICATE_BASE64` + `HRM_REQUIRE_AUTHENTICODE_SIGNING=1`; эфемерный маркер — только для PR-контракта.
-* `UPDATE_CHANNEL_PUBLIC_KEYS` на Render — тем же JSON; после выпуска `UPDATE_INSTALLED_VERSION/SHA` сверяются с `release.json`.
-* Rollback-ёмкость: держите `free_space` ≥2 ГБ, `backup: ok` + `drill.ok` (<168h) до `hrm update`.
+| Угроза | Контрмера |
+| --- | --- |
+| Подмена обновления (MITM/CDN) | detached Ed25519-подпись manifest, HTTPS-only, проверка каждого redirect-хопа до запроса, запрещённые хосты |
+| Подмена installer'а | Authenticode + RFC3161 + цепочка до корня из защищённого входа + совпадение издателя; повторная независимая проверка вне Windows |
+| Подмена/утечка trust store | строгая схема, отсутствие private material, fingerprint/key_id в diagnostics, fail closed на отзыв, запрет fixture-ключей в production |
+| Компрометация signing key | environment с required reviewers, ключ только в secret, двухключевое окно ротации, экстренный отзыв; неизменяемость релизных активов |
+| Выход сервисов наружу | обязательный loopback-binding, readiness-проверка опубликованных портов (наблюдаемые факты движка), prod-overlay без published-портов |
+| Утечка секретов через диагностику/логи | redacted diagnostics, схема хост-отчёта `extra="ignore"`, аудит только с вердиктом/счётчиками, drill маскирует DSN и падает на private material в выводе |
+| Скрытая автоустановка | установка только по явной команде администратора; фоновый watcher лишь проверяет наличие обновления |
+| Потеря данных при сбое | бэкап-ворота перед миграцией, автоматический rollback образов, resume на документированных точках, uninstall без purge сохраняет StateDir/volumes |
+| Ложная «готовность» | вердикт считается из server-owned фактов; отсутствие данных — warning, а не pass; ручная приёмка никогда не отмечается как passed автоматически |
 
-## 8. Verification (локально / CI)
+## 3. Изменённые и новые файлы
 
-```bash
-# Python (3.12)
-pip install cryptography==46.0.3
-pytest backend/tests/test_phase14_hardening.py -v
-pytest backend/tests/test_channel_network.py backend/tests/test_update_channel_contract.py -v
-python infra/release/validate_trust_store.py --input trusted.json --show-fingerprints --require-production
-python infra/pilot/drill.py --quick
+**Release/Authenticode (новое):** `infra/release/der.py`, `infra/release/authenticode.py`,
+`infra/release/sign_authenticode.py`, `infra/release/trust_store.py`,
+`installer/sign.ps1`.
 
-# Frontend (Node 22.22.3)
-npm ci; npm run typecheck; npm run lint; npm test -- ReadinessPage
-npm run build
+**Release (изменено):** `infra/release/publish_channel.py`, `installer/build.ps1`,
+`infra/release/README.md`, `installer/README.md`.
 
-# Supply-chain
-grep -E "actions/(checkout|setup-python|upload-artifact|attest-build-provenance)" .github/workflows/update-channel.yml
-grep -n "InnoSha256" installer/build.ps1
-sha256sum installer/output/*.exe; cat installer/release-manifest.json | jq .signing
-```
+**Workflow (review-artifacts, переносит владелец):**
+`review-artifacts/update-channel.phase14.yml` (+`.patch`),
+`review-artifacts/ci.phase14.yml` (+`.patch`), обновлённый
+`review-artifacts/README.md`.
 
-## 9. PR #23 — что не сломано
+**Backend (новое):** `backend/app/readiness.py`, `backend/app/host_evidence.py`,
+`backend/app/trust_store.py`, `backend/tests/test_release_authenticode.py`,
+`backend/tests/test_release_policy.py`, `backend/tests/test_trust_store.py`,
+`backend/tests/test_readiness_api.py`.
 
-* Handoff Phase 13 (`PR #23`): `update_channel_contract` зеркало неизменно, `publish_channel` расширен без удаления Ed25519, `installer/build.ps1` дополнен опциями без удаления pinned Inno, workflow расширяет а не заменяет deploy (`release.yml`). Никаких каналов/telemetry/docker.sock.
+**Backend (изменено):** `app/channel.py` (валидатор trust store + `describe_trusted_keys`),
+`app/main.py` (`app.state.host_evidence`), `app/models.py`
+(`AuditAction.PILOT_READINESS_VIEWED`), `app/routers/ops.py`
+(`GET /admin/ops/pilot-readiness`), `app/routers/updates.py`
+(`POST /updates/engine-host-report`), `app/schemas.py` (схемы Phase 14).
+
+**Windows-движок:** `infra/windows/engine/Diagnostics.psm1` (хост-отчёт и факты),
+`infra/windows/hr-manager.ps1` (`diagnostics` + help),
+`infra/windows/tests/channel.tests.ps1` (4 теста), `infra/windows/README.md`.
+
+**Frontend:** `src/features/readiness/PilotReadinessPage.tsx` (+ `readiness.css`,
++ тест), `src/api.ts`, `src/types.ts`, `src/app-shell/Workspace.tsx`,
+`src/app-shell/useWorkspaceSection.ts`.
+
+**Drill/docs:** `infra/scripts/pilot_drill.py`, `docs/runbook-pilot-release.md`,
+`docs/phase-14-report-arena.md`.
+
+## 4. Тесты и измерения (локально, Linux-контур)
+
+| Команда | Результат |
+| --- | --- |
+| `pytest -m "not integration" -q` | **674 passed**, 105 deselected (было 595 на baseline) |
+| `ruff check .` / `ruff format --check .` | All checks passed / 120 files formatted |
+| `mypy app tests` | Success: no issues found in 106 source files |
+| `pytest tests/test_readiness_api.py` | 18 passed |
+| `pytest tests/test_release_policy.py test_release_authenticode.py test_trust_store.py` | 61 passed |
+| `pytest tests/test_release_pipeline.py test_channel_network.py test_staging_recovery.py test_updates_api.py` | 51 passed |
+| `npm ci`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm audit --audit-level=high` | lint/typecheck/build OK; **160 tests passed**; **0 vulnerabilities** |
+| `python infra/windows/tests/lint-engine.py` | структурная проверка пройдена (16 файлов) |
+| `python infra/scripts/pilot_drill.py --out-dir drill` | signature-policy 61 passed, channel-tamper-refusal 51 passed, readiness-api 18 passed; windows-engine и backup/restore — `skipped` (в контейнере нет PowerShell и PostgreSQL) → вердикт `incomplete`, exit 1 |
+| `git diff --check` | чисто (проверено перед коммитом) |
+
+**Локальные ограничения контура (честно):** нет Docker → `docker compose config -q`,
+живой Compose smoke и PostgreSQL-интеграция выполнены не были; нет PowerShell/
+Inno Setup/dotnet → `infra/windows/tests/run-tests.ps1`, `installer/build.ps1`,
+`installer/sign.ps1` и drill-шаг `windows-engine` локально не запускались; локальный
+Python 3.11.2 вместо CI 3.12 (CI остаётся контрактом). Эти шаги запускаются в CI на
+точном SHA: jobs `backend`, `integration`, `stack`, `windows-installer`,
+`channel-release-policy`.
+
+**Ручная Windows-приёмка:** не выполнялась (нет Windows-машины) — это явный
+owner-action, статус `passed` ей не присваивался. Чек-лист и процедура — в
+`docs/runbook-pilot-release.md` (раздел 10).
+
+## 5. CI на точном SHA
+
+**Важное ограничение платформы:** GitHub App сессии не имеет разрешения
+`workflows`, поэтому изменения `.github/workflows/` в ветку не пушатся
+(push отклоняется GitHub). Проверенные версии workflow доставлены как
+review-artifacts: `review-artifacts/ci.phase14.yml(.patch)` и
+`review-artifacts/update-channel.phase14.yml(.patch)` (+ SHA256 и инструкция
+переноса в `review-artifacts/README.md`). До переноса владельцем CI на SHA
+работает со старым набором jobs: drill-шаги и production-политика релиза в CI
+ещё не запускаются, при этом сам код политики покрыт backend-тестами и
+локальным drill. Это же ограничение действовало для Phase 13.
+
+* Запланированный (после переноса owner-ом) workflow `CI`
+  (`.github/workflows/ci.yml`): backend (ruff/mypy/pytest +
+  drill-отчёт), integration (PostgreSQL + drill backup/restore), frontend,
+  stack (Compose dev/prod/proxy), windows-installer (движок + installer +
+  ephemeral Authenticode + drill), channel-release-policy (release-политика на
+  реальном signtool-выходе, tamper → `digest_mismatch`, тестовый сертификат →
+  `test_certificate_in_production`, подделанная attestation → `missing_timestamp`,
+  отсутствие секретов в артефактах).
+* Workflow `Update channel release` запускается только по защищённому тегу
+  `v*`/dispatch владельца и требует environment `update-channel-signing`.
+
+Ссылки на прогоны добавляются владельцу после публикации PR (см. PR checks).
+
+## 6. Ограничения и что осталось владельцу
+
+1. **Ручная Windows-приёмка** (чистая установка, loopback, обновление/откат на
+   реальной машине, uninstall/purge, заполнение go/no-go) — не выполнена.
+2. **Production Authenticode**: настоящий сертификат и environment владельца
+   агенту недоступны; проверен полный fail-closed контракт на ephemeral
+   сертификате. Реальная production-подпись не объявляется выполненной.
+3. **Live Compose/PostgreSQL** и `docker compose config -q` локально не
+   запускались (нет Docker) — подтверждение ожидается из CI на final SHA.
+4. **Перенос workflow-файлов** — owner action: GitHub App сессии не может
+   пушить `.github/workflows/`; полные файлы и патчи лежат в `review-artifacts/`
+   (`ci.phase14.*`, `update-channel.phase14.*`, SHA256 в README). После переноса
+   в CI появятся drill-шаги и production-политика релиза.
+5. **`installer/sign.ps1`** не исполнялся локально (нет PowerShell): синтаксис
+   и структура проверены `lint-engine.py`, поведение — в CI-джобе
+   `windows-installer` и `channel-release-policy`.
+6. **Trust store в релизном пакете** доставляется через `build.ps1`; на пилоте
+   применяется `hr-manager.ps1 -Action channel-config`.
+7. Ветка сессии — `arena/01a08ff0-hr-manager` (платформенное ограничение
+   сессии); merge и, при необходимости, переименование PR делает владелец.
+
+## 7. Handoff
+
+* Следующая сессия/владелец могут продолжить с ветки `arena/01a08ff0-hr-manager`:
+  дерево чистое, изменения закоммичены, ветка опубликована, PR открыт в `main`.
+* Полезные точки входа: `docs/runbook-pilot-release.md` (операции и go/no-go),
+  `infra/release/README.md` (подписи/политика), `infra/scripts/pilot_drill.py`
+  (drill + JSON/Markdown), `backend/tests/test_readiness_api.py` (контракт
+  readiness), `infra/windows/tests/channel.tests.ps1` (хост-отчёт).
+* Не закрывать PR #23 и его ветку/handoff: они остаются аудируемым контекстом
+  Phase 13.

@@ -127,63 +127,6 @@ function Get-HrmDiagnostics {
     # честное значение «not_configured» без захода в приватные настройки.
     $channels = @{ smtp = "not_configured"; telegram = "not_configured" }
 
-    # Trust store: redacted diagnostics (только key_id + fingerprint, никаких секретов).
-    $trustState = "not_configured"
-    $trustFingerprints = @()
-    $trustRevoked = 0
-    try {
-        $chCfg = Get-HrmChannelConfig
-        if ($null -ne $chCfg -and $chCfg.public_keys -and $chCfg.public_keys.Count -gt 0) {
-            $trustState = "configured"
-            foreach ($kid in $chCfg.public_keys.Keys) {
-                $entry = $chCfg.public_keys[$kid]
-                $revoked = $false
-                $fingerprint = "unknown"
-                if ($entry -is [hashtable] -and $entry.ContainsKey("revoked")) { $revoked = [bool]$entry.revoked }
-                if ($revoked) { $trustRevoked += 1 }
-                # Fingerprint: первые 12 hex sha256 публичного ключа (redacted, без самого ключа)
-                try {
-                    if ($entry -is [hashtable] -and $entry.ContainsKey("key") -and $entry["key"]) {
-                        $raw = [Convert]::FromBase64String([string]$entry["key"])
-                        $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($raw)
-                        $fingerprint = -join ($sha[0..5] | ForEach-Object { $_.ToString("x2") })
-                    }
-                } catch { $fingerprint = "invalid" }
-                $trustFingerprints += [ordered]@{ key_id = $kid; fingerprint = $fingerprint; revoked = $revoked }
-            }
-            # Проверяем встроенный trust_store.json в InstallDir (детерминированность выпуска)
-            $embeddedPath = Join-Path $InstallDir "trust_store.json"
-            if (Test-Path $embeddedPath) {
-                try {
-                    $embeddedRaw = Get-Content -Path $embeddedPath -Raw -Encoding UTF8
-                    $embedded = $embeddedRaw | ConvertFrom-Json -AsHashtable -ErrorAction Stop
-                    # Сравниваем детерминированно (embedded vs channel.json) — несовпадение = warning в диагностике
-                    $mismatch = $false
-                    if ($embedded.Count -ne $chCfg.public_keys.Count) { $mismatch = $true }
-                    else {
-                        foreach ($k in $embedded.Keys) {
-                            if (-not $chCfg.public_keys.ContainsKey($k)) { $mismatch = $true; break }
-                        }
-                    }
-                    if ($mismatch) { $trustState = "mismatch" }
-                } catch { $trustState = "embedded_invalid" }
-            }
-        }
-    } catch { $trustState = "unknown" }
-
-    # Update channel: offline/errors are warnings, not fatal — hrm status/type = warning
-    $channelStatus = "unknown"
-    $channelUrl = ""
-    try {
-        $ch = Get-HrmChannelConfig
-        if ($ch -and $ch.url) { $channelUrl = [string]$ch.url }
-        # Проверяем доступность канала (HEAD-like): offline = warning per phase 14
-        if ($channelUrl) {
-            $channelStatus = "configured"
-            # Не раскрываем URL в логах полностью — только хост через redaction
-        } else { $channelStatus = "not_configured" }
-    } catch { $channelStatus = "unknown" }
-
     $result = [ordered]@{
         generated_at = (Get-Date).ToString("o")
         install_dir = $InstallDir
@@ -203,11 +146,6 @@ function Get-HrmDiagnostics {
         running_release_sha = $runningSha
         smtp = $channels["smtp"]
         telegram = $channels["telegram"]
-        channel = $channelStatus
-        channel_url_redacted = if ($channelUrl) { Protect-HrmOutput $channelUrl } else { "" }
-        trust_store = $trustState
-        trust_fingerprints = $trustFingerprints
-        trust_revoked = $trustRevoked
     }
 
     if ($AsJson) {
@@ -224,15 +162,171 @@ function Get-HrmDiagnostics {
             ("version     : {0} (установлено {1}, в работе {2})" -f $result.version, $result.installed_release_sha, $result.running_release_sha),
             ("smtp        : {0}" -f $result.smtp),
             ("telegram    : {0}" -f $result.telegram),
-            ("channel     : {0}" -f $result.channel),
-            ("trust_store : {0} (revoked {1})" -f $result.trust_store, $result.trust_revoked),
             ("url         : {0}" -f $result.url)
         )
-        if ($result.trust_fingerprints -and $result.trust_fingerprints.Count -gt 0) {
-            foreach ($fp in $result.trust_fingerprints) {
-                $rows += ("  key {0}: {1} revoked={2}" -f $fp.key_id, $fp.fingerprint, $fp.revoked)
+        $rows | ForEach-Object { Protect-HrmOutput $_ }
+    }
+}
+# --- Phase 14: отчёт о хосте для readiness ---------------------------------------
+#
+# Движок отправляет на loopback только redacted-факты о хосте: версия Windows,
+# состояние Docker/Compose, опубликованные порты, свободное место, флаги
+# каталогов и установленная версия. Пути, имена пользователей, токены и любые
+# секреты в отчёт не попадают: backend валидирует строгую схему, а всё
+# неизвестное отбрасывается (extra="ignore"). Отправка best-effort: офлайн не
+# ломает диагностику и не мешает основной работе.
+
+function Get-HrmWindowsFacts {
+    # Версия/сборка/название продукта. Ни серийных номеров, ни имён пользователей.
+    $facts = @{ version = ""; build = $null; product_name = "" }
+    try {
+        $info = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction Stop
+        if ($info.ProductName) { $facts["product_name"] = [string]$info.ProductName }
+        if ($info.DisplayVersion) { $facts["version"] = [string]$info.DisplayVersion }
+        if ($info.CurrentBuildNumber) { $facts["build"] = [int]$info.CurrentBuildNumber }
+    }
+    catch { }
+    return $facts
+}
+
+function Get-HrmDockerFacts {
+    $facts = @{ cli_ok = $false; daemon_ok = $false; server_version = "" }
+    $cli = Invoke-HrmExternal -Name "docker.exe" -Arguments @("--version") -IgnoreExitCode
+    if ($cli.ExitCode -eq 0) { $facts["cli_ok"] = $true }
+    $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
+    if ($info.ExitCode -eq 0) {
+        $facts["daemon_ok"] = $true
+        $facts["server_version"] = $info.Stdout.Trim()
+    }
+    return $facts
+}
+
+function Get-HrmComposeFacts {
+    $probe = Test-HrmComposeVersion
+    $version = ""
+    if ($probe.Message) {
+        $match = [regex]::Match([string]$probe.Message, "(\d+\.\d+\.\d+)")
+        if ($match.Success) { $version = $match.Groups[1].Value }
+    }
+    return @{ ok = [bool]$probe.Passed; version = $version }
+}
+
+function Get-HrmPublishedPortFacts {
+    # Публикации из `docker compose ps`: сервис + адрес привязки + порт.
+    # observed=$false означает «получить не удалось» — backend честно покажет
+    # предупреждение вместо ложного «все порты на loopback».
+    param([string]$InstallDir, [string]$StateDir)
+    $result = @{ observed = $false; ports = @() }
+    $ps = Invoke-HrmCompose $InstallDir $StateDir @("ps", "--format", "json") -IgnoreExitCode
+    if ($ps.ExitCode -ne 0) { return $result }
+    $items = @()
+    try { $items = @($ps.Stdout | ConvertFrom-Json -ErrorAction Stop) }
+    catch {
+        foreach ($line in ($ps.Stdout -split "`r?`n")) {
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+                $items += ($line | ConvertFrom-Json -ErrorAction Stop)
             }
         }
-        $rows | ForEach-Object { Protect-HrmOutput $_ }
+    }
+    $ports = @()
+    foreach ($item in $items) {
+        if ($null -eq $item.Publishers) { continue }
+        foreach ($publisher in @($item.Publishers)) {
+            $hostIp = if ($publisher.URL) { [string]$publisher.URL } else { "" }
+            $port = $null
+            if ($publisher.PublishedPort) { $port = [int]$publisher.PublishedPort }
+            if (-not $hostIp -and $null -eq $port) { continue }
+            $ports += @{ service = [string]$item.Service; host_ip = $hostIp; port = $port }
+        }
+    }
+    $result["observed"] = $true
+    $result["ports"] = $ports
+    return $result
+}
+
+function Get-HrmDirFacts {
+    # Только флаги: сами пути в отчёт не уходят.
+    param([string]$Path)
+    $facts = @{ configured = $false; acl_restricted = $null; inside_state_dir = $null; inside_program_files = $null }
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $facts }
+    $facts["configured"] = [bool](Test-Path $Path)
+    $stateDir = Get-HrmStateDir
+    if (-not [string]::IsNullOrWhiteSpace($stateDir)) {
+        $facts["inside_state_dir"] = $Path.TrimEnd("\") -like ($stateDir.TrimEnd("\") + "\*")
+    }
+    $programFiles = $env:ProgramFiles
+    if (-not [string]::IsNullOrWhiteSpace($programFiles)) {
+        $facts["inside_program_files"] = $Path.TrimEnd("\") -like ($programFiles.TrimEnd("\") + "\*")
+    }
+    return $facts
+}
+
+function Get-HrmFreeSpaceMb {
+    param([string]$Path)
+    try {
+        $qualifier = Split-Path -Qualifier $Path
+        $drive = Get-PSDrive -Name ($qualifier.TrimEnd(":")) -ErrorAction Stop
+        return [int]($drive.Free / 1MB)
+    }
+    catch { return $null }
+}
+
+function Get-HrmPreviousImagePresent {
+    # Есть ли образ предыдущей версии (возможность безопасного rollback).
+    $images = Invoke-HrmExternal -Name "docker.exe" -Arguments @("images", "--format", "{{.Repository}}:{{.Tag}}") -IgnoreExitCode
+    if ($images.ExitCode -ne 0) { return $null }
+    foreach ($line in ($images.Stdout -split "`r?`n")) {
+        if ($line.Trim() -like "*:previous") { return $true }
+    }
+    return $false
+}
+
+function Get-HrmHostReportPayload {
+    # Полный redacted-отчёт по схеме backend (UpdateEngineHostReportRequest).
+    param([string]$InstallDir = "", [string]$StateDir = "", [string]$AppState = "")
+    if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $record = Get-HrmInstallRecord $StateDir
+    $release = Get-HrmJsonFile (Join-Path $InstallDir "release.json")
+    $published = Get-HrmPublishedPortFacts -InstallDir $InstallDir -StateDir $StateDir
+    $staging = Get-HrmStagingHostDir
+    return [ordered]@{
+        schema_version = 1
+        generated_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        engine_version = "phase-14"
+        app_state = $AppState
+        windows = (Get-HrmWindowsFacts)
+        docker = (Get-HrmDockerFacts)
+        compose = (Get-HrmComposeFacts)
+        published_ports = @($published["ports"])
+        ports_observed = [bool]$published["observed"]
+        free_space_mb = (Get-HrmFreeSpaceMb -Path $InstallDir)
+        state_dir = (Get-HrmDirFacts -Path $StateDir)
+        staging = (Get-HrmDirFacts -Path $staging)
+        installed_version = if ($release -and $release.version) { [string]$release.version } else { "" }
+        installed_release_sha = if ($record -and $record.release_sha) { [string]$record.release_sha } else { "" }
+        previous_images_present = (Get-HrmPreviousImagePresent)
+    }
+}
+
+function Send-HrmHostReport {
+    # POST на loopback с машинным токеном. Best-effort: без install record или
+    # токена ничего не отправляется, сетевые ошибки только логируются.
+    param([string]$InstallDir = "", [string]$StateDir = "", [string]$AppState = "")
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $record = Get-HrmInstallRecord $StateDir
+    if ($null -eq $record) { return $false }
+    $token = Get-HrmSecret $StateDir "HRM_UPDATE_ENGINE_TOKEN"
+    if ([string]::IsNullOrEmpty($token)) { return $false }
+    $port = if ($record.port) { [int]$record.port } else { Get-HrmPort }
+    $payload = Get-HrmHostReportPayload -InstallDir $InstallDir -StateDir $StateDir -AppState $AppState
+    try {
+        $response = Invoke-HrmHttp -Uri ("{0}/api/updates/engine-host-report" -f (Get-HrmBaseUrl $port)) `
+            -Method "POST" -Body $payload -Headers @{ "X-Engine-Token" = $token }
+        return ($response.StatusCode -eq 200)
+    }
+    catch {
+        Write-HrmLog "info" ("Хост-отчёт не отправлен (сервер недоступен): {0}" -f (Redact-HrmText $_.Exception.Message))
+        return $false
     }
 }
