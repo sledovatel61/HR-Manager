@@ -5,12 +5,10 @@
   без продолжения ветки Phase 12 новыми коммитами поверх чужих)
 - **Baseline SHA (на старте):** `7343025dcc5f33ea5f6298b014b646cddd0ffdc8`
   (= `phase12/windows-acceptance-final`, локально принятая Phase 12)
-- **Final code SHA (адресная доработка по техприёмке):**
-  `bc4e9d6226f8994384c97197a5f652d20c2140d3` — полностью зелёный CI
-  (run 34570110327,
-  https://github.com/sledovatel61/HR-Manager/actions/runs/34570110327);
-  финальный docs-коммит поверх — в PR-комментарии. Предыдущий SHA до
-  доработки (проверенный типом приёмки): `fdcc029…`.
+- **Reviewed SHA перед owner-handoff:**
+  `ac4e7ec302915e36ec614893ebd4559020cea903` — полностью зелёный CI и
+  локальный Linux unit suite; owner-коммит поверх переносит byte-exact workflow
+  в `.github/workflows/` и добавляет handoff Phase 14.
 - **PR:** #23 → `phase12/windows-acceptance-final`
   (https://github.com/sledovatel61/HR-Manager/pull/23)
 - **Миграции БД:** новых миграций **нет** (промпт: по умолчанию не
@@ -346,23 +344,14 @@ compose config` — зелёный CI job `Compose stack smoke test`.
 
 ## Ограничения
 
-1. **[P1, блокер для merge — действие владельца]** `update-channel.yml` не
-   запушен этой сессией (GitHub App без права `workflows`). Точная ошибка
-   push:
-   `remote rejected … (refusing to allow a GitHub App to create or update
-   workflow `.github/workflows/update-channel.yml` without `workflows`
-   permission)`. Вердикт оркестратора подтверждает: пока файла нет в
-   `.github/workflows/`, GitHub Actions не исполняет release pipeline, и
-   PR не merge-ready, даже если GitHub показывает MERGEABLE (это лишь
-   отсутствие конфликта). Перенос владельцем (однократно) — по
-   `review-artifacts/update-channel.patch` (проверен `git apply --check`;
-   инструкция в `review-artifacts/README.md`), затем создать environment
-   `update-channel-signing` (секреты `UPDATE_CHANNEL_SIGNING_KEY`/
-   `UPDATE_CHANNEL_KEY_ID`/`UPDATE_CHANNEL_PUBLIC_KEYS`, protection
-   rules) и tag protection `v*`. Инварианты workflow (включая
-   dispatch-SHA и отсутствие inline-inputs) проверяются fixture-тестом
-   на точной копии из `review-artifacts/`; после переноса тот же тест
-   валидирует файл в `.github/workflows/`.
+1. **Workflow перенесён владельцем.** Первоначальная coding-сессия не могла
+   запушить `.github/workflows/update-channel.yml` из-за отсутствия права
+   `workflows`, поэтому оставила проверенные artifact/patch. При финальной
+   приёмке владелец применил patch и подтвердил byte-exact совпадение с
+   `review-artifacts/update-channel.yml`. До первого production-выпуска всё ещё
+   требуются GitHub environment `update-channel-signing`, secrets
+   `UPDATE_CHANNEL_SIGNING_KEY`/`UPDATE_CHANNEL_KEY_ID`/
+   `UPDATE_CHANNEL_PUBLIC_KEYS`, protection rules и защита тегов `v*`.
 
 2. **Real release не публиковался**: канал по умолчанию указывает на
    GitHub Releases (`update-channel.json` появится при первом выпуске);
@@ -455,16 +444,12 @@ PS 5.1-дефекты (все покрыты в CI на точном SHA):
 
 ## Handoff
 
-- **Статус на handoff:** четыре прикладных замечания закрыты и CI
-  полностью зелёный (run 34570110327 на `bc4e9d6`, 5/5 job'ов, плюс
-  финальный прогон после фикса dispatch — в PR-комментарии). Остаётся
-  один блокер: перенос `update-channel.yml` в `.github/workflows/`
-  владельцем (у GitHub App сессии нет права `workflows`). До этого
-  переноса PR не merge-ready (вердикт оркестратора); мерж — только
-  владелец.
-- **Владельцу перед выпуском:** перенести `review-artifacts/update-channel.patch`
-  в `.github/workflows/` (у сессии нет права `workflows`), создать
-  environment `update-channel-signing` (секреты
+- **Статус на handoff:** прикладные замечания закрыты, CI reviewed SHA
+  полностью зелёный, workflow перенесён владельцем в исполняемый каталог.
+  Локальная матрица и ограничения зафиксированы в
+  `docs/phase-13-local-acceptance.md`.
+- **Владельцу перед первым production-выпуском:** создать environment
+  `update-channel-signing` (секреты
   `UPDATE_CHANNEL_SIGNING_KEY`/`UPDATE_CHANNEL_KEY_ID`/
   `UPDATE_CHANNEL_PUBLIC_KEYS`, protection rules) и tag protection `v*`.
 - Выпуск: `infra/release/README.md` (генерация ключей, сборка пакета,
@@ -476,4 +461,4 @@ PS 5.1-дефекты (все покрыты в CI на точном SHA):
   проверить: валидный подписанный manifest → обновление; испорченный
   manifest/пакет → отказ; сломанный update → rollback; uninstall с
   сохранением StateDir/томов/бэкапов; offline не мешает работе.
-- После merge Phase 12 в `main` — переоткрыть PR Phase 13 на `main`.
+- Следующая работа — Phase 14 по контракту `prompts/PHASE_14_PROMPT.md`.
