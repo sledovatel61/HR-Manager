@@ -191,3 +191,44 @@ git push
 три job — backend, frontend, integration — зелёные и не зависят от
 переноса). Семантика `:?`-охран в `compose.prod.yml` намеренно НЕ
 ослабляется: они — защита «fail fast» production-конфигурации.
+
+## Phase 13 rework (2026-09-11): update-channel release workflow
+
+Для доработки Phase 13 (PR #23) подготовлен исполняемый release workflow
+`.github/workflows/update-channel.yml`. Пуш этого файла через GitHub App
+сессии отклонён сервером — точная ошибка:
+
+```
+! [remote rejected] arena/01a084e4-hr-manager -> arena/01a084e4-hr-manager
+  (refusing to allow a GitHub App to create or update workflow
+   `.github/workflows/update-channel.yml` without `workflows` permission)
+```
+
+Артефакты:
+
+| Файл | Назначение |
+|---|---|
+| `update-channel.yml` | полный workflow (точная копия того, что должно лечь в `.github/workflows/`) |
+| `update-channel.patch` | git-патч, добавляющий `.github/workflows/update-channel.yml` (применяется `git apply`; проверено `git apply --check`) |
+
+Перенос владельцем (однократно; учётка с правом записи workflows):
+
+```bash
+git fetch origin
+git checkout -b arena/phase-13-update-channel-workflow origin/arena/01a084e4-hr-manager
+git apply --check review-artifacts/update-channel.patch
+git apply review-artifacts/update-channel.patch
+cmp review-artifacts/update-channel.yml .github/workflows/update-channel.yml \
+  && echo "workflow matches artifact"
+git commit -m "ci: phase 13 update channel release workflow"
+git push
+```
+
+После переноса создать environment `update-channel-signing` с protection
+rules (ветки main; НЕ разрешать PR) и секретами
+`UPDATE_CHANNEL_SIGNING_KEY` (64 hex Ed25519), `UPDATE_CHANNEL_KEY_ID`,
+`UPDATE_CHANNEL_PUBLIC_KEYS` (тот же JSON trust store, что у сервера), а
+также tag protection rules на `v*` (SemVer). Семантика fail-closed и
+fixture-тесты — в `infra/release/publish_channel.py` и
+`backend/tests/test_release_pipeline.py` (исполняются в существующем CI
+без production secret).

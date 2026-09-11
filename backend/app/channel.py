@@ -318,9 +318,7 @@ def _download_to_temp(
                         break
                     total += len(chunk)
                     if total > max_bytes or total > declared + 1:
-                        raise ChannelError(
-                            "download_failed", "пакет превышает объявленный размер"
-                        )
+                        raise ChannelError("download_failed", "пакет превышает объявленный размер")
                     out.write(chunk)
             if total != declared:
                 raise ChannelError(

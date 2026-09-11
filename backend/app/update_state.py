@@ -375,6 +375,5 @@ class UpdateStateStore:
             return self._downloaded_dir
 
 
-
 def is_installing_state(state: str) -> bool:
     return state in _INSTALLING_STATES

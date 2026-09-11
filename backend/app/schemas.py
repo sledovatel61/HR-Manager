@@ -1150,9 +1150,7 @@ class UpdateEngineReportRequest(BaseModel):
             if not self.installed_version.strip():
                 raise ValueError(f"state={self.state} требует installed_version")
             if not RELEASE_SHA_RE.match(self.installed_release_sha or ""):
-                raise ValueError(
-                    f"state={self.state} требует installed_release_sha (40 hex)"
-                )
+                raise ValueError(f"state={self.state} требует installed_release_sha (40 hex)")
         if self.state in ("rolled_back", "failed") and not (self.error_code or "").strip():
             raise ValueError(f"state={self.state} требует error_code")
         return self
