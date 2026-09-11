@@ -12,9 +12,10 @@
 * **Branch**: `arena/01a08ff0-hr-manager` (ветка сессии; отдельную
   `arena/phase-14-*` создать нельзя — сессия жёстко привязана к этой ветке,
   поэтому вся работа и PR идут из неё). Merge выполняет владелец.
-* **Final SHA (код)**: `7beb84e083a742b94ca3d57ed58ff81aedb681b0` — на нём
-  зелёными прошли все job'ы CI (см. §5). После него в ветку добавлен только
-  этот документационный апдейт; head ветки = последний коммит (см. PR).
+* **Final SHA (код)**: `d5423906745abbd4eb2756cddf28ba22c8dbb996` — зелёный HEAD
+  (exact final SHA, см. §5). Промежуточные SHA `0313f02` (первая реализация) и
+  `7beb84e` (предыдущий зелёный прогон) — исторические, не final. Этот документ
+  синхронизирован с `d542390` (PR #24 head).
 * **PR**: https://github.com/sledovatel61/HR-Manager/pull/24
 
 ## 1. Что сделано по пунктам промпта
@@ -85,19 +86,23 @@
 
 ### 1.4 Автоматизированный pilot drill
 
-* `infra/scripts/pilot_drill.py` запускает реальные компоненты (не поиск строк):
-  release-политику и обе подписи; отказы канала на подделках manifest/подписи/
-  пакета и запрещённых хостах; readiness API; backup+restore в изолированную БД
-  (PostgreSQL); Windows-движок (install/update/rollback/resume/uninstall).
-  Пишет `pilot-drill.json` + `pilot-drill.md`, маскирует DSN, падает non-zero
-  при провале и честно помечает недоступные в контуре шаги `skipped`
-  (никогда `passed`).
-* Drill встроен в CI-конфигурацию: backend job (политика/канал/readiness),
-  integration job (backup/restore на PostgreSQL), windows-installer job
-  (движок). Конфигурация доставляется review-artifact и активируется после
-  переноса владельцем (ограничение `workflows`-permission, см. §5). Разделение
-  «автоматизируемое в CI» / «ручная Windows-приёмка» зафиксировано в Markdown
-  отчёта и в runbook: ручная приёмка остаётся owner-action.
+* `infra/scripts/pilot_drill.py` — **automated test aggregator**, не
+  полноценный реальный Windows E2E. Запускает реальные компоненты в
+  Linux-контуре: release-политику и обе подписи; отказы канала на подделках
+  manifest/подписи/пакета и запрещённых хостах; readiness API; backup+restore
+  в изолированную БД (PostgreSQL); Windows-движок (install/update/rollback/
+  resume/uninstall) — в контейнере без PowerShell/Inno Setup эти шаги
+  честно `skipped` (никогда `passed`). Пишет `pilot-drill.json` +
+  `pilot-drill.md`, маскирует DSN, падает non-zero при провале.
+  **Реальные** clean install / update / rollback / uninstall / reinstall и
+  сохранение данных остаются **manual acceptance** владельца на живой
+  Windows-машине (см. runbook, go/no-go) — drill их не заменяет.
+* Drill встроен в CI-конфигурацию как агрегатор: backend job
+  (политика/канал/readiness), integration job (backup/restore на PostgreSQL),
+  windows-installer job (движок). Конфигурация доставляется review-artifact и
+  активируется после переноса владельцем (ограничение `workflows`-permission,
+  см. §5). Разделение «автоматизируемое в CI — aggregator» / «ручная
+  Windows-приёмка — mandatory» зафиксировано в Markdown отчёта и в runbook.
 * CI не использует production secrets: только fixture/testdata и ephemeral
   тестовые ключ/сертификат.
 
@@ -187,7 +192,7 @@
 | `pytest tests/test_release_pipeline.py test_channel_network.py test_staging_recovery.py test_updates_api.py` | 51 passed |
 | `npm ci`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm audit --audit-level=high` | lint/typecheck/build OK; **160 tests passed**; **0 vulnerabilities** |
 | `python infra/windows/tests/lint-engine.py` | структурная проверка пройдена (16 файлов) |
-| `python infra/scripts/pilot_drill.py --out-dir drill` | signature-policy 61 passed, channel-tamper-refusal 51 passed, readiness-api 18 passed; windows-engine и backup/restore — `skipped` (в контейнере нет PowerShell и PostgreSQL) → вердикт `incomplete`, exit 1 |
+| `python infra/scripts/pilot_drill.py --out-dir drill` | **aggregator**: signature-policy 61 passed, channel-tamper-refusal 51 passed, readiness-api 18 passed; windows-engine и backup/restore — `skipped` (в контейнере нет PowerShell и PostgreSQL) → вердикт `incomplete`, exit 1 (не E2E, manual приёмка — отдельно) |
 | `git diff --check` | чисто (проверено перед коммитом) |
 
 **Локальные ограничения контура (честно):** нет Docker → `docker compose config -q`,
@@ -198,27 +203,45 @@ Python 3.11.2 вместо CI 3.12 (CI остаётся контрактом). �
 точном SHA: jobs `backend`, `integration`, `stack`, `windows-installer`,
 `channel-release-policy`.
 
-**CI на final SHA `7beb84e` (run
+**CI на exact final SHA `d542390` (run
+[34595851080](https://github.com/sledovatel61/HR-Manager/actions/runs/34595851080)) и
+предыдущий зелёный `7beb84e` (run
 [34595185553](https://github.com/sledovatel61/HR-Manager/actions/runs/34595185553)):**
-все job'ы зелёные — Backend checks (2m35s, Python 3.12: ruff/mypy/pytest +
-`check_env.sh`), Backend integration tests PostgreSQL (1m58s), Frontend checks
-(50s: lint/typecheck/160 tests/build/audit), Compose stack smoke dev+prod (1m45s),
-Windows engine tests + installer smoke (1m0s: PowerShell-тесты движка, включая
-новые host-report тесты, сборка Setup.exe, silent install/uninstall).
+на обоих SHA все *существующие* 5 jobs зелёные — Backend checks (Python 3.12:
+ruff/mypy/pytest + `check_env.sh`), Backend integration tests PostgreSQL,
+Frontend checks (lint/typecheck/160 tests/build/audit), Compose stack smoke
+dev+prod, Windows engine tests + installer smoke (PowerShell-тесты движка,
+включая новые host-report тесты, сборка Setup.exe).
+**Важно:** это 5 jobs *старых* `.github/workflows/*` (ci.yml, update-channel.yml
+до переноса). Файлы `review-artifacts/*.phase14.yml` GitHub Actions **не
+исполняет** — они review-artifacts для ручного переноса владельцем (см. §5).
+Поэтому текущий зелёный CI **не** является полным Phase 14 CI; полный набор
+(включая `channel-release-policy` и drill-шаги) появится только после переноса
+workflow владельцем и нового прогона на exact final SHA.
 
 **Ручная Windows-приёмка:** не выполнялась (нет Windows-машины) — это явный
 owner-action, статус `passed` ей не присваивался. Чек-лист и процедура — в
 `docs/runbook-pilot-release.md` (раздел 10).
 
-## 5. CI на точном SHA
+## 5. CI на точном SHA (exact final SHA — что реально исполнялось)
 
-**Результаты CI на final SHA:** все job'ы зелёные (run 34595185553):
-`Backend checks`, `Backend integration tests (PostgreSQL)`, `Frontend checks`,
-`Compose stack smoke test (dev + prod overlay)`,
+**Результаты CI на exact final SHA `d542390` (run
+[34595851080](https://github.com/sledovatel61/HR-Manager/actions/runs/34595851080)) и
+`7beb84e` (run [34595185553](https://github.com/sledovatel61/HR-Manager/actions/runs/34595185553)):**
+все job'ы зелёные — `Backend checks`, `Backend integration tests (PostgreSQL)`,
+`Frontend checks`, `Compose stack smoke test (dev + prod overlay)`,
 `Windows engine tests + installer smoke`. Тем самым подтверждены на Python 3.12
-и реальном PostgreSQL/Compose именно те проверки, которые локально выполнить
-было нельзя. Job'ы `channel-release-policy` и drill-шаги появятся после
-переноса workflow-артефактов владельцем (ниже).
+и реальном PostgreSQL/Compose те проверки, которые локально выполнить было
+нельзя.
+
+**Явное ограничение:** это 5 jobs **старых** workflow (без Phase 14
+изменений). GitHub Actions **не** исполняет `review-artifacts/*.phase14.yml` —
+они лишь review-artifacts для ручного переноса владельцем. Полный Phase 14
+набор (включая `channel-release-policy`, drill-шаги, ephemeral Authenticode
+проверки) **не** был исполнен в CI; он появится только после переноса
+workflow владельцем и нового прогона на exact final SHA `d542390` (или новее).
+До переноса CI подтверждает только код политики (backend-тесты) и локальный
+drill, но не production-политику релиза.
 
 **Важное ограничение платформы:** GitHub App сессии не имеет разрешения
 `workflows`, поэтому изменения `.github/workflows/` в ветку не пушатся
@@ -252,10 +275,12 @@ review-artifacts: `review-artifacts/ci.phase14.yml(.patch)` и
    сертификате. Реальная production-подпись не объявляется выполненной.
 3. **Live Compose/PostgreSQL** и `docker compose config -q` локально не
    запускались (нет Docker) — подтверждение ожидается из CI на final SHA.
-4. **Перенос workflow-файлов** — owner action: GitHub App сессии не может
-   пушить `.github/workflows/`; полные файлы и патчи лежат в `review-artifacts/`
-   (`ci.phase14.*`, `update-channel.phase14.*`, SHA256 в README). После переноса
-   в CI появятся drill-шаги и production-политика релиза.
+4. **Перенос workflow-файлов — owner action (обязательно после `d542390`):**
+   GitHub App сессии не может пушить `.github/workflows/`; полные файлы и патчи
+   лежат в `review-artifacts/` (`ci.phase14.*`, `update-channel.phase14.*`,
+   SHA256 в README). После переноса владельцем **обязательно получить новый
+   exact-final-SHA CI** (все Phase 14 jobs на `d542390` или новее) — только он
+   считается полным Phase 14 CI; текущий зелёный CI на 5 jobs — не полный.
 5. **`installer/sign.ps1`** не исполнялся локально (нет PowerShell): синтаксис
    и структура проверены `lint-engine.py`, поведение — в CI-джобе
    `windows-installer` и `channel-release-policy`.
@@ -274,3 +299,7 @@ review-artifacts: `review-artifacts/ci.phase14.yml(.patch)` и
   readiness), `infra/windows/tests/channel.tests.ps1` (хост-отчёт).
 * Не закрывать PR #23 и его ветку/handoff: они остаются аудируемым контекстом
   Phase 13.
+
+---
+
+**Не выполнять merge, auto-merge, закрытие PR/ветки или завершение coding-сессии без разрешения владельца.**
