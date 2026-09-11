@@ -241,5 +241,10 @@ checkout выполняется по нему, и сборка стартует 
 HEAD == release_sha; тег/релиз создаётся `--target` на тот же SHA. Все
 значения dispatch-пользователя попадают в shell-скрипты ТОЛЬКО через
 env (никаких inline-expressions в run-блоках — shell injection
-исключён). Эти инварианты закреплены тестом
-`test_workflow_yaml_security_invariants`.
+исключён). Перед записью в `$GITHUB_OUTPUT` version/release_sha/notes_ru
+отклоняются fail closed при наличии CR/LF — многострочный input не может
+подмешать поддельные строки-выводы (`sha=…`, `tag=…`). Эти инварианты
+закреплены тестами `test_release_pipeline.py`, включая ДВА исполняемых
+теста, которые реально запускают resolve-скрипт из workflow в bash с
+поддельным `$GITHUB_OUTPUT` (атака CR/LF отклоняется до записи; валидная
+однострочная русская заметка сохраняется без изменений).
