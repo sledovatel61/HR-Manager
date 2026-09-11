@@ -10,7 +10,15 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from app.models import (
     AuditAction,
@@ -20,8 +28,10 @@ from app.models import (
     EventHistoryKind,
     EventStatus,
     EventType,
+    PilotWorkingMode,
     UserRole,
 )
+from app.update_channel_contract import RELEASE_SHA_RE
 from app.utils import normalize_phone
 
 
@@ -93,10 +103,15 @@ class UserOut(BaseModel):
 
 
 class CurrentUserOut(BaseModel):
-    """``GET /auth/me`` payload: the user plus the session CSRF token."""
+    """``GET /auth/me`` payload: the user plus the session CSRF token.
+
+    ``working_mode`` is the phase-12 pilot starter interface selection; it
+    is profile data of the authenticated user, never exposed through the
+    HR directory (which stays minimal)."""
 
     user: UserOut
     csrf_token: str
+    working_mode: PilotWorkingMode | None = None
 
 
 class LogoutRequest(BaseModel):
@@ -1063,13 +1078,82 @@ class AccessGrantList(BaseModel):
 class AccessGrantRequest(BaseModel):
     """Grant or revoke explicitly confirmed access."""
 
-    scope: Literal["pilot_full_access", "document_lists_manage", "candidate_documents_all"] = (
-        "pilot_full_access"
-    )
+    scope: Literal[
+        "pilot_full_access",
+        "document_lists_manage",
+        "candidate_documents_all",
+        "update_channel_manage",
+    ] = "pilot_full_access"
 
     user_id: UUID
     revoke: bool = False
     revoke_reason: str | None = Field(default=None, max_length=500)
+
+
+class UpdateStatusResponse(BaseModel):
+    """Состояние канала обновлений (никогда не содержит URL, путей, секретов)."""
+
+    state: str
+    installed_version: str
+    installed_release_sha: str
+    available_version: str | None = None
+    available_release_sha: str | None = None
+    available_published_at: str | None = None
+    notes_ru: str | None = None
+    download_progress: int | None = None
+    last_check_at: str | None = None
+    last_check_ok: bool | None = None
+    error_code: str | None = None
+    last_result: str | None = None
+    channel_configured: bool = True
+
+
+class UpdateInstallResponse(BaseModel):
+    """Ответ на запрос установки (идемпотентно: job_id уникален на операцию)."""
+
+    state: str
+    job_id: str | None = None
+    message: str | None = None
+
+
+class UpdateEnginePollResponse(BaseModel):
+    """Ответ движку: ожидающие команды и проверенные артефакты staging."""
+
+    actions: list[str]
+    job_id: str | None = None
+    release_dir: str | None = None
+    manifest_path: str | None = None
+    error_code: str | None = None
+
+
+class UpdateEngineReportRequest(BaseModel):
+    """Отчёт движка после update (результаты, версии и безопасный код ошибки).
+
+    job_id обязателен: terminal report принимается только для активной
+    install operation с точным совпадением job_id. state валидируется
+    перечислением; поля результата проверяются по типу результата.
+    """
+
+    job_id: str = Field(min_length=1, max_length=128)
+    state: Literal["installed", "restart_required", "rolled_back", "failed"] = "failed"
+    installed_version: str = ""
+    installed_release_sha: str = ""
+    error_code: str | None = None
+    # Безопасная детализация для оператора: движок обязан присылать
+    # только отредактированный текст (без путей, URL, подписей, секретов).
+    # Не возвращается в ответах и не пишется в аудит.
+    error_detail: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_result_fields(self) -> "UpdateEngineReportRequest":
+        if self.state in ("installed", "restart_required"):
+            if not self.installed_version.strip():
+                raise ValueError(f"state={self.state} требует installed_version")
+            if not RELEASE_SHA_RE.match(self.installed_release_sha or ""):
+                raise ValueError(f"state={self.state} требует installed_release_sha (40 hex)")
+        if self.state in ("rolled_back", "failed") and not (self.error_code or "").strip():
+            raise ValueError(f"state={self.state} требует error_code")
+        return self
 
 
 class SetupStateOut(BaseModel):
@@ -1079,7 +1163,56 @@ class SetupStateOut(BaseModel):
     pilot_grant_active: bool
     preferences_initialized: bool
     worker_alive: bool
+    working_mode: PilotWorkingMode | None = None
     channels: dict[str, str]
+
+
+# --- Phase 12: local pilot first-run (Windows installer exchange) ------------
+
+
+class SetupOwnerClaimRequest(BaseModel):
+    """One-time exchange claim: token plus the owner data collected by the
+    installer wizard. Surname and role are validated server-side and never
+    enter a process command line, log or audit record."""
+
+    exchange_token: str = Field(min_length=43, max_length=256)
+    surname: str = Field(min_length=1, max_length=60)
+    working_mode: PilotWorkingMode
+    timezone: str | None = Field(default=None, max_length=64)
+
+
+class SetupOwnerClaimResponse(BaseModel):
+    """Short-lived one-time ticket handed to the browser (URL fragment)."""
+
+    ticket: str
+    expires_at: datetime
+
+
+class SetupOwnerPreviewRequest(BaseModel):
+    ticket: str = Field(min_length=43, max_length=64)
+
+
+class SetupOwnerPreviewResponse(BaseModel):
+    """First-run screen content: never requires re-entering the surname."""
+
+    surname: str
+    working_mode: PilotWorkingMode
+    timezone: str
+    readiness: dict[str, str]
+    channels: dict[str, str]
+    full_access: bool
+
+
+class SetupOwnerRedeemRequest(BaseModel):
+    """Completion of the first run: the owner password is chosen here, in a
+    protected UI, never in a console or a URL."""
+
+    ticket: str = Field(min_length=43, max_length=64)
+    timezone: str = Field(min_length=1, max_length=64)
+    workdays: list[int] = Field(min_length=1, max_length=7)
+    quiet_hours_start: str = Field(min_length=5, max_length=5)
+    quiet_hours_end: str = Field(min_length=5, max_length=5)
+    password: str = Field(min_length=1, max_length=128)
 
 
 # --- Phase 9: Telegram/SMTP integrations, bindings, consent -------------------

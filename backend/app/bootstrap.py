@@ -38,10 +38,21 @@ def bootstrap_admin(db: Session, settings: Settings) -> User | None:
     if existing:
         return None
 
+    if settings.pilot_bootstrap_exchange_token:
+        from app.setup_owner import store_pilot_exchange
+
+        if store_pilot_exchange(db, settings):
+            return None
+        # No exchange registered (e.g. empty token): continue below so the
+        # operator still gets a loud refusal rather than a silently empty
+        # installation.
+
     username = settings.bootstrap_admin_username.strip()
     password = settings.bootstrap_admin_password
 
-    if settings.is_production and password == DEVELOPMENT_BOOTSTRAP_ADMIN_PASSWORD:
+    if (settings.is_production or settings.is_pilot) and (
+        password == DEVELOPMENT_BOOTSTRAP_ADMIN_PASSWORD
+    ):
         logger.error(
             "no users exist and BOOTSTRAP_ADMIN_PASSWORD is not set; refusing to create a "
             "weak administrator. Create one with: python -m app.cli create-admin"

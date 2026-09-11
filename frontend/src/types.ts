@@ -42,6 +42,36 @@ export interface User {
 export interface CurrentUser {
   user: User;
   csrf_token: string;
+  /** Phase 12: role chosen in the Windows installer (profile data only). */
+  working_mode?: WorkingMode | null;
+}
+
+export type WorkingMode = "hr" | "manager" | "admin";
+
+export const WORKING_MODE_LABELS: Record<WorkingMode, string> = {
+  hr: "HR",
+  manager: "Руководитель",
+  admin: "Администратор",
+};
+
+/** POST /setup/owner/preview payload (first-run screen data). */
+export interface SetupPreview {
+  surname: string;
+  working_mode: WorkingMode;
+  timezone: string;
+  readiness: Record<string, string>;
+  channels: Record<string, string>;
+  full_access: boolean;
+}
+
+/** POST /setup/owner/redeem payload. */
+export interface RedeemOwnerInput {
+  ticket: string;
+  timezone: string;
+  workdays: number[];
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  password: string;
 }
 
 /** One audit trail entry (see backend AuditEventOut). */
@@ -641,6 +671,29 @@ export interface QueueDiagnostics {
   oldest_queued_at: string | null;
   stuck_sending: number;
   worker: { alive: boolean; last_seen_at?: string; processed_total?: number; failed_total?: number };
+}
+
+/** Phase 13: Windows pilot update channel status (never URLs/paths/secrets). */
+export interface UpdateStatus {
+  state: string;
+  installed_version: string;
+  installed_release_sha: string;
+  available_version: string | null;
+  available_release_sha: string | null;
+  available_published_at: string | null;
+  notes_ru: string | null;
+  download_progress: number | null;
+  last_check_at: string | null;
+  last_check_ok: boolean | null;
+  error_code: string | null;
+  last_result: string | null;
+  channel_configured: boolean;
+}
+
+export interface UpdateInstallResult {
+  state: string;
+  job_id: string | null;
+  message: string | null;
 }
 
 export interface SetupState {

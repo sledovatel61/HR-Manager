@@ -86,6 +86,18 @@ class UserRole(StrEnum):
     ADMIN = "admin"
 
 
+class PilotWorkingMode(StrEnum):
+    """Phase 12: the working role the pilot owner selected in the Windows
+    installer (HR / manager / administrator). It is a profile field for the
+    starter interface ONLY — it never weakens or replaces RBAC; the pilot
+    owner always has server role ``admin`` plus an explicit
+    ``pilot_full_access`` grant."""
+
+    HR = "hr"
+    MANAGER = "manager"
+    ADMIN = "admin"
+
+
 class AuditAction(StrEnum):
     """Audited security events."""
 
@@ -165,6 +177,19 @@ class AuditAction(StrEnum):
     CANDIDATE_TELEGRAM_UNLINKED = "candidate_telegram_unlinked"
     CANDIDATE_EMAIL_CONFIRM_INITIATED = "candidate_email_confirm_initiated"
     CANDIDATE_EMAIL_CONFIRMED = "candidate_email_confirmed"
+    # Phase 12: local pilot first-run (Windows installer exchange).
+    PILOT_OWNER_CLAIMED = "pilot_owner_claimed"
+    PILOT_OWNER_CREATED = "pilot_owner_created"
+    PILOT_SETUP_REJECTED = "pilot_setup_rejected"
+    # Phase 13: Windows pilot update channel.
+    UPDATE_CHECK_STARTED = "update_check_started"
+    UPDATE_CHECK_SUCCEEDED = "update_check_succeeded"
+    UPDATE_CHECK_FAILED = "update_check_failed"
+    UPDATE_DOWNLOAD_STARTED = "update_download_started"
+    UPDATE_DOWNLOAD_SUCCEEDED = "update_download_succeeded"
+    UPDATE_DOWNLOAD_FAILED = "update_download_failed"
+    UPDATE_INSTALL_REQUESTED = "update_install_requested"
+    UPDATE_ENGINE_REPORTED = "update_engine_reported"
 
 
 class CandidateStage(StrEnum):
@@ -273,6 +298,18 @@ class User(Base):
             values_callable=lambda enum_cls: [member.value for member in enum_cls],
         ),
         nullable=False,
+    )
+    # Phase 12: working mode selected in the Windows installer by the pilot
+    # owner. Informational only (starter interface); never used for access
+    # decisions. ``None`` for users created outside the first-run flow.
+    working_mode: Mapped[PilotWorkingMode | None] = mapped_column(
+        Enum(
+            PilotWorkingMode,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=True,
     )
     # Only an Argon2id hash is ever stored — never a plaintext password.
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -1118,6 +1155,7 @@ class AccessGrantScope(StrEnum):
     PILOT_FULL_ACCESS = "pilot_full_access"
     DOCUMENT_LISTS_MANAGE = "document_lists_manage"
     CANDIDATE_DOCUMENTS_ALL = "candidate_documents_all"
+    UPDATE_CHANNEL_MANAGE = "update_channel_manage"
 
 
 _NOTIFICATION_TYPES = [member.value for member in NotificationType]
@@ -2127,3 +2165,62 @@ class DocumentRuleExecution(Base):
             name="ck_rule_executions_outcome",
         ),
     )
+
+
+class BootstrapExchange(Base):
+    """Phase 12: one-time local first-run exchange between the Windows
+    installer engine and the loopback backend.
+
+    Only the SHA-256 hash of the exchange token is persisted (never the raw
+    token). A row is inserted by the startup bootstrap when
+    ``PILOT_BOOTSTRAP_EXCHANGE_TOKEN`` is configured and the user table is
+    empty; the claim endpoint atomically consumes it (``consumed_at``) and
+    emits a short-lived one-time ticket (see ``BootstrapTicket``). Rows are
+    append-only: a PostgreSQL trigger rejects every UPDATE except the single
+    NULL->timestamp consumption and any DELETE."""
+
+    __tablename__ = "bootstrap_exchanges"
+    __table_args__ = (
+        Index("ix_bootstrap_exchanges_token_hash", "token_hash", unique=True),
+        Index("ix_bootstrap_exchanges_consumed", "consumed_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    consumed_ticket_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class BootstrapTicket(Base):
+    """Phase 12: one-time, short-lived first-run ticket handed from the
+    installer to the browser (URL fragment) after a successful exchange
+    claim. Only the SHA-256 hash is persisted. ``redeem`` consumes the
+    ticket and creates the single pilot owner atomically; the pending
+    surname/working mode/timezone are stored with the ticket so the user
+    never re-enters them."""
+
+    __tablename__ = "bootstrap_tickets"
+    __table_args__ = (
+        Index("ix_bootstrap_tickets_token_hash", "ticket_hash", unique=True),
+        Index("ix_bootstrap_tickets_consumed", "consumed_at"),
+        CheckConstraint(
+            "working_mode IN ('hr', 'manager', 'admin')",
+            name="ck_bootstrap_tickets_working_mode_valid",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    ticket_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    surname: Mapped[str] = mapped_column(String(60), nullable=False)
+    working_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    redeemed_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)

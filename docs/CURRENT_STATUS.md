@@ -1,8 +1,7 @@
 # Текущее состояние и handoff
 
-> Фазы 0–11 приняты. Phase 11 влита через PR #18 merge-коммитом
-> `a6ac73cb797919383b80ce65b1614cd6e4dad47f`. Ветка агента 5
-> `arena/01a081aa-hr-manager` сохранена для продолжения работы над Phase 12.
+> Фазы 0–13 приняты. Phase 13 завершена в PR #23; точные результаты локальной
+> приёмки находятся в `docs/phase-13-local-acceptance.md`.
 
 ## Что принято
 
@@ -70,8 +69,42 @@ request/reminder через существующий outbox, send-time revalidat
 stage/scheduled rules, durable dedupe и append-only история. Полный отчёт:
 [phase-11-report-arena.md](phase-11-report-arena.md).
 
+## Результат Phase 12
+
+- PR реализации: https://github.com/sledovatel61/HR-Manager/pull/22.
+- Windows installer `0.13.0`, PowerShell engine, pilot Compose, первый запуск,
+  update/rollback/resume, diagnostics и uninstall реализованы.
+- На реальной Windows с Docker Desktop успешно проверены trusted update,
+  намеренно сломанный update с автоматическим rollback и install/uninstall.
+- Uninstall удаляет приложение и контейнеры, но сохраняет StateDir,
+  PostgreSQL/backup volumes и зашифрованные backup-файлы.
+- SHA256 принятого installer:
+  `a9670b3921bd218f27cd571d7eba21775ba951c697d41b06f5cd798650e56a05`.
+- Подробный результат: [phase-12-local-acceptance.md](phase-12-local-acceptance.md).
+
+## Ограничение локальной проверки
+
+Профильные backend-тесты нативно на Windows блокируются Unix-only модулем
+`fcntl`. Backend в финальном acceptance hardening не менялся. Linux backend,
+PostgreSQL integration и Compose должны подтверждаться CI точного SHA; это
+ограничение нельзя выдавать за локальный passed.
+
+## Результат Phase 13
+
+- PR: https://github.com/sledovatel61/HR-Manager/pull/23.
+- Reviewed SHA до owner-handoff:
+  `ac4e7ec302915e36ec614893ebd4559020cea903`.
+- Добавлены detached Ed25519 manifest, HTTPS download/staging, строгая SemVer-
+  политика, административный UI и fail-closed release pipeline поверх Phase 12.
+- Workflow перенесён владельцем из проверенного артефакта в
+  `.github/workflows/update-channel.yml`; production signing secrets в git не
+  добавлялись.
+- Полная матрица результатов и честные ограничения:
+  [phase-13-local-acceptance.md](phase-13-local-acceptance.md).
+
 ## Следующая фаза
 
-Следующая работа — Phase 12. Её продуктовый контракт должен быть согласован
-отдельно. Продолжать работу следует в сохранённой ветке агента 5
-`arena/01a081aa-hr-manager`, предварительно синхронизировав её с `main`.
+Phase 14 доводит технически готовый Windows-контур до ограниченного безопасного
+пилота: production release signing, end-to-end release/upgrade drill,
+предпусковая диагностика, restore/rollback и операторский runbook. Полный
+контракт: [`prompts/PHASE_14_PROMPT.md`](../prompts/PHASE_14_PROMPT.md).

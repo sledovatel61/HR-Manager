@@ -3,7 +3,7 @@ import { MyRulesPage } from "../features/documents/MyRulesPage";
 import { useEffect, useState } from "react";
 import { logout, onUnauthorized } from "../api";
 import { Icon, type IconName } from "../design-system/icons/Icon";
-import { ROLE_LABELS, type CurrentUser, type UserRole } from "../types";
+import { ROLE_LABELS, WORKING_MODE_LABELS, type CurrentUser, type UserRole } from "../types";
 import CandidatesListPage from "../features/candidates/CandidatesListPage";
 import KanbanPage from "../features/candidates/KanbanPage";
 import CalendarPage from "../features/calendar/CalendarPage";
@@ -14,6 +14,7 @@ import { RemindersPage } from "../features/notifications/RemindersPage";
 import { PreferencesPage } from "../features/notifications/PreferencesPage";
 import { IntegrationsPage } from "../features/notifications/IntegrationsPage";
 import { AdminQueuePage } from "../features/notifications/AdminQueuePage";
+import { UpdateChannelPage } from "../features/updates/UpdateChannelPage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
 import "./workspace.css";
@@ -36,6 +37,7 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   rules: { label: "Мои правила", icon: "settings" },
   preferences: { label: "Настройки уведомлений", icon: "settings" },
   integrations: { label: "Интеграции", icon: "arrow-right-left" },
+  updates: { label: "Обновления", icon: "loader" },
   admin: { label: "Администрирование", icon: "shield" },
 };
 
@@ -48,7 +50,7 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations", "documents", "rules"];
   return role === "hr"
     ? ["queue", "calendar", "kanban", "deleted", ...personal]
-    : ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "admin"];
+    : ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "admin"];
 }
 
 function initialsOf(fullName: string, username: string): string {
@@ -128,6 +130,11 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             <span className="topbar-user-text">
               <span className="topbar-username">{user.full_name || user.username}</span>
               <span className="topbar-role">{ROLE_LABELS[user.role]}</span>
+              {current.working_mode && (
+                <span className="topbar-working-mode" title="Режим, выбранный при установке">
+                  Режим: {WORKING_MODE_LABELS[current.working_mode]}
+                </span>
+              )}
             </span>
             <button type="button" className="topbar-logout" onClick={() => void handleLogout()}>
               <Icon name="log-out" size={15} />
@@ -151,6 +158,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           {section === "documents" && <DocumentListsPage />}
           {section === "rules" && <MyRulesPage />}
           {section === "integrations" && <IntegrationsPage user={user} />}
+          {section === "updates" && <UpdateChannelPage />}
           {section === "admin" && <AdminQueuePage />}
           {section !== "calendar" &&
             section !== "kanban" &&
@@ -161,6 +169,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             section !== "documents" &&
             section !== "rules" &&
             section !== "integrations" &&
+            section !== "updates" &&
             section !== "admin" && (
             <CandidatesListPage
               key={section}

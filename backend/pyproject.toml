@@ -53,6 +53,9 @@ extend-ignore = ["B008"]
 # flag intentionally mixed-script Cyrillic text.
 "app/**" = ["RUF001", "RUF002", "RUF003"]
 "tests/**" = ["RUF001", "RUF002", "RUF003"]
+# Generated mirror of infra/release/channel_contract.py; its header carries
+# the coding comment for the mirror-identity check.
+"app/update_channel_contract.py" = ["UP009"]
 
 [tool.mypy]
 python_version = "3.12"
