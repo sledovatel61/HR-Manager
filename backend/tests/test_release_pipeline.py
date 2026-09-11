@@ -19,7 +19,15 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 TESTDATA = REPO / "infra" / "release" / "testdata"
 RELEASE = REPO / "infra" / "release"
-WORKFLOW = REPO / ".github" / "workflows" / "update-channel.yml"
+# После переноса владельцем workflow лежит в .github/workflows/; до
+# переноса (GitHub App сессии без права `workflows` не может его запушить)
+# инварианты проверяются на точной копии из review-artifacts/.
+_WORKFLOW_IN_TREE = REPO / ".github" / "workflows" / "update-channel.yml"
+WORKFLOW = (
+    _WORKFLOW_IN_TREE
+    if _WORKFLOW_IN_TREE.exists()
+    else REPO / "review-artifacts" / "update-channel.yml"
+)
 PACKAGE_URL = (
     "https://github.com/sledovatel61/HR-Manager/releases/download/"
     "v0.14.0/hr-manager-windows-0.14.0.zip"
@@ -161,7 +169,10 @@ def test_publish_fail_closed_without_trust_store(tmp_path: Path) -> None:
 
 
 def test_workflow_yaml_security_invariants() -> None:
-    assert WORKFLOW.exists(), "workflow должен находиться в .github/workflows/"
+    assert WORKFLOW.exists(), (
+        "workflow должен находиться в .github/workflows/ "
+        "(или, до переноса владельцем, в review-artifacts/)"
+    )
     data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     # PyYAML 6 читает ключ `on:` как boolean True (YAML 1.1); GitHub Actions
     # парсит YAML 1.2, где `on` остаётся строкой.

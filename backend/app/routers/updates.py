@@ -478,13 +478,9 @@ def engine_report(
         payload.error_code,
     )
     if outcome == ReportOutcome.NO_ACTIVE_JOB:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, "Нет активной операции установки для отчёта."
-        )
+        raise HTTPException(status.HTTP_409_CONFLICT, "Нет активной операции установки для отчёта.")
     if outcome == ReportOutcome.WRONG_JOB:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, "Несовпадение job_id с активной операцией."
-        )
+        raise HTTPException(status.HTTP_409_CONFLICT, "Несовпадение job_id с активной операцией.")
     if outcome == ReportOutcome.CONFLICT:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Противоречащий повтор отчёта для завершённого job."
