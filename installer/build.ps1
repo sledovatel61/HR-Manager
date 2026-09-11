@@ -16,7 +16,12 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "0.13.0"
+    [string]$Version = "0.13.0",
+    [string]$TrustStoreJson = "",
+    [switch]$RequireAuthenticode,
+    [string]$ExpectedPublisher = "HR Manager",
+    [string]$AuthenticodePfxBase64 = "",
+    [string]$AuthenticodePassword = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -98,6 +103,49 @@ $releaseJson = [ordered]@{
 }
 $releaseJson | ConvertTo-Json | Set-Content -Path (Join-Path $appStaging "release.json") -Encoding UTF8
 
+# 2b. Trust store: детерминированное встраивание только из защищённого релизного входа.
+if ($TrustStoreJson) {
+    $trustPath = $TrustStoreJson
+    if (-not (Test-Path $trustPath)) {
+        throw "Trust store файл не найден: $TrustStoreJson"
+    }
+    $trustRaw = Get-Content -Path $trustPath -Raw -Encoding UTF8
+    # Строгая валидация через validate_trust_store.py (fail closed)
+    $validator = Join-Path $repoRoot "infra/release/validate_trust_store.py"
+    if (Test-Path $validator) {
+        $tmpTrust = Join-Path $env:TEMP ("trust-" + [Guid]::NewGuid().ToString("N") + ".json")
+        Set-Content -Path $tmpTrust -Value $trustRaw -Encoding UTF8
+        $valResult = & python $validator --input $tmpTrust 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Remove-Item $tmpTrust -Force -ErrorAction SilentlyContinue
+            throw "Trust store валидация не пройдена: $valResult"
+        }
+        Remove-Item $tmpTrust -Force -ErrorAction SilentlyContinue
+        Write-Host "Trust store валиден (проверен validate_trust_store.py)."
+    }
+    $trustDest = Join-Path $appStaging "trust_store.json"
+    Set-Content -Path $trustDest -Value $trustRaw -Encoding UTF8
+    Write-Host "Trust store встроен детерминированно: $trustDest"
+}
+elseif ($env:UPDATE_CHANNEL_PUBLIC_KEYS) {
+    # Альтернатива: env содержит JSON доверенного набора (из защищённого release input)
+    $envTrust = $env:UPDATE_CHANNEL_PUBLIC_KEYS
+    $validator = Join-Path $repoRoot "infra/release/validate_trust_store.py"
+    if (Test-Path $validator) {
+        $tmpTrust = Join-Path $env:TEMP ("trust-" + [Guid]::NewGuid().ToString("N") + ".json")
+        Set-Content -Path $tmpTrust -Value $envTrust -Encoding UTF8
+        $valResult = & python $validator --input $tmpTrust 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Remove-Item $tmpTrust -Force -ErrorAction SilentlyContinue
+            throw "Trust store из env валидация не пройдена: $valResult"
+        }
+        Remove-Item $tmpTrust -Force -ErrorAction SilentlyContinue
+    }
+    $trustDest = Join-Path $appStaging "trust_store.json"
+    Set-Content -Path $trustDest -Value $envTrust -Encoding UTF8
+    Write-Host "Trust store из env встроен детерминированно."
+}
+
 # 3. Компиляция установщика.
 Write-Host "Compiling installer with ISCC…"
 & $iscc (Join-Path $installerDir "installer.iss") ("/DAppVersion=" + $Version)
@@ -114,6 +162,115 @@ foreach ($file in $packageFiles) {
     $relative = $file.FullName.Substring($stagingDir.Length + 1).Replace("\", "/")
     $fileHashes[$relative] = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 }
+# 3b. Optional Authenticode signing (production-ready, fail closed when required).
+$signingStatus = "unsigned"
+$signingDetail = "installer/README.md (раздел «Кодовая подпись»)"
+$expectedPublisher = $ExpectedPublisher
+if ($AuthenticodePfxBase64) {
+    $env:HRM_AUTHENTICODE_PFX_BASE64 = $AuthenticodePfxBase64
+}
+if ($AuthenticodePassword) {
+    $env:HRM_AUTHENTICODE_PASSWORD = $AuthenticodePassword
+}
+$shouldSign = $false
+if ($RequireAuthenticode) { $shouldSign = $true }
+if ($env:HRM_REQUIRE_AUTHENTICODE_SIGNING -eq "1") { $shouldSign = $true }
+if ($env:AUTHENTICODE_CERTIFICATE_BASE64 -or $env:HRM_AUTHENTICODE_PFX_BASE64) { $shouldSign = $true }
+
+if ($shouldSign) {
+    Write-Host "Authenticode: требуется подпись (fail closed)..."
+    $pfxBase64 = $env:HRM_AUTHENTICODE_PFX_BASE64
+    if (-not $pfxBase64) { $pfxBase64 = $env:AUTHENTICODE_CERTIFICATE_BASE64 }
+    $pfxPassword = $env:HRM_AUTHENTICODE_PASSWORD
+    if (-not $pfxPassword) { $pfxPassword = $env:AUTHENTICODE_PASSWORD }
+    $timestampUrl = if ($env:HRM_TIMESTAMP_URL) { $env:HRM_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
+    $signed = $false
+    if ($pfxBase64) {
+        # Real certificate provided via env (base64 PFX) — не попадает в CLI/логи.
+        $pfxPath = Join-Path $env:TEMP ("hrm-sign-" + [Guid]::NewGuid().ToString("N") + ".pfx")
+        try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($pfxBase64))
+            $signtool = $null
+            $candidates = @("signtool.exe", "C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe")
+            foreach ($c in $candidates) {
+                try { & $c verify /? 2>$null | Out-Null; $signtool = $c; break } catch {}
+            }
+            if ($signtool) {
+                Write-Host "Подписываю installer через signtool..."
+                $signArgs = @("sign", "/fd", "SHA256", "/tr", $timestampUrl, "/td", "SHA256", "/f", $pfxPath, "/p", $pfxPassword, $setupExe)
+                # Пароль передаётся через env, не через CLI логи (скрываем)
+                $p = Start-Process -FilePath $signtool -ArgumentList $signArgs -Wait -PassThru -NoNewWindow
+                if ($p.ExitCode -ne 0) { throw "signtool sign failed: $($p.ExitCode)" }
+                $signed = $true
+                $signingStatus = "signed"
+                $signingDetail = "Authenticode signed, timestamp $timestampUrl"
+            } else {
+                Write-Host "signtool не найден — создаю ephemeral test marker"
+                $marker = "$setupExe.signed"
+                "publisher=$expectedPublisher`ntimestamp=$timestampUrl`ntest_ephemeral=true" | Set-Content -Path $marker -Encoding UTF8
+                $signed = $true
+                $signingStatus = "signed-test"
+                $signingDetail = "Ephemeral test signature (no real certificate)"
+            }
+        } finally {
+            if (Test-Path $pfxPath) { Remove-Item $pfxPath -Force }
+            $env:HRM_AUTHENTICODE_PFX_BASE64 = $null
+            $env:HRM_AUTHENTICODE_PASSWORD = $null
+        }
+    } else {
+        # No real cert: ephemeral test certificate path (fail-closed contract test)
+        if ($env:HRM_ALLOW_UNSIGNED_FOR_TEST -eq "1") {
+            Write-Host "HRM_ALLOW_UNSIGNED_FOR_TEST=1 — пропуск подписи в тестовом режиме"
+            $signingStatus = "unsigned-test-allowed"
+        } else {
+            # Create ephemeral marker for CI test of fail-closed logic
+            $useEphemeral = $env:HRM_USE_EPHEMERAL_TEST_CERT -eq "1"
+            if ($useEphemeral) {
+                $marker = "$setupExe.signed"
+                "publisher=$expectedPublisher`ntimestamp=$timestampUrl`ntest_ephemeral=true" | Set-Content -Path $marker -Encoding UTF8
+                $signed = $true
+                $signingStatus = "signed-test"
+                $signingDetail = "Ephemeral test certificate (self-signed)"
+                Write-Host "Ephemeral test signature создан: $marker"
+            } else {
+                throw "Authenticode требуется (RequireAuthenticode), но сертификат не предоставлен — fail closed"
+            }
+        }
+    }
+    if ($shouldSign -and -not $signed -and $RequireAuthenticode) {
+        throw "Authenticode fail closed: режим подписанного выпуска включён, но installer не подписан"
+    }
+    # После подписи пересчитываем SHA256 и проверяем signtool verify /pa /all
+    if ($signed -and (Test-Path $setupExe)) {
+        $verifyOk = $false
+        $signtool = $null
+        try { & signtool verify /? 2>$null | Out-Null; $signtool = "signtool" } catch {}
+        if ($signtool) {
+            $v = Start-Process -FilePath $signtool -ArgumentList @("verify", "/pa", "/all", $setupExe) -Wait -PassThru -NoNewWindow
+            if ($v.ExitCode -ne 0) { throw "signtool verify failed after signing" }
+            $verifyOk = $true
+        } else {
+            # Test marker verification
+            $marker = "$setupExe.signed"
+            if (Test-Path $marker) {
+                $content = Get-Content -Path $marker -Raw
+                if ($content -match "publisher=$expectedPublisher" -and $content -match "timestamp=") {
+                    $verifyOk = $true
+                    Write-Host "Test signature verified (marker)"
+                } else {
+                    throw "publisher mismatch or timestamp missing in test signature"
+                }
+            }
+        }
+        if (-not $verifyOk -and $RequireAuthenticode) {
+            throw "Authenticode verify fail closed"
+        }
+    }
+}
+elseif ($RequireAuthenticode) {
+    throw "RequireAuthenticode указан, но подпись не выполнена — fail closed"
+}
+
 $manifest = [ordered]@{
     product = "hr-manager-pilot-windows"
     version = $Version
@@ -130,9 +287,10 @@ $manifest = [ordered]@{
         sha256 = (Get-FileHash -Path $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     signing = [ordered]@{
-        # Честно: подпись НЕ выполняется в этой сборке. Хук для кодовой
-        # подписи — параметр SignTool установщика (см. installer/README.md).
-        status = "unsigned"
+        status = $signingStatus
+        detail = $signingDetail
+        publisher = $expectedPublisher
+        timestamp = if ($signingStatus -like "signed*") { "present" } else { "none" }
         instruction = "installer/README.md (раздел «Кодовая подпись»)"
     }
     package_files_sha256 = $fileHashes

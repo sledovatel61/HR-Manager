@@ -690,6 +690,20 @@ export interface UpdateStatus {
   channel_configured: boolean;
 }
 
+export interface PilotReadinessCheck {
+  code: string;
+  status: "pass" | "warning" | "fail";
+  message_ru: string;
+  next_action_ru: string;
+  details?: Record<string, unknown> | null;
+}
+
+export interface PilotReadiness {
+  verdict: "ready" | "ready_with_warnings" | "blocked";
+  generated_at: string;
+  checks: PilotReadinessCheck[];
+}
+
 export interface UpdateInstallResult {
   state: string;
   job_id: string | null;

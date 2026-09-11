@@ -15,6 +15,7 @@ import { PreferencesPage } from "../features/notifications/PreferencesPage";
 import { IntegrationsPage } from "../features/notifications/IntegrationsPage";
 import { AdminQueuePage } from "../features/notifications/AdminQueuePage";
 import { UpdateChannelPage } from "../features/updates/UpdateChannelPage";
+import { ReadinessPage } from "../features/readiness/ReadinessPage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
 import "./workspace.css";
@@ -38,6 +39,7 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   preferences: { label: "Настройки уведомлений", icon: "settings" },
   integrations: { label: "Интеграции", icon: "arrow-right-left" },
   updates: { label: "Обновления", icon: "loader" },
+  readiness: { label: "Готовность пилота", icon: "shield" },
   admin: { label: "Администрирование", icon: "shield" },
 };
 
@@ -50,7 +52,7 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations", "documents", "rules"];
   return role === "hr"
     ? ["queue", "calendar", "kanban", "deleted", ...personal]
-    : ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "admin"];
+    : ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "readiness", "admin"];
 }
 
 function initialsOf(fullName: string, username: string): string {
@@ -159,6 +161,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           {section === "rules" && <MyRulesPage />}
           {section === "integrations" && <IntegrationsPage user={user} />}
           {section === "updates" && <UpdateChannelPage />}
+          {section === "readiness" && <ReadinessPage />}
           {section === "admin" && <AdminQueuePage />}
           {section !== "calendar" &&
             section !== "kanban" &&
@@ -170,6 +173,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             section !== "rules" &&
             section !== "integrations" &&
             section !== "updates" &&
+            section !== "readiness" &&
             section !== "admin" && (
             <CandidatesListPage
               key={section}

@@ -127,6 +127,63 @@ function Get-HrmDiagnostics {
     # честное значение «not_configured» без захода в приватные настройки.
     $channels = @{ smtp = "not_configured"; telegram = "not_configured" }
 
+    # Trust store: redacted diagnostics (только key_id + fingerprint, никаких секретов).
+    $trustState = "not_configured"
+    $trustFingerprints = @()
+    $trustRevoked = 0
+    try {
+        $chCfg = Get-HrmChannelConfig
+        if ($null -ne $chCfg -and $chCfg.public_keys -and $chCfg.public_keys.Count -gt 0) {
+            $trustState = "configured"
+            foreach ($kid in $chCfg.public_keys.Keys) {
+                $entry = $chCfg.public_keys[$kid]
+                $revoked = $false
+                $fingerprint = "unknown"
+                if ($entry -is [hashtable] -and $entry.ContainsKey("revoked")) { $revoked = [bool]$entry.revoked }
+                if ($revoked) { $trustRevoked += 1 }
+                # Fingerprint: первые 12 hex sha256 публичного ключа (redacted, без самого ключа)
+                try {
+                    if ($entry -is [hashtable] -and $entry.ContainsKey("key") -and $entry["key"]) {
+                        $raw = [Convert]::FromBase64String([string]$entry["key"])
+                        $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($raw)
+                        $fingerprint = -join ($sha[0..5] | ForEach-Object { $_.ToString("x2") })
+                    }
+                } catch { $fingerprint = "invalid" }
+                $trustFingerprints += [ordered]@{ key_id = $kid; fingerprint = $fingerprint; revoked = $revoked }
+            }
+            # Проверяем встроенный trust_store.json в InstallDir (детерминированность выпуска)
+            $embeddedPath = Join-Path $InstallDir "trust_store.json"
+            if (Test-Path $embeddedPath) {
+                try {
+                    $embeddedRaw = Get-Content -Path $embeddedPath -Raw -Encoding UTF8
+                    $embedded = $embeddedRaw | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+                    # Сравниваем детерминированно (embedded vs channel.json) — несовпадение = warning в диагностике
+                    $mismatch = $false
+                    if ($embedded.Count -ne $chCfg.public_keys.Count) { $mismatch = $true }
+                    else {
+                        foreach ($k in $embedded.Keys) {
+                            if (-not $chCfg.public_keys.ContainsKey($k)) { $mismatch = $true; break }
+                        }
+                    }
+                    if ($mismatch) { $trustState = "mismatch" }
+                } catch { $trustState = "embedded_invalid" }
+            }
+        }
+    } catch { $trustState = "unknown" }
+
+    # Update channel: offline/errors are warnings, not fatal — hrm status/type = warning
+    $channelStatus = "unknown"
+    $channelUrl = ""
+    try {
+        $ch = Get-HrmChannelConfig
+        if ($ch -and $ch.url) { $channelUrl = [string]$ch.url }
+        # Проверяем доступность канала (HEAD-like): offline = warning per phase 14
+        if ($channelUrl) {
+            $channelStatus = "configured"
+            # Не раскрываем URL в логах полностью — только хост через redaction
+        } else { $channelStatus = "not_configured" }
+    } catch { $channelStatus = "unknown" }
+
     $result = [ordered]@{
         generated_at = (Get-Date).ToString("o")
         install_dir = $InstallDir
@@ -146,6 +203,11 @@ function Get-HrmDiagnostics {
         running_release_sha = $runningSha
         smtp = $channels["smtp"]
         telegram = $channels["telegram"]
+        channel = $channelStatus
+        channel_url_redacted = if ($channelUrl) { Protect-HrmOutput $channelUrl } else { "" }
+        trust_store = $trustState
+        trust_fingerprints = $trustFingerprints
+        trust_revoked = $trustRevoked
     }
 
     if ($AsJson) {
@@ -162,8 +224,15 @@ function Get-HrmDiagnostics {
             ("version     : {0} (установлено {1}, в работе {2})" -f $result.version, $result.installed_release_sha, $result.running_release_sha),
             ("smtp        : {0}" -f $result.smtp),
             ("telegram    : {0}" -f $result.telegram),
+            ("channel     : {0}" -f $result.channel),
+            ("trust_store : {0} (revoked {1})" -f $result.trust_store, $result.trust_revoked),
             ("url         : {0}" -f $result.url)
         )
+        if ($result.trust_fingerprints -and $result.trust_fingerprints.Count -gt 0) {
+            foreach ($fp in $result.trust_fingerprints) {
+                $rows += ("  key {0}: {1} revoked={2}" -f $fp.key_id, $fp.fingerprint, $fp.revoked)
+            }
+        }
         $rows | ForEach-Object { Protect-HrmOutput $_ }
     }
 }

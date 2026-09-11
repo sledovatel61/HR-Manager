@@ -34,6 +34,7 @@ from app.routers import (
     notifications,
     ops,
     preferences,
+    readiness,
     reminders,
     setup,
     updates,
@@ -141,6 +142,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(preferences.router)
     app.include_router(setup.router)
     app.include_router(updates.router)
+    app.include_router(readiness.router)
     return app
 
 

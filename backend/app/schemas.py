@@ -1156,6 +1156,24 @@ class UpdateEngineReportRequest(BaseModel):
         return self
 
 
+class ReadinessCheckOut(BaseModel):
+    """Одна проверка готовности пилота (server-owned, без секретов)."""
+
+    code: str
+    status: Literal["pass", "warning", "fail"]
+    message_ru: str
+    next_action_ru: str
+    details: dict | None = None
+
+
+class ReadinessResponse(BaseModel):
+    """Ответ предпусковой диагностики (готово | с предупреждениями | запрещён)."""
+
+    verdict: Literal["ready", "ready_with_warnings", "blocked"]
+    generated_at: str
+    checks: list[ReadinessCheckOut]
+
+
 class SetupStateOut(BaseModel):
     """Honest setup status: what works, what is not configured."""
 

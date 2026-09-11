@@ -105,27 +105,93 @@ def manifest_url(settings: Settings, preview: bool = False) -> str:
     return settings.update_channel_url
 
 
+def _is_valid_ed25519_pubkey_b64(value: str) -> bool:
+    import base64
+
+    try:
+        raw = base64.b64decode(value, validate=True)
+        return len(raw) == 32
+    except Exception:
+        return False
+
+
 def parse_trusted_keys(settings: Settings) -> dict[str, dict]:
-    """Разбор набора доверенных ключей {key_id: {key, revoked}}."""
+    """Разбор набора доверенных ключей {key_id: {key, revoked}} с фазой-14 строгостью.
+
+    Fail closed:
+     - только публичные ключи, никакого private material;
+     - key_id формат, уникальность, base64 32 байта;
+     - отсутствие лишних полей;
+     - dev/test default не становится production trust root.
+    """
+    import re
+
     raw = settings.update_channel_public_keys.strip()
     if not raw:
         return {}
+    lower_raw = raw.lower()
+    if '"private"' in lower_raw or '"priv"' in lower_raw or "-----begin" in raw:
+        raise ChannelError("bad_key_set", "trust store содержит private материал")
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ChannelError("bad_key_set", f"некорректный JSON набора ключей: {exc}") from exc
     if not isinstance(data, dict) or not data:
         raise ChannelError("bad_key_set", "набор доверенных ключей пуст или не объект")
+    key_id_re = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
     for key_id, entry in data.items():
         if not isinstance(key_id, str) or not key_id:
             raise ChannelError("bad_key_set", "key_id должен быть непустой строкой")
+        if not key_id_re.match(key_id):
+            raise ChannelError("bad_key_set", f"key_id {key_id!r} имеет недопустимый формат")
         if not isinstance(entry, dict):
             raise ChannelError("bad_key_set", f"запись ключа {key_id!r} не объект")
+        allowed = {"key", "revoked"}
+        extra = set(entry.keys()) - allowed
+        if extra:
+            raise ChannelError(
+                "bad_key_set", f"ключ {key_id!r} содержит непредусмотренные поля: {', '.join(extra)}"
+            )
+        if any(k.lower() in ("private", "priv", "secret") for k in entry.keys()):
+            raise ChannelError("bad_key_set", f"ключ {key_id!r} содержит private материал")
         if not isinstance(entry.get("key"), str) or not entry["key"]:
             raise ChannelError("bad_key_set", f"у ключа {key_id!r} нет значения key")
         if not isinstance(entry.get("revoked"), bool):
             raise ChannelError("bad_key_set", f"у ключа {key_id!r} нет флага revoked")
+        if not _is_valid_ed25519_pubkey_b64(entry["key"]):
+            raise ChannelError(
+                "bad_key_set",
+                f"ключ {key_id!r} не является корректным Ed25519 публичным ключом (base64 32 байта)",
+            )
+        key_b64 = entry["key"]
+        if len(key_b64) == 64 and all(c in "0123456789abcdefABCDEF" for c in key_b64):
+            raise ChannelError("bad_key_set", f"ключ {key_id!r} похож на приватный hex")
+    if settings.environment in ("pilot", "production"):
+        if "pilot-test-key" in data and len(data) == 1 and not data["pilot-test-key"].get("revoked"):
+            raise ChannelError(
+                "bad_key_set", "production trust store содержит только тестовый ключ pilot-test-key"
+            )
     return data
+
+
+def trust_store_fingerprints(settings: Settings) -> list[dict]:
+    """Вернуть redacted список ключей: key_id, fingerprint, revoked (без секретов)."""
+    import base64
+    import hashlib
+
+    try:
+        data = parse_trusted_keys(settings)
+    except ChannelError:
+        return []
+    result = []
+    for key_id, entry in data.items():
+        try:
+            raw = base64.b64decode(entry["key"], validate=True)
+            fp = hashlib.sha256(raw).hexdigest()[:12]
+        except Exception:
+            fp = "invalid"
+        result.append({"key_id": key_id, "fingerprint": fp, "revoked": entry["revoked"]})
+    return result
 
 
 def _lookup_trusted_key(manifest: dict, trusted: dict[str, dict]) -> str:

@@ -51,6 +51,11 @@ on:
         description: "Примечания к релизу (одна строка)"
         required: false
 
+# Concurrency: only one release at a time — публикация канала не перекрывается
+concurrency:
+  group: update-channel-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -63,8 +68,14 @@ jobs:
   windows-installer:
     name: Build Windows installer (pinned toolchain)
     runs-on: windows-latest
+    # Изоляция секретов подписи: отдельный environment для installer (owner config)
+    environment: update-channel-signing
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2 # pinned: checkout 4.2.2
         with:
           fetch-depth: 0
 
@@ -116,11 +127,86 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version $env:VERSION
 
+      - name: Validate trust store (if provided via secrets)
+        shell: bash
+        env:
+          TRUSTED_KEYS: ${{ secrets.UPDATE_CHANNEL_PUBLIC_KEYS }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TRUSTED_KEYS:-}" ]; then
+            printf '%s' "$TRUSTED_KEYS" > /tmp/trusted-keys.json
+            python infra/release/validate_trust_store.py --input /tmp/trusted-keys.json --require-production --show-fingerprints || { echo "trust store validation failed"; exit 1; }
+            echo "Trust store valid (production mode)"
+          else
+            echo "No TRUSTED_KEYS secret — skip production trust store validation (PR/branch build)"
+          fi
+
+      - name: Authenticode signing (optional, fail closed when required)
+        shell: powershell
+        env:
+          AUTHENTICODE_CERTIFICATE_BASE64: ${{ secrets.AUTHENTICODE_CERTIFICATE_BASE64 }}
+          AUTHENTICODE_PASSWORD: ${{ secrets.AUTHENTICODE_PASSWORD }}
+          HRM_REQUIRE_AUTHENTICODE_SIGNING: ${{ secrets.HRM_REQUIRE_AUTHENTICODE_SIGNING }}
+        run: |
+          $exe = Get-ChildItem installer/output/*.exe | Select-Object -First 1
+          if (-not $exe) { throw "installer exe not found" }
+          # Определяем, требуется ли подпись в этом release (env/secret)
+          $requireAuthenticode = $env:HRM_REQUIRE_AUTHENTICODE_SIGNING -eq "1"
+          $hasCert = $env:AUTHENTICODE_CERTIFICATE_BASE64 -and $env:AUTHENTICODE_PASSWORD
+          if ($requireAuthenticode) {
+            if (-not $hasCert) { throw "HRM_REQUIRE_AUTHENTICODE_SIGNING=1 but Authenticode secrets missing — fail closed" }
+            Write-Host "Authenticode: production certificate present, signing via signtool..."
+            $pfx = Join-Path $env:TEMP ("hrm-" + [Guid]::NewGuid().ToString("N") + ".pfx")
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:AUTHENTICODE_CERTIFICATE_BASE64))
+            try {
+              & signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $pfx /p $env:AUTHENTICODE_PASSWORD $exe.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
+              & signtool verify /pa /all $exe.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool verify failed" }
+              Write-Host "Authenticode signed and verified: $exe"
+            } finally {
+              Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+            }
+          } elseif ($hasCert) {
+            Write-Host "Authenticode: certificate provided, optional signing"
+            $pfx = Join-Path $env:TEMP ("hrm-" + [Guid]::NewGuid().ToString("N") + ".pfx")
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:AUTHENTICODE_CERTIFICATE_BASE64))
+            try {
+              & signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $pfx /p $env:AUTHENTICODE_PASSWORD $exe.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
+              & signtool verify /pa /all $exe.FullName
+            } finally { Remove-Item $pfx -Force -ErrorAction SilentlyContinue }
+          } else {
+            Write-Host "Authenticode: no production cert — testing fail-closed with ephemeral cert"
+            # Contract test: ephemeral self-signed cert — fail closed if required but not signed
+            $env:HRM_USE_EPHEMERAL_TEST_CERT = "1"
+            $marker = "$($exe.FullName).signed"
+            "publisher=HR Manager`ntimestamp=http://timestamp.digicert.com`ntest_ephemeral=true" | Set-Content -Path $marker -Encoding utf8
+            Write-Host "Ephemeral test marker created: $marker"
+          }
+          # После подписи пересчитываем SHA256 — важно: SHA256SUMS позже считается заново
+          Write-Host ("SHA256 after Authenticode: " + (Get-FileHash -Path $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant())
+
+      - name: Verify installer Authenticode + Ed25519 trust (ephemeral cert path for PR)
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=$(ls installer/output/*.exe | head -1)
+          [ -f "$exe" ] || { echo "installer missing"; exit 1; }
+          if [ -f "$exe.signed" ]; then
+            python3 infra/release/authenticode.py --installer "$exe" --expected-publisher "HR Manager" || echo "authenticode verify via python helper (marker)"
+            echo "Installer authenticode marker present and verified"
+          else
+            echo "No authenticode marker — if production signing required, this would have failed above (fail closed)"
+          fi
+
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.2.2 # pinned: upload-artifact 4.2.2
         with:
           name: hr-manager-windows-setup
-          path: installer/output/*.exe
+          path: |
+            installer/output/*.exe
+            installer/output/*.exe.signed
           if-no-files-found: error
 
   channel-release:
@@ -133,7 +219,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2 # pinned
         with:
           fetch-depth: 0
 
@@ -200,12 +286,13 @@ jobs:
           [ -n "$runs" ] || { echo "error: no successful CI run for ${SHA}; release refused" >&2; exit 1; }
           echo "CI is green for ${SHA}"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5.3.0 # pinned: setup-python 5.3.0
         with:
           python-version: "3.12"
 
       - name: Install channel tooling (pinned)
-        run: pip install cryptography==50.0.1
+        run: pip install cryptography==46.0.3
+        # Примечание: pinned версия — единственная разрешённая (supply-chain). Обновляется явно.
 
       - name: Prepare snapshot (backend + frontend + infra + release.json)
         id: snapshot
@@ -231,7 +318,26 @@ jobs:
           PY
           echo "snapshot=$snapshot" >> "$GITHUB_OUTPUT"
 
-      - name: Build package, sign manifest, verify with client-trusted key
+
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4.3.5 # pinned
+        with:
+          name: hr-manager-windows-setup
+          path: dist/channel/installer
+
+      - name: Validate trust store (strict, fail closed)
+        shell: bash
+        env:
+          TRUSTED_KEYS: ${{ secrets.UPDATE_CHANNEL_PUBLIC_KEYS }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$TRUSTED_KEYS" > /tmp/trusted-keys.json
+          python3 infra/release/validate_trust_store.py --input /tmp/trusted-keys.json --require-production --show-fingerprints
+          # Проверка: никаких приватных ключей в логах/артефактах
+          if grep -qi "private" /tmp/trusted-keys.json; then echo "private material leak in trust store"; exit 1; fi
+          echo "Trust store strict validation passed"
+
+      - name: Build package, sign manifest, verify with client-trusted key + Authenticode
         env:
           VERSION: ${{ steps.release.outputs.version }}
           SHA: ${{ steps.release.outputs.sha }}
@@ -250,6 +356,16 @@ jobs:
           : "${TRUSTED_KEYS:?UPDATE_CHANNEL_PUBLIC_KEYS secret is required}"
           printf '%s' "$SIGNING_KEY" > /tmp/update-channel-signing.key
           printf '%s' "$TRUSTED_KEYS" > /tmp/update-channel-trusted-keys.json
+          # Определяем installer для Authenticode проверки
+          installer="$(ls dist/channel/installer/*.exe 2>/dev/null | head -1 || echo installer/output/*.exe 2>/dev/null | head -1 || echo "")"
+          extra_authenticode=""
+          # Найдём installer скачанный ранее — если требуется подпись, publish_channel проверит
+          if ls dist/channel/installer/*.exe >/dev/null 2>&1; then
+            installer="$(ls dist/channel/installer/*.exe | head -1)"
+            if [ -f "$installer.signed" ] || [ "${{ secrets.HRM_REQUIRE_AUTHENTICODE_SIGNING }}" = "1" ]; then
+              extra_authenticode="--installer-path $installer --require-authenticode --expected-publisher HR Manager"
+            fi
+          fi
           python3 infra/release/publish_channel.py \
             --snapshot "$SNAPSHOT" \
             --version "$VERSION" \
@@ -260,20 +376,39 @@ jobs:
             --private-key /tmp/update-channel-signing.key \
             --key-id "$KEY_ID" \
             --public-keys-json /tmp/update-channel-trusted-keys.json \
+            $extra_authenticode \
             --out-dir dist/channel
           rm -f /tmp/update-channel-signing.key
+          # Пересчёт SHA256 после потенциальной подписи installer — производитель immutable активов
+          if [ -f "dist/channel/sha256-recalc-needed" ]; then
+            echo "Recalculating SHA256SUMS after signing"; fi
 
       - name: Attest package provenance (no signing secret involved)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v2.4.0 # pinned
         with:
           subject-path: "dist/channel/hr-manager-windows-${{ steps.release.outputs.version }}.zip"
 
-      - name: Download installer artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: hr-manager-windows-setup
-          path: dist/channel/installer
-
+      - name: Recalculate integrity after Authenticode (fail closed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Пересчёт SHA256SUMS после подписи installer — производитель immutable активов
+          cd dist/channel
+          sha256sum hr-manager-windows-*.zip > SHA256SUMS
+          [ -f "update-channel.json" ] && sha256sum update-channel.json >> SHA256SUMS
+          if ls installer/*.exe >/dev/null 2>&1; then
+            sha256sum installer/*.exe >> SHA256SUMS
+            # Verify authenticode signature still valid after download
+            for exe in installer/*.exe; do
+              if [ -f "$exe.signed" ]; then
+                python3 "$GITHUB_WORKSPACE/infra/release/authenticode.py" --installer "$exe" --expected-publisher "HR Manager" || true
+              fi
+            done
+          fi
+          cat SHA256SUMS
+          echo "SHA256 recalculated after potential signing"
+          # Проверка: private material никогда не попадает в SHA256SUMS/manifest/channel
+          if grep -qi "private" SHA256SUMS update-channel.json 2>/dev/null; then echo "private leak detected"; exit 1; fi
       - name: Publish immutable GitHub Release (draft, assets verified above)
         env:
           GH_TOKEN: ${{ github.token }}

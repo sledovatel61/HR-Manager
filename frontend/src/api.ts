@@ -826,6 +826,11 @@ export async function cancelCandidateMessage(
 // Phase 11 uses the same authenticated, CSRF-protected, same-origin client.
 export { request as documentRequest };
 
+/** Phase 14: pilot readiness (server-owned, redacted). */
+export async function fetchPilotReadiness(): Promise<import(\"./types\").PilotReadiness> {
+  return request<import(\"./types\").PilotReadiness>(\"/readiness/pilot\");
+}
+
 // --- Phase 12: local pilot first-run (Windows installer exchange) ------------
 
 /** First-run screen data: surname/mode collected by the installer plus
