@@ -5,9 +5,12 @@
   без продолжения ветки Phase 12 новыми коммитами поверх чужих)
 - **Baseline SHA (на старте):** `7343025dcc5f33ea5f6298b014b646cddd0ffdc8`
   (= `phase12/windows-acceptance-final`, локально принятая Phase 12)
-- **Final code SHA:** `e626794fb8f46a9652061aefd81c9b7e48d854a1`
-  (полностью зелёный CI: run 34502728837,
-  https://github.com/sledovatel61/HR-Manager/actions/runs/34502728837)
+- **Final code SHA (адресная доработка по техприёмке):**
+  `bc4e9d6226f8994384c97197a5f652d20c2140d3` — полностью зелёный CI
+  (run 34570110327,
+  https://github.com/sledovatel61/HR-Manager/actions/runs/34570110327);
+  финальный docs-коммит поверх — в PR-комментарии. Предыдущий SHA до
+  доработки (проверенный типом приёмки): `fdcc029…`.
 - **PR:** #23 → `phase12/windows-acceptance-final`
   (https://github.com/sledovatel61/HR-Manager/pull/23)
 - **Миграции БД:** новых миграций **нет** (промпт: по умолчанию не
@@ -194,6 +197,21 @@ infra/windows/tests/            channel.tests.ps1, расширения static/e
 infra/compose.pilot.yml         UPDATE_* + staging bind mount (только /updates)
 installer/installer.iss         запуск наблюдателя после установки
 docs/                           phase-13-report-arena.md, README-обновления
+
+# --- Адресная доработка по техприёмке (rework) ---------------------------------
+infra/release/publish_channel.py      исполняемое ядро release workflow
+review-artifacts/update-channel.{yml,patch}  workflow + применяемый патч
+                                      (push отклонён: нет права workflows)
+backend/app/channel.py                ручной redirect-цикл с проверкой политики
+                                      до запроса, восстановление staging
+backend/app/{config,update_state,schemas}.py  UPDATE_CHANNEL_ALLOWED_HOSTS,
+                                      apply_engine_report, строгая схема отчёта
+backend/app/routers/updates.py        re-delivery install, строгая корреляция report
+backend/tests/test_channel_network.py  11 redirect-тестов (локальные HTTPS)
+backend/tests/test_staging_recovery.py 5 тестов восстановления staging
+backend/tests/test_release_pipeline.py 5 fixture-тестов release pipeline
+backend/tests/test_updates_api.py     +9 регрессий отчётов/доставки
+backend/requirements-dev.txt          PyYAML (тест инвариантов workflow)
 ```
 
 ## Проверки (точные результаты)
@@ -203,11 +221,11 @@ docs/                           phase-13-report-arena.md, README-обновле�
 ```
 cd backend
 ruff check .                              → All checks passed!
-ruff format --check .                     → 96 files already formatted
-mypy app tests                            → Success: no issues in 96 source files
-pytest -m "not integration" -q            → 562 passed, 105 deselected
+ruff format --check .                     → 113 files already formatted
+mypy app tests                            → Success: no issues in 99 source files
+pytest -m "not integration" -q            → 592 passed, 105 deselected
 pytest tests/test_updates_api.py tests/test_update_channel_contract.py -q
-                                          → 24 passed
+                                          → 30 passed
 pytest ../infra/release/test_channel_contract.py -q
                                           → 25 passed
 pytest tests/test_pilot_overlay.py -q     → 13 passed
@@ -230,53 +248,98 @@ windows-latest), `pytest -m integration` (локальный PGlite сериал
 postgres:16), `docker compose config` (Docker в песочнице недоступен;
 структура оверлея проверена тестами `test_pilot_overlay.py`, включая
 новый тест поверхности канала). Все эти проверки зелёные в CI для точного
-SHA — ссылки в PR-комментарии. GitHub-hosted Windows runner не заменяет
-ручной acceptance с живым Docker Desktop (см. handoff).
+SHA `bc4e9d6` — run 34570110327 (5/5 job'ов success). GitHub-hosted
+Windows runner не заменяет ручной acceptance с живым Docker Desktop
+(см. handoff).
+
+## Адресная доработка по техприёмке (`prompts/PHASE_13_REWORK_PROMPT.md`)
+
+Стартовый SHA доработки (проверен типом приёмки): `fdcc029…`. Итоговый
+code SHA: `bc4e9d6…` (зелёный CI, run 34570110327). Что закрыто:
+
+1. **[P1] Release workflow Phase 13** — `infra/release/publish_channel.py`
+   (исполняемое ядро: детерминированный пакет → внешний
+   `update-channel.json` → подпись только ключом из secret → независимая
+   проверка публичным ключом production-клиента + размер/SHA256 пакета →
+   SHA256SUMS; fail closed без signing key/trust store) и тонкий workflow
+   `.github/workflows/update-channel.yml` (защищённые SemVer-теги `v*` /
+   dispatch владельца, environment `update-channel-signing`, без триггера
+   `pull_request`, attestation, публикация draft GitHub Release с
+   неизменяемыми активами только после проверки; `release.yml`
+   deploy/rollback не тронут). **Пуш этого файла отклонён GitHub App
+   сессии** (нет права `workflows`; точная ошибка и применяемый патч —
+   `review-artifacts/`, см. «Ограничения»). Fixture-тесты happy
+   path/неверная подпись/fail-closed — `backend/tests/test_release_pipeline.py`
+   (без production secret, идут в существующем CI).
+2. **[P1] Redirect до обращения** — `backend/app/channel.py`: авто-redirect
+   отключён (`_NoAutoRedirectHandler`), каждый 3xx разбирается вручную,
+   относительный `Location` резолвится через URL ответа, ПЕРЕД каждым
+   запросом проверяются https/host-политика (`_assert_url_policy`),
+   лимит цепочки и циклы — отказ, политика едина для manifest и пакета,
+   host-список — серверная настройка `UPDATE_CHANNEL_ALLOWED_HOSTS`;
+   streaming/таймаут/лимит размера/cleanup `.part`/безопасные коды —
+   сохранены. Детерминированные HTTPS-тесты на локальных серверах
+   (`backend/tests/test_channel_network.py`, 11 тестов) доказывают, что
+   запрещённый target не получает запрос (счётчик hits == 0).
+3. **[P1] Восстанавливаемая доставка install** — `/updates/engine-state`
+   больше не очищает команду на опросе: команда с тем же неизменным
+   `job_id` и server-owned путями выдаётся повторно до terminal report;
+   повторный install при активной операции — 409; report прекращает
+   выдачу. Regression-тесты в `test_updates_api.py`.
+4. **[P1] Строгая корреляция report** — `job_id` обязателен (422 при
+   отсутствии); `UpdateStateStore.apply_engine_report` — единственная
+   атомарная точка приёма: точное совпадение с активной операцией,
+   missing/unknown/stale/mismatched → 409 без изменения state/pending/
+   версии/lock; повтор того же terminal report — идемпотентный 200 без
+   второго audit-события и без повторного освобождения lock;
+   противоречащий повтор — 409; lock освобождается ровно один раз и
+   только владельцем активной операции; значения `state` и поля результата
+   валидируются схемой (422). Race покрыт потоковым тестом (6
+   конкурентных report → один audit-эффект).
+5. **[P2] Восстановление staging** — `download_package`: существующий
+   target переиспользуется только после проверки размера и SHA256;
+   повреждённый/частичный атомарно заменяется новым проверенным файлом;
+   cleanup temp при любой ошибке; валидный reuse без повторного
+   скачивания. Тесты: `backend/tests/test_staging_recovery.py` (5).
+6. **Отчёт и мелочи** — trailing whitespace в `infra/release/README.md`
+   (строка 81) убран; README описывает реальный workflow (не «патч в
+   отчёте»); в `review-artifacts/` — точный workflow, применяемый патч и
+   точная ошибка push; требования-дев дополнены `PyYAML` (только тест
+   инвариантов workflow).
+
+Точные локальные числа (Linux-песочница, venv с теми же пинами, что CI):
+
+```
+backend: ruff check → чисто; ruff format --check → 113 файлов чисто;
+         mypy app tests → Success (99 файлов);
+         pytest -m "not integration" → 592 passed, 105 deselected
+         (добавлено 30: 11 сеть, 5 staging, 9 отчёты/доставка, 5 release pipeline)
+         test_updates_api + mirror + contract + pilot_overlay → 68 passed
+frontend: eslint/typecheck → чисто; npm test → 152 passed; build → собран
+infra/windows/tests/lint-engine.py → 16 файлов, пройдено
+git diff --check → чисто
+```
+
+Не выполнены локально и почему (честно): `pytest -m integration` — нужен
+PostgreSQL (локально нет; авторитетный результат — зелёный Linux CI job
+`Backend integration tests (PostgreSQL)` на `bc4e9d6`); `powershell
+run-tests.ps1` — Windows-раннер CI (зелёный на `bc4e9d6`); `docker
+compose config` — зелёный CI job `Compose stack smoke test`.
 
 ## Ограничения
 
-1. **CI-workflow не запушен этой сессией** (GitHub App без права
-   `workflows`). Патч для владельца — добавить в `.github/workflows/ci.yml`:
-
-```yaml
-  windows-installer:
-    name: Windows engine tests + installer build
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: PowerShell engine tests (Windows PowerShell 5.1)
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
-      - name: PowerShell engine tests (pwsh)
-        shell: pwsh
-        run: pwsh -NoProfile -File infra/windows/tests/run-tests.ps1
-      - name: Build HR Manager Setup.exe (Inno Setup 6.7.3, pinned + SHA256-verified)
-        shell: pwsh
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.14.0
-      - name: Upload installer artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: hr-manager-windows-setup
-          path: |
-            installer/output/*.exe
-            installer/release-manifest.json
-
-  pilot-channel-contract:
-    name: Update channel contract (Python golden tests)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install cryptography pytest
-      - run: pytest infra/release/test_channel_contract.py -q
-```
-
-   Release-workflow (подпись secret'ом, verification, публикация по
-   защищённому SemVer-тегу, SHA256SUMS/provenance) — готовится владельцем
-   как расширение `release.yml`; команда выпуска и требования к secret
-   документированы в `infra/release/README.md`. Из PR ничего не
-   публиковалось, настройки репозитория не менялись.
+1. **`update-channel.yml` не запушен этой сессией** (GitHub App без права
+   `workflows`). Точная ошибка push:
+   `remote rejected … (refusing to allow a GitHub App to create or update
+   workflow `.github/workflows/update-channel.yml` without `workflows`
+   permission)`. Перенос владельцем (однократно) — по
+   `review-artifacts/update-channel.patch` (проверен `git apply --check`),
+   затем создать environment `update-channel-signing` (секреты
+   `UPDATE_CHANNEL_SIGNING_KEY`/`UPDATE_CHANNEL_KEY_ID`/
+   `UPDATE_CHANNEL_PUBLIC_KEYS`, protection rules) и tag protection `v*`.
+   Инварианты workflow проверяются fixture-тестом на точной копии из
+   `review-artifacts/`. До переноса Definition of Done workflow-пункта
+   достигается владельцем, не этой сессией.
 
 2. **Real release не публиковался**: канал по умолчанию указывает на
    GitHub Releases (`update-channel.json` появится при первом выпуске);
@@ -369,9 +432,16 @@ PS 5.1-дефекты (все покрыты в CI на точном SHA):
 
 ## Handoff
 
-- **Статус на handoff:** CI полностью зелёный на `e626794` (run
-  34502728837); Windows-джоб включает оба watcher-теста и installer
-  smoke. PR #23 готов к приёмке владельцем; мерж — только владелец.
+- **Статус на handoff:** CI полностью зелёный на `bc4e9d6` (run
+  34570110327, 5/5 job'ов): backend checks (вкл. 30 новых ревью-тестов),
+  PostgreSQL integration, frontend, Windows engine tests + installer
+  smoke (оба watcher-теста), compose stack smoke. PR #23 готов к
+  приёмке владельцем; мерж — только владелец.
+- **Владельцу перед выпуском:** перенести `review-artifacts/update-channel.patch`
+  в `.github/workflows/` (у сессии нет права `workflows`), создать
+  environment `update-channel-signing` (секреты
+  `UPDATE_CHANNEL_SIGNING_KEY`/`UPDATE_CHANNEL_KEY_ID`/
+  `UPDATE_CHANNEL_PUBLIC_KEYS`, protection rules) и tag protection `v*`.
 - Выпуск: `infra/release/README.md` (генерация ключей, сборка пакета,
   подпись, verification, публикация). После выпуска — внести публичный
   ключ в конфигурацию канала и обновить `ExpectedHeadRevision` при новых
