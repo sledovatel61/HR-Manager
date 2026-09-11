@@ -42,6 +42,12 @@ from channel_contract import (  # noqa: E402
     validate_manifest_fields,
     verify_signature,
 )
+from trust_store import load_trust_store, stores_match  # noqa: E402
+
+# Имя встроенного trust store внутри снимка релиза (installer/build.ps1
+# кладёт его рядом с release.json; движок импортирует при первичной
+# установке ТОЛЬКО публичные ключи).
+EMBEDDED_TRUST_STORE_NAME = "release-trust-store.json"
 
 
 def _read_private_key(path: Path) -> str:
@@ -83,6 +89,43 @@ def _read_public_key(trusted: dict, key_id: str) -> str:
     if entry.get("revoked"):
         raise ChannelError("revoked_key", f"ключ {key_id!r} отозван")
     return entry["key"]
+
+
+def _check_embedded_trust_store(snapshot: Path, trusted: dict, key_id: str) -> dict | None:
+    """Согласованность встроенного trust store с release metadata (Phase 14).
+
+    Если снимок содержит release-trust-store.json (его встраивает
+    installer/build.ps1 -TrustStore), то:
+      * он обязан проходить строгую схему trust_store.py (production,
+        без private material, уникальные key_id, base64 32-байтовые ключи);
+      * его набор ключей обязан ПОБАЙТОВО совпадать с trust store релиза
+        (--public-keys-json) — несовпадение блокирует выпуск;
+      * ключ подписи key_id обязан входить в него и не быть отозванным.
+    Возвращает нормализованное хранилище (для публикации рядом с артефактами)
+    или None, если снимок без встроенного хранилища.
+    """
+    embedded_path = snapshot / EMBEDDED_TRUST_STORE_NAME
+    if not embedded_path.exists():
+        return None
+    embedded = load_trust_store(embedded_path)
+    # Сравнение с плоским trust store релиза ({key_id: {key, revoked}}).
+    flat = {
+        key_id_value: {"key": entry["key"], "revoked": bool(entry.get("revoked"))}
+        for key_id_value, entry in trusted.items()
+    }
+    if not stores_match(embedded, {"schema_version": 1, "environment": "production", "keys": flat}):
+        raise ChannelError(
+            "trust_store_mismatch",
+            "встроенный trust store не совпадает с trust store релиза — выпуск заблокирован",
+        )
+    entry = embedded["keys"].get(key_id)
+    if entry is None:
+        raise ChannelError(
+            "unknown_key", f"ключ подписи {key_id!r} отсутствует во встроенном trust store"
+        )
+    if entry["revoked"]:
+        raise ChannelError("revoked_key", f"ключ подписи {key_id!r} отозван во встроенном trust store")
+    return embedded
 
 
 def main() -> int:
@@ -129,6 +172,13 @@ def main() -> int:
 
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+
+        # 0. Trust store выпуска (Phase 14): загружаем ДО любых записей в
+        #    out_dir, чтобы несовпадение встроенного и release trust store
+        #    блокировало выпуск целиком (никаких частичных артефактов).
+        trusted = _load_public_keys(args.public_keys_json)
+        embedded = _check_embedded_trust_store(snapshot, trusted, args.key_id)
+
         package_name = f"hr-manager-windows-{args.version}.zip"
         package_path = out_dir / package_name
 
@@ -169,7 +219,6 @@ def main() -> int:
 
         # 4. НЕЗАВИСИМАЯ проверка тем ключом, которому доверяет клиент:
         #    подпись + размер/SHA256 пакета против manifest.
-        trusted = _load_public_keys(args.public_keys_json)
         public_key = _read_public_key(trusted, args.key_id)
         verify_signature(signed, public_key)
         if signed["package_size"] != package_size:
@@ -177,13 +226,24 @@ def main() -> int:
         if signed["package_sha256"] != package_sha256:
             raise ChannelError("package_hash_mismatch", "SHA256 пакета не совпал с manifest")
 
+        # 4b. Встроенный trust store уже проверен на шаге 0 (fail closed до
+        #     записи артефактов); здесь публикованные артефакты фиксируются
+        #     в SHA256SUMS.
+        artifacts = [
+            (package_name, package_sha256),
+            ("update-channel.json", hashlib.sha256(manifest_path.read_bytes()).hexdigest()),
+        ]
+        if embedded is not None:
+            trust_path = out_dir / "trust-store.json"
+            trust_path.write_text(
+                json.dumps(embedded, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            artifacts.append(
+                ("trust-store.json", hashlib.sha256(trust_path.read_bytes()).hexdigest())
+            )
+
         # 5. SHA256SUMS поверх проверенных артефактов.
-        sums = "\n".join(
-            [
-                f"{package_sha256}  {package_name}",
-                f"{hashlib.sha256(manifest_path.read_bytes()).hexdigest()}  update-channel.json",
-            ]
-        )
+        sums = "\n".join([f"{sha}  {name}" for name, sha in artifacts])
         (out_dir / "SHA256SUMS").write_text(sums + "\n", encoding="utf-8")
 
         print(f"канал собран и проверен: {args.version} (release_sha {args.release_sha[:12]})")

@@ -1,5 +1,6 @@
 import type {
   AccessGrant,
+  ReadinessReport,
   AdminChannels,
   CandidateChannels,
   CandidateEmailConfirmation,
@@ -204,6 +205,11 @@ export async function downloadUpdate(): Promise<UpdateStatus> {
 /** Queue an install for the Windows engine (existing Phase 12 updater). */
 export async function requestUpdateInstall(): Promise<UpdateInstallResult> {
   return request<UpdateInstallResult>("/updates/install", { method: "POST" });
+}
+
+/** Phase 14: read-only pilot readiness report (admin + update_channel_manage). */
+export async function fetchReadinessReport(): Promise<ReadinessReport> {
+  return request<ReadinessReport>("/updates/readiness");
 }
 
 /** Fetch the backend health report, or null when the backend is unreachable. */

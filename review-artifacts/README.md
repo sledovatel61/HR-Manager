@@ -254,3 +254,55 @@ env (никаких inline-expressions в run-блоках — shell injection
 каталоге и сравнивает `read_bytes()` установленного
 `.github/workflows/update-channel.yml` с артефактом (патч содержит
 `@@`-hunk header; применение без hunk'а создавало бы пустой файл).
+
+## Phase 14 (Arena agent) — pilot readiness
+
+GitHub App не может пушить изменения `.github/workflows/*` (нет права
+`workflows`) — поэтому Phase 14-версии обоих workflow опубликованы здесь как
+точные копии + патчи. Владельцу необходимо перенести их в рабочий каталог
+(после merge PR Phase 14):
+
+| Файл | Назначение |
+|---|---|
+| `update-channel.phase14.yml` | полная Phase 14-версия `.github/workflows/update-channel.yml`: Authenticode-подпись installer (environment `installer-signing`, production-режим fail-closed на тегах `v*`), встраивание trust store, сверка подписи/trust store/SHA256 перед публикацией, `trust-store.json` в релизе; **hardening (этап доработки)**: независимая криптографическая проверка фактических байтов PE (`infra/release/authenticode_verify.py release-gate`) в windows-installer сразу после подписи и в channel-release непосредственно перед `gh release create`; в test-режиме штамп времени выдаёт локальный эфемерный RFC 3161 TSA (`infra/scripts/drill_tsa_server.py`); все сторонние actions закреплены полными commit SHA |
+| `update-channel.phase14.patch` | unified diff для `git apply` из корня репозитория (текущее `.github/workflows/update-channel.yml` → phase14-версия) |
+| `ci.phase14.yml` | полная Phase 14-версия `.github/workflows/ci.yml`: добавлена джоба `pilot-drill` (e2e pilot drill, синтетика, без production secrets); сторонние actions закреплены полными commit SHA |
+| `ci.phase14.patch` | unified diff для `git apply` из корня репозитория (текущее `.github/workflows/ci.yml` → phase14-версия) |
+
+Новые секреты, которые владелец должен создать для independent-гейта
+(публичный материал, приватных ключей среди них НЕТ):
+
+| Environment | Секрет | Содержимое |
+|---|---|---|
+| `installer-signing` | `INSTALLER_AUTHENTICODE_ROOT_PEM` | PEM root CA цепочки production-подписи (можно bundle цепочки корней) — якорь доверия независимой проверки |
+| `installer-signing` | `INSTALLER_AUTHENTICODE_TSA_ROOT_PEM` | PEM root CA timestamp-сервера (необязателен; по умолчанию — root'ы подписанта) |
+| `update-channel-signing` | `INSTALLER_AUTHENTICODE_PUBLISHER` / `INSTALLER_AUTHENTICODE_ROOT_PEM` / `INSTALLER_AUTHENTICODE_TSA_ROOT_PEM` | те же значения, что в `installer-signing`: финальный independent-гейт выполняется в джобе публикации |
+
+Без `INSTALLER_AUTHENTICODE_ROOT_PEM` production-публикация отказывает
+(fail closed) — «проверки по манифесту» недостаточно.
+
+Перенос (вариант A — патчи, из корня репозитория):
+
+```bash
+git apply review-artifacts/update-channel.phase14.patch
+git apply review-artifacts/ci.phase14.patch
+git commit -am "Move Phase 14 workflows in-tree (owner handoff)"
+```
+
+Вариант B — копирование файлов поверх `.github/workflows/`.
+
+Тесты (`backend/tests/test_release_pipeline.py`,
+`backend/tests/test_pilot_drill.py`) автоматически переключаются на in-tree
+версии после переноса (маркеры: `installer-signing` / `pilot-drill:`).
+До переноса джоба `pilot-drill` в CI не запускается — прогнать drill
+локально: `infra/scripts/pilot-drill.sh` (Docker Compose v2.24+).
+
+Независимый Authenticode-верификатор и его тесты живут в дереве и работают
+без переноса: `infra/release/authenticode_verify.py` (CLI `verify` /
+`release-gate`), `backend/tests/test_authenticode_verify.py` (37 тестов:
+позитивные сценарии + все негативные — unsigned/non-PE/модификация после
+подписи/перенос подписи/wrong publisher/untrusted root/нет EKU/повреждённый
+и недоверенный timestamp/legacy MS timestamp/SHA-1/forged manifest/
+тестовый сертификат в production/отсутствующий root). Все фикстуры —
+эфемерные сертификаты, создаваемые в памяти на время прогона; никаких
+production-ключей в репозитории/фикстурах/логах/артефактах нет.

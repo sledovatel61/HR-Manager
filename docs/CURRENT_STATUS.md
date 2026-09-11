@@ -108,3 +108,37 @@ Phase 14 доводит технически готовый Windows-контур
 пилота: production release signing, end-to-end release/upgrade drill,
 предпусковая диагностика, restore/rollback и операторский runbook. Полный
 контракт: [`prompts/PHASE_14_PROMPT.md`](../prompts/PHASE_14_PROMPT.md).
+
+## Результат Phase 14
+
+- Ветка сессии Arena: `arena/01a08fef-hr-manager` (PR в main).
+- Production release с двумя независимыми подписями: обязательная Ed25519
+  channel-подпись + опциональная (production-режим fail-closed) Authenticode
+  `installer/sign-installer.ps1` с контрактом `infra/release/installer_signing.py`;
+  секреты только через GitHub environments `update-channel-signing` и
+  `installer-signing`; ephemeral тестовые сертификаты никогда не проходят
+  production-политику.
+- Доставка trust configuration: строгая схема `infra/release/trust_store.py`
+  (без private material, test ≠ production root), встраивание в installer
+  (`build.ps1 -TrustStore`) и пакет, побайтовая сверка в publish-конвейере
+  (`trust_store_mismatch` блокирует выпуск), публикация `trust-store.json`;
+  Windows-движок: `Test-HrmTrustStoreObject`/`Import-HrmTrustStore`
+  (существующая конфигурация не перезаписывается).
+- Предпусковая диагностика: read-only `GET /api/updates/readiness`
+  (admin + `update_channel_manage`, аудит, redacted), факты host-стороны
+  `POST /api/updates/engine-facts` (закрытая схема, машинный токен), UI
+  «Готовность пилота» с вердиктом готово|готово с предупреждениями|запуск
+  запрещён; SMTP/Telegram — необязательные warning.
+- Автоматизированный CI drill `infra/scripts/pilot-drill.sh`
+  (джоба `pilot-drill`): живой Compose-стек, синтетические данные,
+  эфемерные ключи/сертификаты, first-run, бэкап+restore drill, канал
+  check→download→staging→install→resume, отказы на tampered
+  signature/package и запрещённый redirect, сохранение данных, JSON+MD
+  отчёт без секретов.
+- Workflow-изменения (ci.yml + update-channel.yml) — в `review-artifacts/`
+  (`.phase14.yml/.patch`): GitHub App не имеет права `workflows`; перенос
+  владельцем по инструкции в `review-artifacts/README.md`.
+- Runbook и go/no-go: `docs/phase-14-runbook.md` (реальная production-подпись
+  и ручная Windows-приёмка НЕ выполнялись — описаны как owner-шаги).
+- Полная матрица результатов и честные ограничения:
+  [phase-14-report-arena.md](phase-14-report-arena.md).

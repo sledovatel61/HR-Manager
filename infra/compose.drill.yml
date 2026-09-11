@@ -1,0 +1,60 @@
+# Phase 14 pilot drill overlay for infra/docker-compose.yml + compose.pilot.yml.
+#
+# CI-контур автоматизированного e2e pilot drill (infra/scripts/pilot-drill.sh):
+# только синтетические данные, эфемерные тестовые ключи/сертификаты и
+# сгенерированные на месте секреты прогона. НИКАКИХ production secrets.
+#
+# Добавляет:
+#   * service `channel` — HTTPS-сервер канала обновлений (python:3.12-slim,
+#     пин ниже) с эфемерным TLS-сертификатом drill-CA; обслуживает подписанные
+#     fixture-артефакты (update-channel.json, пакет, SHA256SUMS) и маршрут
+#     /redirect для проверки запрета перехода на посторонний хост;
+#   * backend — доверие drill-CA (SSL_CERT_FILE), политика разрешённых хостов
+#     канала (UPDATE_CHANNEL_ALLOWED_HOSTS=channel), «установленная» версия
+#     0.13.0/sha прогона и быстрый интервал проверок (drill не ждёт минуты).
+#
+# Windows-специфика (реальный установщик, uninstall/purge, роллбэк образов,
+# Authenticode) покрывается ручной приёмкой по docs/phase-14-runbook.md;
+# CI-часть доказывает серверный контракт: first-run, синтетические данные,
+# зашифрованный бэкап + restore drill, подписанный канал → download →
+# staging → явный update, целостность данных, отказ на повреждённые
+# manifest/подпись/пакет и запрещённый redirect, resume-доставку команды.
+
+# Отдельный проект прогона: НИКОГДА не пересекается с реальным пилотом
+# (hr-manager-pilot) — тома/сети drill изолированы и удаляются прогоном.
+name: hr-manager-pilot-drill
+
+services:
+  channel:
+    # Пин базового образа python:3.12-slim — тот же, что в CI toolchain;
+    # образ не содержит кода приложения и не подписывает ничего production.
+    image: python:3.12-slim
+    command:
+      - python
+      - /srv-drill/drill_channel_server.py
+      - --port
+      - "8443"
+      - --cert
+      - /certs/channel.crt
+      - --key
+      - /certs/channel.key
+      - --root
+      - /srv
+    volumes:
+      - ${HRM_DRILL_CHANNEL_DIR:?HRM_DRILL_CHANNEL_DIR is required}:/srv:ro
+      - ${HRM_DRILL_SCRIPTS_DIR:?HRM_DRILL_SCRIPTS_DIR is required}/drill_channel_server.py:/srv-drill/drill_channel_server.py:ro
+      - ${HRM_DRILL_CERTS_DIR:?HRM_DRILL_CERTS_DIR is required}:/certs:ro
+
+  backend:
+    environment:
+      # Drill-CA — единственный дополнительный корень доверия backend-
+      # контейнера: канал drill работает по настоящему HTTPS/TLS.
+      SSL_CERT_FILE: /certs/drill-ca.crt
+      UPDATE_CHANNEL_ALLOWED_HOSTS: channel
+      # «Установленная» версия прогона (движок передаёт её в pilot.env).
+      UPDATE_INSTALLED_VERSION: 0.13.0
+      UPDATE_INSTALLED_SHA: ${HRM_DRILL_INSTALLED_SHA:?HRM_DRILL_INSTALLED_SHA is required}
+      UPDATE_CHECK_MIN_INTERVAL_SECONDS: "1"
+    volumes:
+      # read-only сертификаты drill (нет в базовом/pilot overlay).
+      - ${HRM_DRILL_CERTS_DIR:?HRM_DRILL_CERTS_DIR is required}:/certs:ro
