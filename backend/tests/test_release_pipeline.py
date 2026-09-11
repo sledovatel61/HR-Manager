@@ -287,6 +287,48 @@ def test_dispatch_valid_single_line_russian_note_preserved(tmp_path: Path) -> No
     assert len(lines) == 5  # ровно ожидаемые ключи, ничего подмешанного
 
 
+def test_workflow_patch_applies_byte_exact(tmp_path: Path) -> None:
+    """Патч — полноценный unified diff: реальное применение в отдельном
+    временном каталоге создаёт byte-identical workflow.
+
+    Раньше патч собирался без `@@`-hunk header: `git apply --check`
+    проходил, но применение создавало пустой файл (0 байт). Одного
+    `--check` недостаточно — тест реально применяет патч и сравнивает
+    байты установленного файла с артефактом.
+    """
+    import shutil
+
+    if shutil.which("git") is None:
+        pytest.skip("git требуется для теста применения патча")
+    patch_path = REPO / "review-artifacts" / "update-channel.patch"
+    artifact_path = REPO / "review-artifacts" / "update-channel.yml"
+    patch_text = patch_path.read_text(encoding="utf-8")
+    assert "@@" in patch_text, "патч должен содержать unified hunk header (@@)"
+
+    workdir = tmp_path / "apply"
+    workdir.mkdir()
+    checked = subprocess.run(
+        ["git", "apply", "--check", str(patch_path)],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+    )
+    assert checked.returncode == 0, checked.stderr
+    applied = subprocess.run(
+        ["git", "apply", str(patch_path)],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+    )
+    assert applied.returncode == 0, applied.stderr
+    installed = workdir / ".github" / "workflows" / "update-channel.yml"
+    assert installed.exists(), "apply не создал .github/workflows/update-channel.yml"
+    assert installed.stat().st_size > 0, "применение дало пустой файл (0 байт)"
+    assert installed.read_bytes() == artifact_path.read_bytes(), (
+        "установленный workflow не совпадает побайтово с review-artifacts/update-channel.yml"
+    )
+
+
 def test_workflow_yaml_security_invariants() -> None:
     assert WORKFLOW.exists(), (
         "workflow должен находиться в .github/workflows/ "

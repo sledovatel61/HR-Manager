@@ -209,7 +209,7 @@ backend/app/{config,update_state,schemas}.py  UPDATE_CHANNEL_ALLOWED_HOSTS,
 backend/app/routers/updates.py        re-delivery install, строгая корреляция report
 backend/tests/test_channel_network.py  11 redirect-тестов (локальные HTTPS)
 backend/tests/test_staging_recovery.py 5 тестов восстановления staging
-backend/tests/test_release_pipeline.py 7 fixture-тестов release pipeline
+backend/tests/test_release_pipeline.py 8 fixture-тестов release pipeline
 backend/tests/test_updates_api.py     +9 регрессий отчётов/доставки
 backend/requirements-dev.txt          PyYAML (тест инвариантов workflow)
 ```
@@ -223,7 +223,7 @@ cd backend
 ruff check .                              → All checks passed!
 ruff format --check .                     → 113 files already formatted
 mypy app tests                            → Success: no issues in 99 source files
-pytest -m "not integration" -q            → 594 passed, 105 deselected
+pytest -m "not integration" -q            → 595 passed, 105 deselected
 pytest tests/test_updates_api.py tests/test_update_channel_contract.py -q
                                           → 30 passed
 pytest ../infra/release/test_channel_contract.py -q
@@ -278,11 +278,17 @@ code SHA: `bc4e9d6…` (зелёный CI, run 34570110327). Что закрыт
    GitHub App сессии** (нет права `workflows`; точная ошибка и применяемый
    патч — `review-artifacts/`, см. «Ограничения»). Fixture-тесты happy
    path/неверная подпись/fail-closed + инварианты workflow (включая
-   dispatch-SHA, отсутствие inline-inputs, CR/LF-защиту) — 7 тестов
-   `backend/tests/test_release_pipeline.py`, из них два ИСПОЛНЯЕМЫХ:
+   dispatch-SHA, отсутствие inline-inputs, CR/LF-защиту) — 8 тестов
+   `backend/tests/test_release_pipeline.py`, из них три ИСПОЛНЯЕМЫХ:
    resolve-скрипт реально запускается в bash с поддельным
    `$GITHUB_OUTPUT` (CR/LF-атака отклоняется до записи, валидная
-   однострочная русская заметка сохраняется byte-exact).
+   однострочная русская заметка сохраняется byte-exact); третий
+   (`test_workflow_patch_applies_byte_exact`) реально выполняет
+   `git apply review-artifacts/update-channel.patch` в отдельном
+   временном каталоге и сравнивает `read_bytes()` установленного
+   workflow с артефактом — патч перегенерирован как полноценный unified
+   diff с `@@`-hunk header (ранее hunk отсутствовал: `git apply --check`
+   проходил, но применение создавало пустой файл 0 байт).
 2. **[P1] Redirect до обращения** — `backend/app/channel.py`: авто-redirect
    отключён (`_NoAutoRedirectHandler`), каждый 3xx разбирается вручную,
    относительный `Location` резолвится через URL ответа, ПЕРЕД каждым
@@ -324,8 +330,8 @@ code SHA: `bc4e9d6…` (зелёный CI, run 34570110327). Что закрыт
 ```
 backend: ruff check → чисто; ruff format --check → 113 файлов чисто;
          mypy app tests → Success (99 файлов);
-         pytest -m "not integration" → 594 passed, 105 deselected
-         (добавлено 32: 11 сеть, 5 staging, 9 отчёты/доставка, 7 release pipeline)
+         pytest -m "not integration" → 595 passed, 105 deselected
+         (добавлено 33: 11 сеть, 5 staging, 9 отчёты/доставка, 8 release pipeline)
          test_updates_api + mirror + contract + pilot_overlay → 68 passed
 frontend: eslint/typecheck → чисто; npm test → 152 passed; build → собран
 infra/windows/tests/lint-engine.py → 16 файлов, пройдено

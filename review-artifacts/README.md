@@ -209,7 +209,7 @@ git push
 | Файл | Назначение |
 |---|---|
 | `update-channel.yml` | полный workflow (точная копия того, что должно лечь в `.github/workflows/`) |
-| `update-channel.patch` | git-патч, добавляющий `.github/workflows/update-channel.yml` (применяется `git apply`; проверено `git apply --check`) |
+| `update-channel.patch` | полноценный unified git patch с `@@`-hunk header (создаёт `.github/workflows/update-channel.yml`); применение проверено исполняемым тестом `test_workflow_patch_applies_byte_exact` — реальный `git apply` в отдельном каталоге даёт byte-identical файл (`read_bytes()` совпадает с артефактом; одного `git apply --check` недостаточно) |
 
 Перенос владельцем (однократно; учётка с правом записи workflows):
 
@@ -244,7 +244,12 @@ env (никаких inline-expressions в run-блоках — shell injection
 исключён). Перед записью в `$GITHUB_OUTPUT` version/release_sha/notes_ru
 отклоняются fail closed при наличии CR/LF — многострочный input не может
 подмешать поддельные строки-выводы (`sha=…`, `tag=…`). Эти инварианты
-закреплены тестами `test_release_pipeline.py`, включая ДВА исполняемых
-теста, которые реально запускают resolve-скрипт из workflow в bash с
-поддельным `$GITHUB_OUTPUT` (атака CR/LF отклоняется до записи; валидная
-однострочная русская заметка сохраняется без изменений).
+закреплены тестами `test_release_pipeline.py`, включая ТРИ исполняемых
+теста: два запускают resolve-скрипт из workflow в bash с поддельным
+`$GITHUB_OUTPUT` (атака CR/LF отклоняется до записи; валидная
+однострочная русская заметка сохраняется без изменений), третий —
+`test_workflow_patch_applies_byte_exact` — реально применяет
+`update-channel.patch` командой `git apply` в отдельном временном
+каталоге и сравнивает `read_bytes()` установленного
+`.github/workflows/update-channel.yml` с артефактом (патч содержит
+`@@`-hunk header; применение без hunk'а создавало бы пустой файл).

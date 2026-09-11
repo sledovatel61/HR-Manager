@@ -1,8 +1,10 @@
 diff --git a/.github/workflows/update-channel.yml b/.github/workflows/update-channel.yml
 new file mode 100644
-index 0000000..aa23499bbd1d46e50a4f5e3464734bc446435307
+index 0000000000000000000000000000000000000000..aa23499bbd1d46e50a4f5e3464734bc446435307
 --- /dev/null
 +++ b/.github/workflows/update-channel.yml
+@@ -0,0 +1,297 @@
++# Phase 13: update channel release pipeline (Windows pilot).
 +#
 +# Собирает release channel только для ЗАЩИЩЁННЫХ SemVer-тегов `v*` (или
 +# ручного dispatch владельца): детерминированный пакет + внешний
