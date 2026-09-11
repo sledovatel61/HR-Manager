@@ -9,15 +9,17 @@
   Merge PR #23 (`3f1ae7c`) в графе получения отсутствовал (grafted clone), но его
   файлы уже входят в baseline-дерево — Phase 14 строилась от фактического
   `origin/main`, а не от устаревшей ветки.
-* **Branch**: `arena/01a08ff0-hr-manager` (ветка сессии; отдельную
-  `arena/phase-14-*` создать нельзя — сессия жёстко привязана к этой ветке,
-  поэтому вся работа и PR идут из неё). Merge выполняет владелец.
-* **Final SHA (код, зелёный HEAD)**: `d5423906745abbd4eb2756cddf28ba22c8dbb996` — exact final SHA
-  (зелёный кодовый HEAD, см. §5). Промежуточные `0313f02` и `7beb84e` — исторические,
-  не final. Этот документ синхронизирован с `d542390` (PR #24 head для кода);
-  head ветки после синхронизации docs — см. PR head (текущий, на момент этого
-  коммита — docs-sync, CI на нём — те же 5 jobs, не полный Phase 14).
-* **PR**: https://github.com/sledovatel61/HR-Manager/pull/24
+* **Branch (original PR #24, frozen)**: `arena/01a08ff0-hr-manager` — PR #24
+  https://github.com/sledovatel61/HR-Manager/pull/24,
+  Final SHA (код, зелёный HEAD) `d5423906745abbd4eb2756cddf28ba22c8dbb996` (head после
+  docs-sync `b339b0d7cc1bb089d515ee00403b5dbf6da79a41`), CI — 5 jobs на `d542390`
+  (не полный Phase 14, см. provenance ниже).
+* **Branch (live E2E, this report)**: `arena/01a08ff0-hr-manager-live-e2e`
+  (ветка продолжения Phase 14 с live Compose E2E), branched from `b339b0d`,
+  Final SHA (код, зелёный HEAD, this branch) `fac9c8fd2dc3f7839ac690bb0d6b675745b2bc8f`
+  (exact final SHA, см. §5; docs-sync HEAD — следующий коммит после этого).
+  Отдельная ветка/PR для честного сравнения (не редактировать PR #24 параллельно).
+* **PR (live E2E)**: https://github.com/sledovatel61/HR-Manager/pull/25 (создаётся из `arena/01a08ff0-hr-manager-live-e2e`)
 
 ## 1. Что сделано по пунктам промпта
 
