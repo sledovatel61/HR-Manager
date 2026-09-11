@@ -10,7 +10,6 @@ release SHA. Fail closed на каждом шаге: до распаковки �
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import ssl
 import tempfile
@@ -21,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.trust_store import parse_trust_store_text
 from app.update_channel_contract import ChannelError, parse_manifest_json, verify_signature
 
 # Лимиты канала (защита от аномальных/злонамеренных ответов).
@@ -106,26 +106,28 @@ def manifest_url(settings: Settings, preview: bool = False) -> str:
 
 
 def parse_trusted_keys(settings: Settings) -> dict[str, dict]:
-    """Разбор набора доверенных ключей {key_id: {key, revoked}}."""
-    raw = settings.update_channel_public_keys.strip()
-    if not raw:
+    """Разбор набора доверенных ключей {key_id: {key, revoked}}.
+
+    Phase 14: строгая валидация (схема, 32-байтный Ed25519 public key,
+    уникальные key_id, отсутствие приватного материала, отзыв fail closed)
+    живёт в ``app.trust_store`` — те же правила применяет release-пайплайн
+    через ``infra/release/trust_store.py``. Пустая строка означает «канал не
+    настроен»; неявного набора ключей по умолчанию здесь нет.
+    """
+    if not settings.update_channel_public_keys.strip():
         return {}
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ChannelError("bad_key_set", f"некорректный JSON набора ключей: {exc}") from exc
-    if not isinstance(data, dict) or not data:
-        raise ChannelError("bad_key_set", "набор доверенных ключей пуст или не объект")
-    for key_id, entry in data.items():
-        if not isinstance(key_id, str) or not key_id:
-            raise ChannelError("bad_key_set", "key_id должен быть непустой строкой")
-        if not isinstance(entry, dict):
-            raise ChannelError("bad_key_set", f"запись ключа {key_id!r} не объект")
-        if not isinstance(entry.get("key"), str) or not entry["key"]:
-            raise ChannelError("bad_key_set", f"у ключа {key_id!r} нет значения key")
-        if not isinstance(entry.get("revoked"), bool):
-            raise ChannelError("bad_key_set", f"у ключа {key_id!r} нет флага revoked")
-    return data
+    return parse_trust_store_text(settings.update_channel_public_keys)
+
+
+def describe_trusted_keys(settings: Settings) -> list[dict[str, object]]:
+    """Безопасное описание доверенных ключей для диагностики (без секретов).
+
+    Возвращаются только ``key_id``, публичный отпечаток и статус отзыва —
+    сам ключ в ответы не попадает.
+    """
+    from app.trust_store import describe_trust_store
+
+    return describe_trust_store(parse_trusted_keys(settings))
 
 
 def _lookup_trusted_key(manifest: dict, trusted: dict[str, dict]) -> str:

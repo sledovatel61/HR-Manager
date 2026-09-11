@@ -130,3 +130,32 @@ python infra/release/verify_channel.py --manifest manifest.signed.json \
 лишний корень, exe, несовпадение release.json) и общую таблицу сравнений
 SemVer. Тестовый закрытый ключ НЕ доверяется production-клиентом и не
 публикует release.
+
+## Phase 14: две независимые подписи и pilot drill
+
+- **Ed25519 канала** остаётся обязательной проверкой manifest/пакета и
+  никогда не заменяется Authenticode.
+- **Authenticode installer'а** добавляется как вторая, независимая подпись:
+  `publish_channel.py --release-mode production` требует `--installer`,
+  `--authenticode-attestation` (режим production), `--authenticode-roots`
+  (цепочка до корня из защищённого release input) и `--expected-publisher`;
+  отказ fail closed с кодами `installer_unsigned`, `missing_timestamp`,
+  `publisher_mismatch`, `installer_changed_after_signing`,
+  `signing_key_not_trusted`, `installer_trust_store_mismatch`,
+  `missing_trust_store_attestation`, `embedded_trust_store_mismatch`,
+  `test_certificate_in_production`, `private_material_in_package`.
+- **Trust store**: `trust_store.py validate` (строгая схема, уникальные
+  `key_id`, Ed25519 public key, `revoked`, отсутствие private material) —
+  тот же контракт проверяет backend (`app/trust_store.py`) и установщик;
+  fixture-ключи никогда не становятся production-ключами
+  (`assert_no_fixture_keys`).
+- **Независимая проверка** перед публикацией: `verify_channel.py` (Ed25519) и
+  `authenticode.py verify` (вне Windows: PE/PKCS#7/digest/цепочка/метка
+  времени/издатель); после публикации — build provenance attestation.
+- **Автоматизированный drill**: `infra/scripts/pilot_drill.py` прогоняет
+  release-политику, отказы канала на подделках, readiness API, backup/restore
+  на PostgreSQL и Windows-движок (где доступен), выдаёт JSON + Markdown и
+  non-zero при провале. CLI без Docker/PowerShell честно помечает шаги
+  `skipped`, а не `passed`.
+- Операторские шаги (церемония ключей, promotion, go/no-go, откат) —
+  в `docs/runbook-pilot-release.md`.
