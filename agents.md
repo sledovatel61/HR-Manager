@@ -63,7 +63,9 @@ HR Manager — многопользовательская внутренняя �
 
 ## Текущий статус и handoff
 
-- Фазы 0–11 приняты.
+- Фазы 0–13 приняты. Phase 13 завершена в PR #23 на reviewed SHA
+  `ac4e7ec302915e36ec614893ebd4559020cea903`; исполняемый release workflow
+  перенесён владельцем в `.github/workflows/update-channel.yml` перед merge.
 - Phase 10 прошла review в PR #14 и влита в `main` merge-коммитом
   `7cebac27a89b7544ff4ff494f45eb906840d96e7` (reviewed SHA
   `4b44ff8bb446982aea4609e96bfa6819a8fe2331`).
@@ -75,8 +77,15 @@ HR Manager — многопользовательская внутренняя �
   `a6ac73cb797919383b80ce65b1614cd6e4dad47f`, миграционный head `0012`.
 - Политика Phase 11: HR/manager без `candidate_documents_all` работает только
   с кандидатами, где он owner; scope явно открывает документы всей базы.
-- Следующая работа — Phase 12 после согласования отдельного продуктового
-  контракта. Ветка агента 5 `arena/01a081aa-hr-manager` сохранена.
+- Phase 12: Windows installer/engine, первый запуск, pilot Compose,
+  backup-gated update/rollback/resume и data-preserving uninstall. Локальная
+  приёмка на Windows с Docker Desktop завершена; подробности в
+  `docs/phase-12-local-acceptance.md`.
+- Принятый baseline Phase 12 опубликован в ветке
+  `phase12/windows-acceptance-final`. До её merge следующий агент начинает
+  работу только от этой ветки, а не от устаревшего `main`.
+- Следующая работа — Phase 14, эксплуатационная готовность и ограниченная
+  приёмка первого Windows-пилота. Контракт: `prompts/PHASE_14_PROMPT.md`.
 
 ## Definition of Done
 

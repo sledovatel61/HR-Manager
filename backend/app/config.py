@@ -24,6 +24,15 @@ Environment variables
 ``BOOTSTRAP_ADMIN_FULL_NAME``  initial administrator (created once, when the
                            user table is empty; safe development default in
                            non-production, never used implicitly in production)
+``PILOT_BOOTSTRAP_EXCHANGE_TOKEN`` one-time local first-run exchange (phase 12):
+                           when set, startup stores only the SHA-256 hash of
+                           the token and does NOT create a bootstrap admin;
+                           ``/setup/owner/*`` redeem it once to create the
+                           single pilot owner
+``PILOT_EXCHANGE_TTL_MINUTES`` lifetime of the exchange claim window (60)
+``PILOT_TICKET_TTL_MINUTES``   lifetime of the one-time first-run ticket (15)
+``PILOT_SETUP_RATE_LIMIT`` / ``PILOT_SETUP_RATE_WINDOW_SECONDS``  per-IP
+                           anti-abuse of the first-run endpoints
 ``RELEASE_SHA``            full git SHA of the running release (reported by
                            the ops status endpoint; injected by CI/deploy)
 ``BACKUP_DIR``             directory holding encrypted backups and state
@@ -148,7 +157,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False, env_file=None)
 
     app_name: str = Field(default="hr-manager", validation_alias="APP_NAME")
-    environment: Literal["development", "test", "production"] = Field(
+    # ``pilot`` is the local Windows pilot (phase 12): a production-grade
+    # single-machine contour bound to 127.0.0.1. It runs the same safety
+    # guard as production (strong secrets, no debug, no development
+    # credentials) but declares the local loopback trust model explicitly:
+    # cookies are not Secure (plain http on 127.0.0.1), the bootstrap admin
+    # is replaced by the one-time local first-run exchange, and no ports are
+    # expected to be reachable from the network.
+    environment: Literal["development", "test", "production", "pilot"] = Field(
         default="development", validation_alias="APP_ENV"
     )
     debug: bool = Field(default=False, validation_alias="APP_DEBUG")
@@ -186,6 +202,57 @@ class Settings(BaseSettings):
     bootstrap_admin_full_name: str = Field(
         default="Администратор системы",
         validation_alias="BOOTSTRAP_ADMIN_FULL_NAME",
+    )
+
+    # Local pilot first-run exchange (phase 12). When the exchange token is
+    # configured, the startup bootstrap does NOT create an administrator:
+    # instead it stores the SHA-256 hash of the one-time exchange token and
+    # the single pilot owner is created by the first-run endpoints
+    # (/setup/owner/*) after the Windows installer claims the exchange over
+    # loopback. The raw token exists only in the protected local environment
+    # of the pilot; it is never printed, logged or returned.
+    pilot_bootstrap_exchange_token: str | None = Field(
+        default=None, validation_alias="PILOT_BOOTSTRAP_EXCHANGE_TOKEN"
+    )
+    pilot_exchange_ttl_minutes: int = Field(
+        default=60, validation_alias="PILOT_EXCHANGE_TTL_MINUTES"
+    )
+    pilot_ticket_ttl_minutes: int = Field(default=15, validation_alias="PILOT_TICKET_TTL_MINUTES")
+    # Phase 13: update channel (server-owned configuration; the client never
+    # sends URLs, paths, commands, manifest payloads or release SHAs).
+    # JSON map {key_id: {"key": "<base64 ed25519 public key>", "revoked": bool}}
+    update_channel_public_keys: str = Field(
+        default="{}", validation_alias="UPDATE_CHANNEL_PUBLIC_KEYS"
+    )
+    # Stable channel manifest URL (HTTPS). Empty = channel disabled (UI says
+    # "не настроен"). preview_channel_url is only served in non-production.
+    update_channel_url: str = Field(default="", validation_alias="UPDATE_CHANNEL_URL")
+    update_preview_channel_url: str = Field(
+        default="", validation_alias="UPDATE_PREVIEW_CHANNEL_URL"
+    )
+    # Minimum interval between network checks (seconds).
+    update_check_min_interval_seconds: int = Field(
+        default=300, validation_alias="UPDATE_CHECK_MIN_INTERVAL_SECONDS"
+    )
+    # Comma-separated hostnames allowed for the channel network policy
+    # (manifest + package, every redirect hop checked BEFORE the request).
+    # Empty = the built-in default list. Never includes user-supplied values.
+    update_channel_allowed_hosts: str = Field(
+        default="", validation_alias="UPDATE_CHANNEL_ALLOWED_HOSTS"
+    )
+    # Machine token that the Windows engine presents on the engine endpoints.
+    update_engine_token: str = Field(default="", validation_alias="UPDATE_ENGINE_TOKEN")
+    # Installed build facts, provided by the engine in the pilot env file.
+    update_installed_version: str = Field(default="", validation_alias="UPDATE_INSTALLED_VERSION")
+    update_installed_sha: str = Field(default="", validation_alias="UPDATE_INSTALLED_SHA")
+    # Staging directory for verified packages (never inside user data or the
+    # backup volume; empty = system temp under the host temp root).
+    update_staging_dir: str = Field(default="", validation_alias="UPDATE_STAGING_DIR")
+    # Rate limiting of the first-run claim/preview/redeem endpoints
+    # (per client IP, in-memory sliding window).
+    pilot_setup_rate_limit: int = Field(default=30, validation_alias="PILOT_SETUP_RATE_LIMIT")
+    pilot_setup_rate_window_seconds: int = Field(
+        default=300, validation_alias="PILOT_SETUP_RATE_WINDOW_SECONDS"
     )
 
     # Ops/release contour (roadmap phase 7).
@@ -352,6 +419,12 @@ class Settings(BaseSettings):
         return self.environment == "production"
 
     @property
+    def is_pilot(self) -> bool:
+        """True for the phase-12 local pilot contour (production-grade,
+        loopback-only)."""
+        return self.environment == "pilot"
+
+    @property
     def session_cookie_is_secure(self) -> bool:
         """Effective Secure flag for session/CSRF cookies."""
         return (
@@ -373,47 +446,68 @@ class Settings(BaseSettings):
                 "SQLite is not supported outside of isolated unit tests; use PostgreSQL"
             )
 
-        if self.is_production:
+        # Production and the local pilot run the same hardened guard. The
+        # pilot adds exactly one documented carve-out: non-Secure cookies are
+        # ALLOWED (not silently forced) because the whole contour is bound to
+        # 127.0.0.1 and served over plain http — browsers would otherwise
+        # reject the session cookie and login would break. Production still
+        # requires Secure cookies unconditionally.
+        hardened = self.is_production or self.is_pilot
+        if hardened:
+            label = "production" if self.is_production else "pilot"
             if not self.secret_key or self.secret_key == DEVELOPMENT_SECRET_KEY:
-                problems.append("SECRET_KEY must be set to a non-default value in production")
+                problems.append(f"SECRET_KEY must be set to a non-default value in {label}")
             elif len(self.secret_key) < MIN_SECRET_KEY_LENGTH:
                 problems.append(
-                    f"SECRET_KEY must be at least {MIN_SECRET_KEY_LENGTH} characters in production"
+                    f"SECRET_KEY must be at least {MIN_SECRET_KEY_LENGTH} characters in {label}"
                 )
             if self.database_url == DEVELOPMENT_DATABASE_URL:
-                problems.append("DATABASE_URL must not use development credentials in production")
+                problems.append(f"DATABASE_URL must not use development credentials in {label}")
             if not url.password:
-                problems.append("DATABASE_URL must include a password in production")
+                problems.append(f"DATABASE_URL must include a password in {label}")
             if self.debug:
-                problems.append("APP_DEBUG must be false in production")
-            if self.session_cookie_secure is False:
+                problems.append(f"APP_DEBUG must be false in {label}")
+            if self.is_production and self.session_cookie_secure is False:
                 problems.append("SESSION_COOKIE_SECURE must not be disabled in production")
             # The bootstrap administrator must never get an implicit weak
-            # password in production.
-            if self.bootstrap_admin_password == DEVELOPMENT_BOOTSTRAP_ADMIN_PASSWORD:
-                problems.append(
-                    "BOOTSTRAP_ADMIN_PASSWORD must be set to a strong value in production "
-                    "(or create the administrator with 'python -m app.cli create-admin')"
-                )
-            if len(self.bootstrap_admin_password) < MIN_PASSWORD_LENGTH:
-                problems.append(
-                    f"BOOTSTRAP_ADMIN_PASSWORD must be at least {MIN_PASSWORD_LENGTH} characters "
-                    "in production"
-                )
-            # Backups are secret assets: when the backup contour is enabled in
-            # production the encryption key must be a real, correctly sized,
-            # non-development value. The runner re-validates the key on every
-            # run; this guard fails fast at startup instead.
+            # password. In production the operator must configure a strong
+            # one; the pilot replaces the bootstrap admin with the one-time
+            # first-run exchange (PILOT_BOOTSTRAP_EXCHANGE_TOKEN), so an
+            # unset password is only acceptable there.
+            if self.is_production or not self.pilot_bootstrap_exchange_token:
+                if self.bootstrap_admin_password == DEVELOPMENT_BOOTSTRAP_ADMIN_PASSWORD:
+                    problems.append(
+                        f"BOOTSTRAP_ADMIN_PASSWORD must be set to a strong value in {label} "
+                        "(or create the administrator with 'python -m app.cli create-admin')"
+                    )
+                if len(self.bootstrap_admin_password) < MIN_PASSWORD_LENGTH:
+                    problems.append(
+                        f"BOOTSTRAP_ADMIN_PASSWORD must be at least {MIN_PASSWORD_LENGTH} "
+                        f"characters in {label}"
+                    )
+            # Backups are secret assets: when the backup contour is enabled the
+            # encryption key must be a real, correctly sized, non-development
+            # value. The runner re-validates the key on every run; this guard
+            # fails fast at startup instead.
             if self.backup_enc_key:
                 if self.backup_enc_key == DEVELOPMENT_BACKUP_ENC_KEY:
                     problems.append(
-                        "BACKUP_ENC_KEY must not be the development-only backup key in production"
+                        f"BACKUP_ENC_KEY must not be the development-only backup key in {label}"
                     )
                 elif len(self.backup_enc_key) < BACKUP_KEY_BASE64_LENGTH:
                     problems.append(
                         f"BACKUP_ENC_KEY must decode to {BACKUP_KEY_BYTES} bytes "
                         f"({BACKUP_KEY_BASE64_LENGTH} base64 characters)"
                     )
+
+        if not 1 <= self.pilot_exchange_ttl_minutes <= 24 * 60:
+            problems.append("PILOT_EXCHANGE_TTL_MINUTES must be within [1, 1440]")
+        if not 1 <= self.pilot_ticket_ttl_minutes <= 60:
+            problems.append("PILOT_TICKET_TTL_MINUTES must be within [1, 60]")
+        if self.pilot_setup_rate_limit < 1:
+            problems.append("PILOT_SETUP_RATE_LIMIT must be at least 1")
+        if self.pilot_setup_rate_window_seconds < 1:
+            problems.append("PILOT_SETUP_RATE_WINDOW_SECONDS must be at least 1")
 
         if self.backup_retention_days < 7:
             problems.append("BACKUP_RETENTION_DAYS must be at least 7 (backup retention policy)")
@@ -465,7 +559,9 @@ class Settings(BaseSettings):
                 problems.append("TELEGRAM_BOT_USERNAME is required when TELEGRAM_ENABLED=true")
         if self.telegram_api_base_url and not _is_http_base_url(self.telegram_api_base_url):
             problems.append("TELEGRAM_API_BASE_URL must be an http(s) base URL without a path")
-        if self.is_production and self.telegram_api_base_url.startswith("http://"):
+        if (self.is_production or self.is_pilot) and self.telegram_api_base_url.startswith(
+            "http://"
+        ):
             problems.append("TELEGRAM_API_BASE_URL must use https in production")
         if self.telegram_timeout_s <= 0 or self.telegram_timeout_s > 120:
             problems.append("TELEGRAM_TIMEOUT_S must be within (0, 120]")

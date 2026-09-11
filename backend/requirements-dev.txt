@@ -5,3 +5,5 @@ httpx==0.28.1
 ruff==0.16.5
 mypy==1.20.2
 types-PyYAML==6.0.12.20260815
+# Runtime parser for the update-channel workflow sanity test (backend/tests).
+PyYAML==6.0.3

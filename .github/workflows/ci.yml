@@ -283,3 +283,45 @@ jobs:
       - name: Clean up the stack
         if: always()
         run: docker compose -f infra/docker-compose.yml down -v --remove-orphans
+
+  windows-installer:
+    name: Windows engine tests + installer smoke
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PowerShell engine tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
+
+      - name: Build HR Manager Setup.exe
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0
+
+      - name: Silent install and uninstall smoke
+        shell: powershell
+        run: |
+          $setup = Get-ChildItem installer/output/HR-Manager-Setup-*.exe | Select-Object -First 1
+          if (-not $setup) { throw "Setup.exe was not produced" }
+          $process = Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Silent install failed: $($process.ExitCode)" }
+          $appDir = Join-Path $env:LOCALAPPDATA "Programs\HRManager"
+          if (-not (Test-Path (Join-Path $appDir "infra\windows\hr-manager.ps1"))) {
+            throw "Installed Windows engine is missing"
+          }
+          $uninstaller = Join-Path $appDir "unins000.exe"
+          if (-not (Test-Path $uninstaller)) { throw "Uninstaller is missing" }
+          $process = Start-Process $uninstaller -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Silent uninstall failed: $($process.ExitCode)" }
+          if (Test-Path (Join-Path $appDir "infra\windows\hr-manager.ps1")) {
+            throw "Installed application files survived uninstall"
+          }
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hr-manager-windows-setup
+          path: |
+            installer/output/*.exe
+            installer/release-manifest.json
+          if-no-files-found: error

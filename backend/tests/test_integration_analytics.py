@@ -84,6 +84,37 @@ def _run_alembic(*args: str, url: str) -> None:
     )
 
 
+def _legacy_user(db: Session, username: str, role: UserRole) -> Any:
+    """Insert a user with raw SQL matching the pre-0013 row shape.
+
+    Phase 12 (migration 0013) adds ``users.working_mode``; the backfill test
+    plants history against the 0005 schema, which predates that column, so
+    the ORM model (which always carries ``working_mode``) cannot be used for
+    either the INSERT or a SELECT. A transient ``User`` carrying only the
+    primary key is returned — the helpers below only read ``.id``.
+    """
+    from app.models import User
+    from app.security import hash_password
+
+    user_id = db.execute(
+        text(
+            "INSERT INTO users (id, username, full_name, role, password_hash,"
+            " is_active, created_at, updated_at)"
+            " VALUES (gen_random_uuid(), :username, :full_name, :role,"
+            " :password_hash, true, now(), now())"
+            " RETURNING id"
+        ),
+        {
+            "username": username,
+            "full_name": username,
+            "role": role.value,
+            "password_hash": hash_password(FIXTURE_PASSWORD),
+        },
+    ).scalar_one()
+    db.commit()
+    return User(id=user_id, username=username, full_name=username, role=role)
+
+
 def _kpi(pg_client: TestClient, from_: str, to: str, **params: str) -> dict:
     url = f"/analytics/kpi?from={_q(from_)}&to={_q(to)}"
     for key, value in params.items():
@@ -238,9 +269,10 @@ def test_migration_backfills_facts_from_history(
             )
 
         t0 = datetime(2026, 2, 1, 9, 0, tzinfo=UTC)
-        hr1 = make_user(pg_db, username="anna", role=UserRole.HR)
-        hr2 = make_user(pg_db, username="bob", role=UserRole.HR)
-        manager = make_user(pg_db, username="mgr", role=UserRole.MANAGER)
+        # Planted on the 0005 schema (no users.working_mode yet): raw SQL.
+        hr1 = _legacy_user(pg_db, "anna", UserRole.HR)
+        hr2 = _legacy_user(pg_db, "bob", UserRole.HR)
+        manager = _legacy_user(pg_db, "mgr", UserRole.MANAGER)
 
         candidate = make_candidate(pg_db, owner=hr1, source=CandidateSource.REFERRAL)
         pg_db.execute(

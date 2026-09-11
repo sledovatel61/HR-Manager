@@ -27,12 +27,16 @@ import type {
   NotificationPreferences,
   NotificationResolve,
   QueueDiagnostics,
+  RedeemOwnerInput,
   Reminder,
   ReminderImportance,
   ReminderListPayload,
   ReminderRecurrence,
   ReminderStatus,
+  SetupPreview,
   SetupState,
+  UpdateInstallResult,
+  UpdateStatus,
   AnalyticsKpiReport,
   AnalyticsQuery,
   AuditEvent,
@@ -180,6 +184,26 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   return data as T;
+}
+
+/** Phase 13: update channel status (state machine + versions, no secrets). */
+export async function fetchUpdateStatus(): Promise<UpdateStatus> {
+  return request<UpdateStatus>("/updates/status");
+}
+
+/** Check the signed channel manifest (server verifies signature + policy). */
+export async function checkUpdates(): Promise<UpdateStatus> {
+  return request<UpdateStatus>("/updates/check", { method: "POST" });
+}
+
+/** Download the package into the server staging (size/SHA256 checked). */
+export async function downloadUpdate(): Promise<UpdateStatus> {
+  return request<UpdateStatus>("/updates/download", { method: "POST" });
+}
+
+/** Queue an install for the Windows engine (existing Phase 12 updater). */
+export async function requestUpdateInstall(): Promise<UpdateInstallResult> {
+  return request<UpdateInstallResult>("/updates/install", { method: "POST" });
 }
 
 /** Fetch the backend health report, or null when the backend is unreachable. */
@@ -801,3 +825,25 @@ export async function cancelCandidateMessage(
 
 // Phase 11 uses the same authenticated, CSRF-protected, same-origin client.
 export { request as documentRequest };
+
+// --- Phase 12: local pilot first-run (Windows installer exchange) ------------
+
+/** First-run screen data: surname/mode collected by the installer plus
+ * readiness. The ticket stays in the URL fragment — never sent as a query
+ * parameter. */
+export async function previewOwnerSetup(ticket: string): Promise<SetupPreview> {
+  return request<SetupPreview>("/setup/owner/preview", {
+    method: "POST",
+    body: { ticket },
+  });
+}
+
+/** Complete the first run: creates the single pilot owner, applies
+ * preferences and opens the authenticated session (cookies set by the
+ * backend). */
+export async function redeemOwnerSetup(input: RedeemOwnerInput): Promise<CurrentUser> {
+  return request<CurrentUser>("/setup/owner/redeem", {
+    method: "POST",
+    body: input,
+  });
+}

@@ -36,6 +36,7 @@ from app.routers import (
     preferences,
     reminders,
     setup,
+    updates,
     users,
 )
 
@@ -112,6 +113,12 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app = FastAPI(title="HR Manager API", version=__version__, lifespan=lifespan)
     app.state.settings = app_settings
     app.state.engine = app_engine
+    from app.update_state import UpdateStateStore
+
+    app.state.update_store = UpdateStateStore(
+        installed_version=app_settings.update_installed_version,
+        installed_release_sha=app_settings.update_installed_sha,
+    )
 
     app.add_middleware(MetricsMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
@@ -133,6 +140,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(reminders.router)
     app.include_router(preferences.router)
     app.include_router(setup.router)
+    app.include_router(updates.router)
     return app
 
 

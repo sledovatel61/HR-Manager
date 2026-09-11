@@ -307,6 +307,33 @@ docker compose -f infra/docker-compose.yml down
 # в разделе «Администрирование».
 ```
 
+## Локальный пилот Windows (этап 12)
+
+Обычный пользователь Windows 10/11 x64 устанавливает HR Manager в несколько
+кликов: скачать `HR Manager Setup.exe` (артефакт CI), запустить, выбрать
+роль (`HR | Руководитель | Администратор`), ввести фамилию, нажать
+«Установить». Дальше мастер сам собирает образы, генерирует секреты,
+поднимает Postgres/бэкенд/фронтенд/worker/бэкапы в Docker Desktop и
+открывает браузер на `http://127.0.0.1:8080` — там создаётся единственная
+учётная запись пилота с паролем, который пользователь задаёт сам.
+Никаких команд Docker/Postgres/Alembic, `.env` или PowerShell в основном
+сценарии нет.
+
+- [`installer/README.md`](installer/README.md) — сборка установщика,
+  закреплённый инструмент (Inno Setup 6.7.3, SHA256), манифест хешей,
+  честный статус кодовой подписи;
+- [`infra/windows/README.md`](infra/windows/README.md) — движок
+  `hr-manager.ps1` (install/start/stop/status/open/update/diagnostics/
+  uninstall/resume), секреты, доверенная граница обновления, состояния
+  диагностики, неинтерактивный режим и тесты;
+- [`infra/compose.pilot.yml`](infra/compose.pilot.yml) — пилотный overlay
+  (проект `hr-manager-pilot`, только `127.0.0.1`, тома `pilot_pgdata`/
+  `pilot_backups`, внешние SMTP/Telegram выключены; production-контур
+  `compose.prod.yml` не ослаблен).
+
+Docker Desktop пользователь ставит сам с официального docker.com —
+установщик лицензии за него не принимает.
+
 ## Локальная разработка без Docker
 
 ### Backend (Python 3.12+, PostgreSQL 16 на localhost:5432)
@@ -374,7 +401,9 @@ backend/   FastAPI + SQLAlchemy 2 + Alembic, тесты, Dockerfile
 frontend/  React + TypeScript + Vite, тесты, Dockerfile + nginx
 design/    UX/UI-концепция «Живая воронка»: дизайн-система, гайд переноса
 design-prototype/  изолированный интерактивный прототип (не production-код)
-infra/     docker-compose.yml, production overlay, preflight-скрипт
+infra/     docker-compose.yml, production/pilot overlays, preflight-скрипт
+          windows/ — движок установки/обновления пилота (phase 12)
+installer/ исходники Inno Setup мастера HR Manager Setup.exe (phase 12)
 docs/      ARCHITECTURE.md — решения и ограничения этапа
 prompts/   промпты этапов разработки
 ```
@@ -448,9 +477,10 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
 - В репозитории нет секретов и персональных данных; `.env`, дампы и backup
   игнорируются git'ом.
 - Пользователи, роли, сессии, аудит, кандидаты, события, аналитика,
-  эксплуатационный контур, коммуникации, версионируемые списки документов и
-  ограниченные личные правила реализованы. Следующий этап — Phase 12 после
-  согласования отдельного продуктового контракта.
+  эксплуатационный контур, коммуникации, версионируемые списки документов,
+  ограниченные личные правила, локальный Windows-пилот и безопасный канал
+  доставки обновлений реализованы. Следующий этап — Phase 14:
+  эксплуатационная готовность и ограниченный запуск пилота.
 
 ## Документация
 
@@ -463,6 +493,12 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
 - [`prompts/PHASE_2_PROMPT.md`](prompts/PHASE_2_PROMPT.md) — промпт этапа 2;
 - [`prompts/PHASE_3_PROMPT.md`](prompts/PHASE_3_PROMPT.md) — исторический промпт базы кандидатов;
 - [`prompts/PHASE_11_PROMPT.md`](prompts/PHASE_11_PROMPT.md) — историческое задание этапа 11;
+- [`docs/phase-12-report-arena.md`](docs/phase-12-report-arena.md) — отчёт этапа 12 (Windows-пилот);
+- [`docs/phase-13-report-arena.md`](docs/phase-13-report-arena.md) — отчёт этапа 13 (канал обновлений);
+- [`docs/phase-12-local-acceptance.md`](docs/phase-12-local-acceptance.md) — итоговая локальная приёмка Windows;
+- [`prompts/PHASE_13_PROMPT.md`](prompts/PHASE_13_PROMPT.md) — задание этапа 13;
+- [`docs/phase-13-local-acceptance.md`](docs/phase-13-local-acceptance.md) — итоговая локальная приёмка этапа 13;
+- [`prompts/PHASE_14_PROMPT.md`](prompts/PHASE_14_PROMPT.md) — контракт следующего этапа;
 - [`design/IMPLEMENTATION_GUIDE.md`](design/IMPLEMENTATION_GUIDE.md) — план
   переноса дизайна «Живая воронка» в production.
 
@@ -483,3 +519,39 @@ grant включает оба). Согласия email/Telegram подключа
 
 Подробные API/миграционные решения, проверки, границы совместимости и handoff:
 [`docs/phase-11-report-arena.md`](docs/phase-11-report-arena.md).
+
+## Phase 13 — принято (в ветке-базе Phase 12)
+
+Безопасный канал доставки обновлений Windows-пилота: подписанный release
+manifest (detached Ed25519 над каноническим payload), проверка публичным
+ключом на сервере и на host, HTTPS-загрузка со staging через
+bind-mounted каталог, защита от downgrade/подмены/Zip Slip, серверные
+состояния и админ-раздел «Обновления», повторное использование Phase 12
+backup/rollback/resume. Детали: [`docs/phase-13-report-arena.md`](docs/phase-13-report-arena.md),
+[`infra/release/README.md`](infra/release/README.md).
+
+## Phase 12 — принято
+
+Windows-пилот: графический установщик `HR Manager Setup.exe` (Inno Setup
+6.7.3, сборка в CI, манифест хешей), движок `infra/windows/hr-manager.ps1`
+(9 действий, секреты только в защищённом каталоге состояния, честный
+префлайт, обновление с бэкап-воротами и откатом без даунгрейда БД,
+агрегированная диагностика с редакцией секретов), одноразовый loopback-обмен
+первого запуска (единственный владелец: роль `admin` + грант
+`pilot_full_access`, режим работы — поле профиля), пилотный Compose-оверлей
+с публикацией только на `127.0.0.1` и миграция `0013`. Отчёт:
+[`docs/phase-12-report-arena.md`](docs/phase-12-report-arena.md).
+
+Финальная локальная приёмка на реальной Windows подтвердила trusted update,
+автоматический rollback намеренно сломанного обновления и uninstall с
+сохранением StateDir, PostgreSQL/backup volumes и зашифрованных backup-файлов.
+Подробности и SHA256 установщика:
+[`docs/phase-12-local-acceptance.md`](docs/phase-12-local-acceptance.md).
+
+## Phase 13 — реализовано
+
+Подписанный manifest канала обновлений (Ed25519), безопасная
+загрузка/staging, административный UI «Обновления» и release pipeline
+поверх уже принятого update/rollback Phase 12. Задание:
+[`prompts/PHASE_13_PROMPT.md`](prompts/PHASE_13_PROMPT.md); отчёт:
+[`docs/phase-13-report-arena.md`](docs/phase-13-report-arena.md).

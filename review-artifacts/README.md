@@ -172,7 +172,8 @@ backup — зелёные).
 - `ci.agent-2.phase8.patch` — минимальный diff от текущего
   `.github/workflows/ci.yml`.
 
-Перенос владельцем (однократно; учётка с правом записи workflows):
+Перенос владельцем выполнен при финальной приёмке. Воспроизводимая команда для
+аудита или восстановления:
 
 ```bash
 git fetch origin
@@ -191,3 +192,65 @@ git push
 три job — backend, frontend, integration — зелёные и не зависят от
 переноса). Семантика `:?`-охран в `compose.prod.yml` намеренно НЕ
 ослабляется: они — защита «fail fast» production-конфигурации.
+
+## Phase 13 rework (2026-09-11): update-channel release workflow
+
+Для доработки Phase 13 (PR #23) подготовлен исполняемый release workflow
+`.github/workflows/update-channel.yml`. Пуш этого файла через GitHub App
+сессии отклонён сервером — точная ошибка:
+
+```
+! [remote rejected] arena/01a084e4-hr-manager -> arena/01a084e4-hr-manager
+  (refusing to allow a GitHub App to create or update workflow
+   `.github/workflows/update-channel.yml` without `workflows` permission)
+```
+
+Артефакты:
+
+| Файл | Назначение |
+|---|---|
+| `update-channel.yml` | полный workflow (точная копия того, что должно лечь в `.github/workflows/`) |
+| `update-channel.patch` | полноценный unified git patch с `@@`-hunk header (создаёт `.github/workflows/update-channel.yml`); применение проверено исполняемым тестом `test_workflow_patch_applies_byte_exact` — реальный `git apply` в отдельном каталоге даёт byte-identical файл (`read_bytes()` совпадает с артефактом; одного `git apply --check` недостаточно) |
+
+Перенос владельцем (однократно; учётка с правом записи workflows):
+
+```bash
+git fetch origin
+git checkout -b arena/phase-13-update-channel-workflow origin/arena/01a084e4-hr-manager
+git apply --check review-artifacts/update-channel.patch
+git apply review-artifacts/update-channel.patch
+cmp review-artifacts/update-channel.yml .github/workflows/update-channel.yml \
+  && echo "workflow matches artifact"
+git commit -m "ci: phase 13 update channel release workflow"
+git push
+```
+
+Перед production-выпуском создать environment `update-channel-signing` с protection
+rules (ветки main; НЕ разрешать PR) и секретами
+`UPDATE_CHANNEL_SIGNING_KEY` (64 hex Ed25519), `UPDATE_CHANNEL_KEY_ID`,
+`UPDATE_CHANNEL_PUBLIC_KEYS` (тот же JSON trust store, что у сервера), а
+также tag protection rules на `v*` (SemVer). Семантика fail-closed и
+fixture-тесты — в `infra/release/publish_channel.py` и
+`backend/tests/test_release_pipeline.py` (исполняются в существующем CI
+без production secret).
+
+Замечания оркестратора к dispatch учтены в этой версии workflow:
+`workflow_dispatch` больше не может собрать код одного коммита под
+release_sha другого — при ручном запуске `release_sha` валидируется
+(40 hex), проверяется его существование в репозитории (`git cat-file -e`),
+checkout выполняется по нему, и сборка стартует только при
+HEAD == release_sha; тег/релиз создаётся `--target` на тот же SHA. Все
+значения dispatch-пользователя попадают в shell-скрипты ТОЛЬКО через
+env (никаких inline-expressions в run-блоках — shell injection
+исключён). Перед записью в `$GITHUB_OUTPUT` version/release_sha/notes_ru
+отклоняются fail closed при наличии CR/LF — многострочный input не может
+подмешать поддельные строки-выводы (`sha=…`, `tag=…`). Эти инварианты
+закреплены тестами `test_release_pipeline.py`, включая ТРИ исполняемых
+теста: два запускают resolve-скрипт из workflow в bash с поддельным
+`$GITHUB_OUTPUT` (атака CR/LF отклоняется до записи; валидная
+однострочная русская заметка сохраняется без изменений), третий —
+`test_workflow_patch_applies_byte_exact` — реально применяет
+`update-channel.patch` командой `git apply` в отдельном временном
+каталоге и сравнивает `read_bytes()` установленного
+`.github/workflows/update-channel.yml` с артефактом (патч содержит
+`@@`-hunk header; применение без hunk'а создавало бы пустой файл).
