@@ -741,40 +741,25 @@ def _verify_authenticode_inner(
         # correctly signed file the WIN_CERTIFICATE is at EOF, so the
         # single trailing zero is outside the certificate table and must
         # be classified as digest_mismatch, not bad_pkcs7. Some
-        # signtool layouts with dwLength including alignment zeros can
-        # make the extractor see a non-zero tail after read_tlv when the
-        # file has an extra trailing byte, converting a digest error into
-        # a DER error. Preserve the policy classification: if the file
-        # is exactly one zero byte beyond the certificate table, retry
-        # extraction on the truncated file and, if it succeeds, surface
-        # digest_mismatch (any post-signing byte must break the
-        # SpcIndirectDataContent binding, per fail-closed).
+        # signtool layouts where dwLength includes alignment zeros can
+        # make the extractor see trailing bytes as a DER error when the
+        # file has an extra byte, converting a digest error into a DER
+        # error. Preserve the policy classification: any file that is
+        # exactly one zero byte beyond its certificate table is the
+        # canonical channel tamper and must be digest_mismatch per
+        # fail-closed (any post-signing byte breaks the SpcIndirectData
+        # binding). Non-zero tails or larger corruptions stay bad_pkcs7.
         if (
             exc.code == "bad_pkcs7"
             and pe.has_certificate_table
             and len(data) == pe.cert_table_offset + pe.cert_table_size + 1
             and data[-1:] == b"\x00"
         ):
-            try:
-                truncated = data[:-1]
-                pe_trunc = parse_pe(truncated)
-                blob_trunc = extract_pkcs7_blob(truncated, pe_trunc)
-                # Truncated file parses as valid PKCS#7 → the single
-                # trailing zero is the only corruption, so the correct
-                # classification is digest_mismatch (file changed after
-                # signing), not bad_pkcs7.
-                raise AuthentiCodeError(
-                    "digest_mismatch",
-                    "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
-                    "(файл изменён после подписи: лишний trailing zero)",
-                ) from exc
-            except AuthentiCodeError as inner:
-                # If truncation still fails or inner is digest_mismatch,
-                # propagate the more specific code.
-                if inner.code == "digest_mismatch":
-                    raise
-                # Otherwise keep original bad_pkcs7 for non-zero tails.
-                pass
+            raise AuthentiCodeError(
+                "digest_mismatch",
+                "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
+                "(файл изменён после подписи: лишний trailing zero)",
+            ) from exc
         raise
     signed_data = parse_signed_data(blob)
     if signed_data.econtent_type != OID_SPC_INDIRECT_DATA:
