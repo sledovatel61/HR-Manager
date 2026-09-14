@@ -88,7 +88,7 @@ cleanup() {
     docker compose --env-file "$ENV_FILE" "${COMPOSE_FILES[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
   fi
   # Секреты и ключи прогона не переживают прогон.
-  rm -rf "$CERTS_DIR" "$WORKDIR/pilot.env" "$WORKDIR/snapshot" "$COOKIE_JAR" 2>/dev/null || true
+  rm -rf "$CERTS_DIR" "$WORKDIR/pilot.env" "$WORKDIR"/snapshot* "$COOKIE_JAR" 2>/dev/null || true
   if [ $code -eq 0 ] && [ $FAIL -gt 0 ]; then exit 1; fi
 }
 trap cleanup EXIT
@@ -121,8 +121,11 @@ cp "$CERTS_DIR/channel.crt" "$CERTS_DIR/drill-ca.crt"
 stage_pass "tls_certificates" "ephemeral-self-signed"
 
 # --- 4. Публикация подписанного канала (fixture-ключ, НЕ production) ---------------
-make_snapshot() {
-  local dir="$1"
+make_snapshot() { # make_snapshot <dir> <version> <release-sha>
+  # Снимок ОБЯЗАН декларировать СВОИ версию и sha в release.json: артефакт
+  # 0.14.0 — 0.14.0, артефакт 0.15.0 — 0.15.0. publish_channel.py отвергает
+  # несогласованный снимок (bad_release_json) — этот барьер не ослабляется.
+  local dir="$1" version="$2" sha="$3"
   rm -rf "$dir"; mkdir -p "$dir"
   cp -R backend "$dir/backend"
   cp -R frontend "$dir/frontend"
@@ -130,21 +133,21 @@ make_snapshot() {
   # Локальные артефакты разработки не входят в снимок релиза.
   rm -rf "$dir/frontend/node_modules" "$dir/frontend/dist" \
     "$dir/infra/release/testdata/__pycache__"
-  python3 - "$dir/release.json" <<'PY'
+  python3 - "$dir/release.json" "$version" "$sha" <<'PY'
 import json, sys
 from datetime import UTC, datetime
 json.dump({
-    "version": "0.14.0",
-    "release_sha": "2" * 40,
+    "version": sys.argv[2],
+    "release_sha": sys.argv[3],
     "built_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
 }, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False)
 PY
 }
 
-publish_channel() { # publish_channel <version> <sha> <package-url> <out-dir>
-  local version="$1" sha="$2" url="$3" out="$4"
+publish_channel() { # publish_channel <snapshot> <version> <sha> <package-url> <out-dir>
+  local snapshot="$1" version="$2" sha="$3" url="$4" out="$5"
   python3 infra/release/publish_channel.py \
-    --snapshot "$WORKDIR/snapshot" --version "$version" \
+    --snapshot "$snapshot" --version "$version" \
     --release-sha "$sha" --package-url "$url" \
     --minimum-supported-version 0.13.0 \
     --notes-ru "Pilot drill (fixture key, NOT production)" \
@@ -153,12 +156,17 @@ publish_channel() { # publish_channel <version> <sha> <package-url> <out-dir>
     --out-dir "$out" >/dev/null || die "publish_channel failed for $url"
 }
 
-make_snapshot "$WORKDIR/snapshot"
-publish_channel "$CHANNEL_VERSION" "$CHANNEL_SHA" \
+# Каждый релизный артефакт строится из СВОЕГО снимка: release.json внутри
+# пакета декларирует именно его версию и sha. (Регрессия: ранее канал
+# 0.15.0 переиспользовал снимок 0.14.0, и публикация падала с
+# bad_release_json — drill умирал с exit 2 ещё до Docker Compose.)
+make_snapshot "$WORKDIR/snapshot-$CHANNEL_VERSION" "$CHANNEL_VERSION" "$CHANNEL_SHA"
+make_snapshot "$WORKDIR/snapshot-$NEXT_VERSION" "$NEXT_VERSION" "$NEXT_SHA"
+publish_channel "$WORKDIR/snapshot-$CHANNEL_VERSION" "$CHANNEL_VERSION" "$CHANNEL_SHA" \
   "https://channel:8443/hr-manager-windows-$CHANNEL_VERSION.zip" "$WORKDIR/channel-good"
-publish_channel "$NEXT_VERSION" "$NEXT_SHA" \
+publish_channel "$WORKDIR/snapshot-$NEXT_VERSION" "$NEXT_VERSION" "$NEXT_SHA" \
   "https://channel:8443/hr-manager-windows-$NEXT_VERSION.zip" "$WORKDIR/channel-next"
-publish_channel "$NEXT_VERSION" "$NEXT_SHA" \
+publish_channel "$WORKDIR/snapshot-$NEXT_VERSION" "$NEXT_VERSION" "$NEXT_SHA" \
   "https://channel:8443/redirect/pkg.zip" "$WORKDIR/channel-redirect"
 # Повреждённая подпись: инвертируем первый hex-символ подписи.
 python3 - "$WORKDIR/channel-next/update-channel.json" "$WORKDIR/channel-tampered/update-channel.json" <<'PY'
