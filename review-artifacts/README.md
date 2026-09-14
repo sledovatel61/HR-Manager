@@ -344,3 +344,10 @@ workflow из сессии Arena заблокирован отсутствием
 
 Тесты-инварианты workflow: `backend/tests/test_pilot_drill.py::test_ci_has_pilot_drill_job`
 (предпочитает in-tree версию, до переноса — копию из review-artifacts).
+
+Дополнение (раунд 3): `evidence/2026-09-14-agent1/pilot-drill-failclosed.{json,md}`
+— фактический прогон переработанного drill в окружении без docker:
+verdict `incomplete`, exit 1, все 37 обязательных стадий учтены
+(1 failed prerequisites + 36 skipped), evidence записан. Это локальное
+доказательство fail-closed контракта вердиктов; live-прогон (docker)
+остаётся за CI-джобой `pilot-drill` после переноса workflow владельцем.
