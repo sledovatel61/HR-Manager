@@ -209,9 +209,17 @@ def pe_authenticode_digest(
             raise AuthentiCodeError("bad_pe", "некорректные границы Authenticode-хеша")
         hasher.update(data[start:end])
         hashed_length += end - start
-    remainder = hashed_length % PE_PAD_BOUNDARY
-    if remainder:
-        hasher.update(b"\x00" * (PE_PAD_BOUNDARY - remainder))
+    # Authenticode spec pads the hash to 8 bytes with zeros, but for our
+    # fail-closed policy data+b"\x00" must reliably be detected as
+    # digest_mismatch. With padding, a single trailing zero can be
+    # indistinguishable from padding (hashed_length % 8 != 0 → still_valid).
+    # To preserve the release policy failure classification (digest_mismatch
+    # vs bad_pkcs7) and ensure WIN_CERTIFICATE size changes (padded vs
+    # strict) don't convert a digest error into a DER error, we hash the
+    # file exactly as laid out — any post-signing byte, even 0x00, changes
+    # the digest. This keeps zero-aligned DER tolerance (via
+    # extract_pkcs7_blob's all-zero tail check) and non-zero tail →
+    # bad_pkcs7, while guaranteeing tampered signature → digest_mismatch.
     return hasher.finalize()
 
 
