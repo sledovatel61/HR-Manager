@@ -1,5 +1,22 @@
 # Phase 14 — эксплуатационная готовность и ограниченный запуск Windows-пилота
 
+## Round 3 — итог независимой приёмки (14 сентября 2026)
+
+Исправленный кандидат агента 2 выбран победителем. Изменения live drill
+зафиксированы коммитом `02b749bc931afe062d02834269c63d1998ec6bce`. На этом
+exact code commit выполнен повторный Windows + Docker Desktop live Compose E2E:
+**17/17 passed**; SHA-256 итогового JSON
+`503873f08f8a3c62f444ba9d914656e87aabb275c55d37a6b9cb35c874c9e6eb`.
+Проверены реальные backup bytes, SHA-256/sidecar/state, isolated restore с
+синтетическим кандидатом, signed channel и tamper suite, persistence после
+рестарта и cleanup без остаточных Docker-ресурсов.
+
+Полные Phase 14 workflows перенесены в `.github/workflows/` отдельным коммитом
+`7d3097c` для запуска обязательных проверок на точном финальном SHA. PR #27 и
+ветка `arena/01a08ff0-hr-manager-02` остаются открыты; merge допустим только после
+зелёного exact-SHA CI. Linux live Compose является желательной дополнительной
+платформенной проверкой, но на момент этой записи отдельно не подтверждён.
+
 Отчёт coding-сессии Arena (самостоятельный агент). Phase 14 — hardening/acceptance:
 новых HR-функций, второго updater'а, автоустановки, telemetry SaaS, `docker.sock`
 и обхода проверки подписи не добавлялось.
