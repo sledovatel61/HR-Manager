@@ -1,0 +1,119 @@
+# Phase 14: ЖИВОЙ Compose drill (pilot E2E) — контур, отдельный от unit-CI.
+#
+# Эта джоба НЕ агрегирует и НЕ заменяет unit/integration-тесты (их запускает
+# обычный CI): она выполняет единственный исполняемый артефакт приёмки —
+# infra/scripts/pilot-drill.sh на живом Docker Compose-стеке (изолированный
+# проект с уникальным именем, синтетические данные, эфемерные ключи и
+# сертификаты, генерируемые на месте). Выход unit/pytest-наборов НИКОГДА не
+# выдаётся за live Docker E2E.
+#
+# Контракт джобы:
+#   * drill сам пишет JSON+Markdown evidence ВСЕГДА (включая провал и
+#     аномальный выход) — артефакт `pilot-drill-evidence` выгружается
+#     `if: always()`;
+#   * вердикт drill обязан быть `pass`; `fail`/`incomplete` → non-zero exit;
+#   * отсутствие pilot-drill.json — отдельная ошибка джобы (evidence
+#     обязателен даже при провале).
+#
+# Что ЭТА джоба НЕ проверяет (явно, чтобы не выдавать за проверенное):
+#   * Windows lifecycle (установка/обновление/удаление/rollback реальным
+#     движком на Windows) — ручная приёмка по docs/phase-14-runbook.md
+#     (см. джобу manual-gates ниже);
+#   * production Authenticode-подпись установщика — защищённый контур
+#     `installer-signing` (production PFX, fail closed), ручной релиз; в CI
+#     проверяется только независимый верификатор на ephemeral-сертификатах
+#     (backend/tests/test_authenticode_verify.py).
+name: Phase 14 live Compose drill
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pilot-drill:
+    name: Live pilot drill (Docker Compose E2E, synthetic)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (pinned)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Run the pilot drill (live Compose stack, ephemeral fixture keys)
+        run: |
+          set -euo pipefail
+          # Никаких production secrets: канал подписан fixture-ключом
+          # infra/release/testdata, TLS-сертификаты и секреты прогона
+          # генерируются на месте и удаляются по завершении прогона.
+          infra/scripts/pilot-drill.sh
+
+      - name: Drill evidence must exist and verdict must be pass
+        if: always()
+        run: |
+          set -euo pipefail
+          report="$(ls /tmp/hrm-pilot-drill-*/pilot-drill.json 2>/dev/null | head -1 || true)"
+          if [ -z "$report" ]; then
+            echo "ОШИБКА: pilot-drill.json не создан — drill обязан писать evidence даже при провале"
+            exit 1
+          fi
+          verdict="$(python3 -c "import json; print(json.load(open('$report'))['verdict'])")"
+          echo "drill verdict: $verdict ($(dirname "$report"))"
+          if [ "$verdict" != "pass" ]; then
+            echo "ОШИБКА: вердикт drill — $verdict (обязательные стадии failed/incomplete)"
+            exit 1
+          fi
+
+      - name: Publish drill evidence (JSON + Markdown, no secrets/PII)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pilot-drill-evidence
+          path: |
+            /tmp/hrm-pilot-drill-*/pilot-drill.json
+            /tmp/hrm-pilot-drill-*/pilot-drill.md
+          if-no-files-found: error
+
+  manual-gates:
+    name: Manual acceptance gates (NOT automated here)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (pinned)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Render the manual-gate checklist (documentation, not a test run)
+        run: |
+          set -euo pipefail
+          test -f docs/phase-14-runbook.md
+          cat > manual-gates.md <<'EOF'
+          # Phase 14: ручные ворота приёмки (НЕ автоматизированы этим CI)
+
+          Эта джоба — документирование, а не проверка: она НЕ запускает
+          тестов и НЕ заявляет прохождение нижеперечисленного.
+
+          1. Windows lifecycle приёмка (ручная, docs/phase-14-runbook.md):
+             установка реальным Setup.exe, обновление с канала, uninstall
+             без purge / с purge, rollback образов `:previous`.
+          2. Production Authenticode-подпись установщика (ручной релиз):
+             защищённый environment `installer-signing`, production PFX,
+             fail closed (infra/release/installer_signing.py), RFC 3161
+             timestamp, signtool verify /pa /all.
+          3. Production-подпись канала обновлений: Ed25519-ключ из SECRET
+             `UPDATE_CHANNEL_SIGNING_KEY` (в CI используется ТОЛЬКО
+             fixture-ключ).
+          EOF
+          cat manual-gates.md
+
+      - name: Publish the manual-gate checklist
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase14-manual-gates
+          path: manual-gates.md
+          if-no-files-found: error

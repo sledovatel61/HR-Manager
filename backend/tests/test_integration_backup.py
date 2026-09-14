@@ -591,3 +591,66 @@ def test_cli_backup_now_and_check_end_to_end(
             select(AuditEvent.username).where(AuditEvent.action.in_([AuditAction.BACKUP_SUCCEEDED]))
         ).all()
     assert "backup-seed-admin" in rows
+
+
+# --- restore drill: обязательная проверка восстановленных синтетических данных ----
+
+
+@pytest.fixture()
+def seeded_candidate(migrated_source: str, seeded_user: None) -> str:
+    """Синтетическая запись-маркер (уникальный email), как в pilot drill."""
+    from sqlalchemy import select
+
+    from app.models import Candidate, CandidateSource, CandidateStage
+
+    email = "drill-synthetic-itest@example.com"
+    with Session(create_engine(migrated_source)) as db:
+        owner = db.scalars(select(User).where(User.username == "backup-seed-admin")).one()
+        db.add(
+            Candidate(
+                full_name="Синтетический Кандидат Дрилла",
+                full_name_normalized="синтетический кандидат дрилла",
+                email=email,
+                email_normalized=email.upper(),
+                source=CandidateSource.SITE,
+                position="Синтетическая позиция",
+                owner_user_id=owner.id,
+                stage=CandidateStage.NEW,
+                created_at=utc_now(),
+                updated_at=utc_now(),
+            )
+        )
+        db.commit()
+    return email
+
+
+def test_restore_drill_verifies_synthetic_marker_row(
+    cfg: RunnerConfig,
+    keys: tuple[dict[str, bytes], str],
+    seeded_candidate: str,
+) -> None:
+    """Restore drill с маркером обязан доказать, что синтетическая запись
+    ДЕЙСТВИТЕЛЬНО восстановлена в изолированной БД (не только схема)."""
+    from dataclasses import replace
+
+    _make_backup(cfg, keys, request_id="itest-marker")
+    drill_cfg = replace(cfg, expect_candidate_email=seeded_candidate)
+    drill = run_restore_drill(drill_cfg, actor=None, actor_name="test-runner", keys=keys[0])
+    assert drill.ok, drill.message
+    assert drill.exit_code == EXIT_OK
+
+
+def test_restore_drill_fails_when_marker_row_missing(
+    cfg: RunnerConfig,
+    keys: tuple[dict[str, bytes], str],
+    seeded_candidate: str,
+) -> None:
+    """Маркер, которого нет в бэкапе, — провал restore drill: восстановленные
+    ДАННЫЕ не совпали, а не только схема/пользователи."""
+    from dataclasses import replace
+
+    _make_backup(cfg, keys, request_id="itest-marker-missing")
+    drill_cfg = replace(cfg, expect_candidate_email="missing-synthetic@example.com")
+    drill = run_restore_drill(drill_cfg, actor=None, actor_name="test-runner", keys=keys[0])
+    assert not drill.ok
+    assert "expected synthetic row" in drill.message

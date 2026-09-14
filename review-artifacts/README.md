@@ -324,3 +324,23 @@ control: **rejected (rc=2, bad_release_json)** — как и обязан. На 
 Docker в песочнице отсутствует — docker-стадии drill (5–19) не выполнялись
 и не заявляются; переносу workflow в `.github/workflows/` мешает отсутствие
 scope `workflows` у токена (403 на REST и git push — §9.5 отчёта).
+
+### Phase 14 live drill workflow — `phase14-live-drill.yml` (2026-09-14, Агент 1)
+
+Отдельный от unit-CI контур ЖИВОГО Compose drill:
+`review-artifacts/phase14-live-drill.yml` — точная копия целевого
+`.github/workflows/phase14-live-drill.yml` (перенос владельцем, если push
+workflow из сессии Arena заблокирован отсутствием scope `workflows`).
+
+Джобы:
+- `pilot-drill` — запуск `infra/scripts/pilot-drill.sh` (живой Compose,
+  изолированный уникальный проект, синтетика, эфемерные ключи); отдельный
+  шаг проверяет, что `pilot-drill.json` создан И вердикт `pass` (иначе
+  non-zero); evidence (JSON+MD) выгружается `if: always()` c
+  `if-no-files-found: error`. Никаких pytest-агрегаций — unit ≠ live E2E.
+- `manual-gates` — документирование ручных ворот (Windows lifecycle,
+  production Authenticode, production-подпись канала): чек-лист как
+  артефакт, НЕ заявляющий прохождение.
+
+Тесты-инварианты workflow: `backend/tests/test_pilot_drill.py::test_ci_has_pilot_drill_job`
+(предпочитает in-tree версию, до переноса — копию из review-artifacts).

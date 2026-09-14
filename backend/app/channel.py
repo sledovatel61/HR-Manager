@@ -174,6 +174,21 @@ class _NoAutoRedirectHandler(urllib.request.HTTPRedirectHandler):
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
+def _has_dot_segments(path: str) -> bool:
+    """Сегменты «.»/«..» в пути URL — попытка обхода каталога (traversal).
+
+    Проверяются и percent-encoded варианты (``%2e%2e``): сервер на другом
+    конце может декодировать путь при разборе, поэтому политика обязана
+    видеть то, что увидит сервер. Обычные имена файлов («pkg.zip») сегментом
+    «.»/«..» не являются.
+    """
+    for variant in (path, urllib.parse.unquote(path)):
+        segments = variant.split("/")
+        if "." in segments or ".." in segments:
+            return True
+    return False
+
+
 def _assert_url_policy(parsed: urllib.parse.SplitResult, allowed: list[str]) -> None:
     """Проверка политики ДО сетевого обращения. Сообщения — безопасные
     коды, без URL/хостов (не попадают в логи/аудит/ответы)."""
@@ -181,6 +196,8 @@ def _assert_url_policy(parsed: urllib.parse.SplitResult, allowed: list[str]) -> 
         raise ChannelError("bad_url", "канал перешёл на незащищённую схему (требуется https)")
     if parsed.hostname not in allowed:
         raise ChannelError("bad_url", "хост канала не входит в политику разрешённых")
+    if _has_dot_segments(parsed.path):
+        raise ChannelError("bad_url", "URL канала содержит сегменты обхода пути")
 
 
 def _build_opener(ssl_context: ssl.SSLContext | None) -> urllib.request.OpenerDirector:

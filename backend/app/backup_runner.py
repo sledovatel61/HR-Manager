@@ -85,6 +85,9 @@ class RunnerConfig:
     pgrestore_bin: str = "pg_restore"
     drill_admin_url: str | None = None
     drill_db_name: str = "hr_manager_restore_drill"
+    # Drill-only: synthetic marker row that MUST be present in the restored
+    # database (Phase 14 pilot drill); None keeps the regular drill checks.
+    expect_candidate_email: str | None = None
     retention_days: int = 7
     max_age_hours: int = 26
     min_copies: int = 2
@@ -103,6 +106,7 @@ class RunnerConfig:
             pgrestore_bin=settings.backup_restore_bin,
             drill_admin_url=settings.backup_drill_admin_url or None,
             drill_db_name=settings.backup_drill_db_name,
+            expect_candidate_email=(settings.backup_drill_expect_candidate_email or None),
             retention_days=settings.backup_retention_days,
             max_age_hours=settings.backup_max_age_hours,
             min_copies=settings.backup_min_copies,
@@ -596,6 +600,16 @@ def run_restore_drill(
                     {"names": list(REQUIRED_TABLES)},
                 ).scalar_one()
                 users_count = connection.execute(text("SELECT count(*) FROM users")).scalar_one()
+                # Phase 14 pilot drill: restored DATA, not just schema. The
+                # synthetic marker row (unique per drill run) must have
+                # survived backup → restore; None keeps the regular checks.
+                expected_email = (cfg.expect_candidate_email or "").strip()
+                marker_count = 0
+                if expected_email:
+                    marker_count = connection.execute(
+                        text("SELECT count(*) FROM candidates WHERE email = :email"),
+                        {"email": expected_email},
+                    ).scalar_one()
         finally:
             engine.dispose()
         if present != len(REQUIRED_TABLES):
@@ -604,6 +618,11 @@ def run_restore_drill(
             )
         if users_count < 1:
             raise RuntimeError("restored database has no users; drill cannot pass")
+        if expected_email and marker_count < 1:
+            raise RuntimeError(
+                "restored database is missing the expected synthetic row; "
+                "restore did not preserve drill data"
+            )
 
         # Application health against the RESTORED database.
         port = _free_port()
