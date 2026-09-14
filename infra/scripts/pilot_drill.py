@@ -164,7 +164,8 @@ def _run_pytest(step: Step, extra_env: dict[str, str], secrets: list[str]) -> St
     started = time.monotonic()
     try:
         completed = subprocess.run(
-            command, cwd=REPO_ROOT, capture_output=True, text=True, timeout=1800, env=extra_env
+            command, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=1800, env=extra_env
         )
     except subprocess.TimeoutExpired:
         return StepResult(step, "failed", "timeout", time.monotonic() - started, "шаг не уложился в 30 минут")
@@ -188,7 +189,8 @@ def _run_powershell(step: Step, secrets: list[str]) -> StepResult:
     started = time.monotonic()
     try:
         completed = subprocess.run(
-            command, cwd=REPO_ROOT, capture_output=True, text=True, timeout=3600
+            command, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=3600
         )
     except subprocess.TimeoutExpired:
         return StepResult(step, "failed", "timeout", time.monotonic() - started, "шаг не уложился в 60 минут")
@@ -210,7 +212,10 @@ def _run_live_compose(step: Step, secrets: list[str]) -> StepResult:
     command = [sys.executable, str(REPO_ROOT / "infra" / "scripts" / "pilot_drill_live_compose.py"), "--out-dir", str(out_dir), "--json-out", str(out_json)]
     started = time.monotonic()
     try:
-        completed = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, timeout=1800)
+        completed = subprocess.run(
+            command, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=1800
+        )
     except subprocess.TimeoutExpired:
         return StepResult(step, "failed", "timeout", time.monotonic() - started, "live Compose drill не уложился в 30 минут")
     duration = time.monotonic() - started
@@ -359,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     markdown_path = out_dir / "pilot-drill.md"
     markdown_path.write_text(_markdown(report), encoding="utf-8")
-    print(f"drill verdict: {report['verdict']} → {json_path}")
+    print(f"drill verdict: {report['verdict']} -> {json_path}")
     return 0 if report["verdict"] == "passed" else 1
 
 

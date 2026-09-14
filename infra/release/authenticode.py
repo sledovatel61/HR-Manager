@@ -59,6 +59,7 @@ from der import (  # noqa: E402
     expect,
     parse_all,
     parse_one,
+    read_tlv,
 )
 
 # --- OID, встречающиеся в Authenticode -----------------------------------------
@@ -232,7 +233,17 @@ def extract_pkcs7_blob(data: bytes, pe: PeInfo) -> bytes:
                 "bad_certificate_table", f"неподдерживаемая revision: 0x{revision:04x}"
             )
         if cert_type == 0x0002:  # WIN_CERT_TYPE_PKCS_SIGNED_DATA
-            records.append(data[offset + 8 : offset + length])
+            payload = data[offset + 8 : offset + length]
+            # signtool may include WIN_CERTIFICATE's zero alignment bytes in
+            # dwLength. They are record padding, not part of the DER object.
+            # Accept only an all-zero tail after exactly one complete TLV.
+            try:
+                _, der_end = read_tlv(payload)
+            except DerError as exc:
+                raise AuthentiCodeError("bad_pkcs7", f"некорректный DER подписи: {exc}") from exc
+            if any(payload[der_end:]):
+                raise AuthentiCodeError("bad_pkcs7", "ненулевые байты после DER подписи")
+            records.append(payload[:der_end])
         offset += (length + 7) & ~7  # записи выровнены по 8 байт
     if not records:
         raise AuthentiCodeError("unsigned", "PKCS#7-подпись в таблице сертификатов не найдена")

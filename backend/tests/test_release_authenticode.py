@@ -241,6 +241,18 @@ def test_pe_digest_ignores_certificate_table_and_checksum(authority: EphemeralAu
     assert extract_pkcs7_blob(signed, parse_pe(signed))
 
 
+def test_extract_accepts_signtool_padding_in_win_certificate_length(
+    authority: EphemeralAuthority,
+) -> None:
+    signed = bytearray(sign_test_pe(make_test_pe(), authority))
+    info = parse_pe(signed)
+    length = int.from_bytes(signed[info.cert_table_offset : info.cert_table_offset + 4], "little")
+    aligned = (length + 7) & ~7
+    assert aligned > length
+    signed[info.cert_table_offset : info.cert_table_offset + 4] = aligned.to_bytes(4, "little")
+    assert extract_pkcs7_blob(bytes(signed), parse_pe(signed))
+
+
 def test_cli_refuses_test_signing_without_explicit_flag(tmp_path: Path) -> None:
     import sign_authenticode
 

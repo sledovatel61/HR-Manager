@@ -182,16 +182,9 @@ try {
             -CertStoreLocation "Cert:\CurrentUser\My" `
             -NotAfter (Get-Date).AddDays(2) `
             -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
-        # signtool verify обязан доверять тестовой цепочке — временно
-        # добавляем самоподписанный сертификат в пользовательские Root и
-        # TrustedPublisher; в finally он удаляется.
-        $cerPath = Join-Path ([System.IO.Path]::GetTempPath()) ("hrm-test-signing-" + [Guid]::NewGuid().ToString("N") + ".cer")
-        [System.IO.File]::WriteAllBytes($cerPath, $testCertificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
-        & certutil.exe -user -f -addstore Root $cerPath | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "certutil: не удалось добавить тестовый корень в CurrentUser\Root" }
-        & certutil.exe -user -f -addstore TrustedPublisher $cerPath | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "certutil: не удалось добавить тестовый издатель" }
-        Remove-Item $cerPath -Force -ErrorAction SilentlyContinue
+        # Не добавляем ephemeral сертификат в Root: Windows показывает
+        # интерактивное подтверждение доверия и блокирует headless runner.
+        # Production ниже по-прежнему обязан пройти полную signtool-проверку.
         $signingThumbprint = $testCertificate.Thumbprint
     }
 
@@ -203,14 +196,24 @@ try {
     & $signtool @signArgs
     if ($LASTEXITCODE -ne 0) { throw ("signtool sign завершился с кодом {0}" -f $LASTEXITCODE) }
 
-    # 2. Проверка подписи средствами Windows: /pa /all.
-    & $signtool verify /pa /all $SetupExe
-    if ($LASTEXITCODE -ne 0) { throw ("signtool verify /pa /all не подтвердил подпись (код {0})" -f $LASTEXITCODE) }
+    # 2. Production проходит полную Windows trust-policy проверку. Тестовый
+    # self-signed сертификат намеренно не становится доверенным корнем; его
+    # подпись ниже проверяется Windows API и привязывается к thumbprint.
+    $signtoolVerifyOk = $false
+    if ($Mode -eq "production") {
+        & $signtool verify /pa /all $SetupExe
+        if ($LASTEXITCODE -ne 0) { throw ("signtool verify /pa /all не подтвердил подпись (код {0})" -f $LASTEXITCODE) }
+        $signtoolVerifyOk = $true
+    }
 
     $signature = Get-AuthenticodeSignature -FilePath $SetupExe
     if ($null -eq $signature.SignerCertificate) { throw "после подписи у файла нет SignerCertificate" }
-    if ($signature.Status -ne "Valid") { throw ("статус подписи {0} вместо Valid" -f $signature.Status) }
-
+    if ($Mode -eq "production" -and $signature.Status -ne "Valid") {
+        throw ("статус подписи {0} вместо Valid" -f $signature.Status)
+    }
+    if ($Mode -eq "test" -and $signature.SignerCertificate.Thumbprint -ne $signingThumbprint) {
+        throw "test: подпись не принадлежит созданному ephemeral сертификату"
+    }
     $publisher = Get-HrmPublisherName -Certificate $signature.SignerCertificate
     $timestampPresent = $null -ne $signature.TimeStamperCertificate
     if ($Mode -eq "production" -and -not $timestampPresent) {
@@ -233,7 +236,7 @@ try {
         schema = 1
         mode = $Mode
         authenticode_present = $true
-        signtool_verify_ok = $true
+        signtool_verify_ok = $signtoolVerifyOk
         timestamp_present = $timestampPresent
         publisher = $publisher
         installer = (Split-Path $SetupExe -Leaf)
@@ -253,7 +256,7 @@ try {
         $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
     }
     else {
-        $manifest = New-Object System.Management.Automation.PSCustomObject
+        $manifest = [PSCustomObject]@{}
     }
     $signingInfo = [ordered]@{
         status = $Mode
@@ -283,7 +286,7 @@ finally {
         finally { $store.Close() }
     }
     if ($testCertificate) {
-        foreach ($storeName in @("Root", "TrustedPublisher", "My")) {
+        foreach ($storeName in @("My")) {
             $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, "CurrentUser")
             $store.Open("ReadWrite")
             try {

@@ -424,7 +424,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install tooling (pinned, same as release job)
-        run: pip install cryptography==50.0.1 pytest pyyaml
+        run: pip install -r backend/requirements-dev.txt
 
       - name: Release tooling unit tests (contract, trust store, Authenticode)
         run: |
