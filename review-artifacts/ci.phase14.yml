@@ -348,9 +348,11 @@ jobs:
           # CI НИКОГДА не использует production-секреты: только fixture-набор
           # из testdata. Строгая схема проверяется тем же валидатором, что и
           # в release-пайплайне.
+          $env:PYTHONUTF8 = "1"
           python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json --require-unrevoked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $sha = (Get-FileHash -Path infra/release/testdata/trusted_keys.json -Algorithm SHA256).Hash.ToLowerInvariant()
-          echo "TRUST_STORE_SHA256=$sha" >> $env:GITHUB_ENV
+          "TRUST_STORE_SHA256=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build HR Manager Setup.exe
         shell: powershell
