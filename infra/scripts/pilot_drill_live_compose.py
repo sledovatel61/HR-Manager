@@ -41,6 +41,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DRILL_SCHEMA = 1
+MIN_BACKUP_BYTES = 1024
 SECRET_MARKERS = (
     "PRIVATE KEY-----",
     "BEGIN RSA PRIVATE KEY",
@@ -305,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
                 _mask(reason, secrets),
             )
         )
-        print(f"[{status}] {step.id}: {summary}", flush=True)
+        print(f"[{status}] {step.id}: {_mask(summary, secrets)}", flush=True)
 
     def run_step(step: LiveStep, fn, *a, **kw):
         start = time.monotonic()
@@ -415,7 +416,8 @@ COMPOSE_PROJECT_NAME={project}
         )
         md_path.write_text(_markdown(report), encoding="utf-8")
         print(
-            f"drill verdict: {report['verdict']} → {json_path} (Docker not available — live E2E skipped, not passed)",
+            f"drill verdict: {report['verdict']} -> {json_path} "
+            "(Docker not available - live E2E skipped, not passed)",
             flush=True,
         )
         return 1
@@ -530,7 +532,7 @@ COMPOSE_PROJECT_NAME={project}
             json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         md_path.write_text(_markdown(report), encoding="utf-8")
-        print(f"drill verdict: {verdict} → {json_path}", flush=True)
+        print(f"drill verdict: {verdict} -> {json_path}", flush=True)
         return 0 if verdict == "passed" else 1
 
     # Step 3: wait readiness
@@ -658,7 +660,7 @@ COMPOSE_PROJECT_NAME={project}
             json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         md_path.write_text(_markdown(report), encoding="utf-8")
-        print(f"drill verdict: {verdict} → {json_path}", flush=True)
+        print(f"drill verdict: {verdict} -> {json_path}", flush=True)
         return 0 if verdict == "passed" else 1
 
     backend_base = f"http://127.0.0.1:{host_ports['backend']}"
@@ -728,7 +730,7 @@ COMPOSE_PROJECT_NAME={project}
             pass
         return (
             "pass",
-            "bootstrap login ok (admin/AdminAdmin123)",
+            "bootstrap login ok",
             {
                 "user": body.get("user", {}).get("username", "admin")
                 if isinstance(body, dict)
@@ -867,7 +869,7 @@ COMPOSE_PROJECT_NAME={project}
                 "synthetic prerequisite failed, backup must be fail",
             )
         # Architectural: backup tooling lives only in backup service (pg_dump), not backend.
-        # Trigger via backup container exec, then poll for fresh artifact with size>0 and sha256.
+        # Require a fresh artifact whose bytes, detached checksum, and state record agree.
         code_before, out_before, _ = _run(
             [
                 *compose_base(),
@@ -876,11 +878,12 @@ COMPOSE_PROJECT_NAME={project}
                 "backup",
                 "sh",
                 "-c",
-                "ls -l /var/backups/hr-manager/*.pgdump.enc 2>&1; echo ---BEFORE---; ls -1 /var/backups/hr-manager/*.pgdump.enc 2>&1 | sort",
+                "find /var/backups/hr-manager -maxdepth 1 -type f "
+                "-name '*.pgdump.enc' -printf '%f\\n' 2>/dev/null | sort",
             ],
             timeout=15,
         )
-        before_list = set(out_before.split()) if code_before == 0 else set()
+        before_list = set(out_before.splitlines()) if code_before == 0 else set()
         before_out = (out_before)[:1000]
         reason = f"drill-{drill_id}"
         request_id = f"drill-{_random_id()}"
@@ -904,11 +907,31 @@ COMPOSE_PROJECT_NAME={project}
         )
         trig_out = (out_trig + err_trig)[:1500]
         if code_trig != 0:
-            last_state = f"backup-now exec failed code {code_trig}: {trig_out[:300]}"
-        else:
-            last_state = trig_out[:300]
+            return (
+                "fail",
+                f"backup-now failed code {code_trig}: {trig_out[:300]}",
+                {"trigger": trig_out[:1000], "before": before_out[:500]},
+                trig_out[:500],
+            )
+        last_state = trig_out[:300]
         deadline = time.monotonic() + 120
-        artifact_info: dict[str, Any] = {"trigger_out": trig_out[:1000], "before": before_out[:500]}
+        artifact_info: dict[str, Any] = {
+            "trigger_out": trig_out[:1000],
+            "before": before_out[:500],
+        }
+        inspect_code = (
+            "import glob,hashlib,json,pathlib; "
+            "root=pathlib.Path('/var/backups/hr-manager'); "
+            "state=json.loads((root/'state.json').read_text()); "
+            "rec=state.get('last_backup') or {}; name=rec.get('file',''); p=root/name; "
+            "actual=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else ''; "
+            "side=(p.with_name(p.name+'.sha256').read_text().split()[0] "
+            "if p.is_file() and p.with_name(p.name+'.sha256').is_file() else ''); "
+            "print(json.dumps({'files':[pathlib.Path(x).name for x in "
+            "glob.glob(str(root/'*.pgdump.enc'))],'record':rec,'actual_sha256':actual,"
+            "'sidecar_sha256':side,'actual_size':p.stat().st_size if p.is_file() else 0},"
+            "sort_keys=True))"
+        )
         while time.monotonic() < deadline:
             code_exec, out_exec, err_exec = _run(
                 [
@@ -916,53 +939,76 @@ COMPOSE_PROJECT_NAME={project}
                     "exec",
                     "-T",
                     "backup",
-                    "sh",
+                    "python",
                     "-c",
-                    "ls -l /var/backups/hr-manager/*.pgdump.enc 2>&1; echo ---; cat /var/backups/hr-manager/state.json 2>&1 | head -c 3000; echo ---; sha256sum /var/backups/hr-manager/*.pgdump.enc 2>&1 | head -20",
+                    inspect_code,
                 ],
                 timeout=15,
             )
             exec_out = (out_exec + err_exec)[:4000]
-            files = re.findall(r"(\S+\.pgdump\.enc)", exec_out)
-            m_sizes = re.findall(r"\s(\d+)\s+\S+\s+\S+\s+\S+\.pgdump\.enc", exec_out)
-            sizes = [int(s) for s in m_sizes] if m_sizes else []
-            sha_lines = re.findall(r"([0-9a-f]{64})\s+(\S+\.pgdump\.enc)", exec_out)
-            state_ok = '"status": "ok"' in exec_out
-            if code_exec == 0 and files and sizes and sha_lines:
-                m_file = re.search(r'"file"\s*:\s*"([^"]+\.pgdump\.enc)"', exec_out)
-                newest = m_file.group(1) if m_file else files[-1]
-                is_fresh = newest not in before_list or len(files) > len(before_list)
-                if not is_fresh and code_trig == 0:
-                    is_fresh = True
-                size = 0
-                sha = None
-                for h, f in sha_lines:
-                    if newest in f or f in newest:
-                        sha = h
-                        break
-                if sha is None and sha_lines:
-                    sha = sha_lines[-1][0]
-                for i, f in enumerate(files):
-                    if newest in f or f in newest:
-                        if i < len(sizes):
-                            size = sizes[i]
-                        break
-                if size == 0 and sizes:
-                    size = max(sizes)
-                artifact_info.update({"exec": exec_out[:2000], "file": newest, "size": size, "sha256": sha[:16] if sha else None, "is_fresh": is_fresh})
-                if size > 0 and sha and len(sha) == 64 and state_ok:
+            try:
+                inspection = json.loads(out_exec) if code_exec == 0 else {}
+            except json.JSONDecodeError:
+                inspection = {}
+            record = inspection.get("record") if isinstance(inspection, dict) else {}
+            if isinstance(record, dict):
+                newest = str(record.get("file", ""))
+                size = int(inspection.get("actual_size") or 0)
+                sha = str(inspection.get("actual_sha256", ""))
+                sidecar_sha = str(inspection.get("sidecar_sha256", ""))
+                files = inspection.get("files") or []
+                is_fresh = newest not in before_list and newest in files
+                state_consistent = (
+                    record.get("status") == "ok"
+                    and record.get("reason") == reason
+                    and record.get("request_id") == request_id
+                    and record.get("size") == size
+                    and record.get("enc_sha256") == sha
+                )
+                checksums_agree = (
+                    len(sha) == 64 and sha == sidecar_sha and record.get("enc_sha256") == sha
+                )
+                artifact_info.update(
+                    {
+                        "file": newest,
+                        "size": size,
+                        "sha256": sha,
+                        "sidecar_sha256": sidecar_sha,
+                        "is_fresh": is_fresh,
+                        "state_consistent": state_consistent,
+                    }
+                )
+                if (
+                    size >= MIN_BACKUP_BYTES
+                    and checksums_agree
+                    and state_consistent
+                    and is_fresh
+                ):
                     drill_state["backup_file"] = newest
                     drill_state["backup_size"] = size
                     drill_state["backup_sha"] = sha
                     drill_state["backup_exec"] = exec_out
                     return (
                         "pass",
-                        f"real backup verified {newest} {size} bytes sha256:{sha[:8]} fresh",
-                        {"file": newest, "size": size, "sha256": sha, "sha256_short": sha[:16], "is_fresh": is_fresh, "trigger": trig_out[:500]},
+                        f"real backup verified {newest} {size} bytes sha256:{sha[:8]} fresh/state-consistent",
+                        {
+                            "file": newest,
+                            "size": size,
+                            "minimum_size": MIN_BACKUP_BYTES,
+                            "sha256": sha,
+                            "sidecar_sha256": sidecar_sha,
+                            "is_fresh": is_fresh,
+                            "state_consistent": state_consistent,
+                            "trigger": trig_out[:500],
+                        },
                         "",
                     )
                 else:
-                    last_state = f"backup not ready: size={size} sha_ok={bool(sha and len(sha)==64)} state_ok={state_ok} files={files}"
+                    last_state = (
+                        f"backup not ready: size={size}/{MIN_BACKUP_BYTES} "
+                        f"checksums_agree={checksums_agree} "
+                        f"state_consistent={state_consistent} fresh={is_fresh} files={files}"
+                    )
             else:
                 last_state = f"backup exec not ready: {exec_out[:400]}"
             time.sleep(3)
@@ -1005,7 +1051,7 @@ COMPOSE_PROJECT_NAME={project}
             )
             backup_file = out_exec.strip().split()[-1].split("/")[-1] if code_exec == 0 and out_exec.strip() else ""
         drill_db = "hr_manager_restore_drill"
-        code_psql, out_psql, err_psql = _run(
+        code_drop, out_drop, err_drop = _run(
             [
                 *compose_base(),
                 "exec",
@@ -1017,16 +1063,39 @@ COMPOSE_PROJECT_NAME={project}
                 "-d",
                 "postgres",
                 "-c",
-                f"DROP DATABASE IF EXISTS {drill_db} WITH (FORCE); CREATE DATABASE {drill_db};",
+                f"DROP DATABASE IF EXISTS {drill_db} WITH (FORCE);",
             ],
             timeout=30,
         )
-        if code_psql != 0:
+        if code_drop != 0:
             return (
                 "fail",
-                f"failed to create isolated drill DB: {err_psql[:300]}",
-                {"out": out_psql[:500]},
-                err_psql[:500],
+                f"failed to drop stale isolated drill DB: {err_drop[:300]}",
+                {"out": out_drop[:500]},
+                err_drop[:500],
+            )
+        code_create, out_create, err_create = _run(
+            [
+                *compose_base(),
+                "exec",
+                "-T",
+                "db",
+                "psql",
+                "-U",
+                "hr_manager",
+                "-d",
+                "postgres",
+                "-c",
+                f"CREATE DATABASE {drill_db};",
+            ],
+            timeout=30,
+        )
+        if code_create != 0:
+            return (
+                "fail",
+                f"failed to create isolated drill DB: {err_create[:300]}",
+                {"out": out_create[:500]},
+                err_create[:500],
             )
         code_drill, out_drill, err_drill = _run(
             [
@@ -1895,44 +1964,52 @@ COMPOSE_PROJECT_NAME={project}
                 {"expected_id": cand_id[:8], "expected_name": expected_name, "got": str(resp_c)[:500]},
                 "",
             )
+        persistence_probe = (
+            "import hashlib,json,pathlib; "
+            "root=pathlib.Path('/var/backups/hr-manager'); "
+            f"p=root/{backup_file_before!r}; "
+            "state=json.loads((root/'state.json').read_text()); "
+            "actual=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else ''; "
+            "side=(p.with_name(p.name+'.sha256').read_text().split()[0] "
+            "if p.is_file() and p.with_name(p.name+'.sha256').is_file() else ''); "
+            "records=[state.get('last_backup') or {},*(state.get('recent') or [])]; "
+            "match=next((r for r in records if r.get('file')==p.name),{}); "
+            "print(json.dumps({'exists':p.is_file(),'size':p.stat().st_size if p.is_file() "
+            "else 0,'sha256':actual,'sidecar_sha256':side,"
+            "'matching_record':match},sort_keys=True))"
+        )
         code_exec, out_exec, err_exec = _run(
             [
                 *compose_base(),
                 "exec",
                 "-T",
                 "backup",
-                "sh",
+                "python",
                 "-c",
-                f"ls -l /var/backups/hr-manager/{backup_file_before} 2>&1; echo ---; sha256sum /var/backups/hr-manager/{backup_file_before} 2>&1; echo ---; cat /var/backups/hr-manager/state.json 2>&1 | head -c 3000",
+                persistence_probe,
             ],
             timeout=15,
         )
         exec_out = (out_exec + err_exec)[:4000]
-        if code_exec != 0 or backup_file_before not in exec_out:
-            code_exec2, out_exec2, err_exec2 = _run(
-                [
-                    *compose_base(),
-                    "exec",
-                    "-T",
-                    "backup",
-                    "sh",
-                    "-c",
-                    "ls -l /var/backups/hr-manager/*.pgdump.enc 2>&1; sha256sum /var/backups/hr-manager/*.pgdump.enc 2>&1 | head -5",
-                ],
-                timeout=15,
+        try:
+            persistence = json.loads(out_exec) if code_exec == 0 else {}
+        except json.JSONDecodeError:
+            persistence = {}
+        if not persistence.get("exists"):
+            return (
+                "fail",
+                "persistence check failed: backup artifact missing after restart",
+                {
+                    "exec": exec_out[:800],
+                    "ps": _compose_ps_evidence()[:500],
+                    "expected_file": backup_file_before,
+                },
+                exec_out[:300],
             )
-            exec_out = (out_exec2 + err_exec2)[:4000]
-            if backup_file_before not in exec_out:
-                return (
-                    "fail",
-                    "persistence check failed: backup artifact missing after restart",
-                    {"exec": exec_out[:800], "ps": _compose_ps_evidence()[:500], "expected_file": backup_file_before},
-                    exec_out[:300],
-                )
-        m_size = re.search(r"\s(\d+)\s+.*\.pgdump\.enc", exec_out)
-        size_after = int(m_size.group(1)) if m_size else None
-        m_sha = re.search(r"([0-9a-f]{64})", exec_out)
-        sha_after = m_sha.group(1) if m_sha else None
+        size_after = int(persistence.get("size") or 0)
+        sha_after = str(persistence.get("sha256") or "")
+        sidecar_sha_after = str(persistence.get("sidecar_sha256") or "")
+        state_record = persistence.get("matching_record") or {}
         if backup_size_before is not None and size_after is not None and size_after != backup_size_before:
             return (
                 "fail",
@@ -1947,11 +2024,27 @@ COMPOSE_PROJECT_NAME={project}
                 {"before": backup_sha_before[:16], "after": sha_after[:16]},
                 "",
             )
-        if size_after == 0 or not sha_after:
+        state_persisted = (
+            state_record.get("file") == backup_file_before
+            and state_record.get("size") == size_after
+            and state_record.get("enc_sha256") == sha_after
+            and state_record.get("status") == "ok"
+        )
+        if (
+            size_after < MIN_BACKUP_BYTES
+            or len(sha_after) != 64
+            or sidecar_sha_after != sha_after
+            or not state_persisted
+        ):
             return (
                 "fail",
-                "persistence check failed: backup size/sha not verifiable after restart",
-                {"exec": exec_out[:800]},
+                "persistence check failed: backup bytes/checksum/state not verifiable",
+                {
+                    "size": size_after,
+                    "sha256": sha_after,
+                    "sidecar_sha256": sidecar_sha_after,
+                    "state_persisted": state_persisted,
+                },
                 exec_out[:300],
             )
         return (
@@ -2068,7 +2161,7 @@ COMPOSE_PROJECT_NAME={project}
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     md_path.write_text(_markdown(report), encoding="utf-8")
-    print(f"drill verdict: {verdict} → {json_path}", flush=True)
+    print(f"drill verdict: {verdict} -> {json_path}", flush=True)
     return 0 if verdict == "passed" else 1
 
 

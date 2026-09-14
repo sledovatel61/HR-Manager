@@ -77,14 +77,26 @@ def test_publish_channel_cli_requires_minimum_supported_version(tmp_path: Path) 
 
 def test_drill_backup_requires_bytes_not_just_service() -> None:
     text = DRILL.read_text(encoding="utf-8")
-    # Must check size >0 and sha
-    assert ("size" in text and "> 0" in text) or "size > 0" in text
+    # Must enforce a meaningful lower bound, not merely size > 0, and verify SHA-256.
+    assert "MIN_BACKUP_BYTES" in text
+    assert "size >= MIN_BACKUP_BYTES" in text
     assert ".pgdump.enc" in text
     assert "sha256" in text.lower()
     # Should not be the old false-positive check
     assert 'if "backup" in out_ps.lower()' not in text, (
         "old backup service existence check must be removed"
     )
+    assert "sidecar_sha256" in text
+    assert "state_consistent" in text
+    assert 'record.get("request_id") == request_id' in text
+    assert 'record.get("reason") == reason' in text
+
+
+def test_drill_uses_separate_psql_calls_for_drop_and_create_database() -> None:
+    text = DRILL.read_text(encoding="utf-8")
+    assert "DROP DATABASE IF EXISTS {drill_db} WITH (FORCE); CREATE DATABASE" not in text
+    assert 'f"DROP DATABASE IF EXISTS {drill_db} WITH (FORCE);"' in text
+    assert 'f"CREATE DATABASE {drill_db};"' in text
 
 
 def test_drill_persistence_reads_candidate_not_just_health() -> None:
@@ -97,6 +109,11 @@ def test_drill_persistence_reads_candidate_not_just_health() -> None:
     # The old code had: return \"pass\", \"data and backup after restart: health ok\"
     # New code should verify candidate full_name
     assert "full_name" in text and "expected_name" in text
+    assert "persistence_probe" in text
+    assert 'persistence.get("size")' in text
+    assert "sidecar_sha_after != sha_after" in text
+    assert "matching_record" in text
+    assert "m_size = re.search" not in text
 
 
 def test_drill_tamper_suite_mandatory_and_failed_prereq_keeps_failed() -> None:
