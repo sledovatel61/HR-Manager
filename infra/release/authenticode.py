@@ -751,17 +751,11 @@ def _verify_authenticode_inner(
         # correct classification is digest_mismatch per fail-closed
         # (any post-signing byte breaks the SpcIndirectData binding).
         # Non-zero tails or larger corruptions stay bad_pkcs7.
-        if exc.code == "bad_pkcs7" and data[-1:] == b"\x00" and pe.has_certificate_table:
+        if exc.code == "bad_pkcs7" and data[-1:] == b"\x00":
             truncated = data[:-1]
             try:
                 pe_trunc = parse_pe(truncated)
-                # If truncated parses and would have been considered
-                # signed (has table), then the trailing zero is the
-                # canonical tamper.
                 if pe_trunc.has_certificate_table:
-                    # Verify that truncated would extract correctly (i.e.
-                    # original was valid). If it does, the trailing zero
-                    # is the tamper.
                     try:
                         extract_pkcs7_blob(truncated, pe_trunc)
                         raise AuthentiCodeError(
@@ -770,7 +764,6 @@ def _verify_authenticode_inner(
                             "(файл изменён после подписи: лишний trailing zero)",
                         ) from exc
                     except AuthentiCodeError as inner:
-                        # If truncated still bad_pkcs7, keep original.
                         if inner.code == "bad_pkcs7":
                             pass
                         else:
