@@ -406,3 +406,164 @@ JSON-отчёт; TSA-сервер: rejection на мусор, roundtrip чере
   hardening-коммита; после переподключения GitHub (Arena) все три коммита
   доработки запушены, CI на финальном SHA `e95b701` — полностью зелёный
   (см. §8.7a).
+
+---
+
+## 9. Rework-фикс по итогам независимой проверки (Агент 1, 2026-09-14)
+
+Независимая проверка PR #25 обнаружила: full live drill **никогда не
+доходил до Docker Compose** — стадия 4 погибала с exit 2 на второй
+публикации канала. Разбор подтвердил корневую причину, fix выполнен
+новыми коммитами от базового SHA `5b526825127e205102163a45ebe1a669e6e83e73`
+(исходный коммит не переписывался и не изменялся).
+
+### 9.1 Корневая причина и исправление
+
+`pilot-drill.sh` готовил ОДИН снимок тестданных с хардкодом
+`release.json` (version `0.14.0`, release_sha `2×40`) и переиспользовал
+его для всех трёх публикаций, включая артефакт `NEXT_VERSION=0.15.0`.
+`publish_channel.py` корректно отвергал вторую публикацию:
+
+```
+ОШИБКА[bad_release_json]: release.json version='0.14.0'
+[before] ОШИБКА: publish_channel failed for https://channel:8443/hr-manager-windows-0.15.0.zip
+```
+
+→ `die` → exit 2 ещё до `docker compose up`. Воспроизведено дословно на
+базовом коде (функции стадии 4 извлечены из `git show 5b52682:…`,
+исполнены без Docker: rc=2, `bad_release_json`) — «до».
+
+Fix (коммит `a89cb342f6d3f0416e4964b12f0224f5763a90d0`):
+- `make_snapshot <dir> <version> <release-sha>` — параметризован, хардкод
+  удалён; `release.json` каждого снимка декларирует СВОИ версию и sha;
+- `publish_channel <snapshot> <version> <sha> <url> <out>` — снимок
+  передаётся явным аргументом (пара снимок+версия неразделима);
+- стадия 4 готовит ДВА снимка: `snapshot-0.14.0` (рабочий канал) и
+  `snapshot-0.15.0` (оба негативных канала 0.15.0) — артефакт 0.14.0
+  декларирует 0.14.0, артефакты 0.15.0 декларируют 0.15.0;
+- cleanup удаляет все per-version снимки: `$WORKDIR/snapshot*`.
+
+`publish_channel.py`, `build_package.py` и все security-проверки —
+**без изменений** (`git diff 5b52682..HEAD -- infra/release/` = 0 строк):
+валидация version+release_sha (`bad_release_json`), детерминированный zip,
+ed25519-подпись манифеста, независимая верификация — не ослаблены ни на
+йоту; fail остаётся fail.
+
+### 9.2 Regression-тесты (`backend/tests/test_pilot_drill.py`, +4)
+
+1. `test_drill_stage4_per_version_snapshots` — структурный инвариант:
+   два per-version снимка, хардкод версии исчез, `publish_channel`
+   получает снимок+версию парой, оба канала 0.15.0 строятся из снимка
+   0.15.0;
+2. `test_drill_publishes_two_sequential_versions_end_to_end` —
+   функционально: 0.14.0 и 0.15.0 публикуются из согласованных снимков;
+   имя артефакта ↔ `manifest.json` ↔ `release.json` **внутри zip** ↔
+   версия; подпись каждого манифеста независимо проверена публичным
+   ключом клиента (ed25519), zip детерминирован;
+3. `test_drill_rejects_version_mismatch[...]` (parametrized, негатив) —
+   снимок 0.14.0, публикуемый как 0.15.0 (исходный баг ревью), и снимок с
+   чужим release_sha — оба обязаны отвергаться `bad_release_json`,
+   артефакты не создаются.
+
+Тесты самостоятельно находят workflow (`_CI_P14`): как только джоба
+`pilot-drill` появится в `.github/workflows/ci.yml`, они начнут
+проверять её вместо `review-artifacts/ci.phase14.yml`.
+
+### 9.3 Evidence: дословный replay стадии 4 («после»)
+
+`review-artifacts/evidence/2026-09-14-agent1/replay-stage4.sh` извлекает
+код стадии 4 из актуального `pilot-drill.sh` по маркерам (без Docker),
+исполняет его и проверяет артефакты:
+
+- публикация good 0.14.0 / next 0.15.0 / redirect 0.15.0;
+- для каждого канала: артефакт существует, поля манифеста совпадают,
+  `release.json` внутри пакета декларирует свою версию, подпись
+  независимо проверена;
+- детерминизм zip (повторная сборка — те же байты);
+- негативный контроль — сценарий исходного бага (снимок 0.14.0 как
+  0.15.0) обязан давать rc=2 + `bad_release_json` без артефактов.
+
+Результат на коммите `a89cb342…`: **verdict pass, 19 passed / 0
+failed** (exit 0) — см. `stage4-replay.json` / `stage4-replay.md` +
+`SHA256SUMS` рядом.
+
+### 9.4 Docker / live drill в этой песочнице — НЕ выполнялся
+
+`docker` в песочнице отсутствует целиком (`docker: command not found`;
+CLI-клиента нет, демона нет), установка недоступна. Следовательно:
+
+- `docker compose config --quiet` — не выполнялся (нет CLI);
+- полный live drill (startup/readiness, bootstrap, синтетика через
+  публичный API, restart+сохранность данных, backup, isolated restore,
+  signed channel, redirect, tamper, cleanup) — **не выполнялся**;
+- docker-стадии drill (5–19) не менялись; изменения стадии 4 и cleanup
+  покрыты replay-харнессом и unit-тестами.
+
+Живой прогон возможен только в CI-джобе `pilot-drill` (workflow-патчи
+готовы, см. §9.5) либо владельцем локально. **Phase 14 не объявляется
+завершённой.**
+
+### 9.5 Перенос Phase 14 workflows в `.github/workflows/` — заблокирован
+
+Сделаны обе попытки на ветке `arena/01a08fef-hr-manager` (после коммита
+`a89cb342…`):
+
+1. **GitHub REST API** (`PUT /repos/…/contents/.github/workflows/ci.yml`,
+   текущий blob `9db05629…`): HTTP 403 —
+   `refusing to allow a GitHub App to create or update workflow … without "workflows" permission`;
+2. **git push** коммита, добавляющего `.github/workflows/ci.yml` +
+   `.github/workflows/update-channel.yml`: `! [remote rejected] …
+   refusing to allow a GitHub App to create or update workflow … without
+   "workflows" permission` (probe-коммит сброшен, история чистая).
+
+Это **hard blocker прав токена GitHub-приложения сессии** (не
+имитация): перенести workflow может только владелец репозитория.
+Готовые к переносу файлы (контент байт-в-байт равен патчам, что
+проверяется unit-тестами): `review-artifacts/ci.phase14.yml` →
+`.github/workflows/ci.yml`,
+`review-artifacts/update-channel.phase14.yml` →
+`.github/workflows/update-channel.yml`. До переноса джоба `pilot-drill`
+на новом SHA не запускалась — старые CI checks НЕ являются Phase 14
+evidence.
+
+### 9.6 Команды и результаты
+
+| Проверка | Команда | Результат |
+|---|---|---|
+| Синтаксис drill | `bash -n infra/scripts/pilot-drill.sh` | OK |
+| Lint/format | `ruff check` / `ruff format --check` (backend) | чисто |
+| Типы | `mypy` (107 файлов) | чисто |
+| Regression drill | `pytest backend/tests/test_pilot_drill.py` | 11 passed |
+| Release pipeline | `pytest backend/tests/test_release_pipeline.py` | 27 passed |
+| Полный unit-набор | `pytest -m "not integration"` | **711 passed / 105 deselected** |
+| Replay стадии 4 | `bash review-artifacts/evidence/2026-09-14-agent1/replay-stage4.sh` | **19 passed / 0 failed**, exit 0 |
+| «До» (базовый код) | replay функций стадии 4 из `5b52682` | rc=2, `bad_release_json` (баг подтверждён) |
+| `docker compose config --quiet` | — | **skip**: docker отсутствует |
+| Live drill (стадии 5–19) | — | **skip**: docker отсутствует |
+| Workflows в `.github/workflows/` | REST + git push | **blocked**: 403 без scope `workflows` |
+| Integration (PostgreSQL) | локально | skip (нет сервисов); в CI на новом SHA — см. §9.8 |
+| `git diff --check` | дерево + диапазон `1c6961f..HEAD` | чисто |
+
+Unit-прогон: **711 passed, 105 deselected, 0 failed** (707 прежних + 4
+новых). Дополнительно: 27 passed в `test_release_pipeline.py`. Словарь
+live-стадий drill: 4 стадии до Docker — pass (replay), 15 docker-стадий
+— skip (нет docker), из них 0 замаскировано как passed.
+
+### 9.7 Security-инварианты
+
+- Только ephemeral fixture-ключи (`infra/release/testdata/test_key.*`);
+  production private keys не появлялись ни в коде, ни в логах, ни в
+  артефактах;
+- `publish_channel.py` / `build_package.py` / клиентские проверки —
+  0 изменений; смысл проверок не менялся, fail не превращён в skip/pass;
+- Windows/MSYS-обходы в production-код не добавлялись (fix — чистый
+  bash/Linux CI-контур).
+
+### 9.8 Ограничения (честный список)
+
+Не выполнено и НЕ заявляется как пройденное: полный Docker Compose live
+drill (restore, signed channel вживую, redirect, hash/path tamper,
+cleanup контейнеров/volumes), `docker compose config --quiet`, Windows
+lifecycle, production PFX/signing. Phase 14 остаётся **не завершённой**
+до переноса workflow владельцем и зелёного прогона джобы `pilot-drill`
+(либо live-прогона владельцем) на новом SHA.

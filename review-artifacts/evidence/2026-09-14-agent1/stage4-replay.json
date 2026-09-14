@@ -1,0 +1,110 @@
+{
+  "harness": "replay-stage4.sh — дословный replay стадии 4 pilot-drill.sh (публикация подписанного канала), без Docker",
+  "generated_at": "2026-09-14T07:10:05Z",
+  "generated_at_commit": "a89cb342f6d3f0416e4964b12f0224f5763a90d0",
+  "drill_file_git_blob": "cc7804c3c464e931e72126ec068c3c5a731e5f8d",
+  "docker_used": false,
+  "keys": "fixture (infra/release/testdata), NOT production",
+  "stages_replayed": "make_snapshot(0.14.0) + make_snapshot(0.15.0) + publish_channel x3 (good 0.14.0, next 0.15.0, redirect 0.15.0) + tampered-signature prepare",
+  "negative_control": "snapshot 0.14.0 published as 0.15.0 (исходный баг ревью) — обязан отвергнуться: rc=2, bad_release_json",
+  "verdict": "pass",
+  "passed": 19,
+  "failed": 0,
+  "stages": [
+    {
+      "name": "stage4_extracted_verbatim",
+      "status": "pass",
+      "detail": "make_snapshot+publish_channel+invocation"
+    },
+    {
+      "name": "channel_published",
+      "status": "pass",
+      "detail": "fixture-ed25519"
+    },
+    {
+      "name": "artifacts_present_channel-good",
+      "status": "pass",
+      "detail": "hr-manager-windows-0.14.0.zip"
+    },
+    {
+      "name": "manifest_fields_channel-good",
+      "status": "pass",
+      "detail": "version=0.14.0 sha=222222222222"
+    },
+    {
+      "name": "inner_release_json_channel-good",
+      "status": "pass",
+      "detail": "release.json в пакете декларирует 0.14.0"
+    },
+    {
+      "name": "manifest_signature_channel-good",
+      "status": "pass",
+      "detail": "ed25519-verified"
+    },
+    {
+      "name": "artifacts_present_channel-next",
+      "status": "pass",
+      "detail": "hr-manager-windows-0.15.0.zip"
+    },
+    {
+      "name": "manifest_fields_channel-next",
+      "status": "pass",
+      "detail": "version=0.15.0 sha=444444444444"
+    },
+    {
+      "name": "inner_release_json_channel-next",
+      "status": "pass",
+      "detail": "release.json в пакете декларирует 0.15.0"
+    },
+    {
+      "name": "manifest_signature_channel-next",
+      "status": "pass",
+      "detail": "ed25519-verified"
+    },
+    {
+      "name": "artifacts_present_channel-redirect",
+      "status": "pass",
+      "detail": "hr-manager-windows-0.15.0.zip"
+    },
+    {
+      "name": "manifest_fields_channel-redirect",
+      "status": "pass",
+      "detail": "version=0.15.0 sha=444444444444"
+    },
+    {
+      "name": "inner_release_json_channel-redirect",
+      "status": "pass",
+      "detail": "release.json в пакете декларирует 0.15.0"
+    },
+    {
+      "name": "manifest_signature_channel-redirect",
+      "status": "pass",
+      "detail": "ed25519-verified"
+    },
+    {
+      "name": "deterministic_package_0.15.0",
+      "status": "pass",
+      "detail": "same-bytes"
+    },
+    {
+      "name": "tampered_manifest_prepared",
+      "status": "pass",
+      "detail": "sig-flipped"
+    },
+    {
+      "name": "channel_dir_populated",
+      "status": "pass",
+      "detail": "good-channel"
+    },
+    {
+      "name": "negative_mismatch_rejected",
+      "status": "pass",
+      "detail": "rc=2 bad_release_json (сценарий бага ревью)"
+    },
+    {
+      "name": "artifact_checks",
+      "status": "pass",
+      "detail": "all-verifications-passed"
+    }
+  ]
+}

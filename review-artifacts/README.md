@@ -306,3 +306,21 @@ git commit -am "Move Phase 14 workflows in-tree (owner handoff)"
 тестовый сертификат в production/отсутствующий root). Все фикстуры —
 эфемерные сертификаты, создаваемые в памяти на время прогона; никаких
 production-ключей в репозитории/фикстурах/логах/артефактах нет.
+
+### Evidence rework-фикса (Агент 1, 2026-09-14) — `evidence/2026-09-14-agent1/`
+
+| Файл | Назначение |
+|---|---|
+| `replay-stage4.sh` | Дословный replay стадии 4 `pilot-drill.sh` (код извлекается из актуального файла по маркерам, исполняется без Docker): публикация good 0.14.0 / next 0.15.0 / redirect 0.15.0, проверки артефактов/подписи/детерминизма + негативный контроль исходного бага ревью (снимок 0.14.0 как 0.15.0 → обязан быть rc=2 `bad_release_json`) |
+| `stage4-replay.json` | Machine-readable evidence: verdict/passed/failed/stages, коммит генерации, git-blob drill-файла, фиксация `docker_used=false`, fixture-ключи |
+| `stage4-replay.md` | Human-readable отчёт replay |
+| `SHA256SUMS` | Контрольные суммы трёх файлов выше |
+
+Результат прогона на `a89cb342…`: **pass, 19 passed / 0 failed**. Negative
+control: **rejected (rc=2, bad_release_json)** — как и обязан. На базовом
+коде `5b52682` тот же replay даёт rc=2 `bad_release_json` (подтверждение
+«до» — см. `docs/phase-14-report-arena.md` §9.1).
+
+Docker в песочнице отсутствует — docker-стадии drill (5–19) не выполнялись
+и не заявляются; переносу workflow в `.github/workflows/` мешает отсутствие
+scope `workflows` у токена (403 на REST и git push — §9.5 отчёта).
