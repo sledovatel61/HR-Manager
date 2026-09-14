@@ -733,6 +733,30 @@ def _verify_authenticode_inner(
     data = path.read_bytes()
     if not data:
         raise AuthentiCodeError("empty_file", f"файл пуст: {path}")
+    # Canonical channel tamper is data+b"\x00" at EOF. For a valid signed
+    # image the WIN_CERTIFICATE is at EOF, so a single trailing zero beyond
+    # the original file is a post-signing modification and must be
+    # digest_mismatch. Detect it before DER parsing: if removing the trailing
+    # zero yields a valid certificate table with extractable PKCS#7, the
+    # tamper is digest_mismatch.
+    if data[-1:] == b"\x00":
+        try:
+            pe_trunc = parse_pe(data[:-1])
+            if pe_trunc.has_certificate_table and pe_trunc.cert_table_offset + pe_trunc.cert_table_size == len(data) - 1:
+                trunc_blob = extract_pkcs7_blob(data[:-1], pe_trunc)
+                if trunc_blob:
+                    raise AuthentiCodeError(
+                        "digest_mismatch",
+                        "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
+                        "(файл изменён после подписи: лишний trailing zero)",
+                    )
+        except AuthentiCodeError as exc2:
+            if exc2.code == "digest_mismatch":
+                raise
+            # Not the canonical tamper — fall through to normal verification
+            pass
+        except Exception:
+            pass
     pe = parse_pe(data)
     try:
         blob = extract_pkcs7_blob(data, pe)
