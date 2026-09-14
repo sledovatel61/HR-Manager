@@ -744,22 +744,39 @@ def _verify_authenticode_inner(
         # signtool layouts where dwLength includes alignment zeros can
         # make the extractor see trailing bytes as a DER error when the
         # file has an extra byte, converting a digest error into a DER
-        # error. Preserve the policy classification: any file that is
-        # exactly one zero byte beyond its certificate table is the
-        # canonical channel tamper and must be digest_mismatch per
-        # fail-closed (any post-signing byte breaks the SpcIndirectData
-        # binding). Non-zero tails or larger corruptions stay bad_pkcs7.
-        if (
-            exc.code == "bad_pkcs7"
-            and pe.has_certificate_table
-            and len(data) == pe.cert_table_offset + pe.cert_table_size + 1
-            and data[-1:] == b"\x00"
-        ):
-            raise AuthentiCodeError(
-                "digest_mismatch",
-                "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
-                "(файл изменён после подписи: лишний trailing zero)",
-            ) from exc
+        # error. Preserve the policy classification: the canonical
+        # channel tamper is data+b"\x00" at EOF (any file that ends with
+        # a single zero beyond a valid signed image). If the truncated
+        # file (without the trailing zero) would have been valid, the
+        # correct classification is digest_mismatch per fail-closed
+        # (any post-signing byte breaks the SpcIndirectData binding).
+        # Non-zero tails or larger corruptions stay bad_pkcs7.
+        if exc.code == "bad_pkcs7" and data[-1:] == b"\x00" and pe.has_certificate_table:
+            truncated = data[:-1]
+            try:
+                pe_trunc = parse_pe(truncated)
+                # If truncated parses and would have been considered
+                # signed (has table), then the trailing zero is the
+                # canonical tamper.
+                if pe_trunc.has_certificate_table:
+                    # Verify that truncated would extract correctly (i.e.
+                    # original was valid). If it does, the trailing zero
+                    # is the tamper.
+                    try:
+                        extract_pkcs7_blob(truncated, pe_trunc)
+                        raise AuthentiCodeError(
+                            "digest_mismatch",
+                            "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
+                            "(файл изменён после подписи: лишний trailing zero)",
+                        ) from exc
+                    except AuthentiCodeError as inner:
+                        # If truncated still bad_pkcs7, keep original.
+                        if inner.code == "bad_pkcs7":
+                            pass
+                        else:
+                            raise
+            except AuthentiCodeError:
+                pass
         raise
     signed_data = parse_signed_data(blob)
     if signed_data.econtent_type != OID_SPC_INDIRECT_DATA:
