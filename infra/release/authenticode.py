@@ -742,7 +742,7 @@ def _verify_authenticode_inner(
     if data[-1:] == b"\x00":
         try:
             pe_trunc = parse_pe(data[:-1])
-            if pe_trunc.has_certificate_table and pe_trunc.cert_table_offset + pe_trunc.cert_table_size == len(data) - 1:
+            if pe_trunc.has_certificate_table:
                 trunc_blob = extract_pkcs7_blob(data[:-1], pe_trunc)
                 if trunc_blob:
                     raise AuthentiCodeError(
