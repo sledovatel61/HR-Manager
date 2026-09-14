@@ -138,15 +138,53 @@ def validate_manifest_fields(manifest: dict) -> None:
 
 
 def _validate_package_url(url: str) -> None:
+    if not isinstance(url, str) or not url:
+        raise ChannelError("bad_url", "package_url обязан быть непустой строкой")
     if not url.startswith("https://"):
         raise ChannelError("bad_url", "package_url обязан использовать https")
-    if "?" in url or "#" in url:
+    import urllib.parse
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except Exception as exc:
+        raise ChannelError("bad_url", f"некорректный package_url: {exc}") from exc
+    if parsed.scheme != "https":
+        raise ChannelError("bad_url", "package_url обязан использовать https")
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        raise ChannelError("bad_url", "package_url не должен содержать userinfo")
+    if parsed.query or parsed.fragment:
         raise ChannelError(
             "bad_url", "package_url не должен содержать query/fragment (immutable artifact)"
         )
-    if "@" in url:
-        raise ChannelError("bad_url", "package_url не должен содержать userinfo")
-    if not re.match(r"^https://[A-Za-z0-9._-]+(:\d+)?/", url):
+    if not parsed.hostname:
+        raise ChannelError("bad_url", "package_url должен содержать хост")
+    # Host format: allow A-Z, a-z, 0-9, ., -, and punycode xn--
+    if not re.match(r"^[A-Za-z0-9._-]+$", parsed.hostname):
+        raise ChannelError("bad_url", "package_url имеет недопустимый хост")
+    if parsed.port is not None and not (1 <= parsed.port <= 65535):
+        raise ChannelError("bad_url", "package_url имеет недопустимый порт")
+    path = parsed.path or "/"
+    if not path.startswith("/"):
+        raise ChannelError("bad_url", "package_url path должен начинаться с /")
+    if "\\" in path or "\\" in url:
+        raise ChannelError("bad_url", "package_url не должен содержать обратный слэш")
+    # Repeated percent-decode to catch %2e, %252e, etc.
+    decoded = path
+    for _ in range(5):
+        new = urllib.parse.unquote(decoded)
+        if new == decoded:
+            break
+        decoded = new
+    # Also decode fully for traversal check (handle %2F etc.)
+    # Split and check for .. segment
+    segments = decoded.split("/")
+    if ".." in segments:
+        raise ChannelError("bad_url", "package_url содержит path traversal (..)")
+    # Forbid encoded traversal that may still be hidden after one decode loop? Already handled
+    # Ensure no null bytes or control
+    if "\x00" in decoded:
+        raise ChannelError("bad_url", "package_url содержит недопустимые символы")
+    # Final format check
+    if not re.match(r"^https://[A-Za-z0-9._-]+(:\d+)?/[^?#]*$", url):
         raise ChannelError("bad_url", "package_url имеет недопустимый формат")
 
 

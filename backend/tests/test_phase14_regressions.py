@@ -20,7 +20,7 @@ PUBLISH = REPO / "infra" / "release" / "publish_channel.py"
 TESTDATA = REPO / "infra" / "release" / "testdata"
 
 
-def test_drill_synthetic_uses_real_candidates_endpoint_and_fails_on_404():
+def test_drill_synthetic_uses_real_candidates_endpoint_and_fails_on_404() -> None:
     text = DRILL.read_text(encoding="utf-8")
     # Must use real endpoint /candidates, not /api/candidates
     assert "/candidates" in text, "drill must use real /candidates endpoint"
@@ -31,7 +31,7 @@ def test_drill_synthetic_uses_real_candidates_endpoint_and_fails_on_404():
     assert ("404" in text and "must be fail" in text.lower()) or "HTTP 404" in text
 
 
-def test_drill_signed_channel_uses_real_cli():
+def test_drill_signed_channel_uses_real_cli() -> None:
     text = DRILL.read_text(encoding="utf-8")
     assert "--minimum-supported-version" in text, (
         "signed-channel must pass --minimum-supported-version"
@@ -41,7 +41,7 @@ def test_drill_signed_channel_uses_real_cli():
     assert "trusted_keys.json" in text
 
 
-def test_publish_channel_cli_requires_minimum_supported_version(tmp_path: Path):
+def test_publish_channel_cli_requires_minimum_supported_version(tmp_path: Path) -> None:
     # Direct CLI test: missing --minimum-supported-version should fail
     snapshot = tmp_path / "app"
     # Use the testdata snapshot
@@ -75,7 +75,7 @@ def test_publish_channel_cli_requires_minimum_supported_version(tmp_path: Path):
     assert "minimum-supported-version" in result.stderr or "required" in result.stderr.lower()
 
 
-def test_drill_backup_requires_bytes_not_just_service():
+def test_drill_backup_requires_bytes_not_just_service() -> None:
     text = DRILL.read_text(encoding="utf-8")
     # Must check size >0 and sha
     assert ("size" in text and "> 0" in text) or "size > 0" in text
@@ -87,7 +87,7 @@ def test_drill_backup_requires_bytes_not_just_service():
     )
 
 
-def test_drill_persistence_reads_candidate_not_just_health():
+def test_drill_persistence_reads_candidate_not_just_health() -> None:
     text = DRILL.read_text(encoding="utf-8")
     # persistence step must read candidate id
     assert "candidate_id" in text and "persistence" in text.lower()
@@ -99,7 +99,7 @@ def test_drill_persistence_reads_candidate_not_just_health():
     assert "full_name" in text and "expected_name" in text
 
 
-def test_drill_tamper_suite_mandatory_and_failed_prereq_keeps_failed():
+def test_drill_tamper_suite_mandatory_and_failed_prereq_keeps_failed() -> None:
     text = DRILL.read_text(encoding="utf-8")
     # All tamper steps should be mandatory (default) and not skipped on channel failure
     # Check that we don't have \"prerequisite failed -> skipped\" for tamper, but fail
@@ -117,7 +117,7 @@ def test_drill_tamper_suite_mandatory_and_failed_prereq_keeps_failed():
     assert 'verdict = "failed" if has_fail else "incomplete"' in text or "has_fail" in text
 
 
-def test_drill_compose_evidence_uses_same_env_and_no_interpolation():
+def test_drill_compose_evidence_uses_same_env_and_no_interpolation() -> None:
     text = DRILL.read_text(encoding="utf-8")
     assert "--env-file" in text
     assert "compose_base()" in text
@@ -126,7 +126,7 @@ def test_drill_compose_evidence_uses_same_env_and_no_interpolation():
     assert "interpolation" in text.lower() or "variable is not set" in text
 
 
-def test_drill_verdict_never_passed_on_skipped_critical():
+def test_drill_verdict_never_passed_on_skipped_critical() -> None:
     text = DRILL.read_text(encoding="utf-8")
     # Ensure mandatory skipped -> incomplete or failed, never passed
     assert ("if has_fail" in text and "if has_skipped" in text) or "has_skipped" in text

@@ -181,8 +181,25 @@ def _assert_url_policy(parsed: urllib.parse.SplitResult, allowed: list[str]) -> 
     коды, без URL/хостов (не попадают в логи/аудит/ответы)."""
     if parsed.scheme != "https":
         raise ChannelError("bad_url", "канал перешёл на незащищённую схему (требуется https)")
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        raise ChannelError("bad_url", "URL содержит userinfo")
+    if parsed.query or parsed.fragment:
+        raise ChannelError("bad_url", "URL не должен содержать query/fragment")
     if parsed.hostname not in allowed:
         raise ChannelError("bad_url", "хост канала не входит в политику разрешённых")
+    # Path traversal check (including percent-encoded)
+    import urllib.parse
+    path = parsed.path or "/"
+    if "\\" in path:
+        raise ChannelError("bad_url", "URL содержит обратный слэш")
+    decoded = path
+    for _ in range(5):
+        new = urllib.parse.unquote(decoded)
+        if new == decoded:
+            break
+        decoded = new
+    if ".." in decoded.split("/"):
+        raise ChannelError("bad_url", "URL содержит path traversal")
 
 
 def _build_opener(ssl_context: ssl.SSLContext | None) -> urllib.request.OpenerDirector:

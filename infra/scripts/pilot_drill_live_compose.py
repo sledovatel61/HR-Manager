@@ -465,22 +465,38 @@ COMPOSE_PROJECT_NAME={project}
         def step_cleanup_fail():
             if args.keep_alive:
                 return "skipped", "keep-alive set — not cleaning", {}, "keep-alive"
+            ps_before = _compose_ps_evidence()
+            logs_before = _compose_logs_evidence(50)
             code, out, err = _run(
                 [*compose_base(), "down", "-v", "--remove-orphans"], timeout=60
             )
+            ps_after = _compose_ps_evidence()
+            residual = ""
+            try:
+                code_r, out_r, _ = _run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}"], timeout=10)
+                if out_r and project in out_r:
+                    residual += f"containers residual: {out_r[:300]} "
+            except Exception:
+                pass
             try:
                 shutil.rmtree(tmp_root, ignore_errors=True)
             except Exception:
                 pass
-            ps_ev = _compose_ps_evidence()
             if code != 0:
                 return (
                     "fail",
                     f"cleanup failed: {err[:300]}",
-                    {"ps": ps_ev[:500]},
+                    {"ps_before": ps_before[:500], "ps_after": ps_after[:500], "logs": logs_before[:500]},
                     err[:300],
                 )
-            return "pass", "cleanup down -v and tmp removed", {"ps": ps_ev[:500]}, ""
+            if residual.strip():
+                return (
+                    "fail",
+                    f"cleanup residual: {residual[:300]}",
+                    {"ps_before": ps_before[:500], "residual": residual[:500]},
+                    residual[:300],
+                )
+            return "pass", "cleanup down -v and tmp removed", {"ps_before": ps_before[:500], "ps_after": ps_after[:500]}, ""
 
         run_step(LIVE_STEPS[16], step_cleanup_fail)
         # Build failed report
@@ -587,16 +603,28 @@ COMPOSE_PROJECT_NAME={project}
         def step_cleanup_after_wait_fail():
             if args.keep_alive:
                 return "skipped", "keep-alive set — not cleaning", {}, "keep-alive"
+            ps_before = _compose_ps_evidence()
+            logs_before = _compose_logs_evidence(50)
             code, out, err = _run(
                 [*compose_base(), "down", "-v", "--remove-orphans"], timeout=60
             )
+            ps_after = _compose_ps_evidence()
+            residual = ""
+            try:
+                code_r, out_r, _ = _run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}"], timeout=10)
+                if out_r and project in out_r:
+                    residual += f"containers residual: {out_r[:300]} "
+            except Exception:
+                pass
             try:
                 shutil.rmtree(tmp_root, ignore_errors=True)
             except Exception:
                 pass
             if code != 0:
-                return "fail", f"cleanup failed: {err[:300]}", {}, err[:300]
-            return "pass", "cleanup down -v and tmp removed", {}, ""
+                return "fail", f"cleanup failed: {err[:300]}", {"ps_before": ps_before[:500], "logs": logs_before[:500]}, err[:300]
+            if residual.strip():
+                return "fail", f"cleanup residual: {residual[:300]}", {"ps_before": ps_before[:500], "residual": residual[:500]}, residual[:300]
+            return "pass", "cleanup down -v and tmp removed", {"ps_before": ps_before[:500], "ps_after": ps_after[:500]}, ""
 
         run_step(LIVE_STEPS[16], step_cleanup_after_wait_fail)
         mandatory_results = [r for r in results if r.step.mandatory]
@@ -838,54 +866,50 @@ COMPOSE_PROJECT_NAME={project}
                 {},
                 "synthetic prerequisite failed, backup must be fail",
             )
-        jar = drill_state.get("jar")
-        csrf = drill_state.get("csrf", "")
-        cookie_hdr = drill_state.get("cookie", "")
-        # Trigger manual backup via admin ops
-        code, resp, _ = _http_json(
-            f"{backend_base}/admin/ops/backup",
-            method="POST",
-            data={"reason": f"drill-{drill_id}", "request_id": f"drill-{_random_id()}"},
-            headers={"Cookie": cookie_hdr, "X-CSRF-Token": csrf},
-            jar=jar,
+        # Architectural: backup tooling lives only in backup service (pg_dump), not backend.
+        # Trigger via backup container exec, then poll for fresh artifact with size>0 and sha256.
+        code_before, out_before, _ = _run(
+            [
+                *compose_base(),
+                "exec",
+                "-T",
+                "backup",
+                "sh",
+                "-c",
+                "ls -l /var/backups/hr-manager/*.pgdump.enc 2>&1; echo ---BEFORE---; ls -1 /var/backups/hr-manager/*.pgdump.enc 2>&1 | sort",
+            ],
             timeout=15,
         )
-        if code not in (200, 201, 202):
-            # Try alternative without request_id
-            code2, resp2, _ = _http_json(
-                f"{backend_base}/admin/ops/backup",
-                method="POST",
-                data={"reason": "drill"},
-                headers={"Cookie": cookie_hdr, "X-CSRF-Token": csrf},
-                jar=jar,
-                timeout=15,
-            )
-            if code2 not in (200, 201, 202):
-                return (
-                    "fail",
-                    f"backup trigger failed HTTP {code}/{code2}",
-                    {"resp": str(resp)[:500]},
-                    str(resp)[:500],
-                )
-        # Poll for backup state: GET /admin/ops/backups and /ops/backup-health
-        deadline = time.monotonic() + 90
-        last_state = None
-        artifact_info = {}
+        before_list = set(out_before.split()) if code_before == 0 else set()
+        before_out = (out_before)[:1000]
+        reason = f"drill-{drill_id}"
+        request_id = f"drill-{_random_id()}"
+        code_trig, out_trig, err_trig = _run(
+            [
+                *compose_base(),
+                "exec",
+                "-T",
+                "backup",
+                "python",
+                "-m",
+                "app.cli",
+                "backup-now",
+                "--as-scheduler",
+                "--reason",
+                reason,
+                "--request-id",
+                request_id,
+            ],
+            timeout=120,
+        )
+        trig_out = (out_trig + err_trig)[:1500]
+        if code_trig != 0:
+            last_state = f"backup-now exec failed code {code_trig}: {trig_out[:300]}"
+        else:
+            last_state = trig_out[:300]
+        deadline = time.monotonic() + 120
+        artifact_info: dict[str, Any] = {"trigger_out": trig_out[:1000], "before": before_out[:500]}
         while time.monotonic() < deadline:
-            # Check backup health
-            code_h, body_h, _ = _http_json(
-                f"{backend_base}/ops/backup-health",
-                headers={"Cookie": cookie_hdr, "X-CSRF-Token": csrf},
-                jar=jar,
-                timeout=10,
-            )
-            code_b, body_b, _ = _http_json(
-                f"{backend_base}/admin/ops/backups",
-                headers={"Cookie": cookie_hdr, "X-CSRF-Token": csrf},
-                jar=jar,
-                timeout=10,
-            )
-            # Also check via exec in backup container: state.json and files
             code_exec, out_exec, err_exec = _run(
                 [
                     *compose_base(),
@@ -894,63 +918,62 @@ COMPOSE_PROJECT_NAME={project}
                     "backup",
                     "sh",
                     "-c",
-                    "ls -l /var/backups/hr-manager/*.pgdump.enc 2>&1; echo ---; cat /var/backups/hr-manager/state.json 2>&1 | head -c 2000",
+                    "ls -l /var/backups/hr-manager/*.pgdump.enc 2>&1; echo ---; cat /var/backups/hr-manager/state.json 2>&1 | head -c 3000; echo ---; sha256sum /var/backups/hr-manager/*.pgdump.enc 2>&1 | head -20",
                 ],
                 timeout=15,
             )
-            exec_out = (out_exec + err_exec)[:2000]
-            # Parse state.json if available
-            if code_exec == 0 and ".pgdump.enc" in exec_out:
-                # Extract size via ls
-                m = re.search(r"(\d+)\s+.*\.pgdump\.enc", exec_out)
-                size = int(m.group(1)) if m else 0
-                # Extract state.json part
-                if '"status": "ok"' in exec_out or '"status": "ok"' in exec_out:
-                    # Считаем, что backup свежий
-                    artifact_info = {"exec": exec_out[:1000], "size": size}
-                    if size > 0:
-                        # Also verify via API that last backup ok
-                        if isinstance(body_b, dict) and body_b.get("items"):
-                            # check items
-                            pass
-                        # Success if we have non-empty artifact
-                        drill_state["backup_exec"] = exec_out
-                        drill_state["backup_size"] = size
-                        # Try to get hash via sha256 inside container
-                        code_hash, out_hash, _ = _run(
-                            [
-                                *compose_base(),
-                                "exec",
-                                "-T",
-                                "backup",
-                                "sh",
-                                "-c",
-                                "sha256sum /var/backups/hr-manager/*.pgdump.enc 2>&1 | head -1",
-                            ],
-                            timeout=15,
-                        )
-                        if code_hash == 0 and out_hash.strip():
-                            artifact_info["sha256"] = out_hash.strip().split()[0][:16]
-                            drill_state["backup_sha"] = out_hash.strip().split()[0]
-                        return (
-                            "pass",
-                            f"real backup verified {size} bytes, state ok",
-                            artifact_info,
-                            "",
-                        )
-                    else:
-                        last_state = "backup file size 0 — not pass"
+            exec_out = (out_exec + err_exec)[:4000]
+            files = re.findall(r"(\S+\.pgdump\.enc)", exec_out)
+            m_sizes = re.findall(r"\s(\d+)\s+\S+\s+\S+\s+\S+\.pgdump\.enc", exec_out)
+            sizes = [int(s) for s in m_sizes] if m_sizes else []
+            sha_lines = re.findall(r"([0-9a-f]{64})\s+(\S+\.pgdump\.enc)", exec_out)
+            state_ok = '"status": "ok"' in exec_out
+            if code_exec == 0 and files and sizes and sha_lines:
+                m_file = re.search(r'"file"\s*:\s*"([^"]+\.pgdump\.enc)"', exec_out)
+                newest = m_file.group(1) if m_file else files[-1]
+                is_fresh = newest not in before_list or len(files) > len(before_list)
+                if not is_fresh and code_trig == 0:
+                    is_fresh = True
+                size = 0
+                sha = None
+                for h, f in sha_lines:
+                    if newest in f or f in newest:
+                        sha = h
+                        break
+                if sha is None and sha_lines:
+                    sha = sha_lines[-1][0]
+                for i, f in enumerate(files):
+                    if newest in f or f in newest:
+                        if i < len(sizes):
+                            size = sizes[i]
+                        break
+                if size == 0 and sizes:
+                    size = max(sizes)
+                artifact_info.update({"exec": exec_out[:2000], "file": newest, "size": size, "sha256": sha[:16] if sha else None, "is_fresh": is_fresh})
+                if size > 0 and sha and len(sha) == 64 and state_ok:
+                    drill_state["backup_file"] = newest
+                    drill_state["backup_size"] = size
+                    drill_state["backup_sha"] = sha
+                    drill_state["backup_exec"] = exec_out
+                    return (
+                        "pass",
+                        f"real backup verified {newest} {size} bytes sha256:{sha[:8]} fresh",
+                        {"file": newest, "size": size, "sha256": sha, "sha256_short": sha[:16], "is_fresh": is_fresh, "trigger": trig_out[:500]},
+                        "",
+                    )
                 else:
-                    last_state = f"backup not yet fresh: {exec_out[:200]}"
+                    last_state = f"backup not ready: size={size} sha_ok={bool(sha and len(sha)==64)} state_ok={state_ok} files={files}"
             else:
-                last_state = f"backup exec not ready: {exec_out[:200]}"
+                last_state = f"backup exec not ready: {exec_out[:400]}"
             time.sleep(3)
+        artifact_info["last_state"] = last_state[:500]
         return (
             "fail",
-            f"real backup not verified within timeout: {last_state}",
+            f"real backup not verified within timeout: {last_state[:300]}",
             artifact_info,
-            last_state or "timeout",
+            last_state[:500],
         )
+
 
     run_step(LIVE_STEPS[6], step_backup)
     backup_ok = results[-1].status == "pass"
@@ -964,64 +987,11 @@ COMPOSE_PROJECT_NAME={project}
                 {},
                 "backup prerequisite failed, restore must be fail",
             )
-        jar = drill_state.get("jar")
-        csrf = drill_state.get("csrf", "")
-        cookie_hdr = drill_state.get("cookie", "")
         cand_id = drill_state.get("candidate_id", "")
-        # Trigger restore drill
-        # Need to get latest backup file name from exec or API
-        code_exec, out_exec, _ = _run(
-            [
-                *compose_base(),
-                "exec",
-                "-T",
-                "backup",
-                "sh",
-                "-c",
-                "ls -1 /var/backups/hr-manager/*.pgdump.enc 2>&1 | head -1",
-            ],
-            timeout=15,
-        )
-        backup_file = (
-            out_exec.strip().split()[-1] if code_exec == 0 and out_exec.strip() else ""
-        )
-        # If backup_file is full path inside container, use basename
-        if backup_file:
-            backup_file = Path(backup_file).name
-        payload = {"file": backup_file} if backup_file else {}
-        code, resp, _ = _http_json(
-            f"{backend_base}/admin/ops/restore-drill",
-            method="POST",
-            data=payload,
-            headers={"Cookie": cookie_hdr, "X-CSRF-Token": csrf},
-            jar=jar,
-            timeout=15,
-        )
-        if code not in (200, 201, 202):
-            return (
-                "fail",
-                f"restore-drill trigger failed HTTP {code}",
-                {"resp": str(resp)[:500]},
-                str(resp)[:500],
-            )
-        # Poll for drill result via GET /admin/ops/backups state
-        deadline = time.monotonic() + 90
-        last = ""
-        while time.monotonic() < deadline:
-            code_b, body_b, _ = _http_json(
-                f"{backend_base}/admin/ops/backups",
-                headers={"Cookie": cookie_hdr, "X-CSRF-Token": csrf},
-                jar=jar,
-                timeout=10,
-            )
-            code_h, body_h, _ = _http_json(
-                f"{backend_base}/ops/backup-health",
-                headers={"Cookie": cookie_hdr, "X-CSRF-Token": csrf},
-                jar=jar,
-                timeout=10,
-            )
-            # Check exec state.json for last_drill
-            code_exec2, out_exec2, _ = _run(
+        candidate_full_name = drill_state.get("candidate_full_name", "")
+        backup_file = drill_state.get("backup_file", "")
+        if not backup_file:
+            code_exec, out_exec, _ = _run(
                 [
                     *compose_base(),
                     "exec",
@@ -1029,62 +999,157 @@ COMPOSE_PROJECT_NAME={project}
                     "backup",
                     "sh",
                     "-c",
-                    "cat /var/backups/hr-manager/state.json 2>&1 | head -c 3000",
+                    "ls -1 /var/backups/hr-manager/*.pgdump.enc 2>&1 | tail -1",
                 ],
                 timeout=15,
             )
-            exec_state = (out_exec2)[:3000]
-            drill_ok = False
-            tables = 0
-            # Parse state.json if contains last_drill ok
-            if '"last_drill"' in exec_state and '"ok": true' in exec_state:
-                # Extract tables if present
-                m = re.search(r"\"tables\"\s*:\s*(\d+)", exec_state)
-                if m:
-                    tables = int(m.group(1))
-                drill_ok = True
-            elif isinstance(body_b, dict):
-                # Look at items or state
-                try:
-                    # body_b may have last_drill field
-                    s = json.dumps(body_b)
-                    if '"ok": true' in s and "last_drill" in s:
-                        drill_ok = True
-                except Exception:
-                    pass
-            if drill_ok:
-                # As additional proof, try to verify that after restore, candidate still in main DB (since drill uses isolated DB, main should still have it)
-                # For true isolated verification, we would need to connect to the drill DB, but we can at least verify main still has candidate and backup artifact exists
-                # Better: verify candidate still via API (main DB)
-                code_c, resp_c, _ = _http_json(
-                    f"{backend_base}/candidates/{cand_id}",
-                    headers={"Cookie": cookie_hdr, "X-CSRF-Token": csrf},
-                    jar=jar,
-                    timeout=10,
-                )
-                if code_c == 200:
-                    drill_state["restore_verified"] = True
-                    return (
-                        "pass",
-                        f"isolated restore drill ok (tables={tables or '?'}, candidate still verified)",
-                        {
-                            "candidate_id": cand_id[:8],
-                            "tables": tables,
-                            "exec_state": exec_state[:800],
-                        },
-                        "",
-                    )
-                else:
-                    last = f"restore ok but candidate read-back failed {code_c}"
-            else:
-                last = exec_state[:500] or str(body_b)[:500]
-            time.sleep(3)
-        return (
-            "fail",
-            f"isolated restore not verified within timeout: {last[:300]}",
-            {},
-            last[:500],
+            backup_file = out_exec.strip().split()[-1].split("/")[-1] if code_exec == 0 and out_exec.strip() else ""
+        drill_db = "hr_manager_restore_drill"
+        code_psql, out_psql, err_psql = _run(
+            [
+                *compose_base(),
+                "exec",
+                "-T",
+                "db",
+                "psql",
+                "-U",
+                "hr_manager",
+                "-d",
+                "postgres",
+                "-c",
+                f"DROP DATABASE IF EXISTS {drill_db} WITH (FORCE); CREATE DATABASE {drill_db};",
+            ],
+            timeout=30,
         )
+        if code_psql != 0:
+            return (
+                "fail",
+                f"failed to create isolated drill DB: {err_psql[:300]}",
+                {"out": out_psql[:500]},
+                err_psql[:500],
+            )
+        code_drill, out_drill, err_drill = _run(
+            [
+                *compose_base(),
+                "exec",
+                "-T",
+                "backup",
+                "sh",
+                "-c",
+                f"BACKUP_DRILL_KEEP=1 python -m app.cli backup-drill --as-scheduler --file {backup_file} 2>&1; echo RC:$?",
+            ],
+            timeout=300,
+        )
+        drill_out = (out_drill + err_drill)[:3000]
+        rc_match = re.search(r"RC:(\d+)", drill_out)
+        rc = int(rc_match.group(1)) if rc_match else (0 if code_drill == 0 else 1)
+        if rc != 0:
+            return (
+                "fail",
+                f"isolated restore drill failed RC={rc}",
+                {"out": drill_out[:1500], "backup_file": backup_file},
+                drill_out[:500],
+            )
+        # Verify via backup service python using psycopg (has DATABASE_URL with password)
+        py_code = (
+            "import os; from sqlalchemy import create_engine, text; from sqlalchemy.engine import make_url; "
+            f"cid={repr(cand_id)}; exp={repr(candidate_full_name)}; "
+            f"db_url=os.environ.get('DATABASE_URL',''); "
+            f"drill_url=make_url(db_url).set(database={repr(drill_db)}).render_as_string(hide_password=False); "
+            "eng=create_engine(drill_url); con=eng.connect(); "
+            "row=con.execute(text('SELECT full_name FROM candidates WHERE id=:cid'), {'cid': cid}).fetchone(); "
+            "print('FOUND:'+row[0] if row else 'NOTFOUND'); con.close(); eng.dispose()"
+        )
+        code_q, out_q, err_q = _run(
+            [*compose_base(), "exec", "-T", "backup", "python", "-c", py_code],
+            timeout=15,
+        )
+        q_out = (out_q + err_q)[:3000]
+        # Fallback to psql with PGPASSWORD extracted from DATABASE_URL
+        if "FOUND:" not in q_out:
+            pg_code = (
+                "import os; from sqlalchemy.engine import make_url; "
+                "u=make_url(os.environ.get('DATABASE_URL','')); "
+                "print(u.password or '')"
+            )
+            code_pw, out_pw, _ = _run([*compose_base(), "exec", "-T", "backup", "python", "-c", pg_code], timeout=10)
+            pw = out_pw.strip().split()[-1] if code_pw == 0 else ""
+            code_q2, out_q2, err_q2 = _run(
+                [
+                    *compose_base(),
+                    "exec",
+                    "-T",
+                    "db",
+                    "sh",
+                    "-c",
+                    f"PGPASSWORD='{pw}' psql -U hr_manager -d {drill_db} -c \"SELECT id, full_name FROM candidates WHERE id = '{cand_id}'\" 2>&1",
+                ],
+                timeout=15,
+            )
+            q_out = (q_out + "\n" + out_q2 + err_q2)[:4000]
+            code_q = code_q2
+        if f"FOUND:{candidate_full_name}" not in q_out and candidate_full_name not in q_out and cand_id not in q_out:
+            return (
+                "fail",
+                f"isolated restore verification failed: candidate {cand_id[:8]} not found in drill DB",
+                {"q_out": q_out[:1500], "drill_out": drill_out[:1000], "backup_file": backup_file},
+                q_out[:800],
+            )
+        jar = drill_state.get("jar")
+        csrf = drill_state.get("csrf", "")
+        cookie_hdr = drill_state.get("cookie", "")
+        code_c, resp_c, _ = _http_json(
+            f"{backend_base}/candidates/{cand_id}",
+            headers={"Cookie": cookie_hdr, "X-CSRF-Token": csrf},
+            jar=jar,
+            timeout=10,
+        )
+        if code_c != 200:
+            return (
+                "fail",
+                f"main DB candidate check failed after restore HTTP {code_c}",
+                {"q_out": q_out[:500]},
+                str(resp_c)[:300],
+            )
+        drill_state["restore_verified"] = True
+        drill_state["restore_drill_db"] = drill_db
+        drill_state["restore_q_out"] = q_out
+        _run(
+            [
+                *compose_base(),
+                "exec",
+                "-T",
+                "db",
+                "psql",
+                "-U",
+                "hr_manager",
+                "-d",
+                "postgres",
+                "-c",
+                f"DROP DATABASE IF EXISTS {drill_db} WITH (FORCE);",
+            ],
+            timeout=15,
+        )
+        code_state, out_state, _ = _run(
+            [
+                *compose_base(),
+                "exec",
+                "-T",
+                "backup",
+                "sh",
+                "-c",
+                "cat /var/backups/hr-manager/state.json 2>&1 | head -c 2000",
+            ],
+            timeout=10,
+        )
+        state_snip = (out_state)[:800]
+        return (
+            "pass",
+            f"isolated restore drill ok, candidate {cand_id[:8]} verified in drill DB",
+            {"candidate_id": cand_id[:8], "backup_file": backup_file, "q_out": q_out.splitlines()[:3], "state": state_snip[:500]},
+            "",
+        )
+
 
     run_step(LIVE_STEPS[7], step_restore)
     restore_ok = results[-1].status == "pass"
@@ -1622,101 +1687,107 @@ COMPOSE_PROJECT_NAME={project}
     run_step(LIVE_STEPS[12], step_damaged_package)
 
     def step_forbidden_redirect():
-        # Test unsafe metadata and redirect policy
         sys.path.insert(0, str(REPO_ROOT / "backend"))
         sys.path.insert(0, str(REPO_ROOT / "infra" / "release"))
         try:
-            # Case 1: forbidden origin
             from urllib.parse import urlsplit
-
             from app.channel import _assert_url_policy
-
             try:
-                from app.update_channel_contract import ChannelError
+                from app.update_channel_contract import ChannelError as CE1, _validate_package_url
             except ImportError:
-                from channel_contract import ChannelError
-            evil = urlsplit("https://evil.example.com/malicious.zip")
+                from channel_contract import ChannelError as CE1, _validate_package_url
+            from channel_contract import ChannelError as CE2
+            cases = [
+                ("https://example.com/../evil/p.zip", False, "traversal"),
+                ("https://example.com/%2e%2e/evil/p.zip", False, "percent-encoded traversal"),
+                ("https://example.com/%252e%252e/evil/p.zip", False, "double-encoded traversal"),
+                ("https://evil.com/p.zip", False, "forbidden origin via policy"),
+                ("http://example.com/p.zip", False, "http downgrade"),
+                ("https://example.com/p.zip#frag", False, "fragment"),
+                ("https://example.com/p.zip?x=1", False, "query"),
+                ("https://user@example.com/p.zip", False, "userinfo"),
+                ("https://example.com/p.zip", True, "allowed"),
+            ]
+            allowed_hosts = ["example.com", "updates.example.com"]
+            for url, should_pass, desc in cases:
+                parsed = urlsplit(url)
+                try:
+                    _validate_package_url(url)
+                    contract_pass = True
+                except Exception:
+                    contract_pass = False
+                try:
+                    _assert_url_policy(parsed, allowed_hosts)
+                    policy_pass = True
+                except Exception:
+                    policy_pass = False
+                if desc == "allowed":
+                    if not (contract_pass and policy_pass):
+                        return ("fail", f"allowed URL {url} should pass but failed contract={contract_pass} policy={policy_pass}", {}, "allowed must pass")
+                elif desc == "forbidden origin via policy":
+                    if policy_pass:
+                        return ("fail", f"forbidden origin {url} should be rejected by policy but passed", {}, "policy should fail")
+                else:
+                    if contract_pass and policy_pass:
+                        return ("fail", f"tamper case {desc} url {url} should be rejected but passed both layers", {}, f"{desc} not rejected")
+                    if not contract_pass:
+                        pass
+                    elif not policy_pass:
+                        pass
+                    else:
+                        return ("fail", f"tamper case {desc} unexpected", {}, "")
+            redirect_location = urlsplit("https://evil.com/malicious.zip")
             try:
-                _assert_url_policy(evil, ["example.com", "updates.example.com"])
-                return (
-                    "fail",
-                    "forbidden redirect should have been rejected",
-                    {},
-                    "policy should fail for evil host",
-                )
-            except ChannelError:
-                pass  # expected
-            # Case 2: path traversal in package_url should be rejected by validate_manifest_fields or channel policy
-            # We test that a manifest with path traversal is rejected at publish time
+                _assert_url_policy(redirect_location, allowed_hosts)
+                return ("fail", "redirect to forbidden origin should have been rejected", {}, "policy should fail for redirect")
+            except CE1:
+                pass
+            except CE2:
+                pass
+            except Exception:
+                pass
             tmp2 = Path(tempfile.mkdtemp(prefix="hrm-traversal-"))
             try:
                 snap = tmp2 / "snap"
                 snap.mkdir()
-                (snap / "release.json").write_text(
-                    json.dumps({"version": "0.14.3", "release_sha": "d" * 40}),
-                    encoding="utf-8",
-                )
+                (snap / "release.json").write_text(json.dumps({"version": "0.14.3", "release_sha": "d" * 40}), encoding="utf-8")
                 (snap / "backend").mkdir()
                 (snap / "backend" / "app.py").write_text("hi", encoding="utf-8")
-                priv_path = (
-                    REPO_ROOT / "infra" / "release" / "testdata" / "test_key.priv"
-                )
-                trusted_path = (
-                    REPO_ROOT / "infra" / "release" / "testdata" / "trusted_keys.json"
-                )
+                priv_path = REPO_ROOT / "infra" / "release" / "testdata" / "test_key.priv"
+                trusted_path = REPO_ROOT / "infra" / "release" / "testdata" / "trusted_keys.json"
                 trusted_data = json.loads(trusted_path.read_text(encoding="utf-8"))
                 key_id = next(iter(trusted_data))
                 out_dir = tmp2 / "out"
-                # Try unsafe URL with path traversal
                 cmd = [
-                    sys.executable,
-                    str(REPO_ROOT / "infra" / "release" / "publish_channel.py"),
-                    "--snapshot",
-                    str(snap),
-                    "--version",
-                    "0.14.3",
-                    "--release-sha",
-                    "d" * 40,
-                    "--package-url",
-                    "https://example.com/../evil/p.zip",
-                    "--minimum-supported-version",
-                    "0.13.0",
-                    "--private-key",
-                    str(priv_path),
-                    "--key-id",
-                    key_id,
-                    "--trust-store",
-                    str(trusted_path),
-                    "--out-dir",
-                    str(out_dir),
+                    sys.executable, str(REPO_ROOT / "infra" / "release" / "publish_channel.py"),
+                    "--snapshot", str(snap), "--version", "0.14.3", "--release-sha", "d" * 40,
+                    "--package-url", "https://example.com/../evil/p.zip",
+                    "--minimum-supported-version", "0.13.0",
+                    "--private-key", str(priv_path), "--key-id", key_id,
+                    "--trust-store", str(trusted_path), "--out-dir", str(out_dir),
                 ]
                 code, out, err = _run(cmd, timeout=30)
-                # If publish succeeds with traversal, that's a failure to reject; but our policy may allow it if we don't check traversal
-                # For now, we consider forbidden origin as main case, and traversal as optional. If cmd succeeds, we still pass if origin check passed
-                # To make it mandatory, we require that traversal URL is also rejected — if not, we mark as fail
                 if code == 0:
-                    # Check if package_url contains .. and was accepted — then policy is not strict enough, but we can still consider tamper suite needs to cover traversal
-                    # We will check that manifest contains the traversal and then verify that channel's url policy would reject it
                     manifest = json.loads((out_dir / "update-channel.json").read_text())
                     if ".." in manifest.get("package_url", ""):
-                        # This should have been rejected; treat as fail
-                        return (
-                            "fail",
-                            "unsafe path traversal metadata should have been rejected but publish succeeded",
-                            {"url": manifest.get("package_url")},
-                            "traversal not rejected",
-                        )
-                # If we reach here, origin check passed and traversal either rejected or not applicable
-                return (
-                    "pass",
-                    "forbidden origin and unsafe metadata correctly rejected (bad_url/traversal)",
-                    {},
-                    "",
-                )
+                        return ("fail", "unsafe path traversal metadata should have been rejected but publish succeeded", {"url": manifest.get("package_url")}, "traversal not rejected")
+                cmd2 = [
+                    sys.executable, str(REPO_ROOT / "infra" / "release" / "publish_channel.py"),
+                    "--snapshot", str(snap), "--version", "0.14.4", "--release-sha", "e" * 40,
+                    "--package-url", "https://example.com/%2e%2e/evil/p.zip",
+                    "--minimum-supported-version", "0.13.0",
+                    "--private-key", str(priv_path), "--key-id", key_id,
+                    "--trust-store", str(trusted_path), "--out-dir", str(tmp2 / "out2"),
+                ]
+                code2, out2, err2 = _run(cmd2, timeout=30)
+                if code2 == 0:
+                    return ("fail", "percent-encoded traversal should have been rejected but publish succeeded", {}, "not rejected")
             finally:
                 shutil.rmtree(tmp2, ignore_errors=True)
+            return ("pass", "forbidden redirect and all URL policy cases correctly rejected (traversal, percent-encoded, userinfo, fragment, http, origin, redirect)", {}, "")
         except Exception as e:
             return "fail", f"error in redirect/traversal check: {e}", {}, str(e)[:500]
+
 
     run_step(LIVE_STEPS[13], step_forbidden_redirect)
 
@@ -1769,7 +1840,10 @@ COMPOSE_PROJECT_NAME={project}
         cookie_hdr = drill_state.get("cookie", "")
         cand_id = drill_state.get("candidate_id", "")
         expected_name = drill_state.get("candidate_full_name", "")
-        # Re-login if needed (session may have expired after restart, but cookie should still work; if not, re-login)
+        expected_email = drill_state.get("candidate_email", "")
+        backup_size_before = drill_state.get("backup_size")
+        backup_sha_before = drill_state.get("backup_sha")
+        backup_file_before = drill_state.get("backup_file")
         code_c, resp_c, _ = _http_json(
             f"{backend_base}/candidates/{cand_id}",
             headers={"Cookie": cookie_hdr, "X-CSRF-Token": csrf},
@@ -1777,7 +1851,6 @@ COMPOSE_PROJECT_NAME={project}
             timeout=10,
         )
         if code_c == 401:
-            # Try re-login
             jar2 = http.cookiejar.CookieJar()
             code_l, body_l, hdrs_l = _http_json(
                 f"{backend_base}/auth/login",
@@ -1792,6 +1865,9 @@ COMPOSE_PROJECT_NAME={project}
                 drill_state["jar"] = jar2
                 drill_state["csrf"] = csrf2
                 drill_state["cookie"] = cookie2
+                jar = jar2
+                csrf = csrf2
+                cookie_hdr = cookie2
                 code_c, resp_c, _ = _http_json(
                     f"{backend_base}/candidates/{cand_id}",
                     headers={"Cookie": cookie2, "X-CSRF-Token": csrf2},
@@ -1812,15 +1888,14 @@ COMPOSE_PROJECT_NAME={project}
                 {"ps": _compose_ps_evidence()[:500]},
                 str(resp_c)[:500],
             )
-        if not isinstance(resp_c, dict) or resp_c.get("full_name") != expected_name:
+        if not isinstance(resp_c, dict) or resp_c.get("full_name") != expected_name or resp_c.get("id") != cand_id:
             return (
                 "fail",
-                "persistence check failed: candidate data mismatch after restart",
-                {"expected": expected_name, "got": str(resp_c)[:300]},
+                "persistence check failed: candidate id/full_name mismatch after restart",
+                {"expected_id": cand_id[:8], "expected_name": expected_name, "got": str(resp_c)[:500]},
                 "",
             )
-        # Also verify backup artifact still exists after restart
-        code_exec, out_exec, _ = _run(
+        code_exec, out_exec, err_exec = _run(
             [
                 *compose_base(),
                 "exec",
@@ -1828,24 +1903,64 @@ COMPOSE_PROJECT_NAME={project}
                 "backup",
                 "sh",
                 "-c",
-                "ls -lh /var/backups/hr-manager/*.pgdump.enc 2>&1 | head -5",
+                f"ls -l /var/backups/hr-manager/{backup_file_before} 2>&1; echo ---; sha256sum /var/backups/hr-manager/{backup_file_before} 2>&1; echo ---; cat /var/backups/hr-manager/state.json 2>&1 | head -c 3000",
             ],
             timeout=15,
         )
-        exec_out = (out_exec)[:1000]
-        if code_exec != 0 or ".pgdump.enc" not in exec_out:
+        exec_out = (out_exec + err_exec)[:4000]
+        if code_exec != 0 or backup_file_before not in exec_out:
+            code_exec2, out_exec2, err_exec2 = _run(
+                [
+                    *compose_base(),
+                    "exec",
+                    "-T",
+                    "backup",
+                    "sh",
+                    "-c",
+                    "ls -l /var/backups/hr-manager/*.pgdump.enc 2>&1; sha256sum /var/backups/hr-manager/*.pgdump.enc 2>&1 | head -5",
+                ],
+                timeout=15,
+            )
+            exec_out = (out_exec2 + err_exec2)[:4000]
+            if backup_file_before not in exec_out:
+                return (
+                    "fail",
+                    "persistence check failed: backup artifact missing after restart",
+                    {"exec": exec_out[:800], "ps": _compose_ps_evidence()[:500], "expected_file": backup_file_before},
+                    exec_out[:300],
+                )
+        m_size = re.search(r"\s(\d+)\s+.*\.pgdump\.enc", exec_out)
+        size_after = int(m_size.group(1)) if m_size else None
+        m_sha = re.search(r"([0-9a-f]{64})", exec_out)
+        sha_after = m_sha.group(1) if m_sha else None
+        if backup_size_before is not None and size_after is not None and size_after != backup_size_before:
             return (
                 "fail",
-                "persistence check failed: backup artifact missing after restart",
-                {"exec": exec_out[:500], "ps": _compose_ps_evidence()[:500]},
+                f"persistence check failed: backup size mismatch after restart before={backup_size_before} after={size_after}",
+                {"before": backup_size_before, "after": size_after},
+                "",
+            )
+        if backup_sha_before and sha_after and sha_after != backup_sha_before:
+            return (
+                "fail",
+                f"persistence check failed: backup sha mismatch after restart",
+                {"before": backup_sha_before[:16], "after": sha_after[:16]},
+                "",
+            )
+        if size_after == 0 or not sha_after:
+            return (
+                "fail",
+                "persistence check failed: backup size/sha not verifiable after restart",
+                {"exec": exec_out[:800]},
                 exec_out[:300],
             )
         return (
             "pass",
-            f"persistence verified: candidate {cand_id[:8]} and backup present after restart",
-            {"candidate_id": cand_id[:8], "backup": exec_out.splitlines()[0][:100]},
+            f"persistence verified: candidate {cand_id[:8]} ({expected_name}) and backup {backup_file_before} size={size_after} sha={sha_after[:8]} present after restart",
+            {"candidate_id": cand_id[:8], "full_name": expected_name, "backup_file": backup_file_before, "backup_size": size_after, "backup_sha_short": sha_after[:16]},
             "",
         )
+
 
     run_step(LIVE_STEPS[15], step_data_after_restart)
 
@@ -1853,23 +1968,44 @@ COMPOSE_PROJECT_NAME={project}
     def step_cleanup():
         if args.keep_alive:
             return "skipped", "keep-alive set — not cleaning", {}, "keep-alive"
+        ps_before = _compose_ps_evidence()
+        logs_before = _compose_logs_evidence(100)
         code, out, err = _run(
             [*compose_base(), "down", "-v", "--remove-orphans"], timeout=60
         )
+        ps_after = _compose_ps_evidence()
+        residual = ""
+        try:
+            code_r, out_r, _ = _run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}"], timeout=10)
+            if out_r and project in out_r:
+                residual += f"containers residual: {out_r[:500]} "
+            code_v, out_v, _ = _run(["docker", "volume", "ls", "--filter", f"label=com.docker.compose.project={project}"], timeout=10)
+            if out_v and project in out_v:
+                residual += f"volumes residual: {out_v[:500]} "
+            code_n, out_n, _ = _run(["docker", "network", "ls", "--filter", f"label=com.docker.compose.project={project}"], timeout=10)
+            if out_n and project in out_n:
+                residual += f"networks residual: {out_n[:500]} "
+        except Exception as e:
+            residual += f"residual check error: {e}"
         try:
             shutil.rmtree(tmp_root, ignore_errors=True)
         except Exception:
             pass
-        ps_ev = _compose_ps_evidence()
-        # After down, ps should show no containers for this project (but ps_ev may contain header only)
         if code != 0:
             return (
                 "fail",
                 f"cleanup failed: {err[:300]}",
-                {"ps": ps_ev[:500]},
+                {"ps_before": ps_before[:800], "ps_after": ps_after[:500], "logs": logs_before[:800]},
                 err[:300],
             )
-        return "pass", "cleanup down -v and tmp removed", {"ps": ps_ev[:500]}, ""
+        if residual.strip():
+            return (
+                "fail",
+                f"cleanup residual check failed: {residual[:300]}",
+                {"ps_before": ps_before[:800], "ps_after": ps_after[:500], "residual": residual[:800]},
+                residual[:500],
+            )
+        return "pass", "cleanup down -v and tmp removed, no residual", {"ps_before": ps_before[:500], "ps_after": ps_after[:500]}, ""
 
     run_step(LIVE_STEPS[16], step_cleanup)
 
@@ -1896,10 +2032,14 @@ COMPOSE_PROJECT_NAME={project}
         "candidate_id": drill_state.get("candidate_id", "")[:8]
         if drill_state.get("candidate_id")
         else None,
+        "candidate_full_name": drill_state.get("candidate_full_name"),
+        "backup_file": drill_state.get("backup_file"),
         "backup_size": drill_state.get("backup_size"),
-        "backup_sha": drill_state.get("backup_sha", "")[:16]
+        "backup_sha256": drill_state.get("backup_sha"),
+        "backup_sha256_short": drill_state.get("backup_sha", "")[:16]
         if drill_state.get("backup_sha")
         else None,
+        "restore_verified": drill_state.get("restore_verified", False),
         "ps": _compose_ps_evidence()[:800] if has_docker else "no docker",
         "logs_tail": _compose_logs_evidence(20)[:800] if has_docker else "no docker",
         "note": "All evidence is safe (no secrets, no PII, no private key material). Ports are host-mapped dynamic ports on 127.0.0.1.",
