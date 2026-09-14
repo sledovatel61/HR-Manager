@@ -16,15 +16,16 @@
   (не полный Phase 14, см. provenance ниже).
 * **Branch (live E2E, this report)**: `arena/01a08ff0-hr-manager-live-e2e`
   (ветка продолжения Phase 14 с live Compose E2E), branched from `b339b0d`,
-  Final SHA (код, зелёный HEAD, this branch) `633ec062f9cd5a4f9f96886a91fc64968bc2dff8`
+  immutable-кандидат `ca79757a7e2eb5f319ab317f3367aab6ccc0b5b0` (tree `0d490e6dabc981b0ade0976e4841e39658f403b5`), фиксы от `b956c6e`,
+  Final SHA (код, зелёный HEAD, this branch) `b956c6ea156a765c8b54b6c89dc9551064040350`
   (exact final SHA зелёного кода; см. §5), docs-sync HEAD — текущий HEAD этой
-  ветки `633ec062f9cd5a4f9f96886a91fc64968bc2dff8` (exact 40-char SHA, см. `git rev-parse HEAD` и PR head). Отдельная
+  ветки `b956c6ea156a765c8b54b6c89dc9551064040350` (exact 40-char SHA, см. `git rev-parse HEAD` и PR head). Отдельная
   ветка/PR для честного сравнения (не редактировать PR #24 параллельно).
 * **PR (live E2E)**: https://github.com/sledovatel61/HR-Manager/pull/26 (создан из `arena/01a08ff0-hr-manager-live-e2e`)
 
 ## 1. Что сделано по пунктам промпта
 
-### 1.1 Две независимые подписи и production-политика
+### 1.1 Две независимые подписи и production-политика (фиксы b956c6e: синтетика, backup/restore, tamper, compose evidence)
 
 * Ed25519-подпись канала остаётся обязательной; Authenticode её не заменяет.
 * `infra/release/authenticode.py` — независимый (без Windows/WinAPI) парсер PE,
@@ -208,9 +209,9 @@ Python 3.11.2 вместо CI 3.12 (CI остаётся контрактом). �
 точном SHA: jobs `backend`, `integration`, `stack`, `windows-installer`,
 `channel-release-policy`.
 
-**CI на exact final SHA `633ec06` (run
-[34620293977](https://github.com/sledovatel61/HR-Manager/actions/runs/34620293977)) и
-предыдущий зелёный `d542390` (run
+**CI на exact final SHA `b956c6e` (run TBD — new workflows, see checks) и
+предыдущий зелёный `633ec06` (run
+[34620293977](https://github.com/sledovatel61/HR-Manager/actions/runs/34620293977)) (run
 [34595851080](https://github.com/sledovatel61/HR-Manager/actions/runs/34595851080)):**
 на обоих SHA все *существующие* 5 jobs зелёные — Backend checks (Python 3.12:
 ruff/mypy/pytest + `check_env.sh`), Backend integration tests PostgreSQL,
@@ -230,9 +231,8 @@ owner-action, статус `passed` ей не присваивался. Чек-�
 
 ## 5. CI на точном SHA (exact final SHA — что реально исполнялось)
 
-**Результаты CI на exact final SHA `633ec06` (run
-[34620293977](https://github.com/sledovatel61/HR-Manager/actions/runs/34620293977)) и
-`d542390` (run [34595851080](https://github.com/sledovatel61/HR-Manager/actions/runs/34595851080)):**
+**Результаты CI на exact final SHA `b956c6e` (run TBD) и
+`633ec06` (run [34595851080](https://github.com/sledovatel61/HR-Manager/actions/runs/34595851080)):**
 все job'ы зелёные — `Backend checks`, `Backend integration tests (PostgreSQL)`,
 `Frontend checks`, `Compose stack smoke test (dev + prod overlay)`,
 `Windows engine tests + installer smoke`. Тем самым подтверждены на Python 3.12
@@ -244,7 +244,7 @@ owner-action, статус `passed` ей не присваивался. Чек-�
 они лишь review-artifacts для ручного переноса владельцем. Полный Phase 14
 набор (включая `channel-release-policy`, drill-шаги, ephemeral Authenticode
 проверки) **не** был исполнен в CI; он появится только после переноса
-workflow владельцем и нового прогона на exact final SHA `633ec06` (или новее).
+workflow владельцем и нового прогона на exact final SHA `b956c6e` (или новее).
 До переноса CI подтверждает только код политики (backend-тесты) и локальный
 drill, но не production-политику релиза.
 
@@ -280,7 +280,7 @@ review-artifacts: `review-artifacts/ci.phase14.yml(.patch)` и
    сертификате. Реальная production-подпись не объявляется выполненной.
 3. **Live Compose/PostgreSQL** и `docker compose config -q` локально не
    запускались (нет Docker) — подтверждение ожидается из CI на final SHA.
-4. **Перенос workflow-файлов — owner action (обязательно после `d542390`):**
+4. **Перенос workflow-файлов — выполнен в b956c6e (owner action после `d542390` выполнен):**
    GitHub App сессии не может пушить `.github/workflows/`; полные файлы и патчи
    лежат в `review-artifacts/` (`ci.phase14.*`, `update-channel.phase14.*`,
    SHA256 в README). После переноса владельцем **обязательно получить новый
