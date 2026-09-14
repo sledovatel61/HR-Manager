@@ -16,7 +16,15 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "0.13.0"
+    [string]$Version = "0.13.0",
+
+    # Публичный trust store канала обновлений (Phase 14): файл JSON
+    # {schema_version, environment, keys:{kid:{key,revoked}}}. Валидируется
+    # и встраивается в снимок как release-trust-store.json — установка
+    # импортирует ТОЛЬКО публичные ключи (без private material) в
+    # конфигурацию канала. Без параметра trust store не встраивается
+    # (клиент без ключей честно fail closed; ключи вносит владелец).
+    [string]$TrustStore = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +38,43 @@ $cacheDir = Join-Path $installerDir ".cache"
 
 $InnoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
 $InnoSha256 = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+
+function Test-HrmInstallerTrustStore {
+    # Зеркало контракта infra/release/trust_store.py (только публичный
+    # материал). Отказ — фатальная ошибка сборки: встроить нельзя.
+    param([string]$Path)
+    $data = Get-Content -Path $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($null -eq $data) { throw "Trust store не читается: $Path" }
+    $names = @($data.PSObject.Properties | ForEach-Object { $_.Name })
+    foreach ($name in @("schema_version", "environment", "keys")) {
+        if ($names -notcontains $name) { throw "Trust store: нет поля $name." }
+    }
+    if ($names.Count -ne 3) { throw "Trust store: лишние поля верхнего уровня ($($names -join ', '))." }
+    if ([int]$data.schema_version -ne 1) { throw "Trust store: schema_version != 1." }
+    if ([string]$data.environment -ne "production") {
+        throw "Trust store: environment должен быть production (test/dev не встраиваются)."
+    }
+    $keyIds = @($data.keys.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($keyIds.Count -eq 0) { throw "Trust store: keys пуст." }
+    $hasActive = $false
+    foreach ($keyId in $keyIds) {
+        if ($keyId -notmatch "^[A-Za-z0-9._-]{1,64}$") { throw "Trust store: некорректный key_id '$keyId'." }
+        $entry = $data.keys.PSObject.Properties[$keyId].Value
+        $entryNames = @($entry.PSObject.Properties | ForEach-Object { $_.Name })
+        if (($entryNames -notcontains "key") -or ($entryNames -notcontains "revoked") -or ($entryNames.Count -ne 2)) {
+            throw "Trust store: запись '$keyId' должна содержать ровно key и revoked."
+        }
+        if ([string]$entry.key -notmatch "^[A-Za-z0-9+/]{43}=$") {
+            throw "Trust store: ключ '$keyId' не является base64 32-байтовым Ed25519 публичным ключом."
+        }
+        if ($null -eq $entry.revoked -or $entry.revoked.GetType().Name -ne "Boolean") {
+            throw "Trust store: revoked у '$keyId' должен быть true/false."
+        }
+        if (-not [bool]$entry.revoked) { $hasActive = $true }
+    }
+    if (-not $hasActive) { throw "Trust store: нет ни одного неотозванного ключа." }
+    return $true
+}
 
 function Invoke-RobocopyMirror {
     # robocopy с исключениями; коды выхода 0-7 — успех. Пути с пробелами
@@ -98,6 +143,19 @@ $releaseJson = [ordered]@{
 }
 $releaseJson | ConvertTo-Json | Set-Content -Path (Join-Path $appStaging "release.json") -Encoding UTF8
 
+# Trust store (Phase 14): только публичные ключи канала, детерминированно.
+$trustStoreEmbedded = $false
+if ($TrustStore) {
+    if (-not (Test-Path $TrustStore)) { throw "Файл trust store не найден: $TrustStore" }
+    $null = Test-HrmInstallerTrustStore $TrustStore
+    Copy-Item -Path $TrustStore -Destination (Join-Path $appStaging "release-trust-store.json") -Force
+    # Копия рядом с манифестом: release-pipeline сверяет её побайтово с
+    # trust store канала до публикации (подмена блокируется).
+    Copy-Item -Path $TrustStore -Destination (Join-Path $PSScriptRoot "release-trust-store.json") -Force
+    $trustStoreEmbedded = $true
+    Write-Host "Trust store встроен в снимок (публичные ключи канала)."
+}
+
 # 3. Компиляция установщика.
 Write-Host "Compiling installer with ISCC…"
 & $iscc (Join-Path $installerDir "installer.iss") ("/DAppVersion=" + $Version)
@@ -130,10 +188,18 @@ $manifest = [ordered]@{
         sha256 = (Get-FileHash -Path $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     signing = [ordered]@{
-        # Честно: подпись НЕ выполняется в этой сборке. Хук для кодовой
-        # подписи — параметр SignTool установщика (см. installer/README.md).
+        # Честно: подпись НЕ выполняется в этой сборке. Кодовая подпись —
+        # отдельный шаг installer/sign-installer.ps1 (Phase 14); production
+        # выпуск отклонит неподписанный installer (fail closed).
         status = "unsigned"
-        instruction = "installer/README.md (раздел «Кодовая подпись»)"
+        mode = "disabled"
+        instruction = "installer/sign-installer.ps1 (Phase 14); контракт: infra/release/installer_signing.py"
+    }
+    trust_store = [ordered]@{
+        embedded = $trustStoreEmbedded
+        sha256 = if ($trustStoreEmbedded) {
+            (Get-FileHash -Path (Join-Path $appStaging "release-trust-store.json") -Algorithm SHA256).Hash.ToLowerInvariant()
+        } else { "" }
     }
     package_files_sha256 = $fileHashes
 }

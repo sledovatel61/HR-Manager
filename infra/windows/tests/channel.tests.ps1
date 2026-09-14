@@ -43,12 +43,21 @@ function New-HrmChannelWorld {
     $global:HRM_ChannelWorld = [pscustomobject]@{
         Reports = @()
         EngineCheckCount = 0
+        LastEngineCheckAt = $null
         QueueInstall = $QueueInstall
         EngineCheckState = $EngineCheckState
+        Facts = @()
+        Calls = @()
     }
     Set-HrmHttpMock {
         param($Uri, $Method, $Body, $Headers)
         $w = $global:HRM_ChannelWorld
+        $w.Calls += [string]$Uri
+        if ($Uri -like "*/api/updates/engine-facts") {
+            # Phase 14: факты readiness — захват тела и заголовков.
+            $w.Facts += , @{ Body = $Body; Headers = $Headers }
+            return @{ StatusCode = 200; Body = "ok" }
+        }
         if ($Uri -like "*/api/updates/engine-state") {
             if ($w.QueueInstall) {
                 return @{
@@ -65,7 +74,15 @@ function New-HrmChannelWorld {
             return @{ StatusCode = 200; Body = [pscustomobject]@{ actions = @(); job_id = $null; release_dir = $null; manifest_path = $null; error_code = $null } }
         }
         if ($Uri -like "*/api/updates/engine-check") {
-            $w.EngineCheckCount++
+            # Зеркало серверного контракта: backend троттлит повторные проверки
+            # (update_check_min_interval_seconds, default 300) и на запрос раньше
+            # интервала возвращает текущее состояние БЕЗ выполнения проверки.
+            $now = [datetime]::UtcNow
+            $throttled = ($null -ne $w.LastEngineCheckAt) -and (($now - $w.LastEngineCheckAt).TotalSeconds -lt 300)
+            if (-not $throttled) {
+                $w.LastEngineCheckAt = $now
+                $w.EngineCheckCount++
+            }
             return @{ StatusCode = 200; Body = [pscustomobject]@{ state = $w.EngineCheckState; available_version = $null } }
         }
         if ($Uri -like "*/api/updates/engine-report") {
@@ -372,6 +389,279 @@ Test-Case "канал: хеш/размер пакета проверяются �
     Assert-HrmEqual 1 $channelWorld.Reports.Count "отчёт не отправлен"
     Assert-HrmEqual "rolled_back" ([string]$channelWorld.Reports[0].Body.state) "испорченный пакет не остановил установку"
     Assert-HrmEqual 0 $t.World.AlembicUpgradeCount "миграция не должна была выполняться"
+}
+
+Write-Host "== Trust store и факты readiness (Phase 14) =="
+
+function New-HrmTestTrustStoreJson {
+    # Валидный production trust store как PSCustomObject (как из JSON).
+    # ВЛОЖЕННЫЕ записи тоже PSCustomObject: в Windows PowerShell 5.1
+    # PSObject.Properties hashtable'а не раскрывает ключи словаря, и
+    # валидатор движка видел бы записи без key/revoked.
+    param([hashtable]$Keys = @{ "pilot-test-key" = @{ key = "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM="; revoked = $false } })
+    $keysObj = [pscustomobject]@{}
+    foreach ($keyId in $Keys.Keys) {
+        $keysObj | Add-Member -MemberType NoteProperty -Name $keyId -Value ([pscustomobject]$Keys[$keyId])
+    }
+    return [pscustomobject]@{
+        schema_version = 1
+        environment = "production"
+        keys = $keysObj
+    }
+}
+
+Test-Case "trust store: валидный production store принимается и нормализуется" {
+    Initialize-HrmTestEngine
+    New-HrmChannelWorld | Out-Null
+    $store = New-HrmTestTrustStoreJson -Keys @{
+        "pilot-test-key" = @{ key = "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM="; revoked = $false }
+        "pilot-old-key" = @{ key = "D83KWJq/Tb9ETFv8x2gNe7DvOfZM0vMY4YKH+aQVvy0="; revoked = $true }
+    }
+    $validated = Test-HrmTrustStoreObject $store
+    Assert-HrmEqual "production" $validated["environment"] "environment"
+    Assert-HrmEqual 2 $validated["keys"].Count "число ключей"
+    Assert-HrmTrue ($validated["keys"]["pilot-old-key"].revoked) "revoked-флаг не сохранён"
+}
+
+Test-Case "trust store: private material отклоняется" {
+    Initialize-HrmTestEngine
+    New-HrmChannelWorld | Out-Null
+    $store = New-HrmTestTrustStoreJson
+    $store | Add-Member -NotePropertyName private -NotePropertyValue ("f" * 64)
+    Assert-HrmThrows "private material в trust store не отклонён" { Test-HrmTrustStoreObject $store }
+    # Приватное поле внутри записи ключа — тоже отказ (лишнее поле записи).
+    $store2 = New-HrmTestTrustStoreJson -Keys @{ "pilot-test-key" = @{ key = "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM="; revoked = $false; private = "f" * 64 } }
+    Assert-HrmThrows "private material в записи ключа не отклонён" { Test-HrmTrustStoreObject $store2 }
+}
+
+Test-Case "trust store: test-хранилище не становится production trust root" {
+    Initialize-HrmTestEngine
+    New-HrmChannelWorld | Out-Null
+    $store = New-HrmTestTrustStoreJson
+    $store.environment = "test"
+    Assert-HrmThrows "test-environment store принят как production root" { Test-HrmTrustStoreObject $store }
+}
+
+Test-Case "trust store: не-base64 и не-32-байтовые ключи отклоняются" {
+    Initialize-HrmTestEngine
+    New-HrmChannelWorld | Out-Null
+    $bad1 = New-HrmTestTrustStoreJson -Keys @{ "pilot-test-key" = @{ key = "not-base64!!"; revoked = $false } }
+    Assert-HrmThrows "некорректный base64 ключ принят" { Test-HrmTrustStoreObject $bad1 }
+    # 31 байт -> base64 не соответствует формату 32-байтового ключа
+    # (43 символа + '='); 33 байта — тоже. Оба варианта обязаны отклоняться.
+    $shortKey = [Convert]::ToBase64String((New-Object byte[] 31))
+    $bad2 = New-HrmTestTrustStoreJson -Keys @{ "pilot-test-key" = @{ key = $shortKey; revoked = $false } }
+    Assert-HrmThrows "31-байтовый ключ принят" { Test-HrmTrustStoreObject $bad2 }
+}
+
+Test-Case "trust store: все ключи отозваны / пустой набор / лишние поля / плохой key_id отклоняются" {
+    Initialize-HrmTestEngine
+    New-HrmChannelWorld | Out-Null
+    $allRevoked = New-HrmTestTrustStoreJson -Keys @{ "pilot-test-key" = @{ key = "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM="; revoked = $true } }
+    Assert-HrmThrows "полностью отозванный store принят" { Test-HrmTrustStoreObject $allRevoked }
+    $empty = [pscustomobject]@{ schema_version = 1; environment = "production"; keys = [pscustomobject]@{} }
+    Assert-HrmThrows "пустой набор ключей принят" { Test-HrmTrustStoreObject $empty }
+    $extra = New-HrmTestTrustStoreJson
+    $extra | Add-Member -NotePropertyName url -NotePropertyValue "https://evil.example.com"
+    Assert-HrmThrows "лишнее поле верхнего уровня принято" { Test-HrmTrustStoreObject $extra }
+    $badId = New-HrmTestTrustStoreJson -Keys @{ "ключ с пробелами" = @{ key = "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM="; revoked = $false } }
+    Assert-HrmThrows "некорректный key_id принят" { Test-HrmTrustStoreObject $badId }
+    $badSchema = New-HrmTestTrustStoreJson
+    $badSchema.schema_version = 2
+    Assert-HrmThrows "schema_version=2 принят" { Test-HrmTrustStoreObject $badSchema }
+}
+
+Test-Case "Import-HrmTrustStore: публикует только публичные ключи из встроенного store" {
+    Initialize-HrmTestEngine
+    $t = New-HrmChannelWorld
+    $state = Get-HrmTestStateDir
+    # Конфигурация канала создана миром — удаляем, имитируя первичную установку.
+    $configFile = Get-HrmChannelConfigFile $state
+    if (Test-Path $configFile) { Remove-Item $configFile -Force }
+    $snapshotDir = Join-Path $t.Root "snapshot-trust"
+    New-Item -ItemType Directory -Path $snapshotDir -Force | Out-Null
+    $store = @{
+        schema_version = 1
+        environment = "production"
+        keys = @{
+            "pilot-test-key" = @{ key = "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM="; revoked = $false }
+            "pilot-old-key" = @{ key = "D83KWJq/Tb9ETFv8x2gNe7DvOfZM0vMY4YKH+aQVvy0="; revoked = $true }
+        }
+    } | ConvertTo-Json -Depth 5
+    Set-Content -Path (Join-Path $snapshotDir "release-trust-store.json") -Value $store -Encoding UTF8
+    $imported = Import-HrmTrustStore -SnapshotDir $snapshotDir -StateDir $state
+    Assert-HrmTrue $imported "импорт не выполнен"
+    $config = Get-HrmChannelConfig $state
+    # public_keys здесь — hashtable (его собирает Get-HrmChannelConfig), а в
+    # Windows PowerShell 5.1 PSObject.Properties не раскрывает ключи словаря —
+    # поэтому проверяем через индексатор hashtable, а не через свойства.
+    Assert-HrmEqual 2 $config["public_keys"].Count "ключи не импортированы"
+    $importedKey = $config["public_keys"]["pilot-test-key"]
+    Assert-HrmEqual "RdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM=" $importedKey.key "материал ключа"
+    # В опубликованной конфигурации нет private material и environment-полей.
+    $configText = Get-Content $configFile -Raw -Encoding UTF8
+    Assert-HrmNotContains $configText "private" "private material в channel.json"
+    Assert-HrmNotContains $configText "environment" "environment утёк в публичную конфигурацию"
+}
+
+Test-Case "Import-HrmTrustStore: существующая конфигурация не перезаписывается (ротация выигрывает)" {
+    Initialize-HrmTestEngine
+    $t = New-HrmChannelWorld
+    $state = Get-HrmTestStateDir
+    # Мир уже создал channel.json с доверенными ключами; администратор отозвал
+    # один из них — встроенный store НЕ должен затереть это решение.
+    $configFile = Get-HrmChannelConfigFile $state
+    Assert-HrmTrue (Test-Path $configFile) "мир не создал channel.json"
+    $before = Get-Content $configFile -Raw -Encoding UTF8
+    $snapshotDir = Join-Path $t.Root "snapshot-trust"
+    New-Item -ItemType Directory -Path $snapshotDir -Force | Out-Null
+    @{ schema_version = 1; environment = "production"; keys = @{ "rogue-key" = @{ key = "AdoOG6nUyIJr4vqrLPQD36UISqCFrLov+HgDcisGKxM="; revoked = $false } } } | ConvertTo-Json -Depth 5 |
+        Set-Content -Path (Join-Path $snapshotDir "release-trust-store.json") -Encoding UTF8
+    $imported = Import-HrmTrustStore -SnapshotDir $snapshotDir -StateDir $state
+    Assert-HrmFalse $imported "импорт перезаписал конфигурацию"
+    $after = Get-Content $configFile -Raw -Encoding UTF8
+    Assert-HrmEqual $before $after "channel.json изменён при импорте"
+}
+
+Test-Case "Import-HrmTrustStore: невалидный встроенный store — отказ, конфигурация не создаётся" {
+    Initialize-HrmTestEngine
+    $t = New-HrmChannelWorld
+    $state = Get-HrmTestStateDir
+    $configFile = Get-HrmChannelConfigFile $state
+    if (Test-Path $configFile) { Remove-Item $configFile -Force }
+    $snapshotDir = Join-Path $t.Root "snapshot-trust"
+    New-Item -ItemType Directory -Path $snapshotDir -Force | Out-Null
+    @{ schema_version = 1; environment = "production"; keys = @{ "pilot-test-key" = @{ key = "not-base64!!"; revoked = $false } } } | ConvertTo-Json -Depth 5 |
+        Set-Content -Path (Join-Path $snapshotDir "release-trust-store.json") -Encoding UTF8
+    Assert-HrmThrows "невалидный встроенный store принят" { Import-HrmTrustStore -SnapshotDir $snapshotDir -StateDir $state }
+    Assert-HrmFalse (Test-Path $configFile) "channel.json создан из невалидного store"
+}
+
+Test-Case "Get-HrmEngineFacts: закрытая схема фактов из мок-мира" {
+    Initialize-HrmTestEngine
+    New-HrmChannelWorld | Out-Null
+    $state = Get-HrmTestStateDir
+    $facts = Get-HrmEngineFacts -StateDir $state -WatcherRunning $true
+    # Ровно поля backend-схемы UpdateEngineFactsRequest (extra=forbid).
+    $expected = @("windows_version", "windows_supported", "docker_state", "compose_version", "compose_ok",
+        "published_ports", "disk_free_mb", "state_dir_acl_ok", "staging_writable", "staging_outside_state",
+        "previous_images_present", "watcher_running")
+    Assert-HrmEqual $expected.Count $facts.Keys.Count ("лишние/недостающие поля: " + (($facts.Keys | Sort-Object) -join ","))
+    foreach ($name in $expected) {
+        Assert-HrmTrue $facts.ContainsKey($name) ("нет поля " + $name)
+    }
+    # Мок: compose version v2.29.7 -> ok; docker ps/images не замоканы -> пусто.
+    Assert-HrmEqual $true $facts["compose_ok"] "compose_ok"
+    Assert-HrmEqual "v2.29.7" $facts["compose_version"] "compose_version"
+    Assert-HrmEqual 0 @($facts["published_ports"]).Count "published_ports не пуст"
+    Assert-HrmEqual $false $facts["previous_images_present"] "previous_images_present"
+    Assert-HrmEqual $false $facts["state_dir_acl_ok"] "icacls-мок с пустым выводом должен давать false"
+    Assert-HrmEqual $true $facts["staging_writable"] "staging должен быть записываем"
+    Assert-HrmEqual $true $facts["watcher_running"] "watcher_running не передан"
+    # Типы: published_ports — массив, disk_free_mb — число.
+    Assert-HrmTrue ($facts["disk_free_mb"] -is [long] -or $facts["disk_free_mb"] -is [int]) "disk_free_mb не число"
+}
+
+Test-Case "Get-HrmEngineFacts: опубликованные порты парсятся из docker ps" {
+    Initialize-HrmTestEngine
+    New-HrmChannelWorld | Out-Null
+    $state = Get-HrmTestStateDir
+    $global:HRM_MockWorld.DockerPsPorts = "hr-manager-pilot-backend|0.0.0.0:5432->5432/tcp, 127.0.0.1:8080->80/tcp`nhr-manager-pilot-frontend|127.0.0.1:8081->80/tcp`n"
+    $global:HRM_MockWorld.DockerImagesOutput = "hr-manager-pilot-backend:previous`nhr-manager-pilot-frontend:latest`n"
+    $facts = Get-HrmEngineFacts -StateDir $state -WatcherRunning $false
+    $ports = @($facts["published_ports"])
+    Assert-HrmEqual 3 $ports.Count "порты не распарсены"
+    $exposed = @($ports | Where-Object { $_["host_ip"] -eq "0.0.0.0" })
+    Assert-HrmEqual 1 $exposed.Count "0.0.0.0-порт не найден"
+    Assert-HrmEqual 5432 $exposed[0]["host_port"] "host_port"
+    Assert-HrmEqual "hr-manager-pilot-backend" $exposed[0]["container"] "container"
+    $loopback = @($ports | Where-Object { $_["host_ip"] -eq "127.0.0.1" })
+    Assert-HrmEqual 2 $loopback.Count "loopback-порты не найдены"
+    Assert-HrmEqual $true $facts["previous_images_present"] "previous-образы не найдены"
+}
+
+Test-Case "Send-HrmEngineFacts: POST с машинным токеном, кеш 5 минут, Reset-HrmEngineFactsCache" {
+    Initialize-HrmTestEngine
+    New-HrmChannelWorld | Out-Null
+    $state = Get-HrmTestStateDir
+    Reset-HrmEngineFactsCache
+    Send-HrmEngineFacts -StateDir $state -WatcherRunning $true
+    $world = $global:HRM_ChannelWorld
+    Assert-HrmEqual 1 @($world.Facts).Count "факты не отправлены"
+    $sent = $world.Facts[0]
+    $token = Get-HrmSecret $state "HRM_UPDATE_ENGINE_TOKEN"
+    Assert-HrmEqual $token ([string]$sent.Headers["X-Engine-Token"]) "машинный токен не в заголовке"
+    # Тело — только закрытая схема фактов (никаких секретов и путей).
+    $bodyJson = $sent.Body | ConvertTo-Json -Depth 5
+    Assert-HrmNotContains $bodyJson $token "токен утёк в тело фактов"
+    Assert-HrmNotContains $bodyJson "password" "секреты в теле фактов"
+    Assert-HrmTrue ($sent.Body.ContainsKey("windows_version")) "нет windows_version"
+    # Кеш: повторная отправка в течение 5 минут не создаёт второй POST.
+    Send-HrmEngineFacts -StateDir $state -WatcherRunning $true
+    Assert-HrmEqual 1 @($world.Facts).Count "кеш фактов не работает"
+    # Тестовый шов сбрасывает кеш.
+    Reset-HrmEngineFactsCache
+    Send-HrmEngineFacts -StateDir $state -WatcherRunning $true
+    Assert-HrmEqual 2 @($world.Facts).Count "Reset-HrmEngineFactsCache не сбросил кеш"
+}
+
+Test-Case "наблюдатель: факты отправляются ДО опроса engine-state; -SkipFacts отключает" {
+    Initialize-HrmTestEngine
+    New-HrmChannelWorld -QueueInstall "" | Out-Null
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Reset-HrmEngineFactsCache
+    Invoke-HrmChannelOnce -InstallDir $install -StateDir $state | Out-Null
+    $world = $global:HRM_ChannelWorld
+    Assert-HrmEqual 1 @($world.Facts).Count "факты не отправлены наблюдателем"
+    $factsIndex = [array]::IndexOf(@($world.Calls), (@($world.Calls | Where-Object { $_ -like "*/api/updates/engine-facts" })[0]))
+    $stateIndex = [array]::IndexOf(@($world.Calls), (@($world.Calls | Where-Object { $_ -like "*/api/updates/engine-state" })[0]))
+    Assert-HrmTrue ($factsIndex -ge 0 -and $stateIndex -ge 0 -and $factsIndex -lt $stateIndex) "факты отправлены не до engine-state"
+    # -SkipFacts: без отправки фактов (ручной запуск/диагностика).
+    Reset-HrmEngineFactsCache
+    $world.Facts = @()
+    $world.Calls = @()
+    Invoke-HrmChannelOnce -InstallDir $install -StateDir $state -SkipFacts | Out-Null
+    Assert-HrmEqual 0 @($world.Facts).Count "-SkipFacts не отключил отправку"
+    Assert-HrmEqual 1 $world.EngineCheckCount "фоновая проверка не выполнена"
+}
+
+Test-Case "наблюдатель: сбой отправки фактов не мешает циклу обновлений" {
+    Initialize-HrmTestEngine
+    $t = New-HrmChannelWorld -QueueInstall "yes"
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Reset-HrmEngineFactsCache
+    # Факты отклоняются сервером (500) — установка всё равно выполняется
+    # и отчёт отправляется (сбой facts не влияет на канал обновлений).
+    Set-HrmHttpMock {
+        param($Uri, $Method, $Body, $Headers)
+        $w = $global:HRM_ChannelWorld
+        $w.Calls += [string]$Uri
+        if ($Uri -like "*/api/updates/engine-facts") { return @{ StatusCode = 500; Body = $null } }
+        if ($Uri -like "*/api/updates/engine-state") {
+            return @{ StatusCode = 200; Body = [pscustomobject]@{ actions = @("install"); job_id = "job-facts-1"; release_dir = "/updates/release-222222222222.zip"; manifest_path = "/updates/release-222222222222.json"; error_code = $null } }
+        }
+        if ($Uri -like "*/api/updates/engine-report") {
+            $w.Reports += , @{ Body = $Body; Headers = $Headers }
+            return @{ StatusCode = 200; Body = [pscustomobject]@{ state = "up_to_date" } }
+        }
+        # Update-smoke читает /api/ops/status (release_sha) и Wait-HrmReady —
+        # /api/health: без PSCustomObject-тел StrictMode падал на $ops.release_sha
+        # и установка откатывалась (итог rolled_back вместо installed).
+        if ($Uri -like "*/api/health") {
+            return @{ StatusCode = 200; Body = [pscustomobject]@{ status = "ok" } }
+        }
+        if ($Uri -like "*/api/ops/status") {
+            return @{ StatusCode = 200; Body = $global:HRM_MockWorld.OpsBody }
+        }
+        return @{ StatusCode = 200; Body = "ok" }
+    }
+    Invoke-HrmChannelOnce -InstallDir $install -StateDir $state | Out-Null
+    $world = $global:HRM_ChannelWorld
+    Assert-HrmEqual 1 @($world.Reports).Count "установка не выполнена из-за сбоя facts"
+    Assert-HrmEqual "installed" ([string]$world.Reports[0].Body.state) "итог не installed"
+    Assert-HrmTrue ($t.World.BackupNowCount -ge 1) "update-цикл не дошёл до бэкап-ворот"
 }
 
 Write-Host ("Тесты канала: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

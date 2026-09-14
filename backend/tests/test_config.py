@@ -188,3 +188,20 @@ def test_pilot_rejects_insecure_configuration(field: str, value: str) -> None:
     env[field] = value
     with pytest.raises(ValidationError):
         Settings.model_validate(env)
+
+
+def test_backup_drill_synthetic_marker_setting_alias() -> None:
+    """Drill-маркер синтетической записи (Phase 14): None по умолчанию,
+    читается из BACKUP_DRILL_EXPECT_CANDIDATE_EMAIL и доходит до RunnerConfig."""
+    from app.backup_runner import RunnerConfig
+
+    settings = Settings.model_validate(BASE_PRODUCTION_ENV)
+    assert settings.backup_drill_expect_candidate_email is None
+
+    env = dict(BASE_PRODUCTION_ENV)
+    env["BACKUP_DRILL_EXPECT_CANDIDATE_EMAIL"] = "drill-synthetic@example.com"
+    settings = Settings.model_validate(env)
+    assert settings.backup_drill_expect_candidate_email == "drill-synthetic@example.com"
+
+    config = RunnerConfig.from_settings(settings)
+    assert config.expect_candidate_email == "drill-synthetic@example.com"

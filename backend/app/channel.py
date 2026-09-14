@@ -174,6 +174,21 @@ class _NoAutoRedirectHandler(urllib.request.HTTPRedirectHandler):
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
+def _has_dot_segments(path: str) -> bool:
+    """Сегменты «.»/«..» в пути URL — попытка обхода каталога (traversal).
+
+    Проверяются и percent-encoded варианты (``%2e%2e``): сервер на другом
+    конце может декодировать путь при разборе, поэтому политика обязана
+    видеть то, что увидит сервер. Обычные имена файлов («pkg.zip») сегментом
+    «.»/«..» не являются.
+    """
+    for variant in (path, urllib.parse.unquote(path)):
+        segments = variant.split("/")
+        if "." in segments or ".." in segments:
+            return True
+    return False
+
+
 def _assert_url_policy(parsed: urllib.parse.SplitResult, allowed: list[str]) -> None:
     """Проверка политики ДО сетевого обращения. Сообщения — безопасные
     коды, без URL/хостов (не попадают в логи/аудит/ответы)."""
@@ -181,6 +196,8 @@ def _assert_url_policy(parsed: urllib.parse.SplitResult, allowed: list[str]) -> 
         raise ChannelError("bad_url", "канал перешёл на незащищённую схему (требуется https)")
     if parsed.hostname not in allowed:
         raise ChannelError("bad_url", "хост канала не входит в политику разрешённых")
+    if _has_dot_segments(parsed.path):
+        raise ChannelError("bad_url", "URL канала содержит сегменты обхода пути")
 
 
 def _build_opener(ssl_context: ssl.SSLContext | None) -> urllib.request.OpenerDirector:
@@ -239,13 +256,15 @@ def fetch_manifest_text(
     settings: Settings,
     preview: bool = False,
     ssl_context: ssl.SSLContext | None = None,
+    timeout: float = 30.0,
 ) -> str:
     """Скачивание manifest: HTTPS, проверка политики каждого redirect-хопа
     ДО обращения, лимит цепочки, защита от циклов.
 
     Сетевые ошибки транслируются в ChannelError("channel_offline", ...) —
     вызывающий код отличает offline от других отказов. ssl_context — тестовый
-    шов (в проде — системные корни доверия).
+    шов (в проде — системные корни доверия). timeout переопределяется только
+    готовностной проверкой (короткий ожидание), рабочий путь канала — 30 с.
     """
     url = manifest_url(settings, preview)
     if not url:
@@ -257,7 +276,7 @@ def fetch_manifest_text(
         opener,
         url,
         allowed_hosts(settings),
-        timeout=30,
+        timeout=timeout,
         offline_message="manifest_invalid",
     ) as response:
         data = response.read(MANIFEST_MAX_BYTES + 1)

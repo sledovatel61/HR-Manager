@@ -36,7 +36,10 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import AccessGrant, AccessGrantScope, AuditAction, User, UserRole
 from app.rate_limiting import SlidingWindowRateLimiter
+from app.readiness import run_readiness_checks
 from app.schemas import (
+    ReadinessReportOut,
+    UpdateEngineFactsRequest,
     UpdateEnginePollResponse,
     UpdateEngineReportRequest,
     UpdateInstallResponse,
@@ -500,3 +503,62 @@ def engine_report(
             commit=True,
         )
     return _snapshot_response(store, settings)
+
+
+# --- Phase 14: host facts + предпусковая готовность ---------------------------
+
+
+@router.post(
+    "/engine-facts",
+    response_model=UpdateStatusResponse,
+    summary="Факты host-стороны от движка (loopback + машинный токен)",
+)
+def engine_facts(
+    request: Request,
+    payload: UpdateEngineFactsRequest,
+    db: Session = Depends(get_db),
+) -> UpdateStatusResponse:
+    """Приём redacted-фактов Windows-движка для readiness-проверки.
+
+    Схема закрыта (extra=forbid): неизвестные поля — 422 до записи. Данные
+    хранятся только в памяти процесса (как update state) и никогда не
+    возвращаются наружу в исходном виде: readiness использует их только как
+    факты для проверок. Никаких команд с backend-контейнера не выполняется.
+    """
+    _engine_token_check(request)
+    _store(request)  # контракт модуля: валидный app state
+    facts_store = request.app.state.host_facts
+    facts_store.apply(payload)
+    return _snapshot_response(_store(request), _settings(request))
+
+
+@router.get(
+    "/readiness",
+    response_model=ReadinessReportOut,
+    summary="Предпусковая проверка готовности пилота (read-only)",
+)
+def pilot_readiness(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(_channel_admin),
+) -> ReadinessReportOut:
+    """Агрегированный вердикт готовности пилота для администратора.
+
+    Только admin + подтверждённый scope ``update_channel_manage`` (как и
+    команды канала). Проверка read-only: ничего не устанавливает, не
+    исправляет и не меняет состояние канала. Ответ server-owned и redacted:
+    коды, русские объяснения и безопасные факты (версии, счётчики, key_id).
+    Аудит фиксирует вердикт без PII/секретов.
+    """
+    _user_rate_check(user)
+    report = run_readiness_checks(
+        _settings(request), db, request.app.state.engine, request.app.state.host_facts
+    )
+    record_event(
+        db,
+        AuditAction.PILOT_READINESS_CHECKED,
+        actor=user,
+        details=f"verdict={report.verdict} checks={len(report.checks)}",
+        commit=True,
+    )
+    return report

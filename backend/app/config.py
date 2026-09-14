@@ -272,6 +272,12 @@ class Settings(BaseSettings):
     backup_drill_db_name: str = Field(
         default="hr_manager_restore_drill", validation_alias="BACKUP_DRILL_DB_NAME"
     )
+    # Drill-only маркер (Phase 14 pilot drill): email синтетической записи,
+    # которая ОБЯЗАНА присутствовать в восстановленной изолированной БД.
+    # Пусто/не задано — обычный restore drill (проверки схемы/пользователей).
+    backup_drill_expect_candidate_email: str | None = Field(
+        default=None, validation_alias="BACKUP_DRILL_EXPECT_CANDIDATE_EMAIL"
+    )
     backup_alembic_dir: str = Field(default="", validation_alias="BACKUP_ALEMBIC_DIR")
     backup_health_timeout_s: float = Field(default=90.0, validation_alias="BACKUP_HEALTH_TIMEOUT_S")
 

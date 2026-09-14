@@ -190,6 +190,8 @@ class AuditAction(StrEnum):
     UPDATE_DOWNLOAD_FAILED = "update_download_failed"
     UPDATE_INSTALL_REQUESTED = "update_install_requested"
     UPDATE_ENGINE_REPORTED = "update_engine_reported"
+    # Phase 14: pilot operational readiness.
+    PILOT_READINESS_CHECKED = "pilot_readiness_checked"
 
 
 class CandidateStage(StrEnum):

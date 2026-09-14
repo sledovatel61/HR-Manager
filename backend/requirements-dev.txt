@@ -7,3 +7,6 @@ mypy==1.20.2
 types-PyYAML==6.0.12.20260815
 # Runtime parser for the update-channel workflow sanity test (backend/tests).
 PyYAML==6.0.3
+# Phase 14: independent Authenticode verification of the signed installer
+# (infra/release/authenticode_verify.py + backend/tests/test_authenticode_verify.py).
+asn1crypto==1.5.1

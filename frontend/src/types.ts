@@ -690,6 +690,26 @@ export interface UpdateStatus {
   channel_configured: boolean;
 }
 
+/** Phase 14: один пункт предпусковой проверки (server-owned, без секретов). */
+export interface ReadinessCheck {
+  code: string;
+  title_ru: string;
+  state: "pass" | "warning" | "fail";
+  explanation_ru: string;
+  action_ru: string;
+  details: string[];
+}
+
+/** Phase 14: итог проверки готовности пилота (read-only, без URL/путей/PII). */
+export interface ReadinessReport {
+  verdict: "ready" | "ready_with_warnings" | "blocked";
+  verdict_ru: string;
+  generated_at: string;
+  release_version: string;
+  release_sha: string;
+  checks: ReadinessCheck[];
+}
+
 export interface UpdateInstallResult {
   state: string;
   job_id: string | null;

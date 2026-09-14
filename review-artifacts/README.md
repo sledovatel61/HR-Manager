@@ -254,3 +254,100 @@ env (никаких inline-expressions в run-блоках — shell injection
 каталоге и сравнивает `read_bytes()` установленного
 `.github/workflows/update-channel.yml` с артефактом (патч содержит
 `@@`-hunk header; применение без hunk'а создавало бы пустой файл).
+
+## Phase 14 (Arena agent) — pilot readiness
+
+GitHub App не может пушить изменения `.github/workflows/*` (нет права
+`workflows`) — поэтому Phase 14-версии обоих workflow опубликованы здесь как
+точные копии + патчи. Владельцу необходимо перенести их в рабочий каталог
+(после merge PR Phase 14):
+
+| Файл | Назначение |
+|---|---|
+| `update-channel.phase14.yml` | полная Phase 14-версия `.github/workflows/update-channel.yml`: Authenticode-подпись installer (environment `installer-signing`, production-режим fail-closed на тегах `v*`), встраивание trust store, сверка подписи/trust store/SHA256 перед публикацией, `trust-store.json` в релизе; **hardening (этап доработки)**: независимая криптографическая проверка фактических байтов PE (`infra/release/authenticode_verify.py release-gate`) в windows-installer сразу после подписи и в channel-release непосредственно перед `gh release create`; в test-режиме штамп времени выдаёт локальный эфемерный RFC 3161 TSA (`infra/scripts/drill_tsa_server.py`); все сторонние actions закреплены полными commit SHA |
+| `update-channel.phase14.patch` | unified diff для `git apply` из корня репозитория (текущее `.github/workflows/update-channel.yml` → phase14-версия) |
+| `ci.phase14.yml` | полная Phase 14-версия `.github/workflows/ci.yml`: добавлена джоба `pilot-drill` (e2e pilot drill, синтетика, без production secrets); сторонние actions закреплены полными commit SHA |
+| `ci.phase14.patch` | unified diff для `git apply` из корня репозитория (текущее `.github/workflows/ci.yml` → phase14-версия) |
+
+Новые секреты, которые владелец должен создать для independent-гейта
+(публичный материал, приватных ключей среди них НЕТ):
+
+| Environment | Секрет | Содержимое |
+|---|---|---|
+| `installer-signing` | `INSTALLER_AUTHENTICODE_ROOT_PEM` | PEM root CA цепочки production-подписи (можно bundle цепочки корней) — якорь доверия независимой проверки |
+| `installer-signing` | `INSTALLER_AUTHENTICODE_TSA_ROOT_PEM` | PEM root CA timestamp-сервера (необязателен; по умолчанию — root'ы подписанта) |
+| `update-channel-signing` | `INSTALLER_AUTHENTICODE_PUBLISHER` / `INSTALLER_AUTHENTICODE_ROOT_PEM` / `INSTALLER_AUTHENTICODE_TSA_ROOT_PEM` | те же значения, что в `installer-signing`: финальный independent-гейт выполняется в джобе публикации |
+
+Без `INSTALLER_AUTHENTICODE_ROOT_PEM` production-публикация отказывает
+(fail closed) — «проверки по манифесту» недостаточно.
+
+Перенос (вариант A — патчи, из корня репозитория):
+
+```bash
+git apply review-artifacts/update-channel.phase14.patch
+git apply review-artifacts/ci.phase14.patch
+git commit -am "Move Phase 14 workflows in-tree (owner handoff)"
+```
+
+Вариант B — копирование файлов поверх `.github/workflows/`.
+
+Тесты (`backend/tests/test_release_pipeline.py`,
+`backend/tests/test_pilot_drill.py`) автоматически переключаются на in-tree
+версии после переноса (маркеры: `installer-signing` / `pilot-drill:`).
+До переноса джоба `pilot-drill` в CI не запускается — прогнать drill
+локально: `infra/scripts/pilot-drill.sh` (Docker Compose v2.24+).
+
+Независимый Authenticode-верификатор и его тесты живут в дереве и работают
+без переноса: `infra/release/authenticode_verify.py` (CLI `verify` /
+`release-gate`), `backend/tests/test_authenticode_verify.py` (37 тестов:
+позитивные сценарии + все негативные — unsigned/non-PE/модификация после
+подписи/перенос подписи/wrong publisher/untrusted root/нет EKU/повреждённый
+и недоверенный timestamp/legacy MS timestamp/SHA-1/forged manifest/
+тестовый сертификат в production/отсутствующий root). Все фикстуры —
+эфемерные сертификаты, создаваемые в памяти на время прогона; никаких
+production-ключей в репозитории/фикстурах/логах/артефактах нет.
+
+### Evidence rework-фикса (Агент 1, 2026-09-14) — `evidence/2026-09-14-agent1/`
+
+| Файл | Назначение |
+|---|---|
+| `replay-stage4.sh` | Дословный replay стадии 4 `pilot-drill.sh` (код извлекается из актуального файла по маркерам, исполняется без Docker): публикация good 0.14.0 / next 0.15.0 / redirect 0.15.0, проверки артефактов/подписи/детерминизма + негативный контроль исходного бага ревью (снимок 0.14.0 как 0.15.0 → обязан быть rc=2 `bad_release_json`) |
+| `stage4-replay.json` | Machine-readable evidence: verdict/passed/failed/stages, коммит генерации, git-blob drill-файла, фиксация `docker_used=false`, fixture-ключи |
+| `stage4-replay.md` | Human-readable отчёт replay |
+| `SHA256SUMS` | Контрольные суммы трёх файлов выше |
+
+Результат прогона на `a89cb342…`: **pass, 19 passed / 0 failed**. Negative
+control: **rejected (rc=2, bad_release_json)** — как и обязан. На базовом
+коде `5b52682` тот же replay даёт rc=2 `bad_release_json` (подтверждение
+«до» — см. `docs/phase-14-report-arena.md` §9.1).
+
+Docker в песочнице отсутствует — docker-стадии drill (5–19) не выполнялись
+и не заявляются; переносу workflow в `.github/workflows/` мешает отсутствие
+scope `workflows` у токена (403 на REST и git push — §9.5 отчёта).
+
+### Phase 14 live drill workflow — `phase14-live-drill.yml` (2026-09-14, Агент 1)
+
+Отдельный от unit-CI контур ЖИВОГО Compose drill:
+`review-artifacts/phase14-live-drill.yml` — точная копия целевого
+`.github/workflows/phase14-live-drill.yml` (перенос владельцем, если push
+workflow из сессии Arena заблокирован отсутствием scope `workflows`).
+
+Джобы:
+- `pilot-drill` — запуск `infra/scripts/pilot-drill.sh` (живой Compose,
+  изолированный уникальный проект, синтетика, эфемерные ключи); отдельный
+  шаг проверяет, что `pilot-drill.json` создан И вердикт `pass` (иначе
+  non-zero); evidence (JSON+MD) выгружается `if: always()` c
+  `if-no-files-found: error`. Никаких pytest-агрегаций — unit ≠ live E2E.
+- `manual-gates` — документирование ручных ворот (Windows lifecycle,
+  production Authenticode, production-подпись канала): чек-лист как
+  артефакт, НЕ заявляющий прохождение.
+
+Тесты-инварианты workflow: `backend/tests/test_pilot_drill.py::test_ci_has_pilot_drill_job`
+(предпочитает in-tree версию, до переноса — копию из review-artifacts).
+
+Дополнение (раунд 3): `evidence/2026-09-14-agent1/pilot-drill-failclosed.{json,md}`
+— фактический прогон переработанного drill в окружении без docker:
+verdict `incomplete`, exit 1, все 37 обязательных стадий учтены
+(1 failed prerequisites + 36 skipped), evidence записан. Это локальное
+доказательство fail-closed контракта вердиктов; live-прогон (docker)
+остаётся за CI-джобой `pilot-drill` после переноса workflow владельцем.

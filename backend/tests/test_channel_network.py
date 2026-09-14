@@ -312,3 +312,65 @@ def test_package_redirect_chain_over_limit(https_world: dict, tmp_path: Path) ->
     with pytest.raises(ChannelError) as excinfo:
         download_package(settings, manifest, ssl_context=https_world["client_ctx"])
     assert excinfo.value.code == "redirect_limit"
+
+
+# --- Traversal (dot-segments) в URL: отказ ДО сетевого обращения -----------------
+
+
+def test_has_dot_segments_normal_paths_pass() -> None:
+    """Обычные пути пакетов не содержат dot-segments и не отвергаются."""
+    from app.channel import _has_dot_segments
+
+    assert _has_dot_segments("/../../etc/hostname") is True
+    assert _has_dot_segments("/pkg/./x.zip") is True
+    assert _has_dot_segments("/%2e%2e/secret") is True  # percent-encoded вариант
+    assert _has_dot_segments("/hr-manager-windows-0.14.0.zip") is False
+    assert _has_dot_segments("/redirect/pkg.zip") is False
+    assert _has_dot_segments("") is False
+
+
+def test_manifest_traversal_url_rejected_without_request(tmp_path: Path) -> None:
+    """Dot-segments в исходном URL канала — отказ до любого обращения."""
+    settings = _channel_settings(tmp_path, "https://localhost/../../etc/secret", "localhost")
+    with pytest.raises(ChannelError) as excinfo:
+        fetch_manifest_text(settings)
+    assert excinfo.value.code == "bad_url"
+
+
+def test_manifest_percent_encoded_traversal_url_rejected(tmp_path: Path) -> None:
+    """Percent-encoded dot-segments (%2e%2e) тоже отвергаются: сервер на
+    другом конце может декодировать путь при разборе."""
+    settings = _channel_settings(tmp_path, "https://localhost/%2e%2e/%2e%2e/secret", "localhost")
+    with pytest.raises(ChannelError) as excinfo:
+        fetch_manifest_text(settings)
+    assert excinfo.value.code == "bad_url"
+
+
+def test_package_traversal_url_rejected_without_request(https_world: dict, tmp_path: Path) -> None:
+    """package_url подписанного manifest с dot-segments — отказ до запроса;
+    сервер не получает НИ одного обращения."""
+    package_bytes = (TESTDATA / "package.valid.zip").read_bytes()
+    server = https_world["tls"]({"/secret": _route(200, body=package_bytes)})
+    https_world["servers"].append(server)
+    manifest = _package_manifest(
+        f"https://localhost:{server.server_port}/../../secret", package_bytes
+    )
+    settings = _channel_settings(tmp_path, "https://localhost/unused", "localhost")
+    with pytest.raises(ChannelError) as excinfo:
+        download_package(settings, manifest, ssl_context=https_world["client_ctx"])
+    assert excinfo.value.code == "bad_url"
+    assert server.hits == {}
+
+
+def test_package_percent_encoded_traversal_rejected(https_world: dict, tmp_path: Path) -> None:
+    package_bytes = (TESTDATA / "package.valid.zip").read_bytes()
+    server = https_world["tls"]({"/secret": _route(200, body=package_bytes)})
+    https_world["servers"].append(server)
+    manifest = _package_manifest(
+        f"https://localhost:{server.server_port}/%2e%2e/secret", package_bytes
+    )
+    settings = _channel_settings(tmp_path, "https://localhost/unused", "localhost")
+    with pytest.raises(ChannelError) as excinfo:
+        download_package(settings, manifest, ssl_context=https_world["client_ctx"])
+    assert excinfo.value.code == "bad_url"
+    assert server.hits == {}

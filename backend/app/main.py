@@ -113,12 +113,16 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app = FastAPI(title="HR Manager API", version=__version__, lifespan=lifespan)
     app.state.settings = app_settings
     app.state.engine = app_engine
+    from app.host_facts import HostFactsStore
     from app.update_state import UpdateStateStore
 
     app.state.update_store = UpdateStateStore(
         installed_version=app_settings.update_installed_version,
         installed_release_sha=app_settings.update_installed_sha,
     )
+    # Phase 14: latest host facts from the Windows engine (loopback + token);
+    # in-memory only, honestly "unknown" until the engine watcher reports.
+    app.state.host_facts = HostFactsStore()
 
     app.add_middleware(MetricsMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)

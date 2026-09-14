@@ -1,0 +1,196 @@
+{
+  "drill": "pilot-drill",
+  "generated_at": "2026-09-14T08:43:43Z",
+  "compose_project": "hrm-pilot-drill-20260914084343-46943",
+  "verdict": "incomplete",
+  "passed": 0,
+  "failed": 1,
+  "skipped": 36,
+  "stages": [
+    {
+      "name": "prerequisites",
+      "status": "fail",
+      "detail": "docker-not-found"
+    },
+    {
+      "name": "cleanup_down_v",
+      "status": "skip",
+      "detail": "docker-unavailable"
+    },
+    {
+      "name": "no_residual_resources",
+      "status": "skip",
+      "detail": "docker-unavailable"
+    },
+    {
+      "name": "ephemeral_secrets",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "tls_certificates",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "channel_published",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "compose_config",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "stack_up",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "backend_ready",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "frontend_ready",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "first_run_claim",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "first_run_redeem",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "synthetic_data_created",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "synthetic_data_verified",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "encrypted_backup",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "backup_bytes_verified",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "restore_drill",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "backup_health_api",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "readiness_report",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "channel_check",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "channel_download",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "install_requested",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "engine_resume_delivery",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "update_completed",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "data_preserved_after_update",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "tampered_signature_rejected",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "tampered_manifest_rejected",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "forbidden_redirect_rejected",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "unsafe_scheme_redirect_rejected",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "protocol_relative_redirect_rejected",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "traversal_url_rejected",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "corrupted_package_rejected",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "truncated_package_rejected",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "install_blocked_after_tamper",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "services_restarted",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "synthetic_data_after_restart",
+      "status": "skip",
+      "detail": "not-reached"
+    },
+    {
+      "name": "backup_unchanged_after_restart",
+      "status": "skip",
+      "detail": "not-reached"
+    }
+  ]
+}
