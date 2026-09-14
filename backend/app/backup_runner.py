@@ -698,6 +698,7 @@ def run_restore_drill(
 def _drop_drill_database(cfg: RunnerConfig) -> None:
     """Best-effort cleanup of the drill database (never the production one)."""
     import os
+
     if os.environ.get("BACKUP_DRILL_KEEP"):
         return
     from sqlalchemy import create_engine

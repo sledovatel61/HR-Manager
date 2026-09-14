@@ -189,6 +189,7 @@ def _assert_url_policy(parsed: urllib.parse.SplitResult, allowed: list[str]) -> 
         raise ChannelError("bad_url", "хост канала не входит в политику разрешённых")
     # Path traversal check (including percent-encoded)
     import urllib.parse
+
     path = parsed.path or "/"
     if "\\" in path:
         raise ChannelError("bad_url", "URL содержит обратный слэш")

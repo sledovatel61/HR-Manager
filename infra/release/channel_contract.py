@@ -143,6 +143,7 @@ def _validate_package_url(url: str) -> None:
     if not url.startswith("https://"):
         raise ChannelError("bad_url", "package_url обязан использовать https")
     import urllib.parse
+
     try:
         parsed = urllib.parse.urlsplit(url)
     except Exception as exc:
