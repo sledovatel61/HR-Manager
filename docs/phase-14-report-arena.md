@@ -14,14 +14,10 @@
   Final SHA (код, зелёный HEAD) `d5423906745abbd4eb2756cddf28ba22c8dbb996` (head после
   docs-sync `b339b0d7cc1bb089d515ee00403b5dbf6da79a41`), CI — 5 jobs на `d542390`
   (не полный Phase 14, см. provenance ниже).
-* **Branch (live E2E, this report)**: `arena/01a08ff0-hr-manager-live-e2e`
-  (ветка продолжения Phase 14 с live Compose E2E), branched from `b339b0d`,
-  immutable-кандидат `ca79757a7e2eb5f319ab317f3367aab6ccc0b5b0` (tree `0d490e6dabc981b0ade0976e4841e39658f403b5`), фиксы от `b956c6e`,
-  Final SHA (код, зелёный HEAD, this branch) `b956c6ea156a765c8b54b6c89dc9551064040350`
-  (exact final SHA зелёного кода; см. §5), docs-sync HEAD — текущий HEAD этой
-  ветки `b956c6ea156a765c8b54b6c89dc9551064040350` (exact 40-char SHA, см. `git rev-parse HEAD` и PR head). Отдельная
-  ветка/PR для честного сравнения (не редактировать PR #24 параллельно).
-* **PR (live E2E)**: https://github.com/sledovatel61/HR-Manager/pull/26 (создан из `arena/01a08ff0-hr-manager-live-e2e`)
+* **Branch (live E2E, prior)**: `arena/01a08ff0-hr-manager-02` at 779baaf7e26e65256337f44f68d8a3860f7e8ef2 (tree 34db21a7e17755a0fdcede829dc6c8c1dda58daf), parent ca79757a7e2eb5f319ab317f3367aab6ccc0b5b0 (tree 0d490e6) — независимый live hrm-drill-1789371716-2838: 14 passed 3 failed (backup 503, isolated-restore, forbidden-redirect https://example.com/../evil/p.zip), Backend checks failed (Mypy).
+* **Branch (live E2E, this report, FIXED)**: `arena/01a08ff0-hr-manager-02` — PR #27 https://github.com/sledovatel61/HR-Manager/pull/27,
+  Final SHA (код, exact) `67ee9fc6b778bc9f74d079fdd6e0f66593e5470e` (tree 9db0e93bb0a2cb96adbc4401ca34faeb84e83862), parent 779baaf7e26e65256337f44f68d8a3860f7e8ef2 (tree 34db21a), branched from de131bf via ca79757. Linear, no force-push, old SHA stays. Unpublished workflow bundle 08c240c969ed3c0be9004941bdd97447dd750a5f tree e261bf3a06d8246e987226d97de59928d179e0e3 — separate, requires owner push (no workflows permission for App). This SHA is exact final HEAD; `git ls-remote`+PR API must match 67ee9fc.
+* **PR (live E2E)**: https://github.com/sledovatel61/HR-Manager/pull/27 (создан из `arena/01a08ff0-hr-manager-02` at 67ee9fc)
 
 ## 1. Что сделано по пунктам промпта
 
