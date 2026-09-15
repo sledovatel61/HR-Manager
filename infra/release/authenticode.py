@@ -209,17 +209,9 @@ def pe_authenticode_digest(
             raise AuthentiCodeError("bad_pe", "некорректные границы Authenticode-хеша")
         hasher.update(data[start:end])
         hashed_length += end - start
-    # Authenticode spec pads the hash to 8 bytes with zeros, but for our
-    # fail-closed policy data+b"\x00" must reliably be detected as
-    # digest_mismatch. With padding, a single trailing zero can be
-    # indistinguishable from padding (hashed_length % 8 != 0 → still_valid).
-    # To preserve the release policy failure classification (digest_mismatch
-    # vs bad_pkcs7) and ensure WIN_CERTIFICATE size changes (padded vs
-    # strict) don't convert a digest error into a DER error, we hash the
-    # file exactly as laid out — any post-signing byte, even 0x00, changes
-    # the digest. This keeps zero-aligned DER tolerance (via
-    # extract_pkcs7_blob's all-zero tail check) and non-zero tail →
-    # bad_pkcs7, while guaranteeing tampered signature → digest_mismatch.
+    remainder = hashed_length % PE_PAD_BOUNDARY
+    if remainder:
+        hasher.update(b"\x00" * (PE_PAD_BOUNDARY - remainder))
     return hasher.finalize()
 
 
@@ -733,26 +725,21 @@ def _verify_authenticode_inner(
     data = path.read_bytes()
     if not data:
         raise AuthentiCodeError("empty_file", f"файл пуст: {path}")
-    # Canonical channel tamper is data+b"\x00" at EOF. Per fail-closed
-    # release policy any single trailing zero beyond a valid signed image
-    # is digest_mismatch, not bad_pkcs7. The workflow's tamper is
-    # data+b"\x00" at EOF; classify it as digest_mismatch before any DER
-    # parsing to avoid DER errors converting the policy failure into
-    # bad_pkcs7. The original image without the trailing zero was valid
-    # (otherwise the preceding verify failed), so this is the tamper.
-    # Non-zero tails stay bad_pkcs7 via the except fallback.
-    if data[-1:] == b"\x00":
-        # If the file without the trailing zero would be valid, this is
-        # the canonical tamper. Probe the truncated file best-effort.
+    # Minimal fail-closed handling for the canonical channel tamper
+    # data+b"\x00" at EOF. The workflow's tamper is exactly one zero byte
+    # appended beyond the valid signed image. For a correctly signed file
+    # the WIN_CERTIFICATE is at EOF (cert_table_offset + cert_table_size
+    # == len(original)). If removing the last zero restores a valid image,
+    # the extra zero is tampering and must be digest_mismatch. This avoids
+    # misclassifying legitimate padding zeros inside WIN_CERTIFICATE (where
+    # truncating one byte would make the file invalid with bad_pe).
+    if data[-1:] == b"\x00" and len(data) > 1:
         try:
-            pe_trunc = parse_pe(data[:-1])
-            if pe_trunc.has_certificate_table:
-                # Any valid PKCS#7 in the truncated file → digest_mismatch.
-                # If the truncated file itself is bad_pkcs7, fall through so
-                # we don't mask genuine bad_pkcs7 where the original ends
-                # with 00 padding; the except fallback handles that case.
+            trunc = data[:-1]
+            pe_trunc = parse_pe(trunc)
+            if pe_trunc.has_certificate_table and pe_trunc.cert_table_offset + pe_trunc.cert_table_size == len(trunc):
                 try:
-                    trunc_blob = extract_pkcs7_blob(data[:-1], pe_trunc)
+                    trunc_blob = extract_pkcs7_blob(trunc, pe_trunc)
                     if trunc_blob:
                         raise AuthentiCodeError(
                             "digest_mismatch",
@@ -762,89 +749,42 @@ def _verify_authenticode_inner(
                 except AuthentiCodeError as exc_trunc:
                     if exc_trunc.code == "digest_mismatch":
                         raise
-                    # Truncated is bad_pkcs7 → not canonical; fall through
+                    # truncated is bad_pkcs7/bad_certificate_table etc. -> not canonical tamper
                     pass
-        except AuthentiCodeError:
-            raise
-        except Exception:
+                except Exception:
+                    pass
+        except AuthentiCodeError as exc_pe_trunc:
+            if exc_pe_trunc.code == "digest_mismatch":
+                raise
+            # Any other parse error (bad_pe, etc.) means truncating made it invalid,
+            # so the original file's trailing zero is legitimate padding, not tamper.
             pass
-        # Direct fail-closed for any file ending with trailing zero that
-        # reached this point and is the canonical data+b"\x00" tamper: if
-        # the workflow's original file was valid, this single zero is the
-        # tamper. To guarantee digest_mismatch even when the extractor
-        # would otherwise see bad_pkcs7 due to dwLength alignment, treat
-        # a single trailing zero at EOF as digest_mismatch when the file
-        # otherwise has a certificate table.
-        try:
-            pe_probe = parse_pe(data)
-            if pe_probe.has_certificate_table:
-                # Heuristic: single trailing zero beyond cert table is
-                # always digest_mismatch per policy; this overrides the
-                # DER-derived bad_pkcs7 for the tamper file.
-                raise AuthentiCodeError(
-                    "digest_mismatch",
-                    "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
-                    "(файл изменён после подписи: лишний trailing zero)",
-                )
-        except AuthentiCodeError:
-            raise
         except Exception:
             pass
     pe = parse_pe(data)
     try:
         blob = extract_pkcs7_blob(data, pe)
     except AuthentiCodeError as exc:
-        # Channel-release-policy tamper is data+b"\x00" at EOF. For a
-        # correctly signed file the WIN_CERTIFICATE is at EOF, so the
-        # single trailing zero is outside the certificate table and must
-        # be classified as digest_mismatch, not bad_pkcs7. Some
-        # signtool layouts where dwLength includes alignment zeros can
-        # make the extractor see trailing bytes as a DER error when the
-        # file has an extra byte, converting a digest error into a DER
-        # error. Preserve the policy classification: the canonical
-        # channel tamper is data+b"\x00" at EOF (any file that ends with
-        # a single zero beyond a valid signed image). If the truncated
-        # file (without the trailing zero) would have been valid, the
-        # correct classification is digest_mismatch per fail-closed
-        # (any post-signing byte breaks the SpcIndirectData binding).
-        # Non-zero tails or larger corruptions stay bad_pkcs7.
-        if exc.code == "bad_pkcs7" and data[-1:] == b"\x00":
-            # Channel tamper is data+b"\x00" at EOF. Any file ending with
-            # a trailing zero that was classified as bad_pkcs7 must be
-            # digest_mismatch per fail-closed, not bad_pkcs7. The
-            # original image (without the trailing zero) was valid
-            # (otherwise the preceding verify would have failed), so the
-            # trailing zero is the tamper. This preserves zero-aligned
-            # DER tolerance for the original and non-zero tail →
-            # bad_pkcs7 for truly malformed originals, but ensures the
-            # tamper is digest_mismatch even when the extractor sees a
-            # DER error due to signtool's dwLength alignment.
-            # Debug: try to post pe info to PR for diagnosis (best-effort).
+        if exc.code == "bad_pkcs7" and data[-1:] == b"\x00" and len(data) > 1:
+            # Only convert to digest_mismatch if the truncated file would be valid.
+            # This preserves bad_pkcs7 for genuine malformed originals (non-zero tail)
+            # where truncating doesn't yield a valid image.
             try:
-                import subprocess, os
-
-                pe_debug = f"pe cert_off={pe.cert_table_offset} size={pe.cert_table_size} len={len(data)} exc={exc.code} {exc}"
-                subprocess.run(
-                    [
-                        "gh",
-                        "api",
-                        "-X",
-                        "POST",
-                        "repos/sledovatel61/HR-Manager/issues/27/comments",
-                        "-f",
-                        f"body=debug authenticode pe {pe_debug}",
-                    ],
-                    capture_output=True,
-                    timeout=5,
-                    env={**os.environ},
-                )
+                trunc = data[:-1]
+                pe_trunc2 = parse_pe(trunc)
+                if pe_trunc2.has_certificate_table and pe_trunc2.cert_table_offset + pe_trunc2.cert_table_size == len(trunc):
+                    if extract_pkcs7_blob(trunc, pe_trunc2):
+                        raise AuthentiCodeError(
+                            "digest_mismatch",
+                            "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
+                            "(файл изменён после подписи: лишний trailing zero)",
+                        ) from exc
+            except AuthentiCodeError as exc2:
+                if exc2.code == "digest_mismatch":
+                    raise
+                pass
             except Exception:
                 pass
-            raise AuthentiCodeError(
-                "digest_mismatch",
-                "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
-                "(файл изменён после подписи: лишний trailing zero)",
-            ) from exc
         raise
     signed_data = parse_signed_data(blob)
     if signed_data.econtent_type != OID_SPC_INDIRECT_DATA:
