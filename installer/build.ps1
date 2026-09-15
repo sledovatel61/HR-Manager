@@ -16,7 +16,13 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "0.13.0"
+    [string]$Version = "0.13.0",
+    # Phase 14: ПУБЛИЧНЫЙ trust store канала (из защищённого release input).
+    # Строгая валидация выполняется release-пайплайном
+    # (infra/release/trust_store.py validate), а здесь проверяется, что
+    # встраивается ИМЕННО проверенный файл: sha256 обязан совпасть.
+    [string]$TrustStoreFile = "",
+    [string]$TrustStoreSha256 = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -98,6 +104,48 @@ $releaseJson = [ordered]@{
 }
 $releaseJson | ConvertTo-Json | Set-Content -Path (Join-Path $appStaging "release.json") -Encoding UTF8
 
+# 2b. Trust store канала: детерминированное встраивание публичного набора
+# ключей. Приватный материал здесь невозможен по схеме, но проверяем явно.
+$trustStoreInfo = $null
+if ($TrustStoreFile) {
+    $trustStorePath = (Resolve-Path $TrustStoreFile).Path
+    $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (-not $TrustStoreSha256) {
+        throw "нужен -TrustStoreSha256: встраивается только уже проверенный trust store"
+    }
+    if ($actualSha -ne $TrustStoreSha256.ToLowerInvariant()) {
+        throw ("SHA256 trust store не совпал: {0} (ожидался {1})" -f $actualSha, $TrustStoreSha256)
+    }
+    $trustStoreText = [System.IO.File]::ReadAllText($trustStorePath, [System.Text.Encoding]::UTF8)
+    if ($trustStoreText -match "PRIVATE KEY|BEGIN .*PRIVATE") {
+        throw "trust store содержит приватный материал — сборка installer'а остановлена"
+    }
+    $trustStoreJson = $trustStoreText | ConvertFrom-Json
+    $keyIds = @()
+    foreach ($property in $trustStoreJson.PSObject.Properties) { $keyIds += $property.Name }
+    if ($keyIds.Count -eq 0) { throw "trust store пуст: канал без доверенных ключей собирать нельзя" }
+    $trustStoreTarget = Join-Path $appStaging "infra\release"
+    New-Item -ItemType Directory -Path $trustStoreTarget -Force | Out-Null
+    [System.IO.File]::WriteAllText(
+        (Join-Path $trustStoreTarget "trust-store.json"),
+        $trustStoreText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    $trustStoreInfo = [ordered]@{
+        embedded = $true
+        file = "infra/release/trust-store.json"
+        sha256 = $actualSha
+        keys = $keyIds
+    }
+    Write-Host ("Trust store встроен: {0} ключ(а), sha256 {1}" -f $keyIds.Count, $actualSha.Substring(0, 16))
+}
+else {
+    $trustStoreInfo = [ordered]@{
+        embedded = $false
+        reason = "trust store не передан (локальная сборка); production-релиз требует его обязательно"
+    }
+}
+
 # 3. Компиляция установщика.
 Write-Host "Compiling installer with ISCC…"
 & $iscc (Join-Path $installerDir "installer.iss") ("/DAppVersion=" + $Version)
@@ -129,11 +177,13 @@ $manifest = [ordered]@{
         file = "HR-Manager-Setup-" + $Version + ".exe"
         sha256 = (Get-FileHash -Path $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    trust_store = $trustStoreInfo
     signing = [ordered]@{
-        # Честно: подпись НЕ выполняется в этой сборке. Хук для кодовой
-        # подписи — параметр SignTool установщика (см. installer/README.md).
+        # Честно: на этом шаге подпись ещё НЕ выполнена; статус обновляет
+        # installer/sign.ps1 (attestation + mode). Отсутствие подписи в
+        # production-режиме — отказ, а не предупреждение.
         status = "unsigned"
-        instruction = "installer/README.md (раздел «Кодовая подпись»)"
+        instruction = "installer/README.md (раздел «Кодовая подпись») и installer/sign.ps1"
     }
     package_files_sha256 = $fileHashes
 }

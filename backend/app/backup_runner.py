@@ -689,7 +689,7 @@ def run_restore_drill(
         if app_proc is not None:  # pragma: no cover - defensive cleanup
             app_proc.kill()
         _release_lock(cfg)
-        if cfg.drill_admin_url is not None:
+        if cfg.drill_admin_url is not None and not os.environ.get("BACKUP_DRILL_KEEP"):
             _drop_drill_database(cfg)
         if staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
@@ -697,6 +697,10 @@ def run_restore_drill(
 
 def _drop_drill_database(cfg: RunnerConfig) -> None:
     """Best-effort cleanup of the drill database (never the production one)."""
+    import os
+
+    if os.environ.get("BACKUP_DRILL_KEEP"):
+        return
     from sqlalchemy import create_engine
 
     try:

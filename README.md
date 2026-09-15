@@ -3,11 +3,10 @@
 Сетевая система для командного подбора персонала: несколько HR-менеджеров
 ведут кандидатов в единой PostgreSQL-базе, руководитель получает аналитику.
 
-**Статус: этапы 0–11 завершены; следующий — этап 12 после согласования
-продуктового контракта.** Phase 11 принята в PR #18 и влита в `main`
-merge-коммитом `a6ac73cb797919383b80ce65b1614cd6e4dad47f`. Актуальный handoff находится в
-[`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md), отчёт принятой реализации — в
-[`docs/phase-11-report-arena.md`](docs/phase-11-report-arena.md). Зашифрованные
+**Статус: этапы 0–13 приняты; Phase 14 завершена в PR #27 и ожидает зелёного
+exact-SHA CI перед merge.** Актуальный handoff и подтверждённые результаты
+находятся в [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) и
+[`docs/phase-14-report-arena.md`](docs/phase-14-report-arena.md). Зашифрованные
 backup (AES-256-GCM) с retention ≥ 7 дней и restore drill в отдельную БД,
 deploy-скрипт с автоматическим rollback, HTTPS reverse proxy и
 observability-сигналы — см. [`docs/backup-and-restore.md`](docs/backup-and-restore.md).
