@@ -878,23 +878,67 @@ def _verify_authenticode_inner(
         # OCTET STRING внутри [0] или с дополнительной обёрткой. Пробуем
         # альтернативные хеши перед отказом (fail-closed, но совместимо).
         alternatives: list[bytes] = []
+        alt_labels: list[str] = []
         try:
             alternatives.append(_digest_of(encode_octet_string(signed_data.econtent), outcome.digest_algorithm_oid))
+            alt_labels.append("octet_string")
             alternatives.append(_digest_of(encode_tlv(TAG_CONTEXT0, signed_data.econtent), outcome.digest_algorithm_oid))
+            alt_labels.append("ctx0")
             alternatives.append(_digest_of(encode_tlv(TAG_CONTEXT0, encode_octet_string(signed_data.econtent)), outcome.digest_algorithm_oid))
+            alt_labels.append("ctx0_octet")
             try:
                 spc_node = parse_one(signed_data.econtent)
                 alternatives.append(_digest_of(spc_node.der(), outcome.digest_algorithm_oid))
+                alt_labels.append("spc_der")
+                # хеш от content без outer tag
+                alternatives.append(_digest_of(spc_node.content, outcome.digest_algorithm_oid))
+                alt_labels.append("spc_content")
+                # хеш от SpcPeImageData + DigestInfo re-encoded
+                # пробуем хеш от PE digest напрямую (SpcIndirectDataContent's DigestInfo digest)
+                try:
+                    spc_digest_tmp, _ = _parse_authenticode_content(signed_data.econtent)
+                    alternatives.append(spc_digest_tmp)
+                    alt_labels.append("spc_pe_digest_direct")
+                    # также хеш от Spc с разными алгоритмами
+                    for _oid, _hash_cls in _DIGESTS.items():
+                        try:
+                            alternatives.append(_digest_of(signed_data.econtent, _oid))
+                            alt_labels.append(f"econtent_{_DIGEST_NAMES.get(_oid,_oid)}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             except Exception:
                 pass
+            # Пробуем хешировать econtent как будто он уже OCTET STRING content (т.е. двойное хеширование)
+            for _oid in _DIGESTS:
+                try:
+                    h = hashes.Hash(_DIGESTS[_oid]())
+                    h.update(signed_data.econtent)
+                    alternatives.append(h.finalize())
+                    alt_labels.append(f"econtent_{_DIGEST_NAMES.get(_oid,_oid)}_2")
+                except Exception:
+                    pass
         except Exception:
             pass
         if declared_digest not in alternatives:
             try:
                 import sys as _sys
-                print(f"::error::DEBUG messageDigest mismatch declared={declared_digest.hex()[:32]} computed={computed_digest.hex()[:32]} econtent_len={len(signed_data.econtent)}", file=_sys.stderr)
+                print(f"::error::DEBUG messageDigest mismatch declared={declared_digest.hex()} computed={computed_digest.hex()} econtent_len={len(signed_data.econtent)} oid={outcome.digest_algorithm_oid}", file=_sys.stderr)
+                # логируем econtent hex (первые 200 символов)
+                try:
+                    print(f"::error::DEBUG econtent_hex={signed_data.econtent.hex()[:200]}", file=_sys.stderr)
+                except Exception:
+                    pass
                 for _i, _alt in enumerate(alternatives):
-                    print(f"::error::DEBUG alt{_i}={_alt.hex()[:32]}", file=_sys.stderr)
+                    lbl = alt_labels[_i] if _i < len(alt_labels) else f"alt{_i}"
+                    print(f"::error::DEBUG {lbl}={_alt.hex()}", file=_sys.stderr)
+                # также пробуем логировать Spc PE digest
+                try:
+                    _spc_d, _spc_oid = _parse_authenticode_content(signed_data.econtent)
+                    print(f"::error::DEBUG spc_digest={_spc_d.hex()} spc_oid={_spc_oid}", file=_sys.stderr)
+                except Exception as _e_spc:
+                    print(f"::error::DEBUG spc_parse_failed {_e_spc}", file=_sys.stderr)
             except Exception:
                 pass
             raise AuthentiCodeError(
