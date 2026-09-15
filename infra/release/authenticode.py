@@ -735,14 +735,46 @@ def _verify_authenticode_inner(
     # explicit post-signing byte.
     if data[-1:] == b"\x00" and len(data) > 1:
         try:
+            # Direct check for data's own pe: if data has extra zero beyond cert table, check trunc
+            try:
+                pe_data = parse_pe(data)
+                if pe_data.has_certificate_table:
+                    extra_data = len(data) - (pe_data.cert_table_offset + pe_data.cert_table_size)
+                    if 1 <= extra_data < 8 and all(b == 0 for b in data[pe_data.cert_table_offset + pe_data.cert_table_size:]):
+                        trunc = data[:-1]
+                        try:
+                            pe_trunc = parse_pe(trunc)
+                            if pe_trunc.has_certificate_table and pe_trunc.cert_table_offset + pe_trunc.cert_table_size <= len(trunc) and len(trunc) - (pe_trunc.cert_table_offset + pe_trunc.cert_table_size) < 8:
+                                try:
+                                    trunc_blob = extract_pkcs7_blob(trunc, pe_trunc)
+                                    if trunc_blob:
+                                        raise AuthentiCodeError(
+                                            "digest_mismatch",
+                                            "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
+                                            "(файл изменён после подписи: лишний trailing zero)",
+                                        )
+                                except AuthentiCodeError as exc_trunc:
+                                    if exc_trunc.code == "digest_mismatch":
+                                        raise
+                                    pass
+                                except Exception:
+                                    pass
+                        except AuthentiCodeError as exc_pe_trunc2:
+                            if exc_pe_trunc2.code == "digest_mismatch":
+                                raise
+                            pass
+                        except Exception:
+                            pass
+            except AuthentiCodeError:
+                pass
+            except Exception:
+                pass
+            # Fallback: also check trunc directly as before (for cases where pe_data extra check fails due to parse_pe error)
             trunc = data[:-1]
             pe_trunc = parse_pe(trunc)
             if pe_trunc.has_certificate_table and pe_trunc.cert_table_offset + pe_trunc.cert_table_size <= len(trunc) and len(trunc) - (pe_trunc.cert_table_offset + pe_trunc.cert_table_size) < 8:
                 try:
                     trunc_blob = extract_pkcs7_blob(trunc, pe_trunc)
-                    # If trunc is a valid signed file (has PKCS7), then data is tampered.
-                    # We don't need to verify digest here; trunc being parsable as signed PE
-                    # is enough to distinguish from legitimate padding (where trunc would be bad_pe).
                     if trunc_blob:
                         raise AuthentiCodeError(
                             "digest_mismatch",
