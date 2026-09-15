@@ -1065,7 +1065,7 @@ def main(argv: list[str] | None = None) -> int:
         return int(args.func(args))
     except AuthentiCodeError as exc:
         print(f"ОШИБКА[{exc.code}]: {exc}", file=sys.stderr)
-        print(f"::error::DEBUG tamper {exc.code} for {getattr(args, 'file', '')}", file=sys.stderr)
+        print(f"::error::DEBUG tamper {exc.code} for {getattr(args, 'file', '')} msg={str(exc)[:500]}", file=sys.stderr)
         try:
             import os
             fpath_dbg = Path(getattr(args, 'file', '')) if hasattr(args, 'file') else None
@@ -1075,6 +1075,16 @@ def main(argv: list[str] | None = None) -> int:
                     pe_dbg = parse_pe(raw_dbg)
                     extra_dbg = len(raw_dbg) - (pe_dbg.cert_table_offset + pe_dbg.cert_table_size) if pe_dbg.has_certificate_table else -1
                     print(f"::error::DEBUG pe off={pe_dbg.cert_table_offset} size={pe_dbg.cert_table_size} extra={extra_dbg} len={len(raw_dbg)}", file=sys.stderr)
+                    # also try to get digest info if possible
+                    try:
+                        blob_dbg = extract_pkcs7_blob(raw_dbg, pe_dbg)
+                        sd_dbg = parse_signed_data(blob_dbg)
+                        # try to get expected vs computed if digest_mismatch or bad_signature
+                        from pathlib import Path as _P
+                        # we can't easily compute without pe, but we can at least log blob size
+                        print(f"::error::DEBUG blob len={len(blob_dbg)} econtent_type={sd_dbg.econtent_type}", file=sys.stderr)
+                    except Exception as e_blob:
+                        print(f"::error::DEBUG blob failed {e_blob}", file=sys.stderr)
                 except Exception as e_pe:
                     print(f"::error::DEBUG pe parse failed {e_pe}", file=sys.stderr)
         except Exception:
