@@ -1116,10 +1116,12 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         except Exception:
             pass
         if raw2[-1:] == b"\x00":
+            print(f"::error::DEBUG still_valid check for {args.file} len={len(raw2)} last00", file=sys.stderr)
             import ssl, urllib.request, json, os
             # If file ends with 00 and has cert table, check if it looks like tampered (extra byte beyond cert table)
             try:
                 pe2 = parse_pe(raw2)
+                print(f"::error::DEBUG still_valid pe off={pe2.cert_table_offset} size={pe2.cert_table_size} extra={len(raw2)-(pe2.cert_table_offset+pe2.cert_table_size)}", file=sys.stderr)
                 # If verification succeeded but file has extra byte beyond cert table, it's suspicious
                 if pe2.has_certificate_table and pe2.cert_table_offset + pe2.cert_table_size < len(raw2):
                     dbg2 = {"code": "still_valid", "file": str(args.file), "len": len(raw2), "pe": {"off": pe2.cert_table_offset, "size": pe2.cert_table_size}}
