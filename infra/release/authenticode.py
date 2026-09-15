@@ -1065,13 +1065,38 @@ def main(argv: list[str] | None = None) -> int:
         return int(args.func(args))
     except AuthentiCodeError as exc:
         print(f"ОШИБКА[{exc.code}]: {exc}", file=sys.stderr)
+        print(f"::error::DEBUG tamper {exc.code} for {getattr(args, 'file', '')}", file=sys.stderr)
+        try:
+            import os
+            fpath_dbg = Path(getattr(args, 'file', '')) if hasattr(args, 'file') else None
+            if fpath_dbg is not None and fpath_dbg.exists():
+                raw_dbg = fpath_dbg.read_bytes()
+                try:
+                    pe_dbg = parse_pe(raw_dbg)
+                    extra_dbg = len(raw_dbg) - (pe_dbg.cert_table_offset + pe_dbg.cert_table_size) if pe_dbg.has_certificate_table else -1
+                    print(f"::error::DEBUG pe off={pe_dbg.cert_table_offset} size={pe_dbg.cert_table_size} extra={extra_dbg} len={len(raw_dbg)}", file=sys.stderr)
+                except Exception as e_pe:
+                    print(f"::error::DEBUG pe parse failed {e_pe}", file=sys.stderr)
+        except Exception:
+            pass
         # Also write to GITHUB_STEP_SUMMARY if available (visible via github.com HTML, allowlisted for E2B curl)
         try:
             import os
             summary = os.environ.get("GITHUB_STEP_SUMMARY")
             if summary:
                 with open(summary, "a", encoding="utf-8") as fh:
-                    fh.write(f"\nDEBUG tamper {exc.code} for {getattr(args, 'file', '')} len {len(Path(getattr(args, 'file', '')).read_bytes()) if Path(getattr(args, 'file', '')).exists() else '?'}\n")
+                    # try to include pe info
+                    try:
+                        fpath2 = Path(getattr(args, 'file', ''))
+                        if fpath2.exists():
+                            raw2 = fpath2.read_bytes()
+                            pe2 = parse_pe(raw2)
+                            extra2 = len(raw2) - (pe2.cert_table_offset + pe2.cert_table_size) if pe2.has_certificate_table else -1
+                            fh.write(f"\nDEBUG tamper {exc.code} for {getattr(args, 'file', '')} len {len(raw2)} off {pe2.cert_table_offset} size {pe2.cert_table_size} extra {extra2}\n")
+                        else:
+                            fh.write(f"\nDEBUG tamper {exc.code} for {getattr(args, 'file', '')} len ?\n")
+                    except Exception:
+                        fh.write(f"\nDEBUG tamper {exc.code} for {getattr(args, 'file', '')} len {len(Path(getattr(args, 'file', '')).read_bytes()) if Path(getattr(args, 'file', '')).exists() else '?'}\n")
         except Exception:
             pass
         try:
