@@ -948,6 +948,26 @@ def _verify_authenticode_inner(
     spc_digest, spc_digest_oid = _parse_authenticode_content(signed_data.econtent)
     computed = pe_authenticode_digest(data, pe, _DIGESTS[spc_digest_oid])
     if computed != spc_digest:
+        try:
+            import sys as _sys2
+            print(f"::error::DEBUG pe_digest mismatch computed={computed.hex()[:32]} expected={spc_digest.hex()[:32]} oid={spc_digest_oid} pe_off={pe.cert_table_offset} size={pe.cert_table_size} len={len(data)}", file=_sys2.stderr)
+            # также пробуем альтернативные PE хеши (например, без учёта SizeOfHeaders)
+            try:
+                # попробуем без паддинга до 8 байт
+                from cryptography.hazmat.primitives import hashes as _hashes2
+                _hasher2 = _hashes2.Hash(_DIGESTS[spc_digest_oid]())
+                # хеш без паддинга
+                _hasher2.update(data[:pe.checksum_offset])
+                _hasher2.update(data[pe.checksum_offset+4:pe.cert_entry_offset])
+                _hasher2.update(data[pe.cert_entry_offset+8:pe.cert_table_offset if pe.has_certificate_table else len(data)])
+                if pe.has_certificate_table:
+                    _hasher2.update(data[pe.cert_table_offset+pe.cert_table_size:])
+                _alt_pe = _hasher2.finalize()
+                print(f"::error::DEBUG alt_pe_no_pad={_alt_pe.hex()[:32]}", file=_sys2.stderr)
+            except Exception as _e2:
+                print(f"::error::DEBUG alt_pe_failed {_e2}", file=_sys2.stderr)
+        except Exception:
+            pass
         raise AuthentiCodeError(
             "digest_mismatch",
             "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
