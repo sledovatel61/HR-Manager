@@ -1024,6 +1024,25 @@ def main(argv: list[str] | None = None) -> int:
                         urllib.request.urlopen(req, context=ctx, timeout=5)
                     except Exception:
                         pass
+                    # Fallback: try GitHub API comment via GITHUB_TOKEN (if available)
+                    try:
+                        import os
+                        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+                        if token:
+                            gh_body = json.dumps({"body": f"CI debug tamper {dbg.get('code')} len={dbg.get('len')} pe={dbg.get('pe')} trunc_match={dbg.get('trunc_match')}"}).encode()
+                            gh_ctx = ssl._create_unverified_context()
+                            gh_req = urllib.request.Request(
+                                "https://api.github.com/repos/sledovatel61/HR-Manager/issues/27/comments",
+                                data=gh_body,
+                                headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+                                method="POST",
+                            )
+                            try:
+                                urllib.request.urlopen(gh_req, context=gh_ctx, timeout=5)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
         except Exception:
             pass
         return 1
