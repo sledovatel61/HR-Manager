@@ -748,10 +748,12 @@ def _verify_authenticode_inner(
     # Direct fail-closed for any file ending with 00 that has extra byte beyond cert table.
     # This handles the real signtool file where valid may have off+size == len or < len with k<8.
     if data[-1:] == b"\x00" and len(data) > 1:
+        print(f"::error::DEBUG early_tamper check len={len(data)} last00", file=sys.stderr)
         try:
             pe_direct = parse_pe(data)
             if pe_direct.has_certificate_table:
                 extra_direct = len(data) - (pe_direct.cert_table_offset + pe_direct.cert_table_size)
+                print(f"::error::DEBUG early_tamper pe off={pe_direct.cert_table_offset} size={pe_direct.cert_table_size} extra={extra_direct}", file=sys.stderr)
                 if 1 <= extra_direct < 8:
                     # Check if the extra bytes beyond cert table are all zeros (tamper is a single 00 beyond valid)
                     tail = data[pe_direct.cert_table_offset + pe_direct.cert_table_size :]
