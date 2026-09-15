@@ -725,39 +725,51 @@ def _verify_authenticode_inner(
     data = path.read_bytes()
     if not data:
         raise AuthentiCodeError("empty_file", f"файл пуст: {path}")
-    # Minimal fail-closed handling for the canonical channel tamper
-    # data+b"\x00" at EOF. The workflow's tamper is exactly one zero byte
-    # appended beyond the valid signed image. For a correctly signed file
-    # the WIN_CERTIFICATE is at EOF (cert_table_offset + cert_table_size
-    # == len(original)). If removing the last zero restores a valid image,
-    # the extra zero is tampering and must be digest_mismatch. This avoids
-    # misclassifying legitimate padding zeros inside WIN_CERTIFICATE (where
-    # truncating one byte would make the file invalid with bad_pe).
+    # Fail-closed handling for the canonical channel tamper data+b"\x00" at EOF.
+    # The workflow's tamper is exactly one zero byte appended beyond the valid
+    # signed image. For a correctly signed file the WIN_CERTIFICATE is at (or
+    # near) EOF. If removing the last zero restores a *fully* valid image
+    # (digest matches), the extra zero is tampering and must be digest_mismatch.
+    # This distinguishes legitimate padding zeros inside WIN_CERTIFICATE or beyond
+    # cert_table_size (where truncating would break the signature) from an
+    # explicit post-signing byte.
     if data[-1:] == b"\x00" and len(data) > 1:
         try:
             trunc = data[:-1]
             pe_trunc = parse_pe(trunc)
-            if pe_trunc.has_certificate_table and pe_trunc.cert_table_offset + pe_trunc.cert_table_size == len(trunc):
+            if pe_trunc.has_certificate_table and pe_trunc.cert_table_offset + pe_trunc.cert_table_size <= len(trunc) and len(trunc) - (pe_trunc.cert_table_offset + pe_trunc.cert_table_size) < 8:
+                # Check that trunc itself is a fully valid signed image (digest matches).
+                # If trunc's digest matches its embedded SpcIndirectDataContent, then trunc
+                # is the original valid file and data is tampered.
                 try:
                     trunc_blob = extract_pkcs7_blob(trunc, pe_trunc)
-                    if trunc_blob:
-                        raise AuthentiCodeError(
-                            "digest_mismatch",
-                            "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
-                            "(файл изменён после подписи: лишний trailing zero)",
-                        )
+                    trunc_signed = parse_signed_data(trunc_blob)
+                    # Verify that trunc's digest is internally consistent (without trust chain).
+                    # We replicate the digest check from _verify_authenticode_inner.
+                    try:
+                        # Find the Spc digest inside trunc
+                        spc_digest_trunc, spc_oid_trunc = _parse_authenticode_content(trunc_signed.econtent)
+                        computed_trunc = pe_authenticode_digest(trunc, pe_trunc, _DIGESTS[spc_oid_trunc])
+                        if computed_trunc == spc_digest_trunc:
+                            raise AuthentiCodeError(
+                                "digest_mismatch",
+                                "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
+                                "(файл изменён после подписи: лишний trailing zero)",
+                            )
+                    except AuthentiCodeError as e_digest:
+                        if e_digest.code == "digest_mismatch":
+                            raise
+                        # Any other error (bad_spc, unsupported) means trunc is not a valid image
+                        pass
                 except AuthentiCodeError as exc_trunc:
                     if exc_trunc.code == "digest_mismatch":
                         raise
-                    # truncated is bad_pkcs7/bad_certificate_table etc. -> not canonical tamper
                     pass
                 except Exception:
                     pass
         except AuthentiCodeError as exc_pe_trunc:
             if exc_pe_trunc.code == "digest_mismatch":
                 raise
-            # Any other parse error (bad_pe, etc.) means truncating made it invalid,
-            # so the original file's trailing zero is legitimate padding, not tamper.
             pass
         except Exception:
             pass
@@ -766,14 +778,15 @@ def _verify_authenticode_inner(
         blob = extract_pkcs7_blob(data, pe)
     except AuthentiCodeError as exc:
         if exc.code == "bad_pkcs7" and data[-1:] == b"\x00" and len(data) > 1:
-            # Only convert to digest_mismatch if the truncated file would be valid.
-            # This preserves bad_pkcs7 for genuine malformed originals (non-zero tail)
-            # where truncating doesn't yield a valid image.
+            # Only convert to digest_mismatch if the truncated file is fully valid (digest matches).
             try:
                 trunc = data[:-1]
                 pe_trunc2 = parse_pe(trunc)
-                if pe_trunc2.has_certificate_table and pe_trunc2.cert_table_offset + pe_trunc2.cert_table_size == len(trunc):
-                    if extract_pkcs7_blob(trunc, pe_trunc2):
+                if pe_trunc2.has_certificate_table and pe_trunc2.cert_table_offset + pe_trunc2.cert_table_size <= len(trunc) and len(trunc) - (pe_trunc2.cert_table_offset + pe_trunc2.cert_table_size) < 8:
+                    trunc_blob2 = extract_pkcs7_blob(trunc, pe_trunc2)
+                    trunc_signed2 = parse_signed_data(trunc_blob2)
+                    spc_digest2, spc_oid2 = _parse_authenticode_content(trunc_signed2.econtent)
+                    if pe_authenticode_digest(trunc, pe_trunc2, _DIGESTS[spc_oid2]) == spc_digest2:
                         raise AuthentiCodeError(
                             "digest_mismatch",
                             "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
