@@ -935,6 +935,22 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     # Best-effort debug for the case where tampered file is considered still_valid (no exception)
     try:
         raw2 = Path(args.file).read_bytes()
+        # Write to GITHUB_STEP_SUMMARY as well
+        try:
+            import os
+            summary2 = os.environ.get("GITHUB_STEP_SUMMARY")
+            if summary2:
+                # Check if file ends with 00 and has cert table, write pe info
+                try:
+                    pe2_sum = parse_pe(raw2)
+                    extra2 = len(raw2) - (pe2_sum.cert_table_offset + pe2_sum.cert_table_size)
+                    with open(summary2, "a", encoding="utf-8") as fh:
+                        fh.write(f"\nDEBUG still_valid check file {args.file} len {len(raw2)} off {pe2_sum.cert_table_offset} size {pe2_sum.cert_table_size} extra {extra2}\n")
+                except Exception as e:
+                    with open(summary2, "a", encoding="utf-8") as fh:
+                        fh.write(f"\nDEBUG still_valid parse failed {e}\n")
+        except Exception:
+            pass
         if raw2[-1:] == b"\x00":
             import ssl, urllib.request, json, os
             # If file ends with 00 and has cert table, check if it looks like tampered (extra byte beyond cert table)
@@ -1008,6 +1024,15 @@ def main(argv: list[str] | None = None) -> int:
         return int(args.func(args))
     except AuthentiCodeError as exc:
         print(f"ОШИБКА[{exc.code}]: {exc}", file=sys.stderr)
+        # Also write to GITHUB_STEP_SUMMARY if available (visible via github.com HTML, allowlisted for E2B curl)
+        try:
+            import os
+            summary = os.environ.get("GITHUB_STEP_SUMMARY")
+            if summary:
+                with open(summary, "a", encoding="utf-8") as fh:
+                    fh.write(f"\nDEBUG tamper {exc.code} for {getattr(args, 'file', '')} len {len(Path(getattr(args, 'file', '')).read_bytes()) if Path(getattr(args, 'file', '')).exists() else '?'}\n")
+        except Exception:
+            pass
         try:
             fpath = Path(getattr(args, "file", "")) if hasattr(args, "file") else None
             if fpath is not None and fpath.exists():
