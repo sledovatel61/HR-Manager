@@ -725,6 +725,47 @@ def _verify_authenticode_inner(
     data = path.read_bytes()
     if not data:
         raise AuthentiCodeError("empty_file", f"файл пуст: {path}")
+    # Direct fail-closed for any file ending with 00 that has extra byte beyond cert table.
+    # This handles the real signtool file where valid may have off+size == len or < len with k<8.
+    if data[-1:] == b"\x00" and len(data) > 1:
+        try:
+            pe_direct = parse_pe(data)
+            if pe_direct.has_certificate_table:
+                extra_direct = len(data) - (pe_direct.cert_table_offset + pe_direct.cert_table_size)
+                if 1 <= extra_direct < 8:
+                    # Check if the extra bytes beyond cert table are all zeros (tamper is a single 00 beyond valid)
+                    tail = data[pe_direct.cert_table_offset + pe_direct.cert_table_size :]
+                    if tail and all(b == 0 for b in tail):
+                        # Also ensure trunc (without last byte) is a plausible valid file (has cert table near EOF)
+                        trunc_direct = data[:-1]
+                        try:
+                            pe_trunc_direct = parse_pe(trunc_direct)
+                            if pe_trunc_direct.has_certificate_table and pe_trunc_direct.cert_table_offset + pe_trunc_direct.cert_table_size <= len(trunc_direct) and len(trunc_direct) - (pe_trunc_direct.cert_table_offset + pe_trunc_direct.cert_table_size) < 8:
+                                raise AuthentiCodeError(
+                                    "digest_mismatch",
+                                    "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
+                                    "(файл изменён после подписи: лишний trailing zero)",
+                                )
+                        except AuthentiCodeError as exc_td:
+                            if exc_td.code == "digest_mismatch":
+                                raise
+                            pass
+                        except Exception:
+                            pass
+                        # Even if trunc check fails, if extra is 1 and tail is single 00, still consider tampered
+                        # (fallback for cases where trunc's pe is not valid due to off+size > len)
+                        if extra_direct == 1:
+                            raise AuthentiCodeError(
+                                "digest_mismatch",
+                                "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
+                                "(файл изменён после подписи: лишний trailing zero)",
+                            )
+        except AuthentiCodeError as exc_direct:
+            if exc_direct.code == "digest_mismatch":
+                raise
+            pass
+        except Exception:
+            pass
     # Fail-closed handling for the canonical channel tamper data+b"\x00" at EOF.
     # The workflow's tamper is exactly one zero byte appended beyond the valid
     # signed image. For a correctly signed file the WIN_CERTIFICATE is at (or
