@@ -777,6 +777,7 @@ def _verify_authenticode_inner(
                         # Even if trunc check fails, if extra is 1 and tail is single 00, still consider tampered
                         # (fallback for cases where trunc's pe is not valid due to off+size > len)
                         if extra_direct == 1:
+                            print(f"::error::DEBUG early_tamper raising digest_mismatch extra=1 len={len(data)} off={pe_direct.cert_table_offset} size={pe_direct.cert_table_size}", file=sys.stderr)
                             raise AuthentiCodeError(
                                 "digest_mismatch",
                                 "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
@@ -806,6 +807,7 @@ def _verify_authenticode_inner(
                 # Also ensure trunc has a PKCS7 blob (is signed) - but don't require digest match
                 try:
                     if extract_pkcs7_blob(trunc, pe_trunc):
+                        print(f"::error::DEBUG second_tamper raising digest_mismatch len={len(data)}", file=sys.stderr)
                         raise AuthentiCodeError(
                             "digest_mismatch",
                             "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
