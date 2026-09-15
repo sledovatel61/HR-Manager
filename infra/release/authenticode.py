@@ -738,6 +738,13 @@ def _verify_authenticode_inner(
     data = path.read_bytes()
     if not data:
         raise AuthentiCodeError("empty_file", f"файл пуст: {path}")
+    # CI debug: log PE entry for any file (helps diagnose Windows signtool interop)
+    try:
+        _pe_entry = parse_pe(data)
+        _extra_entry = len(data) - (_pe_entry.cert_table_offset + _pe_entry.cert_table_size) if _pe_entry.has_certificate_table else -1
+        print(f"::error::DEBUG entry file={path.name} len={len(data)} off={_pe_entry.cert_table_offset} size={_pe_entry.cert_table_size} extra={_extra_entry}", file=sys.stderr)
+    except Exception as _e_entry:
+        print(f"::error::DEBUG entry pe failed {_e_entry}", file=sys.stderr)
     # Direct fail-closed for any file ending with 00 that has extra byte beyond cert table.
     # This handles the real signtool file where valid may have off+size == len or < len with k<8.
     if data[-1:] == b"\x00" and len(data) > 1:
