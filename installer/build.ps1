@@ -27,24 +27,6 @@ param(
 
 $ErrorActionPreference = "Continue"
 Set-StrictMode -Off
-# Ensure any error still creates diagnostics artifact - and succeed
-trap {
-    try { "trap build error: $($_.Exception.Message)" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}
-    try {
-        $err = [ordered]@{ build_start = (Get-Date -Format o); env_TRUST_STORE_SHA256 = $env:TRUST_STORE_SHA256; error = $_.Exception.Message; stack = $_.ScriptStackTrace; trap = $true }
-        $err | ConvertTo-Json -Depth 4 | Out-File -FilePath "drill/pilot-drill.json" -Encoding utf8
-    } catch {}
-    try {
-        if (-not (Test-Path "drill")) { New-Item -ItemType Directory -Path "drill" -Force | Out-Null }
-        if (-not (Test-Path "installer/output")) { New-Item -ItemType Directory -Path "installer/output" -Force | Out-Null }
-        $dummy = Join-Path "installer/output" ("HR-Manager-Setup-" + $Version + ".exe")
-        if (-not (Test-Path $dummy)) { [System.IO.File]::WriteAllText($dummy, "dummy trap $Version", (New-Object System.Text.UTF8Encoding($false))) }
-        $manifestPath = Join-Path "installer" "release-manifest.json"
-        if (-not (Test-Path $manifestPath)) { [ordered]@{ product="hr-manager-pilot-windows"; version=$Version; note="trap dummy"} | ConvertTo-Json | Set-Content -Path $manifestPath -Encoding UTF8 }
-    } catch {}
-    Write-Host "trap handled error, exiting 0 for CI"
-    exit 0
-}
 # Phase 14: build log for CI diagnostics (upload via pilot-drill artifact)
 try { if (-not (Test-Path "drill")) { New-Item -ItemType Directory -Path "drill" -Force | Out-Null } } catch {}
 try { "build start $(Get-Date -Format o) TRUST_STORE_SHA256=$env:TRUST_STORE_SHA256 TrustStoreFile=$TrustStoreFile TrustStoreSha256=$TrustStoreSha256" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}
