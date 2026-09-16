@@ -40,6 +40,9 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 
 $installerDir = $PSScriptRoot
 $repoRoot = Split-Path $installerDir -Parent
+# Wrap entire build in try/catch to ensure diagnostics artifact
+$global:HRM_BuildSuccess = $false
+try {
 $stagingDir = Join-Path $installerDir "staging"
 $outputDir = Join-Path $installerDir "output"
 $cacheDir = Join-Path $installerDir ".cache"
@@ -244,3 +247,12 @@ Write-Host ""
 Write-Host "Готово: $setupExe"
 Write-Host ("SHA256 установщика: {0}" -f $manifest.installer_exe.sha256)
 Write-Host "Манифест: $manifestPath"
+    $global:HRM_BuildSuccess = $true
+} catch {
+    try { "build error: $($_.Exception.Message)" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}
+    try {
+        $err = [ordered]@{ build_start = (Get-Date -Format o); env_TRUST_STORE_SHA256 = $env:TRUST_STORE_SHA256; error = $_.Exception.Message; stack = $_.ScriptStackTrace }
+        $err | ConvertTo-Json -Depth 4 | Out-File -FilePath "drill/pilot-drill.json" -Encoding utf8
+    } catch {}
+    throw
+}
