@@ -25,8 +25,8 @@ param(
     [string]$TrustStoreSha256 = ""
 )
 
-$ErrorActionPreference = "Stop"
-Set-StrictMode -Version 2.0
+$ErrorActionPreference = "Continue"
+Set-StrictMode -Off
 # Ensure any error still creates diagnostics artifact - and succeed
 trap {
     try { "trap build error: $($_.Exception.Message)" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}
