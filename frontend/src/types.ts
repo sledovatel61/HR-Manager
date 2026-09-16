@@ -929,3 +929,26 @@ export interface CandidateEmailConfirmation {
   email_masked: string;
   expires_at: string;
 }
+
+/** Phase 14: состояние одной серверной проверки готовности пилота. */
+export type PilotReadinessState = "pass" | "warning" | "fail";
+
+export interface PilotReadinessCheck {
+  code: string;
+  title: string;
+  state: PilotReadinessState;
+  detail: string;
+  action: string;
+  evidence: Record<string, unknown> | null;
+}
+
+/** Phase 14: read-only отчёт «Проверить готовность пилота» (admin + scope). */
+export interface PilotReadiness {
+  generated_at: string;
+  verdict: "готово" | "готово с предупреждениями" | "запуск запрещён";
+  counts: { pass: number; warning: number; fail: number };
+  host_evidence_age_seconds: number | null;
+  host_evidence_fresh: boolean;
+  server_version: string;
+  checks: PilotReadinessCheck[];
+}

@@ -139,6 +139,8 @@ class AuditAction(StrEnum):
     BACKUP_RESTORE_DRILL_STARTED = "backup_restore_drill_started"
     BACKUP_RESTORE_DRILL_SUCCEEDED = "backup_restore_drill_succeeded"
     BACKUP_RESTORE_DRILL_FAILED = "backup_restore_drill_failed"
+    # Phase 14: готовность пилота к запуску (read-only, redacted).
+    PILOT_READINESS_VIEWED = "pilot_readiness_viewed"
     BACKUP_RETENTION_CLEANED = "backup_retention_cleaned"
     DEPLOY_RECORDED = "deploy_recorded"
     RELEASE_RECORDED = "release_recorded"

@@ -1,0 +1,434 @@
+# Phase 13/14: update channel release pipeline (Windows pilot).
+#
+# Собирает release channel только для ЗАЩИЩЁННЫХ SemVer-тегов `v*` (или
+# ручного dispatch владельца): детерминированный пакет + внешний
+# update-channel.json, подписанный Ed25519-ключом ИЗ SECRET, независимая
+# проверка подписи тем публичным ключом, которому доверяет production-клиент,
+# и ДВЕ независимые подписи в итоге:
+#
+#   1. Ed25519-подпись канала (update-channel.json) — обязательна всегда;
+#   2. Authenticode-подпись installer'а (HR-Manager-Setup-<version>.exe) +
+#      RFC3161-метка времени — обязательна в production-режиме.
+#
+# Ни одна подпись не заменяет другую. Production-релиз не создаётся, если
+# хотя бы одной проверки нет: политика зашита в
+# infra/release/publish_channel.py (--release-mode production) и продублирована
+# здесь как отказ на шаге подписи/проверки.
+#
+# Секреты живут в environment `update-channel-signing` (создать владельцу;
+# НЕ включать в настройках environment ветки PR; обязательные reviewers —
+# см. docs/runbook-pilot-release.md):
+#   UPDATE_CHANNEL_SIGNING_KEY            — закрытый Ed25519-ключ канала (64 hex или PEM);
+#   UPDATE_CHANNEL_KEY_ID                 — key_id подписи (напр. pilot-release-2026);
+#   UPDATE_CHANNEL_PUBLIC_KEYS            — PUBLIC trust store {key_id:{key,revoked}};
+#   UPDATE_CHANNEL_AUTHENTICODE_PFX_BASE64— PFX с сертификатом кодовой подписи (base64);
+#   UPDATE_CHANNEL_AUTHENTICODE_PFX_PASSWORD — пароль PFX (никогда не печатается);
+#   UPDATE_CHANNEL_EXPECTED_PUBLISHER     — ожидаемый издатель (O/CN сертификата);
+#   UPDATE_CHANNEL_TIMESTAMP_URL          — RFC3161 TSA владельца.
+#
+# Fail closed: без любой из этих величин release job падает ДО публикации —
+# unsigned/непроверенный manifest не создаётся никогда.
+#
+# Production signing secrets НЕ доступны коду из PR/fork: триггеров
+# pull_request нет, signing выполняется только внутри environment-джобов.
+# CI-PR контур проверяет тот же контракт ephemeral тестовыми ключами и
+# тестовым сертификатом (см. .github/workflows/ci.yml).
+#
+# Dispatch-безопасность: при ручном запуске release_sha обязателен,
+# проверяется (40 hex, существует в репозитории), checkout выполняется по
+# нему, и сборка начинается только если HEAD == release_sha; релиз/тег
+# создаётся `--target` на тот же SHA. Все входные значения dispatch
+# попадают в shell-скрипты ТОЛЬКО через env (никаких inline-expressions
+# от пользователя) — shell injection исключён. Перед записью в
+# $GITHUB_OUTPUT version/sha/notes_ru валидируются fail closed на CR/LF.
+#
+# Защита тегов (владелец): tag protection rules — разрешить только `v*`
+# (SemVer), писать теги может только владелец/CI.
+name: Update channel release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer release (например 0.14.0)"
+        required: true
+      release_sha:
+        description: "Полный Git commit (40 hex)"
+        required: true
+      notes_ru:
+        description: "Примечания к релизу (одна строка)"
+        required: false
+
+permissions:
+  contents: read
+
+# Один релиз на тег/версию: параллельные запуски не могут переписать активы.
+concurrency:
+  group: update-channel-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Порог поддержки канала: менять владельцу при поднятии планки
+  # (аналог ExpectedHeadRevision в Windows-движке).
+  MINIMUM_SUPPORTED_VERSION: "0.13.0"
+
+jobs:
+  windows-installer:
+    name: Build and Authenticode-sign Windows installer
+    runs-on: windows-latest
+    # environment владельца: secrets + required reviewers для подписи.
+    environment: update-channel-signing
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and verify release commit
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          reject_newline() {
+            case "$1" in
+              *$'\r'*|*$'\n'*)
+                echo "error: $2 must be a single line (CR/LF rejected)" >&2
+                exit 2
+                ;;
+            esac
+          }
+          if [ "$EVENT_NAME" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            sha="$(git rev-parse HEAD)"
+          else
+            version="$INPUT_VERSION"
+            sha="$INPUT_SHA"
+          fi
+          # Fail closed ДО записи в $GITHUB_OUTPUT: CR/LF дали бы возможность
+          # подмешать поддельные строки-выводы (например sha=<другой SHA>).
+          reject_newline "$version" "version"
+          reject_newline "$sha" "release_sha"
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "error: version must be SemVer x.y.z" >&2; exit 2; }
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "$sha" | grep -Eq '^[0-9a-fA-F]{40}$' || {
+              echo "error: release_sha must be a full 40-char git SHA" >&2; exit 2; }
+            git cat-file -e "$sha^{commit}" || {
+              echo "error: release_sha does not exist in the repository" >&2; exit 2; }
+            git checkout -q "$sha"
+          fi
+          [ "$(git rev-parse HEAD)" = "$sha" ] || {
+            echo "error: checkout HEAD != release_sha" >&2; exit 2; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate public trust store (protected release input)
+        id: truststore
+        shell: bash
+        env:
+          TRUST_STORE_JSON: ${{ secrets.UPDATE_CHANNEL_PUBLIC_KEYS }}
+        run: |
+          set -euo pipefail
+          : "${TRUST_STORE_JSON:?UPDATE_CHANNEL_PUBLIC_KEYS secret is required}"
+          printf '%s' "$TRUST_STORE_JSON" > "$RUNNER_TEMP/trust-store.json"
+          python infra/release/trust_store.py validate \
+            --file "$RUNNER_TEMP/trust-store.json" --require-unrevoked --json \
+            | tee "$RUNNER_TEMP/trust-store-description.json"
+          sha="$(python - "$RUNNER_TEMP/trust-store.json" <<'PY'
+          import hashlib, json, pathlib, sys
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          canonical = json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+          pathlib.Path(sys.argv[1]).write_text(canonical, encoding="utf-8")
+          print(hashlib.sha256(canonical.encode("utf-8")).hexdigest())
+          PY
+          )"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require production Authenticode signing inputs (fail closed)
+        shell: bash
+        env:
+          PFX_BASE64: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_PFX_PASSWORD }}
+          EXPECTED_PUBLISHER: ${{ secrets.UPDATE_CHANNEL_EXPECTED_PUBLISHER }}
+          TIMESTAMP_URL: ${{ secrets.UPDATE_CHANNEL_TIMESTAMP_URL }}
+        run: |
+          set -euo pipefail
+          : "${PFX_BASE64:?UPDATE_CHANNEL_AUTHENTICODE_PFX_BASE64 secret is required for a release}"
+          : "${PFX_PASSWORD:?UPDATE_CHANNEL_AUTHENTICODE_PFX_PASSWORD secret is required for a release}"
+          : "${EXPECTED_PUBLISHER:?UPDATE_CHANNEL_EXPECTED_PUBLISHER secret is required for a release}"
+          : "${TIMESTAMP_URL:?UPDATE_CHANNEL_TIMESTAMP_URL secret is required for a release}"
+          # PFX живёт только в RUNNER_TEMP; в лог не печатается.
+          printf '%s' "$PFX_BASE64" | base64 -d > "$RUNNER_TEMP/authenticode.pfx"
+          chmod 600 "$RUNNER_TEMP/authenticode.pfx"
+
+      - name: Build installer (Inno Setup 6.7.3, SHA256 pinned in build.ps1)
+        shell: powershell
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TRUST_STORE_PATH: ${{ runner.temp }}\trust-store.json
+          TRUST_STORE_SHA: ${{ steps.truststore.outputs.sha256 }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 `
+            -Version $env:VERSION `
+            -TrustStoreFile $env:TRUST_STORE_PATH `
+            -TrustStoreSha256 $env:TRUST_STORE_SHA
+
+      - name: Authenticode-sign installer (signtool verify + RFC3161 timestamp)
+        shell: powershell
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PFX_PATH: ${{ runner.temp }}\authenticode.pfx
+          PFX_PASSWORD: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_PFX_PASSWORD }}
+          EXPECTED_PUBLISHER: ${{ secrets.UPDATE_CHANNEL_EXPECTED_PUBLISHER }}
+          TIMESTAMP_URL: ${{ secrets.UPDATE_CHANNEL_TIMESTAMP_URL }}
+          TRUST_STORE_PATH: ${{ runner.temp }}\trust-store.json
+        run: |
+          $env:HRM_AUTHENTICODE_PFX_PASSWORD = $env:PFX_PASSWORD
+          $env:HRM_SIGN_CLEANUP_PFX = "1"
+          powershell -NoProfile -ExecutionPolicy Bypass -File installer/sign.ps1 `
+            -Mode production -Version $env:VERSION -PfxPath $env:PFX_PATH `
+            -ExpectedPublisher $env:EXPECTED_PUBLISHER -TimestampUrl $env:TIMESTAMP_URL `
+            -TrustStoreFile $env:TRUST_STORE_PATH
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload signed installer + attestation (no private material)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hr-manager-windows-setup
+          path: |
+            installer/output/*.exe
+            installer/authenticode-attestation.json
+            installer/authenticode-roots.pem
+            installer/release-manifest.json
+          if-no-files-found: error
+
+  channel-release:
+    name: Build, sign, verify and publish update channel
+    needs: windows-installer
+    runs-on: ubuntu-latest
+    environment: update-channel-signing
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release facts (protected SemVer tag or owner dispatch)
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SHA: ${{ inputs.release_sha }}
+          INPUT_NOTES: ${{ inputs.notes_ru }}
+        run: |
+          set -euo pipefail
+          reject_newline() {
+            case "$1" in
+              *$'\r'*|*$'\n'*)
+                echo "error: $2 must be a single line (CR/LF rejected)" >&2
+                exit 2
+                ;;
+            esac
+          }
+          notes=""
+          if [ "$EVENT_NAME" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            sha="$(git rev-parse HEAD)"
+          else
+            version="$INPUT_VERSION"
+            sha="$INPUT_SHA"
+            notes="$INPUT_NOTES"
+          fi
+          # Fail closed ДО любой записи в $GITHUB_OUTPUT: многострочные
+          # version/sha/notes могли бы добавить поддельные строки-выводы
+          # (например sha=<другой SHA>, tag=<чужой тег>).
+          reject_newline "$version" "version"
+          reject_newline "$sha" "release_sha"
+          reject_newline "$notes" "notes_ru"
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "error: version must be SemVer x.y.z" >&2; exit 2; }
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "$sha" | grep -Eq '^[0-9a-fA-F]{40}$' || {
+              echo "error: release_sha must be a full 40-char git SHA" >&2; exit 2; }
+            git cat-file -e "$sha^{commit}" || {
+              echo "error: release_sha does not exist in the repository" >&2; exit 2; }
+            git checkout -q "$sha"
+          fi
+          # Сборка и manifest — строго из подтверждённого SHA.
+          [ "$(git rev-parse HEAD)" = "$sha" ] || {
+            echo "error: checkout HEAD != release_sha" >&2; exit 2; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "notes=$notes" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          # Immutable URL пакета (детерминированный: известен до публикации;
+          # активы GitHub Release неизменяемы после загрузки).
+          echo "package_url=https://github.com/${GITHUB_REPOSITORY}/releases/download/v$version/hr-manager-windows-$version.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Mandatory CI checks must be green for the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=20" \
+            --jq '.workflow_runs[] | select(.name=="CI" and .status=="completed" and .conclusion=="success") | .head_sha' | head -1)"
+          [ -n "$runs" ] || { echo "error: no successful CI run for ${SHA}; release refused" >&2; exit 1; }
+          echo "CI is green for ${SHA}"
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install channel tooling (pinned)
+        run: pip install cryptography==50.0.1
+
+      - name: Download signed installer, attestation and public roots
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: hr-manager-windows-setup
+          path: dist/channel/installer
+
+      - name: Prepare snapshot (backend + frontend + infra + release.json)
+        id: snapshot
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          snapshot="$(mktemp -d)/app"
+          mkdir -p "$snapshot"
+          cp -R backend "$snapshot/backend"
+          cp -R frontend "$snapshot/frontend"
+          cp -R infra "$snapshot/infra"
+          python3 - "$snapshot/release.json" <<'PY'
+          import json, os, sys
+          from datetime import UTC, datetime
+          with open(sys.argv[1], "w", encoding="utf-8") as fh:
+              json.dump({
+                  "version": os.environ["VERSION"],
+                  "release_sha": os.environ["SHA"],
+                  "built_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              }, fh, ensure_ascii=False)
+          PY
+          echo "snapshot=$snapshot" >> "$GITHUB_OUTPUT"
+
+      - name: Independent Authenticode verification (outside Windows, evidence)
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_PUBLISHER: ${{ secrets.UPDATE_CHANNEL_EXPECTED_PUBLISHER }}
+        run: |
+          set -euo pipefail
+          setup_exe="$(ls dist/channel/installer/output/HR-Manager-Setup-*.exe | head -1)"
+          [ -n "$setup_exe" ] || { echo "error: installer exe missing" >&2; exit 1; }
+          python3 infra/release/authenticode.py verify \
+            --file "$setup_exe" \
+            --expected-publisher "$EXPECTED_PUBLISHER" \
+            --require-timestamp \
+            --trust-roots dist/channel/installer/authenticode-roots.pem \
+            --timestamp-roots dist/channel/installer/authenticode-roots.pem \
+            --json-out dist/channel/authenticode-verification.json
+
+      - name: Build package, sign manifest, verify with client-trusted key
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA: ${{ steps.release.outputs.sha }}
+          NOTES: ${{ steps.release.outputs.notes }}
+          PACKAGE_URL: ${{ steps.release.outputs.package_url }}
+          SNAPSHOT: ${{ steps.snapshot.outputs.snapshot }}
+          EXPECTED_PUBLISHER: ${{ secrets.UPDATE_CHANNEL_EXPECTED_PUBLISHER }}
+          # Секреты environment update-channel-signing. Fail closed:
+          # publish_channel.py падает, если ключ, trust store, installer или
+          # attestation отсутствуют либо не проходят проверку.
+          SIGNING_KEY: ${{ secrets.UPDATE_CHANNEL_SIGNING_KEY }}
+          KEY_ID: ${{ secrets.UPDATE_CHANNEL_KEY_ID }}
+          TRUSTED_KEYS: ${{ secrets.UPDATE_CHANNEL_PUBLIC_KEYS }}
+        run: |
+          set -euo pipefail
+          : "${SIGNING_KEY:?UPDATE_CHANNEL_SIGNING_KEY secret is required}"
+          : "${KEY_ID:?UPDATE_CHANNEL_KEY_ID secret is required}"
+          : "${TRUSTED_KEYS:?UPDATE_CHANNEL_PUBLIC_KEYS secret is required}"
+          printf '%s' "$SIGNING_KEY" > /tmp/update-channel-signing.key
+          printf '%s' "$TRUSTED_KEYS" > /tmp/update-channel-trusted-keys.json
+          setup_exe="$(ls dist/channel/installer/output/HR-Manager-Setup-*.exe | head -1)"
+          python3 infra/release/publish_channel.py \
+            --snapshot "$SNAPSHOT" \
+            --version "$VERSION" \
+            --release-sha "$SHA" \
+            --package-url "$PACKAGE_URL" \
+            --minimum-supported-version "$MINIMUM_SUPPORTED_VERSION" \
+            --notes-ru "$NOTES" \
+            --private-key /tmp/update-channel-signing.key \
+            --key-id "$KEY_ID" \
+            --trust-store /tmp/update-channel-trusted-keys.json \
+            --release-mode production \
+            --installer "$setup_exe" \
+            --authenticode-attestation dist/channel/installer/authenticode-attestation.json \
+            --authenticode-roots dist/channel/installer/authenticode-roots.pem \
+            --expected-publisher "$EXPECTED_PUBLISHER" \
+            --out-dir dist/channel
+          rm -f /tmp/update-channel-signing.key
+
+      - name: Independent Ed25519 verification with the client-trusted key
+        env:
+          KEY_ID: ${{ secrets.UPDATE_CHANNEL_KEY_ID }}
+        run: |
+          set -euo pipefail
+          python3 - "$KEY_ID" <<'PY'
+          import json, pathlib, sys
+          store = json.loads(pathlib.Path("dist/channel/trust-store.json").read_text(encoding="utf-8"))
+          key_id = sys.argv[1]
+          entry = store.get(key_id)
+          if not isinstance(entry, dict) or entry.get("revoked"):
+              raise SystemExit(f"error: key_id {key_id!r} отсутствует в опубликованном trust store")
+          pathlib.Path("/tmp/client-public-key.b64").write_text(entry["key"], encoding="utf-8")
+          PY
+          python3 infra/release/verify_channel.py \
+            --manifest dist/channel/update-channel.json \
+            --public-key /tmp/client-public-key.b64
+
+      - name: Attest package and installer provenance (no signing secret involved)
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-path: |
+            dist/channel/hr-manager-windows-${{ steps.release.outputs.version }}.zip
+            dist/channel/installer/output/HR-Manager-Setup-*.exe
+
+      - name: Publish immutable GitHub Release (draft, assets verified above)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          SHA: ${{ steps.release.outputs.sha }}
+          NOTES: ${{ steps.release.outputs.notes }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          setup_exe="$(ls dist/channel/installer/output/HR-Manager-Setup-*.exe | head -1)"
+          [ -n "$setup_exe" ] || { echo "error: installer exe missing" >&2; exit 1; }
+          # Тег/релиз создаются --target на тот же SHA, из которого собрано.
+          gh release create "$TAG" \
+            --target "$SHA" \
+            --draft \
+            --title "HR Manager Windows pilot $VERSION" \
+            --notes "${NOTES:-$VERSION}" \
+            "dist/channel/hr-manager-windows-$VERSION.zip" \
+            "dist/channel/update-channel.json" \
+            "dist/channel/SHA256SUMS" \
+            "dist/channel/release-metadata.json" \
+            "dist/channel/trust-store.json" \
+            "dist/channel/authenticode-verification.json" \
+            "dist/channel/installer/authenticode-attestation.json" \
+            "$setup_exe"

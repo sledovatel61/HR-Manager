@@ -1,0 +1,91 @@
+# Isolated drill stack for pilot_drill_live_compose.py
+# Applied as: docker compose -p hrm-drill-<id> -f infra/docker-compose.yml -f infra/docker-compose.drill.yml --env-file .env.drill up -d
+# Isolated: own project, env, volumes, dynamic 127.0.0.1 host ports, short healthcheck intervals.
+
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${DRILL_POSTGRES_PASSWORD:-hr_manager_drill}
+    volumes:
+      - drill_pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1::5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hr_manager -d hr_manager"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+
+  backend:
+    environment:
+      APP_ENV: development
+      APP_DEBUG: "true"
+      SECRET_KEY: ${DRILL_SECRET_KEY:?DRILL_SECRET_KEY required}
+      DATABASE_URL: postgresql+psycopg://hr_manager:${DRILL_POSTGRES_PASSWORD:-hr_manager_drill}@db:5432/hr_manager
+      BACKUP_DIR: /var/backups/hr-manager
+      BACKUP_STATE_FILE: /var/backups/hr-manager/state.json
+      BACKUP_ENABLED: "true"
+      BACKUP_KEY_ID: drill-key
+      UPDATE_CHANNEL_URL: ${DRILL_UPDATE_CHANNEL_URL:-}
+      UPDATE_CHANNEL_PUBLIC_KEYS: ${DRILL_UPDATE_CHANNEL_PUBLIC_KEYS:-}
+      UPDATE_CHANNEL_ALLOWED_HOSTS: ${DRILL_UPDATE_CHANNEL_ALLOWED_HOSTS:-}
+    volumes:
+      - drill_backups:/var/backups/hr-manager
+    ports:
+      - "127.0.0.1::8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)\""]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  frontend:
+    ports:
+      - "127.0.0.1::8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  worker:
+    environment:
+      APP_ENV: development
+      SECRET_KEY: ${DRILL_SECRET_KEY:?DRILL_SECRET_KEY required}
+      DATABASE_URL: postgresql+psycopg://hr_manager:${DRILL_POSTGRES_PASSWORD:-hr_manager_drill}@db:5432/hr_manager
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: "no"
+    healthcheck:
+      disable: true
+
+  backup:
+    environment:
+      DATABASE_URL: postgresql+psycopg://hr_manager:${DRILL_POSTGRES_PASSWORD:-hr_manager_drill}@db:5432/hr_manager
+      BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://hr_manager:${DRILL_POSTGRES_PASSWORD:-hr_manager_drill}@db:5432/postgres
+      BACKUP_DIR: /var/backups/hr-manager
+      BACKUP_STATE_FILE: /var/backups/hr-manager/state.json
+      BACKUP_KEY_ID: drill-key
+    volumes:
+      - drill_backups:/var/backups/hr-manager
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: "no"
+    healthcheck:
+      disable: true
+
+  mailpit:
+    restart: "no"
+    healthcheck:
+      disable: true
+
+volumes:
+  drill_pgdata:
+  drill_backups:

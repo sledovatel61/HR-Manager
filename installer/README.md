@@ -111,3 +111,22 @@ installer/
   release-manifest.json# результат сборки (генерируется, в CI — артефакт)
   staging/, output/, .cache/  # генерируются; в git не хранятся
 ```
+
+## Authenticode-подпись и trust store (Phase 14)
+
+- `build.ps1 -TrustStoreFile <файл> -TrustStoreSha256 <sha>` встраивает
+  **уже проверенный** публичный trust store канала в снимок
+  (`infra/release/trust-store.json`) и в `release-manifest.json`; файл с
+  приватным материалом отвергается до сборки.
+- `sign.ps1 -Mode test` подписывает installer ephemeral тестовым
+  сертификатом (только CI/PR, без секретов) и пишет
+  `authenticode-attestation.json` + `authenticode-roots.pem`.
+- `sign.ps1 -Mode production -PfxPath <pfx> -ExpectedPublisher <издатель>
+  -TimestampUrl <RFC3161> -TrustStoreFile <файл>` требует пароль PFX только
+  из переменной окружения `HRM_AUTHENTICODE_PFX_PASSWORD`, выполняет
+  `signtool sign /fd SHA256 /tr /td SHA256` и обязательно проверяет
+  `signtool verify /pa /all`, наличие метки времени и совпадение издателя.
+  Пароль и ключ никогда не попадают в командную строку, логи и артефакты.
+- Production-релиз `publish_channel.py --release-mode production` отказывается
+  публиковаться, если installer не подписан, метка времени отсутствует,
+  издатель не совпал или trust store в attestation отличается от релизного.
