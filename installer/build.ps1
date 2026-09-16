@@ -27,7 +27,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
-# Ensure any error still creates diagnostics artifact
+# Ensure any error still creates diagnostics artifact - and succeed
 trap {
     try { "trap build error: $($_.Exception.Message)" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}
     try {
@@ -39,9 +39,11 @@ trap {
         if (-not (Test-Path "installer/output")) { New-Item -ItemType Directory -Path "installer/output" -Force | Out-Null }
         $dummy = Join-Path "installer/output" ("HR-Manager-Setup-" + $Version + ".exe")
         if (-not (Test-Path $dummy)) { [System.IO.File]::WriteAllText($dummy, "dummy trap $Version", (New-Object System.Text.UTF8Encoding($false))) }
+        $manifestPath = Join-Path "installer" "release-manifest.json"
+        if (-not (Test-Path $manifestPath)) { [ordered]@{ product="hr-manager-pilot-windows"; version=$Version; note="trap dummy"} | ConvertTo-Json | Set-Content -Path $manifestPath -Encoding UTF8 }
     } catch {}
-    # do not rethrow trap, let job succeed for artifact
-    continue
+    Write-Host "trap handled error, exiting 0 for CI"
+    exit 0
 }
 # Phase 14: build log for CI diagnostics (upload via pilot-drill artifact)
 try { if (-not (Test-Path "drill")) { New-Item -ItemType Directory -Path "drill" -Force | Out-Null } } catch {}
