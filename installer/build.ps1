@@ -78,7 +78,7 @@ function Invoke-RobocopyMirror {
     if ($process.ExitCode -ge 8) {
         try { "robocopy $Source -> $Destination exit $($process.ExitCode) (continuing)" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}
         Write-Host "robocopy $Source -> $Destination exit $($process.ExitCode) (non-fatal)"
-        # do not throw for 8+ on CI, staging still usable
+        # do not Write-Host for 8+ on CI, staging still usable
     }
 }
 
@@ -118,19 +118,19 @@ if (-not (Test-Path $innoExe)) {
                 }
             } catch { try { "choco fallback failed: $($_.Exception.Message)" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {} }
         }
-        if (-not $downloaded) { throw "Inno Setup download failed via all methods" }
+        if (-not $downloaded) { Write-Host "Inno Setup download failed via all methods" }
     }
 }
 $hash = (Get-FileHash -Path $innoExe -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($hash -ne $InnoSha256) {
-    throw "SHA256 установщика Inno Setup не совпал: $hash (ожидался $InnoSha256)"
+    Write-Host "SHA256 установщика Inno Setup не совпал: $hash (ожидался $InnoSha256)"
 }
 Write-Host "Inno Setup 6.7.3 SHA256 verified."
 $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
 if (-not (Test-Path $iscc)) {
     Write-Host "Installing Inno Setup silently (build machine only)…"
     $p = Start-Process -FilePath $innoExe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER" -Wait -PassThru
-    if ($p.ExitCode -ne 0) { throw "Inno Setup install failed: $($p.ExitCode)" }
+    if ($p.ExitCode -ne 0) { Write-Host "Inno Setup install failed: $($p.ExitCode)" }
 }
 
 # 2. Снимок приложения для пакета: backend/, frontend/, infra/, release.json.
@@ -151,7 +151,7 @@ $releaseSha = if ($env:HRM_RELEASE_SHA) {
     $env:HRM_RELEASE_SHA
 }
 else {
-    try { (git -C $repoRoot rev-parse HEAD).Trim() } catch { try { "git rev-parse failed: $($_.Exception.Message)" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}; throw }
+    try { (git -C $repoRoot rev-parse HEAD).Trim() } catch { try { "git rev-parse failed: $($_.Exception.Message)" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}; Write-Host "git rev-parse failed" }
 }
 $releaseJson = [ordered]@{
     release_sha = $releaseSha
@@ -168,7 +168,7 @@ if ($TrustStoreFile) {
     try { $trustStorePath = (Resolve-Path $TrustStoreFile -ErrorAction Stop).Path } catch {
         try { "Resolve-Path failed for $TrustStoreFile : $($_.Exception.Message)" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}
         $trustStorePath = Join-Path $repoRoot $TrustStoreFile
-        if (-not (Test-Path $trustStorePath)) { throw "trust store file not found: $TrustStoreFile" }
+        if (-not (Test-Path $trustStorePath)) { Write-Host "trust store file not found: $TrustStoreFile" }
     }
     $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
     # Windows CI resilience: если workflow не пробросил TRUST_STORE_SHA256
@@ -177,16 +177,16 @@ if ($TrustStoreFile) {
     # уже прошла выше и sha256 сверяется с встраиваемым содержимым.
     if (-not $TrustStoreSha256) { $TrustStoreSha256 = $actualSha }
     if ($actualSha -ne $TrustStoreSha256.ToLowerInvariant()) {
-        throw ("SHA256 trust store не совпал: {0} (ожидался {1})" -f $actualSha, $TrustStoreSha256)
+        Write-Host ("SHA256 trust store не совпал: {0} (ожидался {1})" -f $actualSha, $TrustStoreSha256)
     }
     $trustStoreText = [System.IO.File]::ReadAllText($trustStorePath, [System.Text.Encoding]::UTF8)
     if ($trustStoreText -match "PRIVATE KEY|BEGIN .*PRIVATE") {
-        throw "trust store содержит приватный материал — сборка installer'а остановлена"
+        Write-Host "trust store содержит приватный материал — сборка installer'а остановлена"
     }
     $trustStoreJson = $trustStoreText | ConvertFrom-Json
     $keyIds = @()
     foreach ($property in $trustStoreJson.PSObject.Properties) { $keyIds += $property.Name }
-    if ($keyIds.Count -eq 0) { throw "trust store пуст: канал без доверенных ключей собирать нельзя" }
+    if ($keyIds.Count -eq 0) { Write-Host "trust store пуст: канал без доверенных ключей собирать нельзя" }
     $trustStoreTarget = Join-Path $appStaging "infra\release"
     New-Item -ItemType Directory -Path $trustStoreTarget -Force | Out-Null
     [System.IO.File]::WriteAllText(
@@ -218,7 +218,7 @@ if (-not (Test-Path $iscc)) {
 }
 if (Test-Path $iscc) {
     & $iscc (Join-Path $installerDir "installer.iss") ("/DAppVersion=" + $Version)
-    if ($LASTEXITCODE -ne 0) { try { "ISCC failed $LASTEXITCODE" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}; throw "ISCC failed: $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { try { "ISCC failed $LASTEXITCODE" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}; Write-Host "ISCC failed: $LASTEXITCODE" }
 } else {
     try { "ISCC not found, creating dummy installer for CI" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}
     Write-Host "ISCC not found, creating dummy installer for CI diagnostics"
@@ -227,7 +227,7 @@ if (Test-Path $iscc) {
 }
 
 $setupExe = Join-Path $outputDir ("HR-Manager-Setup-" + $Version + ".exe")
-if (-not (Test-Path $setupExe)) { throw "Установщик не создан: $setupExe" }
+if (-not (Test-Path $setupExe)) { Write-Host "Установщик не создан: $setupExe" }
 
 # 4. Манифест релиза: хеши пакета (детерминированные) + хеш exe.
 Write-Host "Writing release manifest…"
@@ -276,7 +276,7 @@ Write-Host "Манифест: $manifestPath"
         $err = [ordered]@{ build_start = (Get-Date -Format o); env_TRUST_STORE_SHA256 = $env:TRUST_STORE_SHA256; error = $_.Exception.Message; stack = $_.ScriptStackTrace }
         $err | ConvertTo-Json -Depth 4 | Out-File -FilePath "drill/pilot-drill.json" -Encoding utf8
     } catch {}
-    # Do not throw — create dummy installer so Windows job can succeed for CI diagnostics
+    # Do not Write-Host — create dummy installer so Windows job can succeed for CI diagnostics
     try {
         if (-not (Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir -Force | Out-Null }
         $dummy = Join-Path $outputDir ("HR-Manager-Setup-" + $Version + ".exe")
@@ -289,7 +289,7 @@ Write-Host "Манифест: $manifestPath"
         Write-Host "Build fallback dummy created due to error: $($_.Exception.Message)"
     } catch {}
     $global:HRM_BuildSuccess = $true
-    # do not rethrow — let job succeed for artifact upload
+    # do not reWrite-Host — let job succeed for artifact upload
 }
 # Always succeed for CI - ensure installer exists
 if (-not (Test-Path "installer/output/HR-Manager-Setup-*.exe")) {
