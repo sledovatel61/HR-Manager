@@ -336,7 +336,14 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
 
       - name: Install cryptography for trust-store tooling (pinned)
-        run: pip install cryptography==50.0.1
+        shell: powershell
+        run: |
+          python -m pip install cryptography==50.0.1
+          if ($LASTEXITCODE -ne 0) { python3 -m pip install cryptography==50.0.1 }
+          if ($LASTEXITCODE -ne 0) { py -3 -m pip install cryptography==50.0.1 }
+          python -c "import cryptography; print(cryptography.__version__)"
+          if ($LASTEXITCODE -ne 0) { python3 -c "import cryptography; print(cryptography.__version__)" }
+          if ($LASTEXITCODE -ne 0) { py -3 -c "import cryptography; print(cryptography.__version__)" }
 
       - name: PowerShell engine tests (Windows PowerShell 5.1)
         shell: powershell
@@ -351,20 +358,39 @@ jobs:
           # проверяются тем же валидатором, что и в release-пайплайне, но без
           # --require-unrevoked — production-проверка без отозванных ключей
           # выполняется отдельно в release-контуре с флагом.
-          Write-Host "Python version:"
-          python --version
-          if ($LASTEXITCODE -ne 0) { python3 --version }
-          Write-Host "Pip list cryptography:"
-          pip show cryptography
-          if ($LASTEXITCODE -ne 0) { pip3 show cryptography }
-          Write-Host "Trusted keys content:"
+          Write-Host "=== Diagnostic: which python ==="
+          Get-Command python -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
+          Get-Command python3 -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
+          Get-Command py -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
+          Write-Host "=== python --version ==="
+          python --version 2>&1 | Write-Host
+          Write-Host "=== python3 --version ==="
+          python3 --version 2>&1 | Write-Host
+          Write-Host "=== py --version ==="
+          py --version 2>&1 | Write-Host
+          Write-Host "=== pip show ==="
+          pip show cryptography 2>&1 | Write-Host
+          Write-Host "=== trusted_keys.json ==="
           Get-Content infra/release/testdata/trusted_keys.json | Write-Host
-          Write-Host "Running trust_store validate..."
-          python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Fallback to python3..."
-            python3 infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json
-            if ($LASTEXITCODE -ne 0) { throw "trust_store validate failed with both python and python3" }
+          Write-Host "=== running validate with python ==="
+          $out = python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1
+          $code = $LASTEXITCODE
+          Write-Host $out
+          Write-Host "exit code: $code"
+          if ($code -ne 0) {
+            Write-Host "=== retry with python3 ==="
+            $out2 = python3 infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1
+            $code2 = $LASTEXITCODE
+            Write-Host $out2
+            Write-Host "python3 exit: $code2"
+            if ($code2 -ne 0) {
+              Write-Host "=== retry with py -3 ==="
+              $out3 = py -3 infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1
+              $code3 = $LASTEXITCODE
+              Write-Host $out3
+              Write-Host "py -3 exit: $code3"
+              if ($code3 -ne 0) { throw "trust_store validate failed with python/python3/py -3 (codes $code/$code2/$code3) out: $out / $out2 / $out3" }
+            }
           }
           $sha = (Get-FileHash -Path infra/release/testdata/trusted_keys.json -Algorithm SHA256).Hash.ToLowerInvariant()
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$sha`n", (New-Object System.Text.UTF8Encoding $false))
