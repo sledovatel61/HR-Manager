@@ -366,17 +366,30 @@ jobs:
       - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
         run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "=== CI trust-store fixture check (minimal) ==="
-          $path = "infra/release/testdata/trusted_keys.json"
-          Write-Host "Test-Path $path: $(Test-Path $path)"
-          Get-Content $path | Write-Host
-          $sha = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLowerInvariant()
-          Write-Host "SHA: $sha"
-          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$sha`n", (New-Object System.Text.UTF8Encoding $false))
-          Write-Host "GITHUB_ENV written"
-          Get-Content $env:GITHUB_ENV | Select-String "TRUST_STORE_SHA256" | Write-Host
-          Write-Host "Validate step succeeded (minimal check)" 
+          $ErrorActionPreference = "Continue"
+          Write-Host "=== Minimal test ==="
+          Write-Host "Hello from PowerShell"
+          Write-Host "GITHUB_ENV is $env:GITHUB_ENV"
+          Write-Host "Test-Path infra/release/testdata/trusted_keys.json: $(Test-Path 'infra/release/testdata/trusted_keys.json')"
+          Write-Host "Test-Path infra\release\testdata\trusted_keys.json: $(Test-Path 'infra\release\testdata\trusted_keys.json')"
+          try { Get-Content 'infra/release/testdata/trusted_keys.json' | Write-Host } catch { Write-Host "Get-Content failed: $_" }
+          try { $sha = (Get-FileHash -Path 'infra/release/testdata/trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant(); Write-Host "SHA via /: $sha" } catch { Write-Host "Get-FileHash / failed: $_" }
+          try { $sha2 = (Get-FileHash -Path 'infra\release\testdata\trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant(); Write-Host "SHA via \: $sha2" } catch { Write-Host "Get-FileHash \ failed: $_" }
+          # Try to write to GITHUB_ENV
+          try {
+            $testSha = "abc123"
+            [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$testSha`n", (New-Object System.Text.UTF8Encoding $false))
+            Write-Host "AppendAllText succeeded"
+            Get-Content $env:GITHUB_ENV | Select-String "TRUST_STORE_SHA256" | Write-Host
+          } catch { Write-Host "AppendAllText failed: $_" }
+          Write-Host "Minimal test done"
+          # Now do real SHA
+          try {
+            $realSha = (Get-FileHash -Path 'infra/release/testdata/trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant()
+            [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$realSha`n", (New-Object System.Text.UTF8Encoding $false))
+            Write-Host "Real SHA written: $realSha"
+          } catch { Write-Host "Real SHA failed: $_"; throw }
+          Write-Host "Validate minimal succeeded" 
 
       - name: Build HR Manager Setup.exe
         shell: powershell
