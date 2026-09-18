@@ -351,7 +351,21 @@ jobs:
           # проверяются тем же валидатором, что и в release-пайплайне, но без
           # --require-unrevoked — production-проверка без отозванных ключей
           # выполняется отдельно в release-контуре с флагом.
+          Write-Host "Python version:"
+          python --version
+          if ($LASTEXITCODE -ne 0) { python3 --version }
+          Write-Host "Pip list cryptography:"
+          pip show cryptography
+          if ($LASTEXITCODE -ne 0) { pip3 show cryptography }
+          Write-Host "Trusted keys content:"
+          Get-Content infra/release/testdata/trusted_keys.json | Write-Host
+          Write-Host "Running trust_store validate..."
           python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Fallback to python3..."
+            python3 infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json
+            if ($LASTEXITCODE -ne 0) { throw "trust_store validate failed with both python and python3" }
+          }
           $sha = (Get-FileHash -Path infra/release/testdata/trusted_keys.json -Algorithm SHA256).Hash.ToLowerInvariant()
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$sha`n", (New-Object System.Text.UTF8Encoding $false))
 
