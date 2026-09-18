@@ -366,55 +366,35 @@ jobs:
       - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
         run: |
-          # CI использует fixture-набор из testdata, который намеренно содержит
-          # отозванный ключ (pilot-revoked-key) для негативных тестов.
-          # Строгая схема и базовая валидация (хотя бы один активный ключ)
-          # проверяются тем же валидатором, что и в release-пайплайне, но без
-          # --require-unrevoked — production-проверка без отозванных ключей
-          # выполняется отдельно в release-контуре с флагом.
+          # CI fixture contains revoked key for negative tests — validate via PowerShell
+          # (at least one active key, valid base64 32 bytes, no private material).
+          # Production (--require-unrevoked) is checked separately in release pipeline.
           $ErrorActionPreference = "Stop"
-          Write-Host "=== Validate trusted_keys.json (python if available, else PowerShell) ==="
-          Get-Content infra/release/testdata/trusted_keys.json | Write-Host
-          $validated = $false
-          # Try pythonLocation first (setup-python)
-          if ($env:pythonLocation -and (Test-Path (Join-Path $env:pythonLocation "python.exe"))) {
-            $pyExe = Join-Path $env:pythonLocation "python.exe"
-            Write-Host "Trying $pyExe ..."
-            & $pyExe infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1 | Write-Host
-            if ($LASTEXITCODE -eq 0) { $validated = $true; Write-Host "Validated via pythonLocation" }
+          Write-Host "=== CI trust-store fixture check (PowerShell, no python needed) ==="
+          $path = "infra/release/testdata/trusted_keys.json"
+          if (-not (Test-Path $path)) { throw "missing $path" }
+          $raw = Get-Content $path -Raw
+          Write-Host $raw
+          $data = $raw | ConvertFrom-Json
+          $active = 0
+          foreach ($prop in $data.PSObject.Properties) {
+            $keyId = $prop.Name
+            $entry = $prop.Value
+            if (-not $entry.key) { throw "missing key for $keyId" }
+            if ($null -eq $entry.revoked -or $entry.revoked -isnot [bool]) { throw "bad revoked for $keyId" }
+            # base64 32 bytes check (PowerShell)
+            try { $bytes = [Convert]::FromBase64String($entry.key) } catch { throw "bad base64 for $keyId" }
+            if ($bytes.Length -ne 32) { throw "bad key length for $keyId: $($bytes.Length)" }
+            if ($entry.key -match "PRIVATE KEY" -or $entry.key.Length -eq 64) { throw "private material for $keyId" }
+            if ($entry.revoked -eq $false) { $active++ }
           }
-          if (-not $validated) {
-            Write-Host "Trying python ..."
-            python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1 | Write-Host
-            if ($LASTEXITCODE -eq 0) { $validated = $true; Write-Host "Validated via python" }
-          }
-          if (-not $validated) {
-            Write-Host "Trying python3 ..."
-            python3 infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1 | Write-Host
-            if ($LASTEXITCODE -eq 0) { $validated = $true; Write-Host "Validated via python3" }
-          }
-          if (-not $validated) {
-            Write-Host "Trying py -3 ..."
-            py -3 infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1 | Write-Host
-            if ($LASTEXITCODE -eq 0) { $validated = $true; Write-Host "Validated via py -3" }
-          }
-          if (-not $validated) {
-            Write-Host "All python attempts failed, falling back to PowerShell JSON check (at least one active key)..."
-            $json = Get-Content infra/release/testdata/trusted_keys.json -Raw | ConvertFrom-Json
-            $active = 0
-            foreach ($prop in $json.PSObject.Properties) {
-              if ($prop.Value.revoked -eq $false) { $active++ }
-              if (-not $prop.Value.key) { throw "missing key for $($prop.Name)" }
-            }
-            if ($active -eq 0) { throw "no active keys in trusted_keys.json" }
-            Write-Host "PowerShell fallback validated: $active active keys"
-            $validated = $true
-          }
-          if (-not $validated) { throw "trust_store validate failed" }
-          $sha = (Get-FileHash -Path infra/release/testdata/trusted_keys.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($active -eq 0) { throw "no active keys" }
+          Write-Host "Validated: $($data.PSObject.Properties.Count) keys, $active active"
+          $sha = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLowerInvariant()
           Write-Host "SHA: $sha"
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$sha`n", (New-Object System.Text.UTF8Encoding $false))
-          Write-Host "GITHUB_ENV written"
+          Write-Host "GITHUB_ENV written: $env:GITHUB_ENV"
+          Get-Content $env:GITHUB_ENV | Select-String "TRUST_STORE_SHA256" | Write-Host
 
       - name: Build HR Manager Setup.exe
         shell: powershell
