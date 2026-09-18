@@ -1,26 +1,173 @@
-# Minimal dummy build for CI - always succeeds, creates dummy installer
+# Сборка HR Manager Setup.exe из исходников репозитория.
+#
+# Инструментальная цепочка ЗАКРЕПЛЕНА (см. installer/README.md):
+#   Inno Setup 6.7.3, официальный установщик с GitHub Releases.
+#   URL:    https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+#   SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
+# Никакие другие версии/источники не используются; установщик запускается
+# молча (/VERYSILENT) ТОЛЬКО на сборочной машине/CI, никогда на машине
+# пользователя — пользователю доставляется готовый HR-Manager-Setup.exe.
+#
+# Результат: installer/output/HR-Manager-Setup-<Version>.exe и
+# installer/release-manifest.json (release_sha, версия, хеши пакета и exe).
+#
+# ИСПОЛЬЗОВАНИЕ (Windows 10/11, PowerShell 5.1+ или pwsh):
+#   powershell -ExecutionPolicy Bypass -File installer\build.ps1 [-Version 0.13.0]
+
+[CmdletBinding()]
 param(
     [string]$Version = "0.13.0",
     [string]$TrustStoreFile = "",
     [string]$TrustStoreSha256 = ""
 )
-$ErrorActionPreference = "Continue"
-Set-StrictMode -Off
-Write-Host "== HR Manager installer build (dummy for CI) =="
-Write-Host "Version $Version TrustStoreFile $TrustStoreFile TrustStoreSha256 $TrustStoreSha256"
-try { if (-not (Test-Path "drill")) { New-Item -ItemType Directory -Path "drill" -Force | Out-Null } } catch {}
-try { "dummy build $Version $(Get-Date -Format o)" | Out-File -FilePath "drill/build.log" -Encoding utf8 -Append } catch {}
-try {
-    $info = [ordered]@{ build_start = (Get-Date -Format o); version = $Version; dummy = $true }
-    $info | ConvertTo-Json | Out-File -FilePath "drill/pilot-drill.json" -Encoding utf8
-} catch {}
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version 2.0
+
 $installerDir = $PSScriptRoot
-if (-not $installerDir) { $installerDir = "installer" }
+$repoRoot = Split-Path $installerDir -Parent
+$stagingDir = Join-Path $installerDir "staging"
 $outputDir = Join-Path $installerDir "output"
-if (-not (Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir -Force | Out-Null }
-$dummy = Join-Path $outputDir ("HR-Manager-Setup-" + $Version + ".exe")
-[System.IO.File]::WriteAllText($dummy, "dummy installer $Version", (New-Object System.Text.UTF8Encoding($false)))
+$cacheDir = Join-Path $installerDir ".cache"
+
+$InnoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+$InnoSha256 = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+
+function Invoke-RobocopyMirror {
+    param([string]$Source, [string]$Destination, [string[]]$ExcludeDirs = @())
+    $robocopyArgs = @(('"{0}"' -f $Source), ('"{0}"' -f $Destination), "/MIR", "/NFL", "/NDL", "/NJH", "/NJS", "/NP")
+    foreach ($dir in $ExcludeDirs) { $robocopyArgs += "/XD"; $robocopyArgs += ('"{0}"' -f $dir) }
+    $process = Start-Process -FilePath "robocopy.exe" -ArgumentList $robocopyArgs -Wait -PassThru -NoNewWindow
+    if ($process.ExitCode -ge 8) {
+        throw "robocopy $Source -> $Destination завершился с кодом $($process.ExitCode)"
+    }
+}
+
+Write-Host "== HR Manager installer build =="
+
+if (Test-Path $stagingDir) { Remove-Item $stagingDir -Recurse -Force }
+if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force }
+New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+
+$innoExe = Join-Path $cacheDir "innosetup-6.7.3.exe"
+if (-not (Test-Path $innoExe)) {
+    Write-Host "Downloading Inno Setup 6.7.3 (pinned)…"
+    Invoke-WebRequest -Uri $InnoUrl -OutFile $innoExe -UseBasicParsing
+}
+$hash = (Get-FileHash -Path $innoExe -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($hash -ne $InnoSha256) {
+    throw "SHA256 установщика Inno Setup не совпал: $hash (ожидался $InnoSha256)"
+}
+Write-Host "Inno Setup 6.7.3 SHA256 verified."
+$iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
+if (-not (Test-Path $iscc)) {
+    Write-Host "Installing Inno Setup silently (build machine only)…"
+    $p = Start-Process -FilePath $innoExe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER" -Wait -PassThru
+    if ($p.ExitCode -ne 0) { throw "Inno Setup install failed: $($p.ExitCode)" }
+}
+
+$appStaging = Join-Path $stagingDir "app"
+New-Item -ItemType Directory -Path $appStaging -Force | Out-Null
+Write-Host "Staging backend/…"
+Invoke-RobocopyMirror (Join-Path $repoRoot "backend") (Join-Path $appStaging "backend") @("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "tests", ".venv", "venv")
+Write-Host "Staging frontend/ (без node_modules и dist)…"
+Invoke-RobocopyMirror (Join-Path $repoRoot "frontend") (Join-Path $appStaging "frontend") @("node_modules", "dist", ".vite")
+Write-Host "Staging infra/…"
+Invoke-RobocopyMirror (Join-Path $repoRoot "infra") (Join-Path $appStaging "infra") @()
+
+$releaseSha = if ($env:HRM_RELEASE_SHA) {
+    $env:HRM_RELEASE_SHA
+}
+else {
+    (git -C $repoRoot rev-parse HEAD).Trim()
+}
+$releaseJson = [ordered]@{
+    release_sha = $releaseSha
+    version = $Version
+    built_at = (Get-Date).ToString("o")
+    installer_commit = $releaseSha
+}
+$releaseJson | ConvertTo-Json | Set-Content -Path (Join-Path $appStaging "release.json") -Encoding UTF8
+
+$trustStoreInfo = $null
+if ($TrustStoreFile) {
+    $trustStorePath = (Resolve-Path $TrustStoreFile).Path
+    $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualSha -ne $TrustStoreSha256.ToLowerInvariant()) {
+        throw ("SHA256 trust store не совпал: {0} (ожидался {1})" -f $actualSha, $TrustStoreSha256)
+    }
+    $trustStoreText = [System.IO.File]::ReadAllText($trustStorePath, [System.Text.Encoding]::UTF8)
+    if ($trustStoreText -match "PRIVATE KEY|BEGIN .*PRIVATE") {
+        throw "trust store содержит приватный материал — сборка installer'а остановлена"
+    }
+    $trustStoreJson = $trustStoreText | ConvertFrom-Json
+    $keyIds = @()
+    foreach ($property in $trustStoreJson.PSObject.Properties) { $keyIds += $property.Name }
+    if ($keyIds.Count -eq 0) { throw "trust store пуст: канал без доверенных ключей собирать нельзя" }
+    $trustStoreTarget = Join-Path $appStaging "infra\release"
+    New-Item -ItemType Directory -Path $trustStoreTarget -Force | Out-Null
+    [System.IO.File]::WriteAllText(
+        (Join-Path $trustStoreTarget "trust-store.json"),
+        $trustStoreText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    $trustStoreInfo = [ordered]@{
+        embedded = $true
+        file = "infra/release/trust-store.json"
+        sha256 = $actualSha
+        keys = $keyIds
+    }
+    Write-Host ("Trust store встроен: {0} ключ(а), sha256 {1}" -f $keyIds.Count, $actualSha.Substring(0, 16))
+}
+else {
+    $trustStoreInfo = [ordered]@{
+        embedded = $false
+        reason = "trust store не передан (локальная сборка); production-релиз требует его обязательно"
+    }
+}
+
+Write-Host "Compiling installer with ISCC…"
+& $iscc (Join-Path $installerDir "installer.iss") ("/DAppVersion=" + $Version)
+if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
+
+$setupExe = Join-Path $outputDir ("HR-Manager-Setup-" + $Version + ".exe")
+if (-not (Test-Path $setupExe)) { throw "Установщик не создан: $setupExe" }
+
+Write-Host "Writing release manifest…"
+$fileHashes = [ordered]@{}
+$packageFiles = Get-ChildItem -Path $appStaging -Recurse -File | Sort-Object FullName
+foreach ($file in $packageFiles) {
+    $relative = $file.FullName.Substring($stagingDir.Length + 1).Replace("\", "/")
+    $fileHashes[$relative] = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+$manifest = [ordered]@{
+    product = "hr-manager-pilot-windows"
+    version = $Version
+    release_sha = $releaseSha
+    toolchain = [ordered]@{
+        name = "Inno Setup"
+        version = "6.7.3"
+        installer_url = $InnoUrl
+        installer_sha256 = $InnoSha256
+        source = "https://github.com/jrsoftware/issrc (official release)"
+    }
+    installer_exe = [ordered]@{
+        file = "HR-Manager-Setup-" + $Version + ".exe"
+        sha256 = (Get-FileHash -Path $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    trust_store = $trustStoreInfo
+    signing = [ordered]@{
+        status = "unsigned"
+        instruction = "installer/README.md (раздел «Кодовая подпись») и installer/sign.ps1"
+    }
+    package_files_sha256 = $fileHashes
+}
 $manifestPath = Join-Path $installerDir "release-manifest.json"
-[ordered]@{ product="hr-manager-pilot-windows"; version=$Version; dummy=$true } | ConvertTo-Json -Depth 4 | Set-Content -Path $manifestPath -Encoding UTF8
-Write-Host "Dummy installer created at $dummy"
-exit 0
+$manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $manifestPath -Encoding UTF8
+
+Write-Host ""
+Write-Host "Готово: $setupExe"
+Write-Host ("SHA256 установщика: {0}" -f $manifest.installer_exe.sha256)
+Write-Host "Манифест: $manifestPath"
