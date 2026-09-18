@@ -336,28 +336,7 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
 
       - name: Install cryptography for trust-store tooling (pinned)
-        shell: powershell
-        run: |
-          Write-Host "Installing cryptography via python -m pip..."
-          python -m pip install cryptography==50.0.1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "python -m pip failed, trying python3..."
-            python3 -m pip install cryptography==50.0.1
-          }
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "python3 failed, trying py -3..."
-            py -3 -m pip install cryptography==50.0.1
-          }
-          Write-Host "Check cryptography import:"
-          python -c "import cryptography; print(cryptography.__version__)" 2>&1 | Write-Host
-          if ($LASTEXITCODE -ne 0) {
-            python3 -c "import cryptography; print(cryptography.__version__)" 2>&1 | Write-Host
-          }
-          if ($LASTEXITCODE -ne 0) {
-            py -3 -c "import cryptography; print(cryptography.__version__)" 2>&1 | Write-Host
-          }
-          Write-Host "pip list:"
-          pip list 2>&1 | Select-String "cryptography" | Write-Host
+        run: pip install cryptography==50.0.1
 
       - name: PowerShell engine tests (Windows PowerShell 5.1)
         shell: powershell
@@ -366,65 +345,18 @@ jobs:
       - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
         run: |
-          $ErrorActionPreference = "Continue"
-          Write-Host "=== Minimal test ==="
-          Write-Host "Hello from PowerShell"
-          Write-Host "GITHUB_ENV is $env:GITHUB_ENV"
-          Write-Host "Test-Path infra/release/testdata/trusted_keys.json: $(Test-Path 'infra/release/testdata/trusted_keys.json')"
-          Write-Host "Test-Path infra\release\testdata\trusted_keys.json: $(Test-Path 'infra\release\testdata\trusted_keys.json')"
-          try { Get-Content 'infra/release/testdata/trusted_keys.json' | Write-Host } catch { Write-Host "Get-Content failed: $_" }
-          try { $sha = (Get-FileHash -Path 'infra/release/testdata/trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant(); Write-Host "SHA via /: $sha" } catch { Write-Host "Get-FileHash / failed: $_" }
-          try { $sha2 = (Get-FileHash -Path 'infra\release\testdata\trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant(); Write-Host "SHA via \: $sha2" } catch { Write-Host "Get-FileHash \ failed: $_" }
-          # Try to write to GITHUB_ENV
-          try {
-            $testSha = "abc123"
-            [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$testSha`n", (New-Object System.Text.UTF8Encoding $false))
-            Write-Host "AppendAllText succeeded"
-            Get-Content $env:GITHUB_ENV | Select-String "TRUST_STORE_SHA256" | Write-Host
-          } catch { Write-Host "AppendAllText failed: $_" }
-          Write-Host "Minimal test done"
-          # Now do real SHA
-          try {
-            $realSha = (Get-FileHash -Path 'infra/release/testdata/trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant()
-            [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$realSha`n", (New-Object System.Text.UTF8Encoding $false))
-            Write-Host "Real SHA written: $realSha"
-          } catch { Write-Host "Real SHA failed: $_"; throw }
-          Write-Host "Validate minimal succeeded" 
+          # CI НИКОГДА не использует production-секреты: только fixture-набор
+          # из testdata. Строгая схема проверяется тем же валидатором, что и
+          # в release-пайплайне.
+          python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json --require-unrevoked
+          $sha = (Get-FileHash -Path infra/release/testdata/trusted_keys.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          echo "TRUST_STORE_SHA256=$sha" >> $env:GITHUB_ENV
 
       - name: Build HR Manager Setup.exe
         shell: powershell
         run: |
-          $ErrorActionPreference = "Continue"
-          Write-Host "=== Build diagnostics ==="
-          Write-Host "TRUST_STORE_SHA256 env: $env:TRUST_STORE_SHA256"
-          Write-Host "Test-Path trusted_keys.json: $(Test-Path 'infra/release/testdata/trusted_keys.json')"
-          if (Test-Path 'infra/release/testdata/trusted_keys.json') {
-            Get-Content 'infra/release/testdata/trusted_keys.json' | Write-Host
-            $actualSha = (Get-FileHash -Path 'infra/release/testdata/trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant()
-            Write-Host "Actual SHA: $actualSha"
-            Write-Host "Expected SHA: $env:TRUST_STORE_SHA256"
-            if ($actualSha -ne $env:TRUST_STORE_SHA256.ToLowerInvariant()) {
-              Write-Host "SHA mismatch! Will still try build with actual SHA"
-            }
-          }
-          Write-Host "=== Running build.ps1 ==="
-          # Try with explicit error capture
-          $buildOut = Join-Path $env:TEMP "build_out.log"
-          $buildErr = Join-Path $env:TEMP "build_err.log"
-          $proc = Start-Process -FilePath "powershell" -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File","installer/build.ps1","-Version","0.13.0","-TrustStoreFile","infra/release/testdata/trusted_keys.json","-TrustStoreSha256",$env:TRUST_STORE_SHA256 -Wait -PassThru -NoNewWindow -RedirectStandardOutput $buildOut -RedirectStandardError $buildErr
-          Write-Host "Build exit code: $($proc.ExitCode)"
-          if (Test-Path $buildOut) { Write-Host "=== build stdout ==="; Get-Content $buildOut | Write-Host }
-          if (Test-Path $buildErr) { Write-Host "=== build stderr ==="; Get-Content $buildErr | Write-Host }
-          if ($proc.ExitCode -ne 0) {
-            Write-Host "=== build.ps1 failed, trying with actual SHA ==="
-            $actualSha = (Get-FileHash -Path 'infra/release/testdata/trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant()
-            $proc2 = Start-Process -FilePath "powershell" -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File","installer/build.ps1","-Version","0.13.0","-TrustStoreFile","infra/release/testdata/trusted_keys.json","-TrustStoreSha256",$actualSha -Wait -PassThru -NoNewWindow -RedirectStandardOutput $buildOut -RedirectStandardError $buildErr
-            Write-Host "Retry exit code: $($proc2.ExitCode)"
-            if (Test-Path $buildOut) { Get-Content $buildOut | Write-Host }
-            if (Test-Path $buildErr) { Get-Content $buildErr | Write-Host }
-            if ($proc2.ExitCode -ne 0) { throw "build.ps1 failed with $($proc2.ExitCode)" }
-          }
-          Write-Host "Build succeeded"
+          powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 `
+            -TrustStoreFile infra/release/testdata/trusted_keys.json -TrustStoreSha256 $env:TRUST_STORE_SHA256
 
       - name: Authenticode-sign with ephemeral test certificate (never production)
         shell: powershell
@@ -481,6 +413,7 @@ jobs:
   channel-release-policy:
     name: Release pipeline fail-closed policy (ephemeral test signature)
     runs-on: ubuntu-latest
+    needs: [windows-installer]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -496,111 +429,97 @@ jobs:
           pytest -q infra/release/test_channel_contract.py
           pytest -q backend/tests/test_trust_store.py backend/tests/test_release_authenticode.py backend/tests/test_release_policy.py backend/tests/test_release_pipeline.py
 
-      - name: Ephemeral Authenticode fixture — valid must verify, tampered/wrong/missing must fail
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: hr-manager-windows-setup
+          path: policy/installer
+
+      - name: Independent verification of the real signtool-produced signature
         run: |
           set -euo pipefail
-          python3 <<'PY'
-          import hashlib, json, pathlib, subprocess, sys
-          from pathlib import Path
-          sys.path.insert(0, "infra/release")
-          from sign_authenticode import create_test_authority, make_test_pe, sign_test_pe
-          work = Path("policy/ephemeral")
-          work.mkdir(parents=True, exist_ok=True)
-          publisher = "HR Manager CI Test Publisher"
-          authority = create_test_authority(publisher)
-          pe = make_test_pe(b"HRM-TEST-PE-BODY-FOR-CI")
-          signed = sign_test_pe(pe, authority)
-          installer = work / "HR-Manager-Setup-0.14.0.exe"
-          installer.write_bytes(signed)
-          roots = work / "authenticode-roots.pem"
-          roots.write_bytes(authority.ca_pem())
-          result = subprocess.run([sys.executable, "infra/release/authenticode.py", "verify", "--file", str(installer), "--trust-roots", str(roots), "--json-out", str(work / "verified.json")], capture_output=True, text=True)
-          if result.returncode != 0:
-              print(result.stdout); print(result.stderr, file=sys.stderr); sys.exit(1)
-          report = json.loads((work / "verified.json").read_text(encoding="utf-8"))
-          assert report["signed"] is True and report["chain_verified"] is True
-          tampered = work / "tampered.exe"
-          _data = bytearray(signed); _data[0x250] ^= 0xFF; tampered.write_bytes(_data)
-          result = subprocess.run([sys.executable, "infra/release/authenticode.py", "verify", "--file", str(tampered), "--trust-roots", str(roots)], capture_output=True, text=True)
-          assert result.returncode != 0 and "digest_mismatch" in result.stderr
-          other = create_test_authority("Other Publisher")
-          other_roots = work / "other-roots.pem"
-          other_roots.write_bytes(other.ca_pem())
-          result = subprocess.run([sys.executable, "infra/release/authenticode.py", "verify", "--file", str(installer), "--trust-roots", str(other_roots)], capture_output=True, text=True)
-          assert result.returncode != 0
-          unsigned = work / "unsigned.exe"
-          unsigned.write_bytes(make_test_pe(b"UNSIGNED"))
-          result = subprocess.run([sys.executable, "infra/release/authenticode.py", "verify", "--file", str(unsigned), "--trust-roots", str(roots)], capture_output=True, text=True)
-          assert result.returncode != 0
-          Path("policy/installer.exe").write_bytes(signed)
-          Path("policy/roots.pem").write_bytes(authority.ca_pem())
-          (work / "publisher.txt").write_text(publisher, encoding="utf-8")
+          setup_exe="$(ls policy/installer/output/HR-Manager-Setup-*.exe | head -1)"
+          python3 infra/release/authenticode.py verify \
+            --file "$setup_exe" \
+            --trust-roots policy/installer/authenticode-roots.pem \
+            --json-out policy/authenticode-verified.json
+          python3 - "$setup_exe" <<'PY'
+          import json, pathlib, subprocess, sys
+          setup = sys.argv[1]
+          report = json.loads(pathlib.Path("policy/authenticode-verified.json").read_text(encoding="utf-8"))
+          assert report["signed"] is True, report
+          assert report["chain_verified"] is True, report
+          assert report["digest_algorithm"] == "sha256", report
+          # Подпись Windows распознана независимой реализацией: подмена байта
+          # обязана ломать привязку файла к SpcIndirectDataContent.
+          tampered = pathlib.Path("policy/tampered.exe")
+          data = pathlib.Path(setup).read_bytes()
+          tampered.write_bytes(data + b"\x00")
+          result = subprocess.run(
+              [
+                  sys.executable,
+                  "infra/release/authenticode.py",
+                  "verify",
+                  "--file",
+                  str(tampered),
+                  "--trust-roots",
+                  "policy/installer/authenticode-roots.pem",
+              ],
+              capture_output=True,
+              text=True,
+          )
+          assert result.returncode != 0, "подделанный installer не может пройти проверку"
+          assert "digest_mismatch" in result.stderr, result.stderr
+          print("authenticode interop: real signtool signature verified; tamper rejected")
           PY
 
-      - name: Channel policy — valid / tampered / wrong signer / missing must be fail-closed
+      - name: Production policy refuses the ephemeral test certificate
         run: |
           set -euo pipefail
-          python3 <<'PY'
-          import hashlib, json, pathlib, shutil, subprocess, sys, tempfile
-          from pathlib import Path
-          sys.path.insert(0, "infra/release")
-          from sign_authenticode import create_test_authority, make_test_pe, sign_test_pe
-          from trust_store import describe_trust_store, trust_store_sha256
-          work = Path("policy/ephemeral")
-          publisher = (work / "publisher.txt").read_text(encoding="utf-8").strip() if (work / "publisher.txt").exists() else "HR Manager CI Test Publisher"
-          installer = Path("policy/installer.exe")
-          roots = Path("policy/roots.pem")
-          tmp = Path(tempfile.mkdtemp())
-          snapshot = tmp / "app"
-          shutil.copytree("infra/release/testdata/snapshot", snapshot)
-          (snapshot / "release.json").write_text(json.dumps({"version": "0.14.0", "release_sha": "3"*40}), encoding="utf-8")
-          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-          from cryptography.hazmat.primitives import serialization
-          import base64
-          key = Ed25519PrivateKey.generate()
-          private_path = tmp / "channel-priv.hex"
-          private_path.write_text(key.private_bytes_raw().hex() + "\n", encoding="utf-8")
-          public_b64 = base64.b64encode(key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
-          trust_store = tmp / "trust-store.json"
-          trust_store.write_text(json.dumps({"pilot-test-key": {"key": public_b64, "revoked": False}}), encoding="utf-8")
-          fresh_auth = create_test_authority(publisher)
-          fresh_signed = sign_test_pe(make_test_pe(b"HRM-TEST-PE-BODY-FOR-CI"), fresh_auth)
-          installer.write_bytes(fresh_signed)
-          roots.write_bytes(fresh_auth.ca_pem())
-          trust_data = json.loads(trust_store.read_text(encoding="utf-8"))
-          valid_attestation = {"mode": "test", "authenticode_present": True, "signtool_verify_ok": True, "timestamp_present": True, "publisher": publisher, "installer_sha256": hashlib.sha256(fresh_signed).hexdigest(), "signer_thumbprint_sha256": fresh_auth.leaf_certificate.fingerprint(__import__("cryptography").hazmat.primitives.hashes.SHA256()).hex(), "tool": "infra/release/sign_authenticode.py (ephemeral)", "trust_store": {"sha256": trust_store_sha256(trust_data), "keys": describe_trust_store(trust_data)}}
-          attestation_path = tmp / "attestation.json"
-          attestation_path.write_text(json.dumps(valid_attestation), encoding="utf-8")
-          out_dir = tmp / "out"
-          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(out_dir), "--release-mode", "test", "--installer", str(installer), "--authenticode-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(attestation_path)]
-          result = subprocess.run(cmd, capture_output=True, text=True)
-          assert result.returncode == 0 and (out_dir / "update-channel.json").exists()
-          tampered = tmp / "tampered.exe"
-          _t = bytearray(fresh_signed); _t[0x250] ^= 0xFF; tampered.write_bytes(_t)
-          tampered_att = dict(valid_attestation); tampered_att["mode"]="production"
-          tampered_att_path = tmp / "tampered_att.json"
-          tampered_att_path.write_text(json.dumps(tampered_att), encoding="utf-8")
-          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-tampered"), "--release-mode", "production", "--installer", str(tampered), "--authenticode-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(tampered_att_path)]
-          result = subprocess.run(cmd, capture_output=True, text=True)
-          assert result.returncode != 0
-          wrong_roots = tmp / "wrong.pem"
-          wrong_auth = create_test_authority("Other Publisher")
-          wrong_roots.write_bytes(wrong_auth.ca_pem())
-          wrong_att = dict(valid_attestation); wrong_att["mode"]="production"
-          wrong_att_path = tmp / "wrong_att.json"
-          wrong_att_path.write_text(json.dumps(wrong_att), encoding="utf-8")
-          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-wrong"), "--release-mode", "production", "--installer", str(installer), "--authenticode-roots", str(wrong_roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(wrong_att_path)]
-          result = subprocess.run(cmd, capture_output=True, text=True)
-          assert result.returncode != 0
-          unsigned = tmp / "unsigned.exe"
-          unsigned.write_bytes(make_test_pe(b"UNSIGNED-PE"))
-          unsigned_att = dict(valid_attestation); unsigned_att["mode"]="production"; unsigned_att["installer_sha256"]=hashlib.sha256(unsigned.read_bytes()).hexdigest()
-          unsigned_att_path = tmp / "unsigned_att.json"
-          unsigned_att_path.write_text(json.dumps(unsigned_att), encoding="utf-8")
-          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-missing"), "--release-mode", "production", "--installer", str(unsigned), "--authenticode-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(unsigned_att_path)]
-          result = subprocess.run(cmd, capture_output=True, text=True)
-          assert result.returncode != 0
+          setup_exe="$(ls policy/installer/output/HR-Manager-Setup-*.exe | head -1)"
+          snapshot="$(mktemp -d)/app"
+          mkdir -p "$snapshot"
+          cp -R backend "$snapshot/backend"
+          cp -R frontend "$snapshot/frontend"
+          cp -R infra "$snapshot/infra"
+          python3 - "$snapshot/release.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1], "w", encoding="utf-8") as fh:
+              json.dump({"version": "0.14.0", "release_sha": "3" * 40}, fh)
           PY
+          sha="$(printf '3%.0s' $(seq 1 40))"
+          run_publish() {
+            python3 infra/release/publish_channel.py \
+              --snapshot "$snapshot" --version 0.14.0 --release-sha "$sha" \
+              --package-url "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip" \
+              --minimum-supported-version 0.13.0 \
+              --private-key infra/release/testdata/test_key.priv \
+              --key-id pilot-test-key \
+              --out-dir policy/channel --release-mode production \
+              --installer "$setup_exe" \
+              --authenticode-roots policy/installer/authenticode-roots.pem \
+              --expected-publisher "HR Manager CI Test Publisher" \
+              --trust-store infra/release/testdata/trusted_keys.json \
+              --authenticode-attestation "$1"
+          }
+          # 1. Тестовая attestation (mode=test) не проходит production policy.
+          if run_publish policy/installer/authenticode-attestation.json 2>policy/error-1.txt; then
+            echo "test certificate must not pass production policy" >&2; exit 1
+          fi
+          grep -q "test_certificate_in_production" policy/error-1.txt
+          # 2. Даже если attestation подменить на production, независимая
+          #    проверка обязана заметить отсутствие метки времени: policy
+          #    выполняется на реальном signtool-выходе, а не на строках.
+          python3 - <<'PYPOLICY'
+          import json, pathlib
+          payload = json.loads(pathlib.Path("policy/installer/authenticode-attestation.json").read_text(encoding="utf-8"))
+          payload["mode"] = "production"
+          pathlib.Path("policy/forged-attestation.json").write_text(json.dumps(payload), encoding="utf-8")
+          PYPOLICY
+          if run_publish policy/forged-attestation.json 2>policy/error-2.txt; then
+            echo "unsigned-timestamp signature must not pass production policy" >&2; exit 1
+          fi
+          grep -q "missing_timestamp" policy/error-2.txt
+          echo "production policy is fail closed on the real signed installer"
 
       - name: No secrets in produced reports
         run: |

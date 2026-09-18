@@ -100,7 +100,7 @@ function Show-HrmUsage {
         "  status         Состояние: контейнеры, готовность, версия",
         "  open           Открыть приложение в браузере",
         "  update         Обновление из доверенного каталога релиза (-ReleaseDir)",
-        "  diagnostics    Агрегированная диагностика (с редакцией секретов; -Json)",
+        "  diagnostics    Диагностика (редакция секретов; -Json) + хост-отчёт для readiness",
         "  uninstall      Удалить приложение (данные сохраняются; -PurgeData удаляет)",
         "  resume         Продолжить прерванную операцию (после перезагрузки/UAC)",
         "  channel        Цикл канала обновлений (-Watch — блокирующий наблюдатель)",
@@ -138,6 +138,9 @@ try {
             Remove-HrmApp -InstallDir $InstallDir -StateDir $StateDir -PurgeData:$PurgeData.IsPresent
         }
         "diagnostics" {
+            # Сначала redacted хост-отчёт для «Проверки готовности пилота»
+            # (best-effort, ничего не печатает), затем сама диагностика.
+            Send-HrmHostReport -InstallDir $InstallDir -StateDir $StateDir | Out-Null
             Get-HrmDiagnostics -InstallDir $InstallDir -StateDir $StateDir -AsJson:$Json.IsPresent
         }
         "resume" {
