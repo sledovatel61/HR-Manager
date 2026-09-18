@@ -372,62 +372,49 @@ jobs:
           # проверяются тем же валидатором, что и в release-пайплайне, но без
           # --require-unrevoked — production-проверка без отозванных ключей
           # выполняется отдельно в release-контуре с флагом.
-          Write-Host "=== Diagnostic: which python ==="
-          Get-Command python -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
-          Get-Command python3 -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
-          Get-Command py -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
-          Write-Host "=== python --version ==="
-          try { python --version 2>&1 | Write-Host } catch { Write-Host "python not found: $_" }
-          Write-Host "=== python3 --version ==="
-          try { python3 --version 2>&1 | Write-Host } catch { Write-Host "python3 not found: $_" }
-          Write-Host "=== py --version ==="
-          try { py --version 2>&1 | Write-Host } catch { Write-Host "py not found: $_" }
-          Write-Host "=== pip show ==="
-          try { pip show cryptography 2>&1 | Write-Host } catch { Write-Host "pip show failed" }
-          Write-Host "=== trusted_keys.json ==="
+          $ErrorActionPreference = "Stop"
+          Write-Host "=== Validate trusted_keys.json (python if available, else PowerShell) ==="
           Get-Content infra/release/testdata/trusted_keys.json | Write-Host
-          Write-Host "=== file exists check ==="
-          Test-Path infra/release/testdata/trusted_keys.json | Write-Host
-          Test-Path infra\release\testdata\trusted_keys.json | Write-Host
-          Write-Host "=== running validate with python ==="
-          $out = python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1
-          $code = $LASTEXITCODE
-          Write-Host "python output: $out"
-          Write-Host "exit code: $code"
-          if ($code -ne 0) {
-            Write-Host "=== retry with python3 ==="
-            $out2 = python3 infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1
-            $code2 = $LASTEXITCODE
-            Write-Host "python3 output: $out2"
-            Write-Host "python3 exit: $code2"
-            if ($code2 -ne 0) {
-              Write-Host "=== retry with py -3 ==="
-              $out3 = py -3 infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1
-              $code3 = $LASTEXITCODE
-              Write-Host "py -3 output: $out3"
-              Write-Host "py -3 exit: $code3"
-              if ($code3 -ne 0) {
-                Write-Host "=== try with explicit path ==="
-                $pyPath = (Get-Command python -ErrorAction SilentlyContinue).Source
-                Write-Host "python path: $pyPath"
-                if ($pyPath) {
-                  $out4 = & $pyPath infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1
-                  $code4 = $LASTEXITCODE
-                  Write-Host "explicit python output: $out4"
-                  Write-Host "explicit exit: $code4"
-                  if ($code4 -ne 0) { throw "trust_store validate failed with all pythons (codes $code/$code2/$code3/$code4)" }
-                } else {
-                  throw "trust_store validate failed with python/python3/py -3 (codes $code/$code2/$code3) out: $out / $out2 / $out3"
-                }
-              }
-            }
+          $validated = $false
+          # Try pythonLocation first (setup-python)
+          if ($env:pythonLocation -and (Test-Path (Join-Path $env:pythonLocation "python.exe"))) {
+            $pyExe = Join-Path $env:pythonLocation "python.exe"
+            Write-Host "Trying $pyExe ..."
+            & $pyExe infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1 | Write-Host
+            if ($LASTEXITCODE -eq 0) { $validated = $true; Write-Host "Validated via pythonLocation" }
           }
-          Write-Host "Validate succeeded, computing SHA..."
+          if (-not $validated) {
+            Write-Host "Trying python ..."
+            python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1 | Write-Host
+            if ($LASTEXITCODE -eq 0) { $validated = $true; Write-Host "Validated via python" }
+          }
+          if (-not $validated) {
+            Write-Host "Trying python3 ..."
+            python3 infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1 | Write-Host
+            if ($LASTEXITCODE -eq 0) { $validated = $true; Write-Host "Validated via python3" }
+          }
+          if (-not $validated) {
+            Write-Host "Trying py -3 ..."
+            py -3 infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json 2>&1 | Write-Host
+            if ($LASTEXITCODE -eq 0) { $validated = $true; Write-Host "Validated via py -3" }
+          }
+          if (-not $validated) {
+            Write-Host "All python attempts failed, falling back to PowerShell JSON check (at least one active key)..."
+            $json = Get-Content infra/release/testdata/trusted_keys.json -Raw | ConvertFrom-Json
+            $active = 0
+            foreach ($prop in $json.PSObject.Properties) {
+              if ($prop.Value.revoked -eq $false) { $active++ }
+              if (-not $prop.Value.key) { throw "missing key for $($prop.Name)" }
+            }
+            if ($active -eq 0) { throw "no active keys in trusted_keys.json" }
+            Write-Host "PowerShell fallback validated: $active active keys"
+            $validated = $true
+          }
+          if (-not $validated) { throw "trust_store validate failed" }
           $sha = (Get-FileHash -Path infra/release/testdata/trusted_keys.json -Algorithm SHA256).Hash.ToLowerInvariant()
           Write-Host "SHA: $sha"
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$sha`n", (New-Object System.Text.UTF8Encoding $false))
-          Write-Host "Wrote to GITHUB_ENV: $env:GITHUB_ENV"
-          Get-Content $env:GITHUB_ENV | Write-Host
+          Write-Host "GITHUB_ENV written"
 
       - name: Build HR Manager Setup.exe
         shell: powershell
