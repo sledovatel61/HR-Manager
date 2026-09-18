@@ -274,142 +274,17 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     file_path = Path(args.file)
     data = load_trust_store_file(file_path)
     if args.require_unrevoked:
+        # Строгая production-проверка: ни один ключ не должен быть отозван.
+        # Fixture-набор с revoked (для негативных тестов) намеренно содержит
+        # отозванный ключ и не должен проверяться с этим флагом — CI проверяет
+        # его без флага, а production/release — с флагом.
+        for key_id, entry in data.items():
+            if entry.get("revoked") is True:
+                raise TrustStoreError(
+                    "revoked_key_present",
+                    f"ключ {key_id!r} отозван (revoked:true) — требуется набор без отозванных ключей",
+                )
         validate_trust_store(data, allow_empty=False)
-    # Windows CI compatibility: write TRUST_STORE_SHA256 to GITHUB_ENV
-    # via Python (UTF-8) so that the subsequent PowerShell
-    # `echo ... >> $env:GITHUB_ENV` (which writes UTF-16) is not the sole
-    # source. If the workflow already uses Add-Content (UTF-8) this is
-    # harmless duplicate; GitHub Actions takes the last value.
-    import os as _os
-
-    github_env = _os.environ.get("GITHUB_ENV")
-    if github_env:
-        try:
-            raw_sha = hashlib.sha256(file_path.read_bytes()).hexdigest().lower()
-            with open(github_env, "a", encoding="utf-8", newline="\n") as fh:
-                fh.write(f"TRUST_STORE_SHA256={raw_sha}\n")
-            if _os.name == "nt":
-                # Synchronous RO to block the next PowerShell `echo >>` line (fast, before echo)
-                try:
-                    import ctypes
-                    ctypes.windll.kernel32.SetFileAttributesW(github_env, 0x01)
-                except:
-                    pass
-                try:
-                    import subprocess as _sub2
-                    _sub2.run(["cmd", "/c", "attrib", "+R", github_env], stdout=_sub2.DEVNULL, stderr=_sub2.DEVNULL, timeout=1)
-                except:
-                    pass
-                # Detached poller: wait ~70ms for echo to fail due RO, then clear RO and fix file continuously
-                try:
-                    import subprocess as _sub
-                    import sys as _sys
-                    # Use repr for safe quoting
-                    _ge_repr = repr(github_env)
-                    _fp_repr = repr(str(file_path))
-                    poll_code = (
-                        "import time, pathlib, hashlib, re, ctypes, os\n"
-                        f"ge={_ge_repr}\n"
-                        f"fp={_fp_repr}\n"
-                        "p=pathlib.Path(ge)\n"
-                        "try:\n"
-                        "    correct=hashlib.sha256(pathlib.Path(fp).read_bytes()).hexdigest().lower()\n"
-                        "except:\n"
-                        "    correct=None\n"
-                        "try:\n"
-                        "    ctypes.windll.kernel32.SetFileAttributesW(ge, 0x80)\n"
-                        "except:\n"
-                        "    pass\n"
-                        "try:\n"
-                        "    os.system(f'attrib -R \"' + ge + '\" >nul 2>&1')\n"
-                        "except:\n"
-                        "    pass\n"
-                        "for _ in range(2500):\n"
-                        "    try:\n"
-                        "        if not p.exists():\n"
-                        "            time.sleep(0.002)\n"
-                        "            continue\n"
-                        "        raw=p.read_bytes()\n"
-                        "        has_null=b'\\x00' in raw or raw.startswith(b'\\xff\\xfe')\n"
-                        "        try:\n"
-                        "            txt=raw.decode('utf-8')\n"
-                        "        except:\n"
-                        "            txt=raw.decode('utf-8', errors='ignore')\n"
-                        "        has_correct=correct and f'TRUST_STORE_SHA256={correct}' in txt\n"
-                        "        if has_null or not has_correct:\n"
-                        "            try:\n"
-                        "                ctypes.windll.kernel32.SetFileAttributesW(ge, 0x80)\n"
-                        "            except:\n"
-                        "                pass\n"
-                        "            cands=[]\n"
-                        "            for enc in ('utf-8','utf-16','utf-16-le'):\n"
-                        "                try:\n"
-                        "                    t=raw.decode(enc, errors='ignore')\n"
-                        "                    for m in re.finditer(r'TRUST_STORE_SHA256=([0-9a-fA-F]{64})', t):\n"
-                        "                        c=m.group(1).lower()\n"
-                        "                        if c not in cands:\n"
-                        "                            cands.append(c)\n"
-                        "                except:\n"
-                        "                    pass\n"
-                        "            try:\n"
-                        "                t2=raw.replace(b'\\x00',b'').decode('utf-8', errors='ignore')\n"
-                        "                for m in re.finditer(r'TRUST_STORE_SHA256=([0-9a-fA-F]{64})', t2):\n"
-                        "                    c=m.group(1).lower()\n"
-                        "                    if c not in cands:\n"
-                        "                        cands.append(c)\n"
-                        "            except:\n"
-                        "                pass\n"
-                        "            chosen=correct.lower() if correct else (cands[-1] if cands else None)\n"
-                        "            if not chosen:\n"
-                        "                time.sleep(0.002)\n"
-                        "                continue\n"
-                        "            if has_null:\n"
-                        "                txt_clean=raw.replace(b'\\x00',b'').replace(b'\\xff\\xfe',b'').decode('utf-8', errors='ignore').replace('\\r','\\n')\n"
-                        "            else:\n"
-                        "                txt_clean=raw.decode('utf-8', errors='ignore').replace('\\r','\\n')\n"
-                        "            out=[]\n"
-                        "            for line in txt_clean.split('\\n'):\n"
-                        "                s=line.strip()\n"
-                        "                if not s or s.startswith('#'):\n"
-                        "                    continue\n"
-                        "                if s.startswith('TRUST_STORE_SHA256='):\n"
-                        "                    continue\n"
-                        "                out.append(s)\n"
-                        "            out.append(f'TRUST_STORE_SHA256={chosen}')\n"
-                        "            try:\n"
-                        "                ctypes.windll.kernel32.SetFileAttributesW(ge, 0x80)\n"
-                        "            except:\n"
-                        "                pass\n"
-                        "            p.write_text('\\n'.join(out)+'\\n', encoding='utf-8')\n"
-                        "        time.sleep(0.002)\n"
-                        "        raw2=p.read_bytes()\n"
-                        "        if b'\\x00' not in raw2 and not raw2.startswith(b'\\xff\\xfe'):\n"
-                        "            txt2=raw2.decode('utf-8', errors='ignore')\n"
-                        "            if correct and f'TRUST_STORE_SHA256={correct}' in txt2:\n"
-                        "                time.sleep(0.08)\n"
-                        "                raw3=p.read_bytes()\n"
-                        "                if b'\\x00' not in raw3 and f'TRUST_STORE_SHA256={correct}' in raw3.decode('utf-8', errors='ignore'):\n"
-                        "                    break\n"
-                        "    except:\n"
-                        "        time.sleep(0.002)\n"
-                    )
-                    _sub.Popen(
-                        [_sys.executable, "-c", poll_code],
-                        stdout=_sub.DEVNULL,
-                        stderr=_sub.DEVNULL,
-                        stdin=_sub.DEVNULL,
-                        creationflags=0x00000008 if _os.name == "nt" else 0,
-                    )
-                    # Give poller time to start and acquire lock before PowerShell's next line (echo) runs
-                    try:
-                        import time as _time
-                        _time.sleep(0.35)
-                    except:
-                        pass
-                except Exception:
-                    pass
-        except Exception:
-            pass  # best-effort; PowerShell fallback still runs
     if args.json:
         payload = {
             "ok": True,

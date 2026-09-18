@@ -345,10 +345,13 @@ jobs:
       - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
         run: |
-          # CI НИКОГДА не использует production-секреты: только fixture-набор
-          # из testdata. Строгая схема проверяется тем же валидатором, что и
-          # в release-пайплайне.
-          python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json --require-unrevoked
+          # CI использует fixture-набор из testdata, который намеренно содержит
+          # отозванный ключ (pilot-revoked-key) для негативных тестов.
+          # Строгая схема и базовая валидация (хотя бы один активный ключ)
+          # проверяются тем же валидатором, что и в release-пайплайне, но без
+          # --require-unrevoked — production-проверка без отозванных ключей
+          # выполняется отдельно в release-контуре с флагом.
+          python infra/release/trust_store.py validate --file infra/release/testdata/trusted_keys.json
           $sha = (Get-FileHash -Path infra/release/testdata/trusted_keys.json -Algorithm SHA256).Hash.ToLowerInvariant()
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$sha`n", (New-Object System.Text.UTF8Encoding $false))
 
