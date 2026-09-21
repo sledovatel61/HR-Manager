@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
+  issues: write
 
 env:
   PYTHON_VERSION: "3.12"
@@ -326,6 +328,10 @@ jobs:
   windows-installer:
     name: Windows engine tests + installer smoke
     runs-on: windows-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -383,6 +389,34 @@ jobs:
           Get-Content $env:GITHUB_ENV | Select-String "TRUST_STORE" | Write-Host
           Write-Host "Validate succeeded" 
 
+      - name: Test Inno Setup download (diagnostic, no fail)
+        shell: powershell
+        run: |
+          Write-Host "=== Testing Inno Setup download (diagnostic) ==="
+          $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+          $expected = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+          $tmp = Join-Path $env:TEMP "innosetup-test.exe"
+          Write-Host "URL: $url"
+          try {
+            Write-Host "Trying Invoke-WebRequest..."
+            Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -ErrorAction Stop
+            $h = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host "IWR succeeded: $h match $($h -eq $expected) size $((Get-Item $tmp).Length)"
+          } catch { Write-Host "IWR failed: $_" }
+          try {
+            Write-Host "Trying curl.exe..."
+            & curl.exe -L -o $tmp $url
+            Write-Host "curl exit $LASTEXITCODE"
+            if (Test-Path $tmp) {
+              $h2 = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
+              Write-Host "curl hash $h2 match $($h2 -eq $expected) size $((Get-Item $tmp).Length)"
+            }
+          } catch { Write-Host "curl failed: $_" }
+          Write-Host "curl.exe version:"
+          try { & curl.exe --version | Select-Object -First 1 | Write-Host } catch { Write-Host "no curl" }
+          Write-Host "Git version:"; try { & git --version | Write-Host } catch { Write-Host "no git $_" }
+          Write-Host "Test done"
+
       - name: Build HR Manager Setup.exe
         shell: powershell
         run: |
@@ -398,22 +432,50 @@ jobs:
             Write-Host "Expected SHA env: '$env:TRUST_STORE_SHA256'"
           }
           Write-Host "=== Running installer/build.ps1 ==="
+          $logFile = Join-Path $env:TEMP "build.log"
+          Write-Host "Logging to $logFile"
           Write-Host "Command: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256"
-          powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256
+          powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256 2>&1 | Tee-Object -FilePath $logFile
           $code = $LASTEXITCODE
           Write-Host "build.ps1 exit code: $code"
+          if (Test-Path $logFile) { Write-Host "=== build log ==="; Get-Content $logFile | Write-Host }
           if ($code -ne 0) {
             Write-Host "=== First attempt failed, retrying with actual SHA ==="
             $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
             Write-Host "Retry with actual SHA: $actualSha"
-            powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $actualSha
+            powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $actualSha 2>&1 | Tee-Object -FilePath $logFile -Append
             $code2 = $LASTEXITCODE
             Write-Host "Retry exit code: $code2"
+            if (Test-Path $logFile) { Write-Host "=== retry log ==="; Get-Content $logFile | Write-Host }
             if ($code2 -ne 0) { throw "build.ps1 failed both attempts: first $code, retry $code2" }
           }
           Write-Host "Build succeeded"
           Get-ChildItem installer/output -Recurse | ForEach-Object { Write-Host $_.FullName }
           if (Test-Path installer/release-manifest.json) { Get-Content installer/release-manifest.json | Write-Host }
+
+      - name: Post Build log to PR summary on failure
+        if: always()
+        shell: powershell
+        run: |
+          $logFile = Join-Path $env:TEMP "build.log"
+          if (Test-Path $logFile) {
+            Write-Host "=== Build log file exists, posting to summary ==="
+            $content = Get-Content $logFile -Raw
+            if ($content.Length -gt 60000) { $content = $content.Substring(0,60000) + "`n...truncated" }
+            # Write to GITHUB_STEP_SUMMARY (visible in Actions UI)
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Build log for $env:GITHUB_SHA`n``````n$content`n``````"
+            Write-Host "Posted to step summary"
+            # Also try to post as PR comment via gh
+            try {
+              $body = "Build log for $env:GITHUB_SHA (run $env:GITHUB_RUN_ID):`n``````n$content`n``````"
+              $body | Out-File -FilePath (Join-Path $env:TEMP "pr_comment.txt") -Encoding utf8
+              gh pr comment 24 --body-file (Join-Path $env:TEMP "pr_comment.txt") 2>&1 | Write-Host
+              Write-Host "Attempted PR comment"
+            } catch { Write-Host "PR comment failed: $_" }
+          } else {
+            Write-Host "No build log found at $logFile"
+            Get-ChildItem $env:TEMP | Write-Host
+          }
 
       - name: Authenticode-sign with ephemeral test certificate (never production)
         shell: powershell
