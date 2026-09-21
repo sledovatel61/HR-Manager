@@ -53,11 +53,22 @@ New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
 
 $innoExe = Join-Path $cacheDir "innosetup-6.7.3.exe"
 if (-not (Test-Path $innoExe)) {
-    Write-Host "Downloading Inno Setup 6.7.3 (pinned)…"
-    Invoke-WebRequest -Uri $InnoUrl -OutFile $innoExe -UseBasicParsing
+    Write-Host "Downloading Inno Setup 6.7.3 (pinned) from $InnoUrl ..."
+    try {
+        Invoke-WebRequest -Uri $InnoUrl -OutFile $innoExe -UseBasicParsing -ErrorAction Stop
+        Write-Host "Invoke-WebRequest succeeded, file size $((Get-Item $innoExe).Length) bytes"
+    } catch {
+        Write-Host "Invoke-WebRequest failed: $_"
+        Write-Host "Trying curl.exe fallback..."
+        & curl.exe -L -o $innoExe $InnoUrl
+        if ($LASTEXITCODE -ne 0) { throw "curl.exe failed with exit $LASTEXITCODE : $_" }
+        Write-Host "curl.exe succeeded, file size $((Get-Item $innoExe).Length) bytes"
+    }
 }
+Write-Host "Verifying Inno Setup hash..."
 $hash = (Get-FileHash -Path $innoExe -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($hash -ne $InnoSha256) {
+Write-Host "Inno hash: $hash expected $InnoSha256"
+if ($hash -ne $InnoSha256.ToLowerInvariant()) {
     throw "SHA256 установщика Inno Setup не совпал: $hash (ожидался $InnoSha256)"
 }
 Write-Host "Inno Setup 6.7.3 SHA256 verified."
@@ -77,12 +88,18 @@ Invoke-RobocopyMirror (Join-Path $repoRoot "frontend") (Join-Path $appStaging "f
 Write-Host "Staging infra/…"
 Invoke-RobocopyMirror (Join-Path $repoRoot "infra") (Join-Path $appStaging "infra") @()
 
+Write-Host "Resolving release_sha..."
 $releaseSha = if ($env:HRM_RELEASE_SHA) {
+    Write-Host "Using HRM_RELEASE_SHA from env: $env:HRM_RELEASE_SHA"
     $env:HRM_RELEASE_SHA
 }
 else {
-    (git -C $repoRoot rev-parse HEAD).Trim()
+    Write-Host "Running git rev-parse HEAD in $repoRoot"
+    $gitOut = & git -C $repoRoot rev-parse HEAD 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "git rev-parse failed ${LASTEXITCODE}: $gitOut" }
+    $gitOut.Trim()
 }
+Write-Host "release_sha: $releaseSha"
 $releaseJson = [ordered]@{
     release_sha = $releaseSha
     version = $Version
@@ -93,8 +110,14 @@ $releaseJson | ConvertTo-Json | Set-Content -Path (Join-Path $appStaging "releas
 
 $trustStoreInfo = $null
 if ($TrustStoreFile) {
+    Write-Host "Resolving trust store: $TrustStoreFile (cwd $(Get-Location))"
+    if (-not (Test-Path $TrustStoreFile)) { throw "TrustStoreFile not found: $TrustStoreFile (cwd $(Get-Location))" }
     $trustStorePath = (Resolve-Path $TrustStoreFile).Path
+    Write-Host "Resolved trust store to $trustStorePath"
     $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-Host "Trust store actual SHA256: $actualSha"
+    Write-Host "Trust store expected SHA256: '$TrustStoreSha256'"
+    if (-not $TrustStoreSha256) { throw "TrustStoreSha256 is empty — GITHUB_ENV not propagated? actual $actualSha" }
     if ($actualSha -ne $TrustStoreSha256.ToLowerInvariant()) {
         throw ("SHA256 trust store не совпал: {0} (ожидался {1})" -f $actualSha, $TrustStoreSha256)
     }
@@ -128,9 +151,14 @@ else {
     }
 }
 
-Write-Host "Compiling installer with ISCC…"
+Write-Host "Compiling installer with ISCC..."
+Write-Host "ISCC path: $iscc exists $(Test-Path $iscc)"
+Write-Host "ISS path: $(Join-Path $installerDir 'installer.iss') exists $(Test-Path (Join-Path $installerDir 'installer.iss'))"
+Write-Host "Staging dir contents first 20:"
+Get-ChildItem $stagingDir -Recurse | Select-Object FullName -First 20 | ForEach-Object { Write-Host $_.FullName }
 & $iscc (Join-Path $installerDir "installer.iss") ("/DAppVersion=" + $Version)
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
+Write-Host "ISCC succeeded"
 
 $setupExe = Join-Path $outputDir ("HR-Manager-Setup-" + $Version + ".exe")
 if (-not (Test-Path $setupExe)) { throw "Установщик не создан: $setupExe" }
