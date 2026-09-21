@@ -204,7 +204,7 @@ $manifest = [ordered]@{
     trust_store = $trustStoreInfo
     signing = [ordered]@{
         status = "unsigned"
-        instruction = "installer/README.md (раздел "Кодовая подпись") и installer/sign.ps1"
+        instruction = "installer/README.md (раздел 'Кодовая подпись') и installer/sign.ps1"
     }
     package_files_sha256 = $fileHashes
 }
