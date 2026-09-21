@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 
 REPO = Path(__file__).resolve().parents[2]
 RELEASE = REPO / "infra" / "release"
@@ -528,3 +528,41 @@ def test_message_digest_hashes_spc_body_not_tlv(source: str, authority: Ephemera
     declared, spc_body, econtent_tlv = _message_digest_of(blob)
     assert declared == hashlib.sha256(spc_body).digest()
     assert declared != hashlib.sha256(econtent_tlv).digest()
+
+
+def test_trust_roots_must_come_from_outside_the_artifact(tmp_path: Path) -> None:
+    """Якорь доверия, взятый из самой подписи, делает проверку тавтологией.
+
+    `_verify_chain` немедленно возвращает успех, когда DER подписанта есть среди
+    корней. Поэтому «экспортировать SignerCertificate в --trust-roots» — это не
+    проверка цепочки: так проходит любой самоподписанный издатель. Тест фиксирует
+    обе половины утверждения, чтобы паттерн нельзя было вернуть молча.
+    """
+    outsider = create_test_authority("EVIL Corp (attacker)")
+    target = tmp_path / "outsider-signed.exe"
+    target.write_bytes(sign_test_pe(make_test_pe(), outsider, with_timestamp=False))
+
+    # Тавтология: корень — это сертификат подписанта из того же файла.
+    self_roots = tmp_path / "self-roots.pem"
+    self_roots.write_bytes(outsider.leaf_certificate.public_bytes(serialization.Encoding.PEM))
+    tautology = verify_authenticode(
+        target,
+        expected_publisher="EVIL Corp (attacker)",
+        require_timestamp=False,
+        trust_roots=load_pem_certificates(self_roots),
+    )
+    assert tautology["chain_verified"] is True, (
+        "предусловие: тавтологический якорь действительно принимает"
+    )
+
+    # Корректная проверка: якорь задан независимо от артефакта.
+    pinned = tmp_path / "pinned-roots.pem"
+    pinned.write_bytes(create_test_authority("ООО Ромашка (тестовый издатель)").ca_pem())
+    with pytest.raises(AuthentiCodeError) as excinfo:
+        verify_authenticode(
+            target,
+            expected_publisher="EVIL Corp (attacker)",
+            require_timestamp=False,
+            trust_roots=load_pem_certificates(pinned),
+        )
+    assert excinfo.value.code == "untrusted_root"

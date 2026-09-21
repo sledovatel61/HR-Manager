@@ -241,6 +241,28 @@ def check_workflows() -> None:
     for path in sorted(WORKFLOWS.glob("*.yml")):
         check_no_backtick_fence(path)
 
+def check_no_self_referential_trust(path: Path, code: str) -> None:
+    """Доверенные якоря Authenticode не должны браться из проверяемого файла.
+
+    Если в --trust-roots положить сертификат подписанта, извлечённый из той же
+    подписи, проверка цепочки становится тавтологией: _verify_chain сразу
+    возвращает успех, когда DER листа есть среди корней. Подтверждено PoC —
+    посторонний самоподписанный издатель проходил chain_verified=true и
+    timestamp_chain_verified=true даже при --require-timestamp.
+    """
+    for lineno, line in enumerate(code.splitlines(), 1):
+        if "$signature." not in line:
+            continue
+        lowered = line.lower()
+        if "export-hrmcertificatepem" in lowered or "--trust-roots" in lowered or (
+            "--timestamp-roots" in lowered
+        ):
+            fail(
+                f"{path}:{lineno}: сертификат из подписи нельзя использовать как "
+                "доверенный якорь (тавтологическая проверка цепочки)"
+            )
+
+
 def main() -> int:
     engine_files = (
         sorted(WINDOWS.glob("*.ps1"))
@@ -259,6 +281,7 @@ def main() -> int:
     installer_files = sorted((ROOT / "installer").glob("*.ps1"))
     for path in installer_files:
         check_installer_script(path)
+        check_no_self_referential_trust(path, _strip_ps_comments(path.read_text(encoding="utf-8-sig")))
     files = engine_files + test_files + installer_files
     for path in files:
         check_ps_encoding(path)
