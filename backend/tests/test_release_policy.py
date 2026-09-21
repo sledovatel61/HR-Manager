@@ -604,3 +604,23 @@ def test_forged_attestation_does_not_allow_publish_unsigned_or_modified_installe
         code in result_foreign.stderr
         for code in ("untrusted_root", "publisher_mismatch", "signtool_verification_failed")
     ), result_foreign.stderr
+
+
+def test_windows_json_artifacts_with_utf8_bom_are_accepted(tmp_path: Path) -> None:
+    """Windows PowerShell 5.1 пишет JSON с BOM: release-пайплайн обязан его читать.
+
+    Артефакты Windows-шага (release.json, authenticode-attestation.json) читаются
+    на ubuntu-шаге публикации; ``json.loads`` BOM не принимает, поэтому чтение
+    идёт через ``utf-8-sig``.
+    """
+    import publish_channel  # type: ignore[import-not-found]
+
+    payload = {"mode": "production", "signtool_verify_ok": True}
+    path = tmp_path / "attestation.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(payload).encode())
+    assert publish_channel._load_attestation(path) == payload
+    release_json = tmp_path / "release.json"
+    release_json.write_bytes(
+        b"\xef\xbb\xbf" + json.dumps({"version": "0.14.0", "release_sha": "a" * 40}).encode()
+    )
+    assert json.loads(publish_channel._read_text(release_json))["version"] == "0.14.0"

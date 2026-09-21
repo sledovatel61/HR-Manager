@@ -30,6 +30,7 @@ CLI:
     python infra/release/trust_store.py validate --file trust-store.json [--json]
     python infra/release/trust_store.py describe --file trust-store.json [--json]
     python infra/release/trust_store.py merge --current a.json --update b.json --out c.json
+    python infra/release/trust_store.py ci-contract [--file <fixture trusted_keys.json>]
 """
 
 from __future__ import annotations
@@ -265,6 +266,20 @@ def assert_no_fixture_keys(data: dict[str, dict], fixture_fingerprints: set[str]
             )
 
 
+def assert_no_revoked_keys(data: dict[str, dict]) -> None:
+    """Production/release-контракт: в наборе не должно быть отозванных ключей.
+
+    Используется и флагом ``validate --require-unrevoked``, и проверкой
+    CI-набора (которая обязана убедиться, что этот отказ по-прежнему работает).
+    """
+    for key_id, entry in data.items():
+        if entry.get("revoked") is True:
+            raise TrustStoreError(
+                "revoked_key_present",
+                f"ключ {key_id!r} отозван (revoked:true) — требуется набор без отозванных ключей",
+            )
+
+
 def keys_json_for_env(data: dict[str, dict]) -> str:
     """Компактная JSON-строка для переменной окружения/installer."""
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -277,13 +292,8 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         # Строгая production-проверка: ни один ключ не должен быть отозван.
         # Fixture-набор с revoked (для негативных тестов) намеренно содержит
         # отозванный ключ и не должен проверяться с этим флагом — CI проверяет
-        # его без флага, а production/release — с флагом.
-        for key_id, entry in data.items():
-            if entry.get("revoked") is True:
-                raise TrustStoreError(
-                    "revoked_key_present",
-                    f"ключ {key_id!r} отозван (revoked:true) — требуется набор без отозванных ключей",
-                )
+        # его подкомандой ``ci-contract``, а production/release — этим флагом.
+        assert_no_revoked_keys(data)
         validate_trust_store(data, allow_empty=False)
     if args.json:
         payload = {
@@ -318,6 +328,87 @@ def _cmd_merge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ci_contract(args: argparse.Namespace) -> int:
+    """Проверка CI-набора fixtures — отдельный контракт от production-политики.
+
+    Fixture-набор намеренно содержит ОТОЗВАННЫЙ ключ: на нём проверяются
+    негативные сценарии канала. Поэтому его нельзя проверять флагом
+    ``--require-unrevoked`` (тот описывает production/release-набор). Здесь
+    фиксируется ровно то, что обязан гарантировать CI:
+
+    1. файл проходит строгую схему trust store;
+    2. активный и отозванный ключи на месте и помечены верно;
+    3. production-политика по-прежнему ОТКАЗЫВАЕТ этому набору — и по отзыву
+       (``--require-unrevoked``), и по fixture-отпечаткам
+       (``assert_no_fixture_keys``). То есть ослабления production-политики
+       ради зелёного CI не произошло.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    file_path = Path(args.file) if args.file else (
+        repo_root / "infra" / "release" / "testdata" / "trusted_keys.json"
+    )
+    data = load_trust_store_file(file_path)
+
+    described = {entry["key_id"]: entry for entry in describe_trust_store(data)}
+    expected = {
+        args.active_key_id: False,
+        args.revoked_key_id: True,
+    }
+    for key_id, revoked in expected.items():
+        entry = described.get(key_id)
+        if entry is None:
+            raise TrustStoreError(
+                "ci_fixture_missing_key",
+                f"в CI-наборе нет ключа {key_id!r}: негативные сценарии останутся без проверки",
+            )
+        if entry["revoked"] is not revoked:
+            raise TrustStoreError(
+                "ci_fixture_bad_revoked_flag",
+                f"ключ {key_id!r}: revoked={entry['revoked']!r}, ожидалось {revoked!r}",
+            )
+
+    # Production-инвариант 1: набор с отозванным ключом не проходит строгую
+    # production-проверку (та же функция, что и у --require-unrevoked).
+    try:
+        assert_no_revoked_keys(data)
+    except TrustStoreError as exc:
+        if exc.code != "revoked_key_present":
+            raise
+        print(f"production policy: набор с отозванным ключом отклонён ({exc})")
+    else:
+        raise TrustStoreError(
+            "ci_fixture_not_production_rejected",
+            "CI-набор прошёл бы --require-unrevoked: отозванный ключ исчез из fixture",
+        )
+
+    # Production-инвариант 2: тестовые ключи репозитория не бывают доверенными.
+    try:
+        assert_no_fixture_keys(data, fixture_key_fingerprints(repo_root))
+    except TrustStoreError as exc:
+        if exc.code != "fixture_key_in_production":
+            raise
+        print(f"production policy: fixture-ключи отклонены ({exc})")
+    else:
+        raise TrustStoreError(
+            "ci_fixture_accepted_by_production",
+            "CI-набор принят production-политикой: fixture-ключи попали в доверенные",
+        )
+
+    raw_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
+    payload = {
+        "ok": True,
+        "file": str(file_path),
+        "file_sha256": raw_sha256,
+        "sha256": trust_store_sha256(data),
+        "keys": describe_trust_store(data),
+        "production_rejects_this_set": True,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    # Одна строка для записи в GITHUB_ENV без разбора JSON в PowerShell.
+    print(f"TRUST_STORE_SHA256={raw_sha256}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 14 trust store tooling")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -332,6 +423,15 @@ def main(argv: list[str] | None = None) -> int:
     describe.add_argument("--file", required=True)
     describe.add_argument("--json", action="store_true")
     describe.set_defaults(func=_cmd_describe)
+
+    ci_contract = sub.add_parser(
+        "ci-contract",
+        help="проверить CI-набор fixtures (и что production-политика его отклоняет)",
+    )
+    ci_contract.add_argument("--file", default="")
+    ci_contract.add_argument("--active-key-id", dest="active_key_id", default="pilot-test-key")
+    ci_contract.add_argument("--revoked-key-id", dest="revoked_key_id", default="pilot-revoked-key")
+    ci_contract.set_defaults(func=_cmd_ci_contract)
 
     merge = sub.add_parser("merge", help="ротация: старый набор + новый набор")
     merge.add_argument("--current", required=True)
