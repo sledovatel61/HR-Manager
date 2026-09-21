@@ -451,11 +451,15 @@ jobs:
         run: |
           $ErrorActionPreference = "Continue"
           $logFile = Join-Path $env:RUNNER_TEMP "build.log"
-          if (-not (Test-Path $logFile)) { Write-Host "No build log at $logFile"; exit 0 }
-          $content = Get-Content $logFile -Raw
-          if ($content.Length -gt 60000) { $content = $content.Substring(0, 60000) + "`n...truncated" }
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Build log`n```text`n$content`n```"
-          Write-Host "Build log posted to the job summary"
+          if (Test-Path $logFile) {
+            $content = Get-Content $logFile -Raw
+            if ($content.Length -gt 60000) { $content = $content.Substring(0, 60000) + "`n...truncated" }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Build log`n```text`n$content`n```"
+            Write-Host "Build log posted to the job summary"
+          }
+          else {
+            Write-Host "No build log at $logFile (сборка не запускалась)"
+          }
 
       - name: Authenticode-sign with ephemeral test certificate (never production)
         shell: pwsh
@@ -507,10 +511,15 @@ jobs:
         run: |
           $ErrorActionPreference = "Continue"
           $logFile = Join-Path $env:RUNNER_TEMP "authenticode.log"
-          if (-not (Test-Path $logFile)) { Write-Host "No authenticode log at $logFile"; exit 0 }
-          $content = Get-Content $logFile -Raw
-          if ($content.Length -gt 60000) { $content = $content.Substring(0, 60000) + "`n...truncated" }
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Authenticode log`n```text`n$content`n```"
+          if (Test-Path $logFile) {
+            $content = Get-Content $logFile -Raw
+            if ($content.Length -gt 60000) { $content = $content.Substring(0, 60000) + "`n...truncated" }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Authenticode log`n```text`n$content`n```"
+            Write-Host "Authenticode log posted to the job summary"
+          }
+          else {
+            Write-Host "No authenticode log at $logFile (подпись не запускалась)"
+          }
 
       - name: Upload Authenticode logs and attestation
         if: always()
