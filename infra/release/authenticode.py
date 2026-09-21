@@ -278,9 +278,15 @@ def extract_pkcs7_blob(data: bytes, pe: PeInfo) -> bytes:
 class SignedDataInfo:
     econtent_type: str
     econtent: bytes
+    econtent_raw: bytes
     certificates: list[x509.Certificate]
     signer_info: Node
     raw: bytes
+
+
+def _tlv_of(content: bytes) -> bytes:
+    """TLV-обёртка содержимого [0] (диагностика интерпретаций eContent)."""
+    return encode_tlv(TAG_CONTEXT0, content)
 
 
 def _unwrap_content(node: Node) -> bytes:
@@ -362,6 +368,7 @@ def parse_signed_data(data: bytes) -> SignedDataInfo:
     return SignedDataInfo(
         econtent_type=econtent_type,
         econtent=econtent,
+        econtent_raw=encap_items[1].content,
         certificates=certificates,
         signer_info=signer_info,
         raw=data,
@@ -774,12 +781,25 @@ def _verify_authenticode_inner(
         # начало байтов: без полных логов джоба это единственный способ понять,
         # что именно прочитано не так. Секретов здесь нет — только публичная
         # структура подписи.
+        candidates = {
+            "econtent": signed_data.econtent,
+            "encap0_raw": signed_data.econtent_raw,
+            "encap0_tlv": _tlv_of(signed_data.econtent_raw),
+        }
+        if signed_data.econtent_raw[:1] == b"\x04":
+            candidates["octet_string_tlv"] = signed_data.econtent_raw
+        matched = [
+            label
+            for label, blob in candidates.items()
+            if _digest_of(blob, outcome.digest_algorithm_oid) == declared_digest
+        ]
         raise AuthentiCodeError(
             "bad_signature",
             "messageDigest подписанных атрибутов не совпал с содержимым подписи: "
             f"declared={declared_digest.hex()} computed={computed_content_digest.hex()} "
             f"oid={outcome.digest_algorithm_oid} econtent_len={len(signed_data.econtent)} "
-            f"econtent_head={signed_data.econtent[:32].hex()}",
+            f"encap0_raw_len={len(signed_data.econtent_raw)} matched={matched or 'none'} "
+            f"pkcs7_b64={base64.b64encode(signed_data.raw).decode()}",
         )
     spc_digest, spc_digest_oid = _parse_authenticode_content(signed_data.econtent)
     computed = pe_authenticode_digest(data, pe, _DIGESTS[spc_digest_oid])
