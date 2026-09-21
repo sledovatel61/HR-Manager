@@ -64,6 +64,7 @@ from der import (  # noqa: E402
     encode_tlv,
     encode_utc_time,
     parse_all,
+    read_tlv,
 )
 
 OID_INDIVIDUAL_CODE_SIGNING = "1.3.6.1.4.1.311.2.1.21"
@@ -358,8 +359,13 @@ def build_signed_pkcs7(
     pe = parse_pe(pe_bytes)
     pe_digest = pe_authenticode_digest(pe_bytes, pe, hashes.SHA256())
     spc = _spc_indirect_data(pe_digest)
+    # signtool кладёт в messageDigest хеш ТЕЛА SpcIndirectDataContent — без
+    # заголовка SEQUENCE, — а не всего TLV. Подтверждено разбором реальной
+    # подписи установщика: sha256(spc[2:]) совпадает с атрибутом messageDigest,
+    # sha256(spc) — нет. Тестовый подписант обязан повторять эталонную
+    # реализацию, иначе независимый верификатор нельзя сверять с signtool.
     spc_digest = hashes.Hash(hashes.SHA256())
-    spc_digest.update(spc)
+    spc_digest.update(read_tlv(spc, 0)[0].content)
 
     attributes = b"".join(
         [
