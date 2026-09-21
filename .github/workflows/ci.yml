@@ -481,6 +481,38 @@ jobs:
           }
           Write-Host "Post step done"
 
+      - name: Comment Build log on PR
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const logPath = path.join(process.env.TEMP || process.env.RUNNER_TEMP || '/tmp', 'build.log');
+            let content = '';
+            try {
+              if (fs.existsSync(logPath)) {
+                content = fs.readFileSync(logPath, 'utf8');
+                if (content.length > 50000) content = content.slice(0, 50000) + '\n...truncated';
+              } else {
+                // Try alternative TEMP
+                const alt = require('child_process').execSync('powershell -Command \"Write-Host $env:TEMP\"', {encoding: 'utf8'}).trim();
+                const altPath = path.join(alt, 'build.log');
+                if (fs.existsSync(altPath)) content = fs.readFileSync(altPath, 'utf8');
+                else content = 'No build.log found at ' + logPath + ' nor ' + altPath;
+              }
+            } catch (e) { content = 'Error reading log: ' + e.message; }
+            const body = `Build log for ${process.env.GITHUB_SHA} (run ${process.env.GITHUB_RUN_ID}):\n\`\`\`\n${content}\n\`\`\``;
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: 24,
+                body: body
+              });
+              console.log('Posted PR comment');
+            } catch (e) { console.log('Failed to post comment: ' + e.message); }
+
       - name: Authenticode-sign with ephemeral test certificate (never production)
         shell: powershell
         run: |
