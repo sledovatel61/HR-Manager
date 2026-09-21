@@ -68,7 +68,12 @@ param(
     [string]$TrustStoreFile = "",
     [string]$AttestationPath = "",
     [string]$RootsPath = "",
-    [string]$VerificationPath = ""
+    [string]$VerificationPath = "",
+    # Доверенные якоря, заданные ВНЕ проверяемого файла. Без них проверка
+    # цепочки вырождается в тавтологию: если корни взять из самой подписи,
+    # её примет любой самоподписанный сертификат.
+    [string]$SignerRootsPath = "",
+    [string]$TimestampRootsPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -84,6 +89,14 @@ if (-not (Test-Path $SetupExe)) { throw "Setup.exe не найден: $SetupExe"
 if (-not $AttestationPath) { $AttestationPath = Join-Path $installerDir "authenticode-attestation.json" }
 if (-not $RootsPath) { $RootsPath = Join-Path $installerDir "authenticode-roots.pem" }
 if (-not $VerificationPath) { $VerificationPath = Join-Path $installerDir "authenticode-verification.json" }
+if ($Mode -eq "production") {
+    # Production обязан проверять цепочку до заранее закреплённого корня.
+    # Корни из самой подписи здесь запрещены: это не проверка, а тавтология.
+    if (-not $SignerRootsPath) { throw "production: нужен -SignerRootsPath (закреплённый корень издателя)" }
+    if (-not (Test-Path $SignerRootsPath)) { throw "production: -SignerRootsPath не найден: $SignerRootsPath" }
+    if (-not $TimestampRootsPath) { throw "production: нужен -TimestampRootsPath (закреплённый корень TSA)" }
+    if (-not (Test-Path $TimestampRootsPath)) { throw "production: -TimestampRootsPath не найден: $TimestampRootsPath" }
+}
 
 function Write-HrmUtf8NoBom {
     # Python-часть release-пайплайна читает JSON через json.loads без BOM-фильтра:
@@ -349,10 +362,35 @@ try {
         throw ("production: издатель сертификата '{0}' не совпал с ожидаемым" -f $publisher)
     }
 
-    # 3. Публичная цепочка для независимой проверки вне Windows.
-    $chainCerts = @($signature.SignerCertificate)
-    if ($signature.TimeStamperCertificate) { $chainCerts += $signature.TimeStamperCertificate }
-    Export-HrmCertificatePem -Certificates $chainCerts -Path $RootsPath
+    # 3. Доверенные якоря для независимой проверки вне Windows.
+    #    ЯКОРЬ НЕ БЕРЁТСЯ ИЗ ПРОВЕРЯЕМОГО ФАЙЛА. $signature.SignerCertificate —
+    #    это сертификат из самой подписи: положив его в --trust-roots, мы
+    #    разрешаем любому самоподписанному сертификату «доводить цепочку до
+    #    доверенного корня». Проверено PoC: посторонний издатель проходил
+    #    chain_verified=true и timestamp_chain_verified=true при --require-timestamp.
+    #    Поэтому:
+    #      test       — корень, созданный ЭТИМ запуском ($testCertificate), он
+    #                   известен независимо от файла и доказывает, что подписано
+    #                   именно нашим ephemeral-сертификатом;
+    #      production — закреплённые владельцем PEM'ы из -SignerRootsPath /
+    #                   -TimestampRootsPath.
+    if ($Mode -eq "production") {
+        $trustRootsFile = $SignerRootsPath
+        $timestampRootsFile = $TimestampRootsPath
+        # Артефакт фиксирует, КАКОЙ якорь использован (аудит), и не содержит
+        # сертификата подписанта.
+        Write-HrmUtf8NoBom -Path $RootsPath -Text ([System.IO.File]::ReadAllText(
+            $SignerRootsPath, [System.Text.Encoding]::UTF8))
+        Write-Host "Trust roots: pinned by the operator ($SignerRootsPath)"
+    }
+    else {
+        if ($null -eq $testCertificate) { throw "test: ephemeral-сертификат не создан" }
+        Export-HrmCertificatePem -Certificates @($testCertificate) -Path $RootsPath
+        $trustRootsFile = $RootsPath
+        $timestampRootsFile = ""
+        Write-Host ("Trust roots: ephemeral test certificate {0} (создан этим запуском)" -f `
+            $testCertificate.Thumbprint)
+    }
 
     # 4. Независимая проверка: Authenticode-хеш PE + CMS + цепочка до корня.
     #    Не зависит от системного Root trust, поэтому одинаково строга в обоих
@@ -361,9 +399,12 @@ try {
     $verifier = Join-Path (Join-Path $repoRoot "infra") (Join-Path "release" "authenticode.py")
     if (-not (Test-Path $verifier)) { throw "независимый верификатор не найден: $verifier" }
     $pythonCommand = @(Get-HrmPython)
-    $verifyArgs = @($verifier, "verify", "--file", $SetupExe, "--trust-roots", $RootsPath,
+    $verifyArgs = @($verifier, "verify", "--file", $SetupExe, "--trust-roots", $trustRootsFile,
         "--expected-publisher", $publisher, "--json-out", $VerificationPath)
-    if ($Mode -eq "production") { $verifyArgs += "--require-timestamp" }
+    if ($Mode -eq "production") {
+        # Явно: корни TSA не наследуются от корней издателя.
+        $verifyArgs += @("--require-timestamp", "--timestamp-roots", $timestampRootsFile)
+    }
     $pythonExe = [string]$pythonCommand[0]
     $pythonPrefix = @()
     if ($pythonCommand.Count -gt 1) { $pythonPrefix = @($pythonCommand[1..($pythonCommand.Count - 1)]) }
