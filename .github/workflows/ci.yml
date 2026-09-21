@@ -418,7 +418,7 @@ jobs:
           Write-Host "Test done"
 
       - name: Build HR Manager Setup.exe
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
           Write-Host "=== Build diagnostics ==="
@@ -464,7 +464,7 @@ jobs:
 
       - name: Post Build log to PR summary on failure
         if: always()
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
           $logFile = Join-Path $env:RUNNER_TEMP "build.log"
