@@ -351,12 +351,11 @@ def _cmd_ci_contract(args: argparse.Namespace) -> int:
     # (Get-FileHash) до вызова инструмента, и требует, чтобы инструмент
     # прочитал ровно тот же файл. Расхождение — отказ (fail closed).
     raw_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
-    if args.expected_sha256:
-        if raw_sha256.lower() != str(args.expected_sha256).strip().lower():
-            raise TrustStoreError(
-                "ci_fixture_sha_mismatch",
-                f"SHA256 trust store не совпал: файл={raw_sha256} ожидался={args.expected_sha256}",
-            )
+    if args.expected_sha256 and raw_sha256.lower() != str(args.expected_sha256).strip().lower():
+        raise TrustStoreError(
+            "ci_fixture_sha_mismatch",
+            f"SHA256 trust store не совпал: файл={raw_sha256} ожидался={args.expected_sha256}",
+        )
     data = load_trust_store_file(file_path)
 
     described = {entry["key_id"]: entry for entry in describe_trust_store(data)}
@@ -384,7 +383,9 @@ def _cmd_ci_contract(args: argparse.Namespace) -> int:
     except TrustStoreError as exc:
         if exc.code != "revoked_key_present":
             raise
-        print(f"production policy: набор с отозванным ключом отклонён ({exc})")
+        # ASCII-only: вывод идёт в pipe под cp1252 на Windows-раннере,
+        # кириллица вызвала бы UnicodeEncodeError и ложный отказ CI.
+        print("production policy: set with a revoked key was rejected (expected for CI fixture)")
     else:
         raise TrustStoreError(
             "ci_fixture_not_production_rejected",
@@ -397,7 +398,7 @@ def _cmd_ci_contract(args: argparse.Namespace) -> int:
     except TrustStoreError as exc:
         if exc.code != "fixture_key_in_production":
             raise
-        print(f"production policy: fixture-ключи отклонены ({exc})")
+        print("production policy: repository fixture keys were rejected (expected)")
     else:
         raise TrustStoreError(
             "ci_fixture_accepted_by_production",
@@ -412,7 +413,9 @@ def _cmd_ci_contract(args: argparse.Namespace) -> int:
         "keys": describe_trust_store(data),
         "production_rejects_this_set": True,
     }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    # ensure_ascii (по умолчанию True): вывод должен оставаться чистым ASCII —
+    # под cp1252-консолью Windows-раннера кириллица в pipe = UnicodeEncodeError.
+    print(json.dumps(payload, indent=2))
     # Одна строка для записи в GITHUB_ENV без разбора JSON в PowerShell.
     print(f"TRUST_STORE_SHA256={raw_sha256}")
     return 0

@@ -74,6 +74,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
+# Независимый верификатор (authenticode.py) печатает не-ASCII символы в stdout;
+# под cp1252-локалью windows-latest python в pipe бросает UnicodeEncodeError.
+$env:PYTHONIOENCODING = "utf-8"
+
 $installerDir = $PSScriptRoot
 $repoRoot = Split-Path $installerDir -Parent
 if (-not $Version) { throw "нужен -Version" }

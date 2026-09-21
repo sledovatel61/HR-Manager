@@ -323,6 +323,23 @@ def test_ci_contract_fails_if_the_revoked_fixture_disappears(
     assert "revoked" in capsys.readouterr().err.lower()
 
 
+def test_ci_contract_stdout_is_ascii_safe(capsys: pytest.CaptureFixture[str]) -> None:
+    """Stdout обязан быть чистым ASCII.
+
+    На windows-latest python пишет stdout в pipe с cp1252-кодировкой:
+    кириллица вызывала UnicodeEncodeError и ложный отказ CI-шага
+    (run 35601710181). Регрессия: любой не-ASCII символ в stdout падает.
+    """
+    import trust_store
+
+    assert trust_store.main(["ci-contract", "--file", str(FIXTURE_STORE)]) == 0
+    printed = capsys.readouterr().out
+    try:
+        printed.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise AssertionError(f"ci-contract печатает не-ASCII в stdout: {exc!r}") from exc
+
+
 def test_ci_contract_accepts_independently_computed_sha256(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

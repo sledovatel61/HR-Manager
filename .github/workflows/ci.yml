@@ -382,6 +382,9 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          # Python пишет stdout в pipe: без UTF-8 под cp1252-локалью
+          # windows-latest любая кириллица в выводе = UnicodeEncodeError.
+          $env:PYTHONIOENCODING = "utf-8"
           Write-Host "=== Trust store: CI fixture contract (Phase 14) ==="
           $trustStorePath = "infra/release/testdata/trusted_keys.json"
           if (-not (Test-Path $trustStorePath)) { throw "trust store not found: $trustStorePath" }
@@ -582,6 +585,9 @@ jobs:
       - name: Phase 14 pilot drill (Windows engine update/rollback/resume/uninstall)
         shell: powershell
         run: |
+          # Python пишет stdout в pipe: без UTF-8 под cp1252-локалью
+          # windows-latest не-ASCII символы в выводе = UnicodeEncodeError.
+          $env:PYTHONIOENCODING = "utf-8"
           python infra/scripts/pilot_drill.py --out-dir drill --steps windows-engine
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
