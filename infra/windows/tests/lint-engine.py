@@ -206,6 +206,41 @@ def check_ps_encoding(path: Path) -> None:
         fail(f"{path}: нет UTF-8 BOM — PowerShell 5.1 прочитает кириллицу как ANSI и не распарсит файл")
 
 
+FENCE_RE = re.compile(r"`{3,}")
+# Одинарные строки в PowerShell не обрабатывают escape-последовательности,
+# поэтому $fence = '```' — единственная безопасная форма ограждения.
+PS_SINGLE_QUOTED_RE = re.compile(r"'(?:[^']|'')*'")
+
+
+def check_no_backtick_fence(path: Path) -> None:
+    """Запретить ``` в PowerShell-коде (в т.ч. в `run:` шагах workflow).
+
+    Внутри двойной строки PowerShell разбирает ```text` как: `n -> LF, `` ->
+    литерал, `t -> TAB, а завершающая ```" -> экранированная кавычка. Строка
+    остаётся незакрытой, парсер роняет ВЕСЬ шаг с «Process completed with exit
+    code 1» без внятной аннотации. Markdown-ограждение в job summary нужно
+    собирать из одинарных кавычек: $fence = '```'.
+    """
+    for lineno, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        # Ограждение внутри одинарных кавычек безопасно — вырезаем такие строки
+        # перед поиском, чтобы не наказывать корректную форму $fence = '```'.
+        if FENCE_RE.search(PS_SINGLE_QUOTED_RE.sub("''", line)):
+            fail(
+                f"{path}:{lineno}: ``` в PowerShell-коде ломает строковые литералы — "
+                "ограждение кода собирайте из одинарных кавычек ($fence = '```')"
+            )
+
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+
+def check_workflows() -> None:
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        check_no_backtick_fence(path)
+
 def main() -> int:
     engine_files = (
         sorted(WINDOWS.glob("*.ps1"))
@@ -227,6 +262,8 @@ def main() -> int:
     files = engine_files + test_files + installer_files
     for path in files:
         check_ps_encoding(path)
+        check_no_backtick_fence(path)
+    check_workflows()
     # Секреты-литералы.
     patterns = [
         "AdminAdmin123",

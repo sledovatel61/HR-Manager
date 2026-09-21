@@ -78,6 +78,12 @@ jobs:
   windows-installer:
     name: Build and Authenticode-sign Windows installer
     runs-on: windows-latest
+    env:
+      # sign.ps1/build.ps1 вызываются через Windows PowerShell 5.1 и дёргают
+      # release-CLI; без UTF-8 русский вывод Python кодируется в кодовой
+      # странице консоли и падает с UnicodeEncodeError вместо внятной ошибки.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
     # environment владельца: secrets + required reviewers для подписи.
     environment: update-channel-signing
     steps:
