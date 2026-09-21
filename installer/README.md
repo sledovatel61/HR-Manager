@@ -120,13 +120,33 @@ installer/
   приватным материалом отвергается до сборки.
 - `sign.ps1 -Mode test` подписывает installer ephemeral тестовым
   сертификатом (только CI/PR, без секретов) и пишет
-  `authenticode-attestation.json` + `authenticode-roots.pem`.
+  `authenticode-attestation.json`, `authenticode-roots.pem` и
+  `authenticode-verification.json`. Test-сертификат создаётся только в
+  `Cert:\CurrentUser\My` и **не** добавляется в `Root`/`TrustedPublisher`:
+  на GitHub-hosted runner такое добавление показывает диалог подтверждения и
+  висит до таймаута job'а. Поэтому Windows честно не доверяет цепочке —
+  это единственная причина, которую test-режим принимает, и она фиксируется
+  в attestation как `signtool_verify_ok=false` / `windows_chain_trusted=false`.
+  Любая другая причина (`HashMismatch`, `NotSigned`, несовместимый формат)
+  остаётся отказом. Криптография при этом проверяется по-настоящему:
+  `infra/release/authenticode.py verify` пересчитывает Authenticode-хеш PE,
+  проверяет CMS-подпись и доводит цепочку до экспортированного корня.
+  Production policy такой релиз не пропускает: `mode="test"`.
 - `sign.ps1 -Mode production -PfxPath <pfx> -ExpectedPublisher <издатель>
   -TimestampUrl <RFC3161> -TrustStoreFile <файл>` требует пароль PFX только
   из переменной окружения `HRM_AUTHENTICODE_PFX_PASSWORD`, выполняет
   `signtool sign /fd SHA256 /tr /td SHA256` и обязательно проверяет
-  `signtool verify /pa /all`, наличие метки времени и совпадение издателя.
-  Пароль и ключ никогда не попадают в командную строку, логи и артефакты.
+  `signtool verify /pa`, статус `Valid`, наличие метки времени, совпадение
+  издателя и независимую проверку `infra/release/authenticode.py` с
+  `--require-timestamp`. Пароль и ключ никогда не попадают в командную
+  строку, логи и артефакты.
+- `sign.ps1` всегда завершается явным кодом возврата (0 — подпись выполнена и
+  проверена, 1 — отказ). Без этого `$LASTEXITCODE` вызывающей стороны
+  оставался от `signtool verify`, и CI считал успешную подпись провалом.
+- Оба скрипта требуют `python` в PATH: `build.ps1` — нет, `sign.ps1` — да
+  (независимый верификатор). JSON-артефакты пишутся UTF-8 **без BOM**:
+  `Set-Content -Encoding UTF8` в Windows PowerShell 5.1 добавляет BOM, а
+  Python-часть release-пайплайна читает их через `json.loads`.
 - Production-релиз `publish_channel.py --release-mode production` отказывается
   публиковаться, если installer не подписан, метка времени отсутствует,
   издатель не совпал или trust store в attestation отличается от релизного.

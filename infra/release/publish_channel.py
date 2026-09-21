@@ -93,6 +93,17 @@ class PolicyError(ChannelError):
     """Нарушение production-политики выпуска."""
 
 
+def _read_text(path: Path) -> str:
+    """Текст JSON-файла, терпимый к BOM.
+
+    Windows PowerShell 5.1 пишет ``Set-Content -Encoding UTF8`` с BOM, а
+    ``json.loads`` BOM не принимает. Release-артефакты (release.json,
+    authenticode-attestation.json, trust store) создаются на Windows-шаге,
+    поэтому читаем их как ``utf-8-sig`` — так же, как trust_store.py.
+    """
+    return path.read_text(encoding="utf-8-sig")
+
+
 def _read_private_key(path: Path) -> str:
     text = path.read_text(encoding="utf-8").strip()
     if "-----BEGIN" in text:  # PEM (OpenSSL): конвертируем в hex
@@ -118,7 +129,7 @@ def _load_public_keys(value: str) -> dict:
     candidate = value.strip()
     path = Path(candidate)
     if path.is_file():
-        candidate = path.read_text(encoding="utf-8")
+        candidate = _read_text(path)
     data = json.loads(candidate)
     if not isinstance(data, dict) or not data:
         raise ChannelError("bad_key_set", "набор публичных ключей пуст или не объект")
@@ -168,7 +179,7 @@ def _prepare_snapshot(snapshot: Path, staging_root: Path) -> Path:
 
 def _load_attestation(path: Path) -> dict:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_read_text(path))
     except FileNotFoundError as exc:
         raise PolicyError(
             "missing_authenticode_attestation",
@@ -356,7 +367,7 @@ def main() -> int:
 
         snapshot = Path(args.snapshot)
         release_json = snapshot / "release.json"
-        release_data = json.loads(release_json.read_text(encoding="utf-8"))
+        release_data = json.loads(_read_text(release_json))
         if release_data.get("version") != args.version:
             raise ChannelError(
                 "bad_release_json", f"release.json version={release_data.get('version')!r}"
