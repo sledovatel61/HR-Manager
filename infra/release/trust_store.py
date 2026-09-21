@@ -409,7 +409,25 @@ def _cmd_ci_contract(args: argparse.Namespace) -> int:
     return 0
 
 
+def _force_utf8_stdio() -> None:
+    """Гарантировать UTF-8 в stdout/stderr независимо от кодовой страницы ОС.
+
+    На Windows-раннере (ANSI 1252/437) перенаправленный stdout Python кодируется
+    в кодовой странице консоли, и любой русский текст в выводе CLI падает с
+    UnicodeEncodeError и кодом 1 — даже когда сама проверка прошла. CI читает
+    вывод через PowerShell, то есть именно перенаправленным.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):  # pragma: no cover - защита от экзотики
+            pass
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_stdio()
     parser = argparse.ArgumentParser(description="Phase 14 trust store tooling")
     sub = parser.add_subparsers(dest="command", required=True)
 

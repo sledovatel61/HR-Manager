@@ -12,6 +12,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -367,3 +369,45 @@ def test_load_trust_store_tolerates_utf8_bom(tmp_path: Path) -> None:
         + json.dumps({"pilot-release-2026": {"key": PUBLIC_KEY_A, "revoked": False}}).encode()
     )
     assert load_trust_store_file(path)["pilot-release-2026"]["key"] == PUBLIC_KEY_A
+
+
+def _run_cli_cp1252(*args: str) -> subprocess.CompletedProcess[bytes]:
+    """Прогнать release-CLI в окружении Windows-кодовой страницы cp1252.
+
+    Так ведёт себя перенаправленный stdout Python на windows-latest (cp1252/437):
+    CI ловит вывод через PowerShell, поэтому без явного UTF-8 любой русский текст
+    падал с UnicodeEncodeError и кодом 1, хотя сама проверка прошла успешно.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "cp1252"
+    env["PYTHONUTF8"] = "0"
+    return subprocess.run(
+        [sys.executable, str(RELEASE / "trust_store.py"), *args],
+        capture_output=True,
+        env=env,
+        timeout=120,
+        check=False,
+    )
+
+
+FIXTURE_STORE = RELEASE / "testdata" / "trusted_keys.json"
+
+
+def test_ci_contract_survives_windows_code_page() -> None:
+    result = _run_cli_cp1252("ci-contract", "--file", str(FIXTURE_STORE))
+    stdout = result.stdout.decode("utf-8", errors="strict")
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert "UnicodeEncodeError" not in result.stderr.decode("utf-8", "replace")
+    # Русский отчёт production-политики обязан дойти до лога целиком.
+    assert "production policy" in stdout
+    assert "production_rejects_this_set" in stdout
+    assert f"TRUST_STORE_SHA256={hashlib.sha256(FIXTURE_STORE.read_bytes()).hexdigest()}" in stdout
+
+
+def test_require_unrevoked_failure_message_survives_windows_code_page() -> None:
+    """Отказ production-политики обязан печататься, а не падать на кодировке."""
+    result = _run_cli_cp1252("validate", "--file", str(FIXTURE_STORE), "--require-unrevoked")
+    stderr = result.stderr.decode("utf-8", errors="strict")
+    assert result.returncode == 1
+    assert "revoked_key_present" in stderr
+    assert "UnicodeEncodeError" not in stderr

@@ -334,6 +334,12 @@ jobs:
   windows-installer:
     name: Windows engine tests + installer smoke
     runs-on: windows-latest
+    env:
+      # Python на Windows кодирует перенаправленный stdout в кодовой странице
+      # консоли (cp1252/cp437); русские сообщения release-CLI тогда падают с
+      # UnicodeEncodeError и кодом 1, хотя сама проверка прошла.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
     permissions:
       contents: read
     steps:
@@ -377,6 +383,18 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          # Python пишет UTF-8 (PYTHONUTF8=1); научим PowerShell 5.1 так же его
+          # декодировать, иначе в логе будет кракозябра вместо русского текста.
+          # Косметика, поэтому под try/catch: на раннере без консольного хендла
+          # сеттер бросает IOException, а падать из-за этого шаг не должен.
+          # Ключевая строка TRUST_STORE_SHA256= — чистый ASCII, она парсится
+          # одинаково в любой кодовой странице.
+          try {
+            [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+          }
+          catch {
+            Write-Host "Console.OutputEncoding не переключён: $($_.Exception.Message)"
+          }
           Write-Host "=== Trust store: CI fixture contract (Phase 14) ==="
           $trustStorePath = "infra/release/testdata/trusted_keys.json"
           if (-not (Test-Path $trustStorePath)) { throw "trust store not found: $trustStorePath" }
@@ -454,7 +472,12 @@ jobs:
           if (Test-Path $logFile) {
             $content = Get-Content $logFile -Raw
             if ($content.Length -gt 60000) { $content = $content.Substring(0, 60000) + "`n...truncated" }
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Build log`n```text`n$content`n```"
+            # Ограждение кода собираем из одинарных кавычек: в двойной строке
+            # PowerShell последовательность ```" разбирается как экранированная
+            # кавычка, и строка остаётся незакрытой (parse error на весь шаг).
+            $fence = '```'
+            $body = "### Build log" + "`n" + $fence + "text" + "`n" + $content + "`n" + $fence
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $body
             Write-Host "Build log posted to the job summary"
           }
           else {
@@ -514,7 +537,12 @@ jobs:
           if (Test-Path $logFile) {
             $content = Get-Content $logFile -Raw
             if ($content.Length -gt 60000) { $content = $content.Substring(0, 60000) + "`n...truncated" }
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Authenticode log`n```text`n$content`n```"
+            # Ограждение кода собираем из одинарных кавычек: в двойной строке
+            # PowerShell последовательность ```" разбирается как экранированная
+            # кавычка, и строка остаётся незакрытой (parse error на весь шаг).
+            $fence = '```'
+            $body = "### Authenticode log" + "`n" + $fence + "text" + "`n" + $content + "`n" + $fence
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $body
             Write-Host "Authenticode log posted to the job summary"
           }
           else {
