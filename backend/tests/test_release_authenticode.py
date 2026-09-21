@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import hashes
 
 REPO = Path(__file__).resolve().parents[2]
 RELEASE = REPO / "infra" / "release"
@@ -33,7 +34,9 @@ sys.path.insert(0, str(RELEASE))
 
 from authenticode import (  # type: ignore[import-not-found]  # noqa: E402
     AuthentiCodeError,
+    PeInfo,
     extract_pkcs7_blob,
+    load_pem_certificates,
     parse_pe,
     pe_authenticode_digest,
     verify_authenticode,
@@ -239,6 +242,85 @@ def test_pe_digest_ignores_certificate_table_and_checksum(authority: EphemeralAu
     # Подпись добавляет только таблицу сертификатов: Authenticode-хеш не меняется.
     assert before == after
     assert extract_pkcs7_blob(signed, parse_pe(signed))
+
+
+def _spec_regions(data: bytes, pe: PeInfo) -> list[tuple[int, int]]:
+    """Независимая реализация алгоритма Microsoft (без дополнения нулями).
+
+    Регионы повторяют документированные шаги: от начала до CheckSum, пропуск
+    4 байт, до записи Certificate Table, пропуск 8 байт, до начала таблицы
+    сертификатов и от её конца до EOF. Никаких нулевых хвостов.
+    """
+    end_of_body = pe.cert_table_offset if pe.has_certificate_table else len(data)
+    regions = [
+        (0, pe.checksum_offset),
+        (pe.checksum_offset + 4, pe.cert_entry_offset),
+        (pe.cert_entry_offset + 8, end_of_body),
+    ]
+    if pe.has_certificate_table:
+        regions.append((pe.cert_table_offset + pe.cert_table_size, len(data)))
+    return regions
+
+
+def _spec_digest(data: bytes, pe: PeInfo) -> bytes:
+    hasher = hashes.Hash(hashes.SHA256())
+    for start, end in _spec_regions(data, pe):
+        hasher.update(data[start:end])
+    return hasher.finalize()
+
+
+@pytest.mark.parametrize("trailing", [b"", b"\x00" * 8, b"\x00" * 16])
+def test_pe_digest_matches_spec_without_zero_padding(
+    authority: EphemeralAuthority, trailing: bytes
+) -> None:
+    """Authenticode-хеш обязан совпадать с документированным алгоритмом.
+
+    Регрессия: прежняя реализация дополняла хешируемую часть нулями до границы
+    8 байт. Round-trip с `sign_test_pe` этого не ловил (подписант считал хеш той
+    же функцией), а реальный `signtool.exe` — ловил сразу: на CI-раннере для
+    HR-Manager-Setup-0.13.0.exe подписанный digest был 4c64684e…, тогда как
+    дополненный нулями — d7b7725b… (см. docs/phase-14-report-arena.md).
+    """
+    signed = sign_test_pe(make_test_pe(b"HRM-TEST-PE-BODY-FOR-CI"), authority) + trailing
+    pe = parse_pe(signed)
+    hashed_length = sum(end - start for start, end in _spec_regions(signed, pe))
+    # Геометрия обязана быть «неудобной»: иначе тест не отличает implementations.
+    assert hashed_length % 8 != 0, "нужна не кратная 8 длина хешируемой части"
+    assert pe_authenticode_digest(signed, pe, hashes.SHA256) == _spec_digest(signed, pe)
+    # И явно: дополненный нулями вариант даёт ДРУГОЙ хеш (то есть не принимается).
+    padded = hashes.Hash(hashes.SHA256())
+    for start, end in _spec_regions(signed, pe):
+        padded.update(signed[start:end])
+    padded.update(b"\x00" * (8 - hashed_length % 8))
+    assert padded.finalize() != pe_authenticode_digest(signed, pe, hashes.SHA256)
+
+
+def test_verify_accepts_signature_over_pe_with_non_aligned_hashed_length(
+    tmp_path: Path, authority: EphemeralAuthority
+) -> None:
+    """End-to-end: подпись принимается, когда длина образа не кратна 8.
+
+    Это сценарий реального установщика (signtool.exe), который прежняя версия
+    с нулевым дополнением отвергала как `digest_mismatch`.
+    """
+    signed = sign_test_pe(make_test_pe(b"HRM-TEST-PE-BODY-FOR-CI"), authority)
+    pe = parse_pe(signed)
+    hashed_length = sum(end - start for start, end in _spec_regions(signed, pe))
+    assert hashed_length % 8 != 0
+    target = tmp_path / "HR-Manager-Setup-aligned.exe"
+    target.write_bytes(signed)
+    roots = tmp_path / "roots.pem"
+    roots.write_bytes(authority.ca_pem())
+    report = verify_authenticode(
+        target,
+        expected_publisher=PUBLISHER,
+        require_timestamp=True,
+        trust_roots=load_pem_certificates(roots),
+        timestamp_roots=load_pem_certificates(roots),
+    )
+    assert report["signed"] is True
+    assert report["chain_verified"] is True
+    assert report["timestamp_present"] is True
 
 
 def test_cli_refuses_test_signing_without_explicit_flag(tmp_path: Path) -> None:
