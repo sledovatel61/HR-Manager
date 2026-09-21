@@ -59,6 +59,7 @@ from der import (  # noqa: E402
     expect,
     parse_all,
     parse_one,
+    read_tlv,
 )
 
 # --- OID, встречающиеся в Authenticode -----------------------------------------
@@ -237,7 +238,23 @@ def extract_pkcs7_blob(data: bytes, pe: PeInfo) -> bytes:
                 "bad_certificate_table", f"неподдерживаемая revision: 0x{revision:04x}"
             )
         if cert_type == 0x0002:  # WIN_CERT_TYPE_PKCS_SIGNED_DATA
-            records.append(data[offset + 8 : offset + length])
+            raw = data[offset + 8 : offset + length]
+            # WIN_CERTIFICATE.CertData дополняется нулями до границы 8 байт,
+            # при этом signtool включает это дополнение в dwLength записи.
+            # Обрезаем ровно до фактической длины верхнеуровневого DER-элемента:
+            # при dwLength без дополнения (наши тестовые фикстуры) срез
+            # ничего не меняет, при дополненном — отбрасывает нулевой хвост.
+            # Хвост безопасен для игнорирования: Authenticode-хеш образа
+            # таблицу сертификатов (целиком) не покрывает.
+            try:
+                _node, consumed = read_tlv(raw, 0)
+            except DerError as exc:
+                raise AuthentiCodeError("bad_pkcs7", f"некорректный DER подписи: {exc}") from exc
+            if consumed != len(raw) and any(raw[consumed:]):
+                raise AuthentiCodeError(
+                    "bad_certificate_table", "за записью WIN_CERTIFICATE следуют не-нулевые байты"
+                )
+            records.append(raw[:consumed])
         offset += (length + 7) & ~7  # записи выровнены по 8 байт
     if not records:
         raise AuthentiCodeError("unsigned", "PKCS#7-подпись в таблице сертификатов не найдена")

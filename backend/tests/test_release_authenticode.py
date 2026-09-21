@@ -358,3 +358,81 @@ def test_report_contains_no_private_material(
     assert base64.b64encode(private_der).decode() not in rendered
     assert "PRIVATE KEY" not in rendered
     assert private_pem.splitlines()[0] not in rendered
+
+
+# --- WIN_CERTIFICATE в стиле signtool.exe (padded dwLength) -------------------
+
+
+def _rebuild_record_signtool_style(pe: bytes, pad_tail: bytes) -> bytes:
+    """Пересобирает таблицу сертификатов так, как это делает signtool.exe:
+
+    dwLength записи WIN_CERTIFICATE включает нулевое (в тесте — заданное)
+    дополнение CertData до 8-байтовой границы, а запись лежит в конце файла.
+    Таблица в Authenticode-хеше не участвует, поэтому digest не меняется.
+    """
+    from der import read_tlv  # type: ignore[import-not-found]
+
+    info = parse_pe(pe)
+    assert info.has_certificate_table
+    offset = info.cert_table_offset
+    assert offset == len(pe) - info.cert_table_size, "фикстура: таблица в конце файла"
+    raw = pe[offset + 8 : offset + info.cert_table_size]
+    _node, consumed = read_tlv(bytes(raw), 0)
+    pkcs7 = raw[:consumed]
+    base = 8 + len(pkcs7)
+    pad = (8 - base % 8) % 8 or 8  # гарантированно непустое дополнение
+    if pad < len(pad_tail):
+        pad += 8
+    assert len(pad_tail) <= pad
+    new_len = base + pad
+    record = (
+        new_len.to_bytes(4, "little")
+        + (0x0200).to_bytes(2, "little")
+        + (0x0002).to_bytes(2, "little")
+        + pkcs7
+        + pad_tail
+        + b"\x00" * (pad - len(pad_tail))
+    )
+    assert len(record) == new_len
+    data = pe[:offset] + record
+    entry = info.cert_entry_offset
+    data = data[: entry + 4] + new_len.to_bytes(4, "little") + data[entry + 8 :]
+    return data
+
+
+def test_verify_accepts_signtool_padded_win_certificate(
+    tmp_path: Path, authority: EphemeralAuthority
+) -> None:
+    """signtool включает нулевое дополнение CertData в dwLength.
+
+    Раньше верификатор передавал DER-парсеру хвост из нулей и падал
+    bad_pkcs7 («лишние байты») на настоящем installer'е (CI run
+    35604060573). Теперь DER обрезается ровно до фактической длины.
+    """
+    pe = sign_test_pe(make_test_pe(), authority)
+    padded = _rebuild_record_signtool_style(pe, b"")
+    path = tmp_path / "signtool-style.exe"
+    path.write_bytes(padded)
+    result = verify_authenticode(
+        path,
+        expected_publisher=PUBLISHER,
+        require_timestamp=True,
+        trust_roots=[authority.ca_certificate],
+        timestamp_roots=[authority.ca_certificate],
+    )
+    assert result["signed"] is True
+    assert result["chain_verified"] is True
+    assert result["publisher_match"] is True
+
+
+def test_verify_rejects_nonzero_tail_in_win_certificate(
+    tmp_path: Path, authority: EphemeralAuthority
+) -> None:
+    """Не-нулевые байты после DER-элемента не могут молча игнорироваться."""
+    pe = sign_test_pe(make_test_pe(), authority)
+    bad = _rebuild_record_signtool_style(pe, b"\x01")
+    path = tmp_path / "bad-tail.exe"
+    path.write_bytes(bad)
+    with pytest.raises(AuthentiCodeError) as exc:
+        verify_authenticode(path, trust_roots=[authority.ca_certificate])
+    assert exc.value.code in {"bad_certificate_table", "digest_mismatch"}
