@@ -560,6 +560,15 @@ jobs:
             installer/authenticode-roots.pem
           if-no-files-found: warn
 
+      - name: Upload signed installer for Authenticode diagnosis
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signed-installer-diagnostic
+          path: |
+            installer/output/HR-Manager-Setup-*.exe
+          if-no-files-found: warn
+
       - name: Silent install and uninstall smoke
         shell: powershell
         run: |
