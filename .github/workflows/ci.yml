@@ -519,9 +519,50 @@ jobs:
         shell: pwsh
         timeout-minutes: 10
         run: |
-          Write-Host "Running sign.ps1 in test mode..."
-          & ./installer/sign.ps1 -Mode test -Version 0.13.0 -TrustStoreFile infra/release/testdata/trusted_keys.json
-          Write-Host "sign.ps1 completed with exit code $LASTEXITCODE" 
+          $logFile = Join-Path $env:RUNNER_TEMP "authenticode.log"
+          if (-not $logFile -or -not $env:RUNNER_TEMP) { $logFile = Join-Path $env:TEMP "authenticode.log" }
+          Write-Host "Logging Authenticode to $logFile"
+          & ./installer/sign.ps1 -Mode test -Version 0.13.0 -TrustStoreFile infra/release/testdata/trusted_keys.json 2>&1 | Tee-Object -FilePath $logFile -Encoding utf8
+          $code = $LASTEXITCODE
+          Write-Host "sign.ps1 exit code: $code"
+          if (Test-Path $logFile) { Write-Host "=== authenticode log ==="; Get-Content $logFile | Write-Host } else { Write-Host "No log file at $logFile" }
+          if ($code -ne 0) { throw "sign.ps1 failed with code $code" }
+
+      - name: Post Authenticode log to PR summary
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $logFile = Join-Path $env:RUNNER_TEMP "authenticode.log"
+          if (-not $logFile -or -not $env:RUNNER_TEMP) { $logFile = Join-Path $env:TEMP "authenticode.log" }
+          if (Test-Path $logFile) {
+            $content = Get-Content $logFile -Raw
+            if ($content.Length -gt 50000) { $content = $content.Substring(0,50000) + "`n...truncated" }
+            try { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Authenticode log`n``````n$content`n``````" } catch { Write-Host "summary write failed: $_" }
+          } else { Write-Host "No authenticode log at $logFile" }
+
+      - name: Comment Authenticode log on PR
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const logPath = path.join(process.env.RUNNER_TEMP || process.env.TEMP || '/tmp', 'authenticode.log');
+            let content = '';
+            try {
+              if (fs.existsSync(logPath)) {
+                content = fs.readFileSync(logPath, 'utf8');
+                if (content.length > 50000) content = content.slice(0,50000) + '\n...truncated';
+              } else {
+                content = 'No authenticode.log found at ' + logPath;
+              }
+            } catch (e) { content = 'Error reading log: ' + e.message; }
+            const body = `Authenticode log for ${process.env.GITHUB_SHA} (run ${process.env.GITHUB_RUN_ID}):\n\`\`\`\n${content}\n\`\`\``;
+            try {
+              await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: 24, body: body});
+              console.log('Posted Authenticode PR comment');
+            } catch (e) { console.log('Failed: ' + e.message); }
 
       - name: Silent install and uninstall smoke
         shell: powershell
