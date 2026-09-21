@@ -435,7 +435,7 @@ jobs:
           $logFile = Join-Path $env:TEMP "build.log"
           Write-Host "Logging to $logFile"
           Write-Host "Command: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256"
-          powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256 2>&1 | Tee-Object -FilePath $logFile
+          powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256 2>&1 | Tee-Object -FilePath $logFile -Encoding utf8
           $code = $LASTEXITCODE
           Write-Host "build.ps1 exit code: $code"
           if (Test-Path $logFile) { Write-Host "=== build log ==="; Get-Content $logFile | Write-Host }
@@ -443,7 +443,7 @@ jobs:
             Write-Host "=== First attempt failed, retrying with actual SHA ==="
             $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
             Write-Host "Retry with actual SHA: $actualSha"
-            powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $actualSha 2>&1 | Tee-Object -FilePath $logFile -Append
+            powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $actualSha 2>&1 | Tee-Object -FilePath $logFile -Encoding utf8 -Append
             $code2 = $LASTEXITCODE
             Write-Host "Retry exit code: $code2"
             if (Test-Path $logFile) { Write-Host "=== retry log ==="; Get-Content $logFile | Write-Host }
