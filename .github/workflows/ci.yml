@@ -366,65 +366,54 @@ jobs:
       - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
         run: |
-          $ErrorActionPreference = "Continue"
-          Write-Host "=== Minimal test ==="
-          Write-Host "Hello from PowerShell"
-          Write-Host "GITHUB_ENV is $env:GITHUB_ENV"
-          Write-Host "Test-Path infra/release/testdata/trusted_keys.json: $(Test-Path 'infra/release/testdata/trusted_keys.json')"
-          Write-Host "Test-Path infra\release\testdata\trusted_keys.json: $(Test-Path 'infra\release\testdata\trusted_keys.json')"
-          try { Get-Content 'infra/release/testdata/trusted_keys.json' | Write-Host } catch { Write-Host "Get-Content failed: $_" }
-          try { $sha = (Get-FileHash -Path 'infra/release/testdata/trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant(); Write-Host "SHA via /: $sha" } catch { Write-Host "Get-FileHash / failed: $_" }
-          try { $sha2 = (Get-FileHash -Path 'infra\release\testdata\trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant(); Write-Host "SHA via \: $sha2" } catch { Write-Host "Get-FileHash \ failed: $_" }
-          # Try to write to GITHUB_ENV
+          $ErrorActionPreference = "Stop"
+          Set-StrictMode -Version Latest
+          Write-Host "=== Validate trust store (Phase 14) ==="
+          $trustStorePath = "infra/release/testdata/trusted_keys.json"
+          if (-not (Test-Path $trustStorePath)) { throw "trust store not found: $trustStorePath" }
+          Write-Host "Test-Path ok: $trustStorePath"
+          Get-Content $trustStorePath | Write-Host
+          $sha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "SHA256: $sha"
           try {
-            $testSha = "abc123"
-            [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$testSha`n", (New-Object System.Text.UTF8Encoding $false))
-            Write-Host "AppendAllText succeeded"
-            Get-Content $env:GITHUB_ENV | Select-String "TRUST_STORE_SHA256" | Write-Host
-          } catch { Write-Host "AppendAllText failed: $_" }
-          Write-Host "Minimal test done"
-          # Now do real SHA
-          try {
-            $realSha = (Get-FileHash -Path 'infra/release/testdata/trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant()
-            [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$realSha`n", (New-Object System.Text.UTF8Encoding $false))
-            Write-Host "Real SHA written: $realSha"
-          } catch { Write-Host "Real SHA failed: $_"; throw }
-          Write-Host "Validate minimal succeeded" 
+            python -c "import sys, json, pathlib; sys.path.insert(0,'infra/release'); from trust_store import trust_store_sha256, describe_trust_store; data=json.loads(pathlib.Path('infra/release/testdata/trusted_keys.json').read_text()); print('trust_store_sha256 from python:', trust_store_sha256(data)); print(describe_trust_store(data))"
+          } catch { Write-Host "python trust_store check: $_" }
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$sha`n", (New-Object System.Text.UTF8Encoding $false))
+          Write-Host "Written TRUST_STORE_SHA256=$sha to GITHUB_ENV"
+          Get-Content $env:GITHUB_ENV | Select-String "TRUST_STORE" | Write-Host
+          Write-Host "Validate succeeded" 
 
       - name: Build HR Manager Setup.exe
         shell: powershell
         run: |
           $ErrorActionPreference = "Continue"
           Write-Host "=== Build diagnostics ==="
-          Write-Host "TRUST_STORE_SHA256 env: $env:TRUST_STORE_SHA256"
-          Write-Host "Test-Path trusted_keys.json: $(Test-Path 'infra/release/testdata/trusted_keys.json')"
-          if (Test-Path 'infra/release/testdata/trusted_keys.json') {
-            Get-Content 'infra/release/testdata/trusted_keys.json' | Write-Host
-            $actualSha = (Get-FileHash -Path 'infra/release/testdata/trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "TRUST_STORE_SHA256 env: '$env:TRUST_STORE_SHA256'"
+          $trustStorePath = "infra/release/testdata/trusted_keys.json"
+          Write-Host "Test-Path ${trustStorePath}: $(Test-Path $trustStorePath)"
+          if (Test-Path $trustStorePath) {
+            Get-Content $trustStorePath | Write-Host
+            $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
             Write-Host "Actual SHA: $actualSha"
-            Write-Host "Expected SHA: $env:TRUST_STORE_SHA256"
-            if ($actualSha -ne $env:TRUST_STORE_SHA256.ToLowerInvariant()) {
-              Write-Host "SHA mismatch! Will still try build with actual SHA"
-            }
+            Write-Host "Expected SHA env: '$env:TRUST_STORE_SHA256'"
           }
-          Write-Host "=== Running build.ps1 ==="
-          # Try with explicit error capture
-          $buildOut = Join-Path $env:TEMP "build_out.log"
-          $buildErr = Join-Path $env:TEMP "build_err.log"
-          $proc = Start-Process -FilePath "powershell" -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File","installer/build.ps1","-Version","0.13.0","-TrustStoreFile","infra/release/testdata/trusted_keys.json","-TrustStoreSha256",$env:TRUST_STORE_SHA256 -Wait -PassThru -NoNewWindow -RedirectStandardOutput $buildOut -RedirectStandardError $buildErr
-          Write-Host "Build exit code: $($proc.ExitCode)"
-          if (Test-Path $buildOut) { Write-Host "=== build stdout ==="; Get-Content $buildOut | Write-Host }
-          if (Test-Path $buildErr) { Write-Host "=== build stderr ==="; Get-Content $buildErr | Write-Host }
-          if ($proc.ExitCode -ne 0) {
-            Write-Host "=== build.ps1 failed, trying with actual SHA ==="
-            $actualSha = (Get-FileHash -Path 'infra/release/testdata/trusted_keys.json' -Algorithm SHA256).Hash.ToLowerInvariant()
-            $proc2 = Start-Process -FilePath "powershell" -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File","installer/build.ps1","-Version","0.13.0","-TrustStoreFile","infra/release/testdata/trusted_keys.json","-TrustStoreSha256",$actualSha -Wait -PassThru -NoNewWindow -RedirectStandardOutput $buildOut -RedirectStandardError $buildErr
-            Write-Host "Retry exit code: $($proc2.ExitCode)"
-            if (Test-Path $buildOut) { Get-Content $buildOut | Write-Host }
-            if (Test-Path $buildErr) { Get-Content $buildErr | Write-Host }
-            if ($proc2.ExitCode -ne 0) { throw "build.ps1 failed with $($proc2.ExitCode)" }
+          Write-Host "=== Running installer/build.ps1 ==="
+          Write-Host "Command: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256"
+          powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256
+          $code = $LASTEXITCODE
+          Write-Host "build.ps1 exit code: $code"
+          if ($code -ne 0) {
+            Write-Host "=== First attempt failed, retrying with actual SHA ==="
+            $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host "Retry with actual SHA: $actualSha"
+            powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $actualSha
+            $code2 = $LASTEXITCODE
+            Write-Host "Retry exit code: $code2"
+            if ($code2 -ne 0) { throw "build.ps1 failed both attempts: first $code, retry $code2" }
           }
           Write-Host "Build succeeded"
+          Get-ChildItem installer/output -Recurse | ForEach-Object { Write-Host $_.FullName }
+          if (Test-Path installer/release-manifest.json) { Get-Content installer/release-manifest.json | Write-Host }
 
       - name: Authenticode-sign with ephemeral test certificate (never production)
         shell: powershell
