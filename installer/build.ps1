@@ -73,11 +73,27 @@ if ($hash -ne $InnoSha256.ToLowerInvariant()) {
 }
 Write-Host "Inno Setup 6.7.3 SHA256 verified."
 $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
+Write-Host "Checking ISCC at $iscc : $(Test-Path $iscc)"
 if (-not (Test-Path $iscc)) {
-    Write-Host "Installing Inno Setup silently (build machine only)…"
+    Write-Host "ISCC not at default, searching for ISCC.exe..."
+    try {
+      $found = Get-ChildItem -Path "C:\Program Files*" -Recurse -Filter "ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($found) { $iscc = $found.FullName; Write-Host "Found ISCC at $iscc" }
+      else { Write-Host "ISCC not found via search, will try install" }
+    } catch { Write-Host "Search failed: $_" }
+}
+if (-not (Test-Path $iscc)) {
+    Write-Host "Installing Inno Setup silently (build machine only)..."
     $p = Start-Process -FilePath $innoExe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER" -Wait -PassThru
     if ($p.ExitCode -ne 0) { throw "Inno Setup install failed: $($p.ExitCode)" }
+    Write-Host "Install completed, checking again $iscc : $(Test-Path $iscc)"
+    if (-not (Test-Path $iscc)) {
+      # Try alternative location after install (Program Files)
+      $found2 = Get-ChildItem -Path "C:\Program Files*" -Recurse -Filter "ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($found2) { $iscc = $found2.FullName; Write-Host "Found after install at $iscc" }
+    }
 }
+Write-Host "Final ISCC path: $iscc exists $(Test-Path $iscc)"
 
 $appStaging = Join-Path $stagingDir "app"
 New-Item -ItemType Directory -Path $appStaging -Force | Out-Null
