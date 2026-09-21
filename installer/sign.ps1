@@ -369,7 +369,21 @@ try {
     if ($pythonCommand.Count -gt 1) { $pythonPrefix = @($pythonCommand[1..($pythonCommand.Count - 1)]) }
     $verifyPy = Invoke-HrmNative -FilePath $pythonExe -Arguments (@($pythonPrefix) + $verifyArgs) -Label "verify"
     if ($verifyPy.ExitCode -ne 0) {
-        throw ("независимая проверка Authenticode не прошла (код {0})" -f $verifyPy.ExitCode)
+        # Причина обязана доехать до check-runs: полные логи джоба доступны не
+        # всегда, а ::error с кодом и detail читается из аннотаций.
+        $reason = "отчёт верификатора отсутствует"
+        if (Test-Path $VerificationPath) {
+            try {
+                $failure = [System.IO.File]::ReadAllText($VerificationPath, [System.Text.Encoding]::UTF8) |
+                    ConvertFrom-Json
+                $reason = ("{0}: {1}" -f $failure.error_code, $failure.error_detail)
+            }
+            catch { Write-Host "отчёт верификатора не разобран: $($_.Exception.Message)" }
+        }
+        $tail = (($verifyPy.Output -split "`r?`n") |
+            Where-Object { $_.Trim().Length -gt 0 } | Select-Object -Last 5) -join " | "
+        throw ("независимая проверка Authenticode не прошла (код {0}); {1}; вывод верификатора: {2}" -f `
+            $verifyPy.ExitCode, $reason, $tail)
     }
     if (-not (Test-Path $VerificationPath)) {
         throw "независимый верификатор не создал отчёт: $VerificationPath"
