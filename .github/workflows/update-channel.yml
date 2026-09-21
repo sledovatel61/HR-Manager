@@ -394,6 +394,7 @@ jobs:
           KEY_ID: ${{ secrets.UPDATE_CHANNEL_KEY_ID }}
           TRUSTED_KEYS: ${{ secrets.UPDATE_CHANNEL_PUBLIC_KEYS }}
           AUTHENTICODE_ROOTS: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS }}
+          AUTHENTICODE_TIMESTAMP_ROOTS: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS }}
         run: |
           set -euo pipefail
           : "${SIGNING_KEY:?UPDATE_CHANNEL_SIGNING_KEY secret is required}"
@@ -402,7 +403,11 @@ jobs:
           printf '%s' "$SIGNING_KEY" > /tmp/update-channel-signing.key
           printf '%s' "$TRUSTED_KEYS" > /tmp/update-channel-trusted-keys.json
           : "${AUTHENTICODE_ROOTS:?UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS is required}"
+          : "${AUTHENTICODE_TIMESTAMP_ROOTS:?UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS is required}"
           printf '%s' "$AUTHENTICODE_ROOTS" > /tmp/publish-authenticode-roots.pem
+          # Корень TSA отдельно: signer CA и TSA CA в production независимы,
+          # их повтор друг в друге отклонил бы корректную метку времени.
+          printf '%s' "$AUTHENTICODE_TIMESTAMP_ROOTS" > /tmp/publish-authenticode-timestamp-roots.pem
           setup_exe="$(ls dist/channel/installer/output/HR-Manager-Setup-*.exe | head -1)"
           python3 infra/release/publish_channel.py \
             --snapshot "$SNAPSHOT" \
@@ -418,9 +423,11 @@ jobs:
             --installer "$setup_exe" \
             --authenticode-attestation dist/channel/installer/authenticode-attestation.json \
             --authenticode-roots /tmp/publish-authenticode-roots.pem \
+            --authenticode-timestamp-roots /tmp/publish-authenticode-timestamp-roots.pem \
             --expected-publisher "$EXPECTED_PUBLISHER" \
             --out-dir dist/channel
-          rm -f /tmp/update-channel-signing.key /tmp/publish-authenticode-roots.pem
+          rm -f /tmp/update-channel-signing.key /tmp/publish-authenticode-roots.pem \
+            /tmp/publish-authenticode-timestamp-roots.pem
 
       - name: Independent Ed25519 verification with the client-trusted key
         env:

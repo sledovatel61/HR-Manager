@@ -663,29 +663,95 @@ def load_pem_certificates(path: Path) -> list[x509.Certificate]:
     return certificates
 
 
+def _is_ca_certificate(certificate: x509.Certificate) -> bool:
+    """BasicConstraints cA=TRUE — обязательное условие для издателя/корня."""
+    try:
+        extension = certificate.extensions.get_extension_for_class(x509.BasicConstraints)
+    except x509.ExtensionNotFound:
+        return False
+    return bool(extension.value.ca)
+
+
+def _can_sign_certificates(certificate: x509.Certificate) -> bool:
+    """keyCertSign в KeyUsage. Отсутствие KeyUsage по RFC 5280 не запрещает подпись."""
+    try:
+        extension = certificate.extensions.get_extension_for_class(x509.KeyUsage)
+    except x509.ExtensionNotFound:
+        return True
+    return bool(extension.value.key_cert_sign)
+
+
+def _assert_trustworthy_issuer(certificate: x509.Certificate, role: str) -> None:
+    """Издатель/корень обязан быть CA с правом подписывать сертификаты."""
+    if not _is_ca_certificate(certificate):
+        raise AuthentiCodeError(
+            "issuer_not_ca",
+            f"{role} {certificate.subject.rfc4514_string()} не является CA "
+            "(нет BasicConstraints cA=TRUE)",
+        )
+    if not _can_sign_certificates(certificate):
+        raise AuthentiCodeError(
+            "issuer_cannot_sign_certificates",
+            f"{role} {certificate.subject.rfc4514_string()} не имеет keyCertSign в KeyUsage",
+        )
+
+
 def _verify_chain(
     certificate: x509.Certificate,
     intermediates: list[x509.Certificate],
     roots: list[x509.Certificate],
     at: datetime,
+    *,
+    allow_leaf_anchor: bool = False,
 ) -> None:
-    """Минимальная проверка цепочки: подписи, сроки, доведение до корня."""
-    root_ders = {root.public_bytes(serialization.Encoding.DER) for root in roots}
+    """Проверка цепочки: подписи, сроки, CA-ограничения, доведение до корня.
+
+    ``allow_leaf_anchor`` разрешает закрепить в качестве якоря ровно тот
+    самоподписанный leaf-сертификат, которым подписан файл. Это нужно только
+    test-режиму CI (эфемерный сертификат без CA-бита) и никогда не применяется
+    в production: там якорь обязан быть CA из защищённого release input.
+    """
+    if not roots:
+        raise AuthentiCodeError(
+            "empty_trust_roots",
+            "список доверенных корней пуст: цепочку не к чему доводить",
+        )
+    root_by_der = {
+        root.public_bytes(serialization.Encoding.DER): root for root in roots
+    }
     pool = list(intermediates) + list(roots)
+    leaf_der = certificate.public_bytes(serialization.Encoding.DER)
     current = certificate
-    seen = {current.serial_number}
+    seen = {leaf_der}
+    leaf_in_roots = False
     for _ in range(8):
         if current.not_valid_before_utc > at or current.not_valid_after_utc < at:
             raise AuthentiCodeError(
                 "certificate_expired",
                 f"сертификат {current.subject.rfc4514_string()} недействителен на момент {at.isoformat()}",
             )
-        if current.public_bytes(serialization.Encoding.DER) in root_ders:
-            return
+        current_der = current.public_bytes(serialization.Encoding.DER)
+        anchor = root_by_der.get(current_der)
+        if anchor is not None:
+            # Сам сертификат подписанта якорем не считается: «цепочка доведена до
+            # корня» через собственный leaf — тавтология. Исключение — явный
+            # leaf-пинн test-режима. Если же в наборе корней есть настоящий CA,
+            # цепочка честно достраивается до него (ниже).
+            if current_der == leaf_der:
+                if allow_leaf_anchor:
+                    # Точный пинн: якорь байт-в-байт совпадает с подписантом.
+                    # CA-бит здесь не требуется и не может быть — это и есть
+                    # самоподписанный эфемерный сертификат test-режима.
+                    return
+                leaf_in_roots = True
+            else:
+                _assert_trustworthy_issuer(anchor, "доверенный корень")
+                return
         candidates = [
             candidate
             for candidate in pool
-            if candidate.subject == current.issuer and candidate.serial_number not in seen
+            if candidate.subject == current.issuer
+            and candidate.public_bytes(serialization.Encoding.DER) not in seen
         ]
         signature_algorithm = _signature_algorithm(
             current.signature_algorithm_oid.dotted_string, current.signature_hash_algorithm
@@ -701,15 +767,23 @@ def _verify_chain(
                 )
             except AuthentiCodeError:
                 continue  # одноимённый, но не тот издатель — пробуем следующий
+            _assert_trustworthy_issuer(candidate, "издатель")
             issuer = candidate
             break
         if issuer is None:
+            if leaf_in_roots:
+                raise AuthentiCodeError(
+                    "leaf_as_trust_anchor",
+                    f"единственный «корень» в наборе — сам сертификат подписанта "
+                    f"{certificate.subject.rfc4514_string()}: это тавтология, а не "
+                    "проверка цепочки. Нужен CA-корень из защищённого release input",
+                )
             raise AuthentiCodeError(
                 "untrusted_root",
                 f"цепочка сертификатов не доводится до доверенного корня: "
                 f"{current.issuer.rfc4514_string()}",
             )
-        seen.add(issuer.serial_number)
+        seen.add(issuer.public_bytes(serialization.Encoding.DER))
         current = issuer
     raise AuthentiCodeError("untrusted_root", "слишком длинная цепочка сертификатов")
 
@@ -722,6 +796,7 @@ def verify_authenticode(
     at: datetime | None = None,
     trust_roots: list[x509.Certificate] | None = None,
     timestamp_roots: list[x509.Certificate] | None = None,
+    allow_leaf_anchor: bool = False,
 ) -> dict:
     """Полная проверка Authenticode-подписи файла (fail closed).
 
@@ -736,6 +811,7 @@ def verify_authenticode(
             at=at,
             trust_roots=trust_roots,
             timestamp_roots=timestamp_roots,
+            allow_leaf_anchor=allow_leaf_anchor,
         )
     except DerError as exc:
         raise AuthentiCodeError("bad_pkcs7", f"некорректная структура подписи: {exc}") from exc
@@ -749,6 +825,7 @@ def _verify_authenticode_inner(
     at: datetime | None = None,
     trust_roots: list[x509.Certificate] | None = None,
     timestamp_roots: list[x509.Certificate] | None = None,
+    allow_leaf_anchor: bool = False,
 ) -> dict:
     data = path.read_bytes()
     if not data:
@@ -870,11 +947,17 @@ def _verify_authenticode_inner(
 
     # 5. Доверие: проверка цепочки только при явно переданных корнях.
     chain_verified: bool | None = None
-    if trust_roots:
-        _verify_chain(signer, signed_data.certificates, trust_roots, at or datetime.now(UTC))
+    if trust_roots is not None:
+        _verify_chain(
+            signer,
+            signed_data.certificates,
+            trust_roots,
+            at or datetime.now(UTC),
+            allow_leaf_anchor=allow_leaf_anchor,
+        )
         chain_verified = True
     timestamp_chain_verified: bool | None = None
-    if timestamp_info["present"] and timestamp_roots:
+    if timestamp_info["present"] and timestamp_roots is not None:
         _verify_chain(
             timestamp_info["certificate"],
             timestamp_info["certificates"],
@@ -915,6 +998,16 @@ def _verify_authenticode_inner(
 
 def _cmd_verify(args: argparse.Namespace) -> int:
     trust_roots = load_pem_certificates(Path(args.trust_roots)) if args.trust_roots else None
+    # Корни TSA не наследуются от корней издателя молча: signer CA и TSA CA в
+    # production независимы, а неявный повтор превращает проверку метки времени
+    # в тавтологию. При --require-timestamp якорь TSA обязателен.
+    if args.require_timestamp and not args.timestamp_roots:
+        print(
+            "ОШИБКА[missing_timestamp_roots]: --require-timestamp требует "
+            "--timestamp-roots (корень TSA не наследуется от корня издателя)",
+            file=sys.stderr,
+        )
+        return 1
     timestamp_roots = (
         load_pem_certificates(Path(args.timestamp_roots)) if args.timestamp_roots else trust_roots
     )
@@ -926,6 +1019,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
             at=_parse_at(args.at),
             trust_roots=trust_roots,
             timestamp_roots=timestamp_roots,
+            allow_leaf_anchor=args.allow_leaf_anchor,
         )
     except AuthentiCodeError as exc:
         # Отказ обязан быть машиночитаемым: вызывающая сторона (sign.ps1) кладёт
@@ -988,6 +1082,12 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--require-timestamp", action="store_true")
     verify.add_argument("--trust-roots", default=None, help="PEM с доверенными корнями")
     verify.add_argument("--timestamp-roots", default=None, help="PEM с корнями TSA")
+    verify.add_argument(
+        "--allow-leaf-anchor",
+        action="store_true",
+        help="ТОЛЬКО test-режим CI: якорь может совпадать с leaf-сертификатом "
+        "подписанта. В production запрещён — якорь обязан быть CA.",
+    )
     verify.add_argument("--at", default=None, help="ISO-время проверки (по умолчанию now UTC)")
     verify.add_argument("--json", action="store_true")
     verify.add_argument("--json-out", default=None)

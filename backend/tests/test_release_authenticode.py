@@ -531,38 +531,94 @@ def test_message_digest_hashes_spc_body_not_tlv(source: str, authority: Ephemera
 
 
 def test_trust_roots_must_come_from_outside_the_artifact(tmp_path: Path) -> None:
-    """Якорь доверия, взятый из самой подписи, делает проверку тавтологией.
+    """Якорь доверия не берётся из проверяемого файла.
 
-    `_verify_chain` немедленно возвращает успех, когда DER подписанта есть среди
-    корней. Поэтому «экспортировать SignerCertificate в --trust-roots» — это не
-    проверка цепочки: так проходит любой самоподписанный издатель. Тест фиксирует
-    обе половины утверждения, чтобы паттерн нельзя было вернуть молча.
+    `_verify_chain` исторически возвращал успех, как только DER подписанта
+    оказывался среди корней, — то есть «цепочка доводится до корня» было
+    тавтологией. Теперь leaf-сертификат подписанта якорем не считается:
+    цепочка обязана достраиваться до настоящего CA-корня.
     """
     outsider = create_test_authority("EVIL Corp (attacker)")
     target = tmp_path / "outsider-signed.exe"
     target.write_bytes(sign_test_pe(make_test_pe(), outsider, with_timestamp=False))
 
-    # Тавтология: корень — это сертификат подписанта из того же файла.
+    # 1. Единственный «корень» — сам сертификат подписанта: тавтология, отказ.
     self_roots = tmp_path / "self-roots.pem"
     self_roots.write_bytes(outsider.leaf_certificate.public_bytes(serialization.Encoding.PEM))
-    tautology = verify_authenticode(
+    with pytest.raises(AuthentiCodeError) as tautology:
+        verify_authenticode(
+            target,
+            expected_publisher="EVIL Corp (attacker)",
+            require_timestamp=False,
+            trust_roots=load_pem_certificates(self_roots),
+        )
+    assert tautology.value.code == "leaf_as_trust_anchor"
+
+    # 2. Тот же leaf-пинн разрешён только явным opt-in (test-режим CI).
+    pinned_leaf = verify_authenticode(
         target,
         expected_publisher="EVIL Corp (attacker)",
         require_timestamp=False,
         trust_roots=load_pem_certificates(self_roots),
+        allow_leaf_anchor=True,
     )
-    assert tautology["chain_verified"] is True, (
-        "предусловие: тавтологический якорь действительно принимает"
-    )
+    assert pinned_leaf["chain_verified"] is True
 
-    # Корректная проверка: якорь задан независимо от артефакта.
+    # 3. Внешний CA-корень чужого издателя отвергает.
     pinned = tmp_path / "pinned-roots.pem"
     pinned.write_bytes(create_test_authority("ООО Ромашка (тестовый издатель)").ca_pem())
-    with pytest.raises(AuthentiCodeError) as excinfo:
+    with pytest.raises(AuthentiCodeError) as rejected:
         verify_authenticode(
             target,
             expected_publisher="EVIL Corp (attacker)",
             require_timestamp=False,
             trust_roots=load_pem_certificates(pinned),
         )
-    assert excinfo.value.code == "untrusted_root"
+    assert rejected.value.code == "untrusted_root"
+
+    # 4. Набор CA+leaf работает: цепочка доводится до CA, а не обрывается на leaf.
+    bundle = tmp_path / "bundle-roots.pem"
+    bundle.write_bytes(outsider.chain_pem())
+    assert (
+        verify_authenticode(
+            target,
+            expected_publisher="EVIL Corp (attacker)",
+            require_timestamp=False,
+            trust_roots=load_pem_certificates(bundle),
+        )["chain_verified"]
+        is True
+    )
+
+
+def test_trust_anchor_must_be_a_ca(tmp_path: Path) -> None:
+    """Не-CA сертификат не может ни завершать цепочку, ни быть издателем."""
+    authority = create_test_authority("HR Manager CA Check Publisher")
+    target = tmp_path / "signed.exe"
+    target.write_bytes(sign_test_pe(make_test_pe(), authority, with_timestamp=False))
+
+    # Корень без cA=TRUE: набор из одного такого сертификата — отказ.
+    not_ca = tmp_path / "not-ca-roots.pem"
+    not_ca.write_bytes(authority.leaf_certificate.public_bytes(serialization.Encoding.PEM))
+    with pytest.raises(AuthentiCodeError) as excinfo:
+        verify_authenticode(
+            target,
+            expected_publisher="HR Manager CA Check Publisher",
+            require_timestamp=False,
+            trust_roots=load_pem_certificates(not_ca),
+        )
+    assert excinfo.value.code == "leaf_as_trust_anchor"
+
+
+def test_empty_trust_roots_fail_closed(tmp_path: Path) -> None:
+    """Пустой набор корней — это отказ, а не «проверка не запрашивалась»."""
+    authority = create_test_authority("HR Manager Empty Roots Publisher")
+    target = tmp_path / "signed.exe"
+    target.write_bytes(sign_test_pe(make_test_pe(), authority, with_timestamp=False))
+    with pytest.raises(AuthentiCodeError) as excinfo:
+        verify_authenticode(
+            target,
+            expected_publisher="HR Manager Empty Roots Publisher",
+            require_timestamp=False,
+            trust_roots=[],
+        )
+    assert excinfo.value.code == "empty_trust_roots"

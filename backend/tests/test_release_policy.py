@@ -39,6 +39,7 @@ TESTDATA = RELEASE / "testdata"
 sys.path.insert(0, str(RELEASE))
 
 from sign_authenticode import (  # type: ignore[import-not-found]  # noqa: E402
+    EphemeralAuthority,
     create_test_authority,
     make_test_pe,
     sign_test_pe,
@@ -112,6 +113,9 @@ def production_inputs(tmp_path: Path) -> dict:
         "installer": installer,
         "attestation": attestation,
         "roots": roots,
+        # CI-фикстура честно одно-CA, поэтому корень TSA совпадает с корневым
+        # издателем. Раздельные CA покрыты отдельным тестом ниже.
+        "timestamp_roots": roots,
         "outside_roots": outside_roots,
         "trust_store": trust_store,
         "private_key": private_key,
@@ -163,6 +167,8 @@ def _run_production(
         str(attestation_path),
         "--authenticode-roots",
         str(inputs["roots"]),
+        "--authenticode-timestamp-roots",
+        str(inputs["timestamp_roots"]),
         "--trust-store",
         str(inputs["trust_store"]),
         *extra,
@@ -624,3 +630,126 @@ def test_windows_json_artifacts_with_utf8_bom_are_accepted(tmp_path: Path) -> No
         b"\xef\xbb\xbf" + json.dumps({"version": "0.14.0", "release_sha": "a" * 40}).encode()
     )
     assert json.loads(publish_channel._read_text(release_json))["version"] == "0.14.0"
+
+
+def _write_attestation(tmp_path: Path, attestation: dict) -> Path:
+    path = tmp_path / "two-ca-attestation.json"
+    path.write_text(json.dumps(attestation), encoding="utf-8")
+    return path
+
+
+def _two_ca_production_inputs(tmp_path: Path, *, tsa_root_reuse: bool) -> dict:
+    """Production-вход, где цепочка издателя и TSA выпущены РАЗНЫМИ CA.
+
+    Это нормальная production-схема: код подписывает CA вендора, метку времени
+    ставит сторонний TSA-оператор со своим центром доверия.
+    """
+    from cryptography.hazmat.primitives import hashes
+
+    signer_ca = create_test_authority(PUBLISHER)
+    tsa_ca = create_test_authority("Независимый TSA-оператор")
+    authority = EphemeralAuthority(
+        ca_certificate=signer_ca.ca_certificate,
+        ca_key=signer_ca.ca_key,
+        leaf_certificate=signer_ca.leaf_certificate,
+        leaf_key=signer_ca.leaf_key,
+        tsa_certificate=tsa_ca.tsa_certificate,
+        tsa_key=tsa_ca.tsa_key,
+        publisher=PUBLISHER,
+    )
+    installer = tmp_path / "HR-Manager-Setup-0.14.0.exe"
+    installer.write_bytes(sign_test_pe(make_test_pe(), authority))
+    private_key, trust_store, _public = _ephemeral_signing_key(tmp_path)
+    store_data = json.loads(trust_store.read_text(encoding="utf-8"))
+    signer_roots = tmp_path / "signer-roots.pem"
+    signer_roots.write_bytes(signer_ca.ca_pem())
+    tsa_roots = tmp_path / "tsa-roots.pem"
+    tsa_roots.write_bytes(signer_ca.ca_pem() if tsa_root_reuse else tsa_ca.ca_pem())
+    return {
+        "installer": installer,
+        "attestation": {
+            "mode": "production",
+            "authenticode_present": True,
+            "signtool_verify_ok": True,
+            "timestamp_present": True,
+            "publisher": PUBLISHER,
+            "installer_sha256": hashlib.sha256(installer.read_bytes()).hexdigest(),
+            "signer_thumbprint_sha256": authority.leaf_certificate.fingerprint(
+                hashes.SHA256()
+            ).hex(),
+            "tool": "installer/sign.ps1",
+            "trust_store": {
+                "file": "trust-store.json",
+                "sha256": trust_store_sha256(store_data),
+                "keys": describe_trust_store(store_data),
+            },
+        },
+        "roots": signer_roots,
+        "timestamp_roots": tsa_roots,
+        "outside_roots": signer_roots,
+        "private_key": private_key,
+        "trust_store": trust_store,
+    }
+
+
+def test_production_requires_separate_timestamp_roots(tmp_path: Path) -> None:
+    """Без --authenticode-timestamp-roots production-выпуск обязан отказать."""
+    inputs = _two_ca_production_inputs(tmp_path, tsa_root_reuse=False)
+    command = [
+        sys.executable,
+        str(RELEASE / "publish_channel.py"),
+        "--snapshot",
+        str(TESTDATA / "snapshot"),
+        "--version",
+        "0.14.0",
+        "--release-sha",
+        "2" * 40,
+        "--package-url",
+        PACKAGE_URL,
+        "--minimum-supported-version",
+        "0.13.0",
+        "--private-key",
+        str(inputs["private_key"]),
+        "--key-id",
+        "pilot-release-2026",
+        "--out-dir",
+        str(tmp_path / "dist" / "channel"),
+        "--release-mode",
+        "production",
+        "--expected-publisher",
+        PUBLISHER,
+        "--installer",
+        str(inputs["installer"]),
+        "--authenticode-attestation",
+        str(_write_attestation(tmp_path, inputs["attestation"])),
+        "--authenticode-roots",
+        str(inputs["roots"]),
+        "--trust-store",
+        str(inputs["trust_store"]),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+    assert result.returncode != 0
+    assert "missing_authenticode_timestamp_roots" in result.stderr
+
+
+def test_production_accepts_independent_tsa_ca(tmp_path: Path) -> None:
+    """Регрессия: signer CA и TSA CA независимы — релиз обязан пройти.
+
+    До появления --authenticode-timestamp-roots гейт подставлял signer-корни
+    как timestamp_roots и отклонял корректную метку времени с untrusted_root.
+    """
+    inputs = _two_ca_production_inputs(tmp_path, tsa_root_reuse=False)
+    result = _run_production(tmp_path, inputs, [])
+    assert result.returncode == 0, result.stderr[-600:]
+    metadata = json.loads(
+        (tmp_path / "dist" / "channel" / "release-metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["authenticode"]["timestamp_present"] is True
+
+
+def test_production_rejects_signer_root_reused_as_tsa_root(tmp_path: Path) -> None:
+    """Подстановка signer-корня вместо TSA-корня обязана быть видна как отказ."""
+    inputs = _two_ca_production_inputs(tmp_path, tsa_root_reuse=True)
+    result = _run_production(tmp_path, inputs, [])
+    assert result.returncode != 0
+    assert "untrusted_root" in result.stderr
