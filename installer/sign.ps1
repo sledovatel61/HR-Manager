@@ -371,6 +371,39 @@ try {
     Write-Host "Authenticode trust roots: $AuthenticodeRootsPath"
     Write-Host "Timestamp trust roots: $TimestampRootsPath"
 
+    # Test mode: create trust roots file with the test CA certificate.
+    # In production mode, trust roots must be provided externally.
+    if ($Mode -eq "test") {
+        if (-not (Test-Path $AuthenticodeRootsPath)) {
+            # Export the test CA certificate as trust roots.
+            if ($testCertificate) {
+                # Find the CA certificate (issuer of the test certificate).
+                $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("My", "CurrentUser")
+                $store.Open("ReadOnly")
+                try {
+                    $testCa = $null
+                    foreach ($cert in $store.Certificates) {
+                        if ($cert.Subject -eq $testCertificate.Issuer) {
+                            $testCa = $cert
+                            break
+                        }
+                    }
+                    if ($testCa) {
+                        Export-HrmCertificatePem -Certificates @($testCa) -Path $AuthenticodeRootsPath
+                        Write-Host "Test mode: created trust roots from test CA: $AuthenticodeRootsPath"
+                    } else {
+                        throw "test: не найден CA-сертификат для trust roots"
+                    }
+                }
+                finally { $store.Close() }
+            }
+        }
+        # In test mode, timestamp roots default to authenticode roots if not specified.
+        if (-not (Test-Path $TimestampRootsPath)) {
+            Copy-Item $AuthenticodeRootsPath $TimestampRootsPath -ErrorAction SilentlyContinue
+        }
+    }
+
     # Production mode: trust roots are MANDATORY.
     if ($Mode -eq "production") {
         if (-not (Test-Path $AuthenticodeRootsPath)) {
