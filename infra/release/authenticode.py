@@ -72,6 +72,9 @@ OID_PKCS9_CONTENT_TYPE = "1.2.840.113549.1.9.3"
 OID_PKCS9_MESSAGE_DIGEST = "1.2.840.113549.1.9.4"
 OID_PKCS9_SIGNING_TIME = "1.2.840.113549.1.9.5"
 OID_PKCS9_TIMESTAMP_TOKEN = "1.2.840.113549.1.9.16.2.14"
+# signtool.exe кладёт RFC 3161 токен в атрибут с Microsoft-specific OID
+# (id-MS-timeStampToken); стандартный id-aa-timeStampToken тоже легален.
+OID_MS_TIMESTAMP_TOKEN = "1.3.6.1.4.1.311.3.3.1"
 OID_CT_TSTINFO = "1.2.840.113549.1.9.16.1.4"
 OID_EKU_CODE_SIGNING = ExtendedKeyUsageOID.CODE_SIGNING.dotted_string
 OID_EKU_TIME_STAMPING = ExtendedKeyUsageOID.TIME_STAMPING.dotted_string
@@ -620,12 +623,20 @@ def _parse_at(value: str | None) -> datetime:
 
 
 def _parse_certificate_time(value: str) -> datetime:
-    """UTCTime ``YYMMDDHHMMSSZ`` или GeneralizedTime ``YYYYMMDDHHMMSSZ``."""
+    """UTCTime ``YYMMDDHHMMSSZ`` или GeneralizedTime ``YYYYMMDDHHMMSSZ``.
+
+    TSA-токены часто содержат дробные секунды (``YYYYMMDDHHMMSS.fffZ``) —
+    дробная часть для сверки с окном сертификата не нужна.
+    """
     text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1]
+    if "." in text:
+        text = text.partition(".")[0]
     try:
-        if len(text) == 13:
-            return datetime.strptime(text, "%y%m%d%H%M%SZ").replace(tzinfo=UTC)
-        return datetime.strptime(text, "%Y%m%d%H%M%SZ").replace(tzinfo=UTC)
+        if len(text) == 12:
+            return datetime.strptime(text, "%y%m%d%H%M%S").replace(tzinfo=UTC)
+        return datetime.strptime(text, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
     except ValueError as exc:
         raise AuthentiCodeError("bad_time", f"некорректное время подписи: {value!r}") from exc
 
@@ -757,7 +768,20 @@ def _verify_authenticode_inner(
     if message_digest_attr is None:
         raise AuthentiCodeError("bad_signature", "в подписи нет атрибута messageDigest")
     declared_digest = parse_one(message_digest_attr).content
-    if declared_digest != _digest_of(signed_data.econtent, outcome.digest_algorithm_oid):
+    # Microsoft-конвенция Authenticode: messageDigest считается по ВНУТРЕННЕМУ
+    # содержимому SpcIndirectDataContent (значению SEQUENCE, а не TLV-коду) —
+    # так делает signtool.exe, так проверяет CryptMsg (подтверждено на реальном
+    # signtool-подписанном PE). Строго-спецификационный CMS-сигнатор может
+    # посчитать digest по полным октетам [0]-контента — принимаем оба варианта;
+    # ослабления нет: сам атрибут покрыт CMS-подписью подписанта.
+    spc_node = parse_one(signed_data.econtent)
+    if spc_node.tag != TAG_SEQUENCE:
+        raise AuthentiCodeError("bad_spc", "контент Authenticode обязан быть SEQUENCE")
+    expected_digests = {
+        _digest_of(signed_data.econtent, outcome.digest_algorithm_oid),  # строгий CMS
+        _digest_of(spc_node.content, outcome.digest_algorithm_oid),  # Microsoft
+    }
+    if declared_digest not in expected_digests:
         raise AuthentiCodeError(
             "bad_signature", "messageDigest подписанных атрибутов не совпал с содержимым подписи"
         )
@@ -791,7 +815,7 @@ def _verify_authenticode_inner(
     timestamp_attr = None
     for oid, values in outcome.unsigned_attributes.items():
         # id-aa-timeStampToken (RFC 3161) либо устаревшая counterSignature.
-        if oid in (OID_PKCS9_TIMESTAMP_TOKEN, "1.2.840.113549.1.9.6"):
+        if oid in (OID_PKCS9_TIMESTAMP_TOKEN, OID_MS_TIMESTAMP_TOKEN, "1.2.840.113549.1.9.6"):
             timestamp_attr = values[0].der()
     timestamp_info: dict = {"present": False}
     if timestamp_attr is not None:

@@ -436,3 +436,50 @@ def test_verify_rejects_nonzero_tail_in_win_certificate(
     with pytest.raises(AuthentiCodeError) as exc:
         verify_authenticode(path, trust_roots=[authority.ca_certificate])
     assert exc.value.code in {"bad_certificate_table", "digest_mismatch"}
+
+
+# --- Конвенции, в которых работает реальный signtool.exe ----------------------
+
+
+def test_signer_message_digest_uses_microsoft_convention(authority: EphemeralAuthority) -> None:
+    """messageDigest = SHA256(ВНУТРЕННЕЕ содержимое SpcIndirectDataContent).
+
+    signtool.exe так подписывает, так проверяет CryptMsg (проверено на
+    реальном signtool-подписанном PE: объявленный digest совпал только с
+    хешем внутреннего контента, не с полным TLV). Подпись, посчитавшая
+    digest по полному TLV, Windows бы отвергнул как content digest mismatch.
+    """
+    import hashlib
+
+    from authenticode import (
+        OID_PKCS9_MESSAGE_DIGEST,
+        _attribute_bytes,
+        parse_signed_data,
+        verify_signer_info,
+    )
+    from der import parse_one
+
+    pe = sign_test_pe(make_test_pe(), authority)
+    blob = extract_pkcs7_blob(pe, parse_pe(pe))
+    signed_data = parse_signed_data(blob)
+    outcome = verify_signer_info(signed_data)
+    declared = parse_one(_attribute_bytes(outcome.attributes, OID_PKCS9_MESSAGE_DIGEST)).content
+    spc = parse_one(signed_data.econtent)
+    # digest по внутреннему содержимому (конвенция Microsoft) — и НЕ по полному TLV.
+    assert declared == bytes.fromhex(hashlib.sha256(spc.content).hexdigest())
+    assert declared != bytes.fromhex(hashlib.sha256(signed_data.econtent).hexdigest())
+
+
+def test_parse_certificate_time_accepts_fractional_seconds() -> None:
+    """TSA-токены содержат дробные секунды (20260918185006.331Z)."""
+    from datetime import UTC, datetime
+
+    from authenticode import _parse_certificate_time
+
+    assert _parse_certificate_time("20260918185006.331Z") == datetime(
+        2026, 9, 18, 18, 50, 6, tzinfo=UTC
+    )
+    assert _parse_certificate_time("260918185006Z") == datetime(2026, 9, 18, 18, 50, 6, tzinfo=UTC)
+    assert _parse_certificate_time("20260918185006Z") == datetime(
+        2026, 9, 18, 18, 50, 6, tzinfo=UTC
+    )

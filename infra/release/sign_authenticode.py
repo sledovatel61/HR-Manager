@@ -64,6 +64,7 @@ from der import (  # noqa: E402
     encode_tlv,
     encode_utc_time,
     parse_all,
+    parse_one,
 )
 
 OID_INDIVIDUAL_CODE_SIGNING = "1.3.6.1.4.1.311.2.1.21"
@@ -358,8 +359,14 @@ def build_signed_pkcs7(
     pe = parse_pe(pe_bytes)
     pe_digest = pe_authenticode_digest(pe_bytes, pe, hashes.SHA256())
     spc = _spc_indirect_data(pe_digest)
+    # Microsoft-конвенция Authenticode (signtool.exe): атрибут messageDigest
+    # считается по ВНУТРЕННЕМУ содержимому SpcIndirectDataContent (значению
+    # SEQUENCE, а не его TLV-кодировке) — так подписывает signtool, так
+    # проверяет CryptMsg. Подтверждено на реальном signtool-подписанном PE:
+    # объявленный messageDigest совпал только с хешем внутреннего контента.
+    # Если бы digest шёл по полному TLV, Windows никогда бы не принял подпись.
     spc_digest = hashes.Hash(hashes.SHA256())
-    spc_digest.update(spc)
+    spc_digest.update(parse_one(spc).content)
 
     attributes = b"".join(
         [
