@@ -49,5 +49,8 @@ installer/staging/
 installer/output/
 installer/.cache/
 installer/release-manifest.json
+installer/authenticode-attestation.json
+installer/authenticode-roots.pem
+installer/authenticode-verification.json
 
 drill-live/

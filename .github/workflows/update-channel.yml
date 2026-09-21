@@ -209,6 +209,7 @@ jobs:
             installer/output/*.exe
             installer/authenticode-attestation.json
             installer/authenticode-roots.pem
+            installer/authenticode-verification.json
             installer/release-manifest.json
           if-no-files-found: error
 
