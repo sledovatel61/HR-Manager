@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,7 +33,8 @@ RELEASE = REPO / "infra" / "release"
 # напрямую (та же схема, что у publish_channel.py внутри workflow).
 sys.path.insert(0, str(RELEASE))
 
-from authenticode import (  # type: ignore[import-not-found]  # noqa: E402
+import authenticode  # type: ignore[import-not-found]  # noqa: E402
+from authenticode import (  # noqa: E402
     AuthentiCodeError,
     PeInfo,
     extract_pkcs7_blob,
@@ -358,3 +360,62 @@ def test_report_contains_no_private_material(
     assert base64.b64encode(private_der).decode() not in rendered
     assert "PRIVATE KEY" not in rendered
     assert private_pem.splitlines()[0] not in rendered
+
+
+def test_verify_cli_reports_machine_readable_failure(tmp_path: Path) -> None:
+    """Отказ верификатора обязан быть машиночитаемым и не менять код возврата.
+
+    sign.ps1 кладёт error_code/error_detail в ::error, поэтому причина видна в
+    check-runs даже когда полные логи джоба недоступны. Fail-closed сохранён.
+    """
+    authority = create_test_authority("HR Manager Report Publisher")
+    signed = sign_test_pe(make_test_pe(), authority, with_timestamp=False)
+    target = tmp_path / "signed.exe"
+    target.write_bytes(signed)
+    roots = tmp_path / "roots.pem"
+    roots.write_bytes(authority.chain_pem())
+    report = tmp_path / "verification.json"
+
+    # Байт перед таблицей сертификатов входит в Authenticode-хеш, поэтому
+    # такая правка обязана давать digest_mismatch (а не «подпись существует»).
+    pe = parse_pe(signed)
+    tampered = bytearray(signed)
+    tampered[pe.cert_table_offset - 1] ^= 0xFF
+    bad = tmp_path / "tampered.exe"
+    bad.write_bytes(bytes(tampered))
+
+    ok_code = authenticode.main(
+        [
+            "verify",
+            "--file",
+            str(target),
+            "--trust-roots",
+            str(roots),
+            "--expected-publisher",
+            "HR Manager Report Publisher",
+            "--json-out",
+            str(report),
+        ]
+    )
+    assert ok_code == 0
+    assert json.loads(report.read_text(encoding="utf-8"))["ok"] is True
+
+    bad_code = authenticode.main(
+        [
+            "verify",
+            "--file",
+            str(bad),
+            "--trust-roots",
+            str(roots),
+            "--expected-publisher",
+            "HR Manager Report Publisher",
+            "--json-out",
+            str(report),
+        ]
+    )
+    assert bad_code == 1
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["ok"] is False
+    assert payload["signed"] is False
+    assert payload["error_code"] == "digest_mismatch"
+    assert payload["error_detail"]

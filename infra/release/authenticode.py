@@ -852,14 +852,34 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     timestamp_roots = (
         load_pem_certificates(Path(args.timestamp_roots)) if args.timestamp_roots else trust_roots
     )
-    result = verify_authenticode(
-        Path(args.file),
-        expected_publisher=args.expected_publisher,
-        require_timestamp=args.require_timestamp,
-        at=_parse_at(args.at),
-        trust_roots=trust_roots,
-        timestamp_roots=timestamp_roots,
-    )
+    try:
+        result = verify_authenticode(
+            Path(args.file),
+            expected_publisher=args.expected_publisher,
+            require_timestamp=args.require_timestamp,
+            at=_parse_at(args.at),
+            trust_roots=trust_roots,
+            timestamp_roots=timestamp_roots,
+        )
+    except AuthentiCodeError as exc:
+        # Отказ обязан быть машиночитаемым: вызывающая сторона (sign.ps1) кладёт
+        # error_code/error_detail в ::error, и причина видна в check-runs даже
+        # тогда, когда полные логи джоба недоступны. Fail-closed сохранён: код 1.
+        report = {
+            "ok": False,
+            "signed": False,
+            "chain_verified": False,
+            "file": str(args.file),
+            "error_code": exc.code,
+            "error_detail": str(exc),
+        }
+        if args.json_out:
+            Path(args.json_out).write_text(
+                json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+        print(json.dumps(report, ensure_ascii=False, indent=2), file=sys.stderr)
+        return 1
+    result["ok"] = True
     if args.json_out:
         Path(args.json_out).write_text(
             json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -890,6 +910,7 @@ def _force_utf8_stdio() -> None:
             reconfigure(encoding="utf-8", errors="replace")
         except (OSError, ValueError):  # pragma: no cover - защита от экзотики
             pass
+
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_stdio()

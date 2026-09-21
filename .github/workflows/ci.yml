@@ -557,6 +557,7 @@ jobs:
           path: |
             installer/authenticode-attestation.json
             installer/authenticode-verification.json
+            installer/authenticode-roots.pem
           if-no-files-found: warn
 
       - name: Silent install and uninstall smoke
