@@ -68,7 +68,10 @@ param(
     [string]$TrustStoreFile = "",
     [string]$AttestationPath = "",
     [string]$RootsPath = "",
-    [string]$VerificationPath = ""
+    [string]$VerificationPath = "",
+    [string]$AuthenticodeRootsPath = "",
+    [string]$TimestampRootsPath = "",
+    [string]$ChainCertsPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,6 +90,9 @@ if (-not $SetupExe) {
 if (-not (Test-Path $SetupExe)) { throw "Setup.exe не найден: $SetupExe" }
 if (-not $AttestationPath) { $AttestationPath = Join-Path $installerDir "authenticode-attestation.json" }
 if (-not $RootsPath) { $RootsPath = Join-Path $installerDir "authenticode-roots.pem" }
+if (-not $ChainCertsPath) { $ChainCertsPath = Join-Path $installerDir "authenticode-chain-certs.pem" }
+if (-not $AuthenticodeRootsPath) { $AuthenticodeRootsPath = $RootsPath }
+if (-not $TimestampRootsPath) { $TimestampRootsPath = $RootsPath }
 if (-not $VerificationPath) { $VerificationPath = Join-Path $installerDir "authenticode-verification.json" }
 
 function Write-HrmUtf8NoBom {
@@ -354,9 +360,29 @@ try {
     }
 
     # 3. Публичная цепочка для независимой проверки вне Windows.
+    # ВАЖНО: сертификаты из подписанного файла — это НЕДОВЕРЕННЫЕ intermediate
+    # кандидаты. Они экспортируются в отдельный файл chain-certs.pem и НЕ могут
+    # использоваться как trust roots. Trust roots поступают из отдельного
+    # защищённого input (AuthenticodeRootsPath / TimestampRootsPath).
     $chainCerts = @($signature.SignerCertificate)
     if ($signature.TimeStamperCertificate) { $chainCerts += $signature.TimeStamperCertificate }
-    Export-HrmCertificatePem -Certificates $chainCerts -Path $RootsPath
+    Export-HrmCertificatePem -Certificates $chainCerts -Path $ChainCertsPath
+    Write-Host "Chain certificates exported (untrusted intermediates): $ChainCertsPath"
+    Write-Host "Authenticode trust roots: $AuthenticodeRootsPath"
+    Write-Host "Timestamp trust roots: $TimestampRootsPath"
+
+    # Production mode: trust roots are MANDATORY.
+    if ($Mode -eq "production") {
+        if (-not (Test-Path $AuthenticodeRootsPath)) {
+            throw "production: Authenticode trust roots не найдены: $AuthenticodeRootsPath"
+        }
+        if ((Get-Item $AuthenticodeRootsPath).Length -eq 0) {
+            throw "production: Authenticode trust roots пусты: $AuthenticodeRootsPath"
+        }
+        if ($requireTimestamp -and -not (Test-Path $TimestampRootsPath)) {
+            throw "production: Timestamp trust roots не найдены: $TimestampRootsPath"
+        }
+    }
 
     # 4. Независимая проверка: Authenticode-хеш PE + CMS + цепочка до корня.
     #    Не зависит от системного Root trust, поэтому одинаково строга в обоих
@@ -365,8 +391,14 @@ try {
     $verifier = Join-Path (Join-Path $repoRoot "infra") (Join-Path "release" "authenticode.py")
     if (-not (Test-Path $verifier)) { throw "независимый верификатор не найден: $verifier" }
     $pythonCommand = @(Get-HrmPython)
-    $verifyArgs = @($verifier, "verify", "--file", $SetupExe, "--trust-roots", $RootsPath,
+    # Независимый верификатор получает trust roots из защищённого input,
+    # а НЕ из сертификатов, извлечённых из подписанного файла.
+    $verifyArgs = @($verifier, "verify", "--file", $SetupExe, "--trust-roots", $AuthenticodeRootsPath,
         "--expected-publisher", $publisher, "--json-out", $VerificationPath)
+    if ($TimestampRootsPath -and (Test-Path $TimestampRootsPath)) {
+        $verifyArgs += "--timestamp-roots"
+        $verifyArgs += $TimestampRootsPath
+    }
     if ($Mode -eq "production") { $verifyArgs += "--require-timestamp" }
     $pythonExe = [string]$pythonCommand[0]
     $pythonPrefix = @()

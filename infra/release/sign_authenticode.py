@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Phase 14: ТЕСТОВый Authenticode-подписант (ephemeral сертификаты).
 
 Модуль существует ровно для двух задач:
@@ -22,7 +21,6 @@ RFC 3161 timestamp token (``id-aa-timeStampToken``), чтобы проверяю
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import sys
 from dataclasses import dataclass
@@ -36,7 +34,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from authenticode import (  # noqa: E402
+from authenticode import (
     OID_CT_TSTINFO,
     OID_PKCS7_SIGNED_DATA,
     OID_PKCS9_CONTENT_TYPE,
@@ -46,10 +44,10 @@ from authenticode import (  # noqa: E402
     OID_SPC_INDIRECT_DATA,
     OID_SPC_PE_IMAGE_DATA,
     OID_SPC_STATEMENT_TYPE,
-    pe_authenticode_digest,
     parse_pe,
+    pe_authenticode_digest,
 )
-from der import (  # noqa: E402
+from der import (
     TAG_CONTEXT0,
     TAG_CONTEXT1,
     TAG_SET,
@@ -63,7 +61,6 @@ from der import (  # noqa: E402
     encode_set,
     encode_tlv,
     encode_utc_time,
-    parse_all,
     parse_one,
 )
 
@@ -88,7 +85,9 @@ class EphemeralAuthority:
         return self.ca_certificate.public_bytes(serialization.Encoding.PEM)
 
     def chain_pem(self, include_tsa: bool = False) -> bytes:
-        data = self.ca_pem() + self.leaf_certificate.public_bytes(serialization.Encoding.PEM)
+        data = self.ca_pem() + self.leaf_certificate.public_bytes(
+            serialization.Encoding.PEM
+        )
         if include_tsa:
             data += self.tsa_certificate.public_bytes(serialization.Encoding.PEM)
         return data
@@ -103,7 +102,9 @@ def make_test_pe(payload: bytes = b"HRM-TEST-PE-BODY") -> bytes:
     optional = bytearray(240)
     optional[0:2] = (0x20B).to_bytes(2, "little")  # PE32+
     optional[2] = 14  # linker major
-    size_of_code = ((len(payload) + PE_SECTION_ALIGNMENT - 1) // PE_SECTION_ALIGNMENT) * PE_SECTION_ALIGNMENT
+    size_of_code = (
+        (len(payload) + PE_SECTION_ALIGNMENT - 1) // PE_SECTION_ALIGNMENT
+    ) * PE_SECTION_ALIGNMENT
     optional[4:8] = size_of_code.to_bytes(4, "little")
     optional[16:20] = PE_SECTION_ALIGNMENT.to_bytes(4, "little")  # EntryPoint
     optional[24:32] = (0x140000000).to_bytes(8, "little")  # ImageBase
@@ -165,7 +166,9 @@ def create_test_authority(
     """Ephemeral корень + code-signing сертификат + TSA сертификат."""
     moment = now or datetime.now(UTC)
     ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "HR Manager Test Root CA")])
+    ca_name = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "HR Manager Test Root CA")]
+    )
     ca_certificate = (
         x509.CertificateBuilder()
         .subject_name(ca_name)
@@ -274,7 +277,9 @@ def _sign_attrs(signed_attrs_content: bytes, key: rsa.RSAPrivateKey) -> bytes:
 def _spc_indirect_data(pe_digest: bytes) -> bytes:
     pe_image_data = encode_sequence(
         encode_bit_string(b"", unused_bits=0),
-        encode_tlv(TAG_CONTEXT0, encode_sequence(encode_tlv(TAG_CONTEXT0, encode_sequence()))),
+        encode_tlv(
+            TAG_CONTEXT0, encode_sequence(encode_tlv(TAG_CONTEXT0, encode_sequence()))
+        ),
     )
     attribute = encode_sequence(
         encode_oid(OID_SPC_PE_IMAGE_DATA),
@@ -311,8 +316,13 @@ def _timestamp_token(
     attributes = b"".join(
         [
             _attribute(OID_PKCS9_CONTENT_TYPE, encode_oid(OID_CT_TSTINFO)),
-            _attribute(OID_PKCS9_MESSAGE_DIGEST, encode_octet_string(tst_digest.finalize())),
-            _attribute(OID_PKCS9_SIGNING_TIME, encode_utc_time(gen_time.strftime("%y%m%d%H%M%SZ"))),
+            _attribute(
+                OID_PKCS9_MESSAGE_DIGEST, encode_octet_string(tst_digest.finalize())
+            ),
+            _attribute(
+                OID_PKCS9_SIGNING_TIME,
+                encode_utc_time(gen_time.strftime("%y%m%d%H%M%SZ")),
+            ),
         ]
     )
     signature = authority.tsa_key.sign(
@@ -335,10 +345,10 @@ def _timestamp_token(
     )
     signed_data = encode_sequence(
         encode_integer(3),
-        encode_set(encode_sequence(encode_oid("2.16.840.1.101.3.4.2.1"), encode_null())),
-        encode_sequence(
-            encode_oid(OID_CT_TSTINFO), encode_tlv(TAG_CONTEXT0, tst_info)
+        encode_set(
+            encode_sequence(encode_oid("2.16.840.1.101.3.4.2.1"), encode_null())
         ),
+        encode_sequence(encode_oid(OID_CT_TSTINFO), encode_tlv(TAG_CONTEXT0, tst_info)),
         certificates,
         encode_set(signer_info),
     )
@@ -371,11 +381,14 @@ def build_signed_pkcs7(
     attributes = b"".join(
         [
             _attribute(OID_PKCS9_CONTENT_TYPE, encode_oid(OID_SPC_INDIRECT_DATA)),
-            _attribute(OID_PKCS9_MESSAGE_DIGEST, encode_octet_string(spc_digest.finalize())),
-            _attribute(OID_PKCS9_SIGNING_TIME, encode_utc_time(moment.strftime("%y%m%d%H%M%SZ"))),
             _attribute(
-                OID_SPC_STATEMENT_TYPE, encode_oid(OID_INDIVIDUAL_CODE_SIGNING)
+                OID_PKCS9_MESSAGE_DIGEST, encode_octet_string(spc_digest.finalize())
             ),
+            _attribute(
+                OID_PKCS9_SIGNING_TIME,
+                encode_utc_time(moment.strftime("%y%m%d%H%M%SZ")),
+            ),
+            _attribute(OID_SPC_STATEMENT_TYPE, encode_oid(OID_INDIVIDUAL_CODE_SIGNING)),
         ]
     )
     signature = authority.leaf_key.sign(
@@ -405,10 +418,14 @@ def build_signed_pkcs7(
     )
     signed_data = encode_sequence(
         encode_integer(1),
-        encode_set(encode_sequence(encode_oid("2.16.840.1.101.3.4.2.1"), encode_null())),
+        encode_set(
+            encode_sequence(encode_oid("2.16.840.1.101.3.4.2.1"), encode_null())
+        ),
         # Authenticode (PKCS#7): содержимое лежит в [0] как структура, без
         # промежуточного OCTET STRING.
-        encode_sequence(encode_oid(OID_SPC_INDIRECT_DATA), encode_tlv(TAG_CONTEXT0, spc)),
+        encode_sequence(
+            encode_oid(OID_SPC_INDIRECT_DATA), encode_tlv(TAG_CONTEXT0, spc)
+        ),
         certificates,
         encode_set(signer_info),
     )
@@ -433,7 +450,9 @@ def embed_signature(pe_bytes: bytes, pkcs7: bytes) -> bytes:
     offset = len(data)
     data.extend(record)
     data[pe.cert_entry_offset : pe.cert_entry_offset + 4] = offset.to_bytes(4, "little")
-    data[pe.cert_entry_offset + 4 : pe.cert_entry_offset + 8] = padded.to_bytes(4, "little")
+    data[pe.cert_entry_offset + 4 : pe.cert_entry_offset + 8] = padded.to_bytes(
+        4, "little"
+    )
     return bytes(data)
 
 
@@ -471,15 +490,20 @@ def _cmd_sign(args: argparse.Namespace) -> int:
         "authenticode_present": True,
         "timestamp_present": not args.no_timestamp,
         "publisher": authority.publisher,
-        "signer_thumbprint_sha256": authority.leaf_certificate.fingerprint(hashes.SHA256()).hex(),
+        "signer_thumbprint_sha256": authority.leaf_certificate.fingerprint(
+            hashes.SHA256()
+        ).hex(),
         "ca_sha256": authority.ca_certificate.fingerprint(hashes.SHA256()).hex(),
         "tool": "infra/release/sign_authenticode.py",
     }
     if args.attestation_out:
         Path(args.attestation_out).write_text(
-            json.dumps(attestation, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            json.dumps(attestation, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
         )
-    print(f"тестовый PE подписан: {args.out} (mode=test, timestamp={not args.no_timestamp})")
+    print(
+        f"тестовый PE подписан: {args.out} (mode=test, timestamp={not args.no_timestamp})"
+    )
     print(f"CA (PEM): {args.ca_out or '<не сохранён>'}")
     return 0
 
@@ -487,8 +511,12 @@ def _cmd_sign(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 14 test Authenticode signer")
     sub = parser.add_subparsers(dest="command", required=True)
-    sign = sub.add_parser("sign", help="подписать PE тестовым сертификатом (только тесты)")
-    sign.add_argument("--file", default=None, help="существующий PE; иначе создаётся тестовый")
+    sign = sub.add_parser(
+        "sign", help="подписать PE тестовым сертификатом (только тесты)"
+    )
+    sign.add_argument(
+        "--file", default=None, help="существующий PE; иначе создаётся тестовый"
+    )
     sign.add_argument("--out", required=True)
     sign.add_argument("--publisher", default="HR Manager Test Publisher")
     sign.add_argument("--ca-out", default=None)

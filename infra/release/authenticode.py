@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Phase 14: независимая проверка Authenticode-подписи Windows installer'а.
 
 Зачем: канал обновлений защищён detached Ed25519-подписью (Phase 13), но
@@ -38,14 +37,13 @@ from pathlib import Path
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
-from cryptography.x509.oid import ExtendedKeyUsageOID, ObjectIdentifier
+from cryptography.x509.oid import ExtendedKeyUsageOID
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from der import (  # noqa: E402
+from der import (
     TAG_CONTEXT0,
     TAG_CONTEXT1,
     TAG_SEQUENCE,
@@ -165,18 +163,26 @@ def parse_pe(data: bytes) -> PeInfo:
         data_dir_offset = optional + 112
         checksum_offset = optional + 64
     else:
-        raise AuthentiCodeError("bad_pe", f"неизвестный optional header magic: 0x{magic:x}")
+        raise AuthentiCodeError(
+            "bad_pe", f"неизвестный optional header magic: 0x{magic:x}"
+        )
     size_of_headers = int.from_bytes(data[optional + 60 : optional + 64], "little")
     # Data directory index 4 = Certificate Table.
     cert_entry_offset = data_dir_offset + 4 * 8
     if cert_entry_offset + 8 > optional + size_of_optional_header:
-        raise AuthentiCodeError("bad_pe", "таблица данных PE обрывается до Certificate Table")
-    cert_table_offset = int.from_bytes(data[cert_entry_offset : cert_entry_offset + 4], "little")
+        raise AuthentiCodeError(
+            "bad_pe", "таблица данных PE обрывается до Certificate Table"
+        )
+    cert_table_offset = int.from_bytes(
+        data[cert_entry_offset : cert_entry_offset + 4], "little"
+    )
     cert_table_size = int.from_bytes(
         data[cert_entry_offset + 4 : cert_entry_offset + 8], "little"
     )
     if cert_table_offset and cert_table_offset + cert_table_size > len(data):
-        raise AuthentiCodeError("bad_pe", "таблица сертификатов выходит за пределы файла")
+        raise AuthentiCodeError(
+            "bad_pe", "таблица сертификатов выходит за пределы файла"
+        )
     return PeInfo(
         checksum_offset=checksum_offset,
         cert_entry_offset=cert_entry_offset,
@@ -212,7 +218,10 @@ def pe_authenticode_digest(
     regions: list[tuple[int, int]] = [
         (0, pe.checksum_offset),
         (pe.checksum_offset + 4, pe.cert_entry_offset),
-        (pe.cert_entry_offset + 8, pe.cert_table_offset if pe.has_certificate_table else len(data)),
+        (
+            pe.cert_entry_offset + 8,
+            pe.cert_table_offset if pe.has_certificate_table else len(data),
+        ),
     ]
     if pe.has_certificate_table:
         regions.append((pe.cert_table_offset + pe.cert_table_size, len(data)))
@@ -226,7 +235,9 @@ def pe_authenticode_digest(
 def extract_pkcs7_blob(data: bytes, pe: PeInfo) -> bytes:
     """Извлекает PKCS#7 (SignedData) из WIN_CERTIFICATE-таблицы."""
     if not pe.has_certificate_table:
-        raise AuthentiCodeError("unsigned", "в файле нет таблицы сертификатов Authenticode")
+        raise AuthentiCodeError(
+            "unsigned", "в файле нет таблицы сертификатов Authenticode"
+        )
     offset = pe.cert_table_offset
     end = pe.cert_table_offset + pe.cert_table_size
     records: list[bytes] = []
@@ -235,7 +246,9 @@ def extract_pkcs7_blob(data: bytes, pe: PeInfo) -> bytes:
         revision = int.from_bytes(data[offset + 4 : offset + 6], "little")
         cert_type = int.from_bytes(data[offset + 6 : offset + 8], "little")
         if length < 8 or offset + length > end:
-            raise AuthentiCodeError("bad_certificate_table", "некорректная запись WIN_CERTIFICATE")
+            raise AuthentiCodeError(
+                "bad_certificate_table", "некорректная запись WIN_CERTIFICATE"
+            )
         if revision != 0x0200:
             raise AuthentiCodeError(
                 "bad_certificate_table", f"неподдерживаемая revision: 0x{revision:04x}"
@@ -252,15 +265,20 @@ def extract_pkcs7_blob(data: bytes, pe: PeInfo) -> bytes:
             try:
                 _node, consumed = read_tlv(raw, 0)
             except DerError as exc:
-                raise AuthentiCodeError("bad_pkcs7", f"некорректный DER подписи: {exc}") from exc
+                raise AuthentiCodeError(
+                    "bad_pkcs7", f"некорректный DER подписи: {exc}"
+                ) from exc
             if consumed != len(raw) and any(raw[consumed:]):
                 raise AuthentiCodeError(
-                    "bad_certificate_table", "за записью WIN_CERTIFICATE следуют не-нулевые байты"
+                    "bad_certificate_table",
+                    "за записью WIN_CERTIFICATE следуют не-нулевые байты",
                 )
             records.append(raw[:consumed])
         offset += (length + 7) & ~7  # записи выровнены по 8 байт
     if not records:
-        raise AuthentiCodeError("unsigned", "PKCS#7-подпись в таблице сертификатов не найдена")
+        raise AuthentiCodeError(
+            "unsigned", "PKCS#7-подпись в таблице сертификатов не найдена"
+        )
     return records[0]
 
 
@@ -289,11 +307,15 @@ def parse_signed_data(data: bytes) -> SignedDataInfo:
     try:
         content_info = parse_one(data)
     except DerError as exc:
-        raise AuthentiCodeError("bad_pkcs7", f"некорректный DER подписи: {exc}") from exc
+        raise AuthentiCodeError(
+            "bad_pkcs7", f"некорректный DER подписи: {exc}"
+        ) from exc
     expect(content_info, TAG_SEQUENCE, "ContentInfo")
     items = content_info.children
     if len(items) != 2:
-        raise AuthentiCodeError("bad_pkcs7", "ContentInfo обязан содержать ровно два элемента")
+        raise AuthentiCodeError(
+            "bad_pkcs7", "ContentInfo обязан содержать ровно два элемента"
+        )
     content_type = decode_oid(items[0])
     if content_type != OID_PKCS7_SIGNED_DATA:
         raise AuthentiCodeError(
@@ -302,7 +324,9 @@ def parse_signed_data(data: bytes) -> SignedDataInfo:
     try:
         content = items[1].children
     except DerError as exc:
-        raise AuthentiCodeError("bad_pkcs7", f"некорректный ContentInfo: {exc}") from exc
+        raise AuthentiCodeError(
+            "bad_pkcs7", f"некорректный ContentInfo: {exc}"
+        ) from exc
     if len(content) != 1 or content[0].tag != TAG_SEQUENCE:
         raise AuthentiCodeError("bad_pkcs7", "ContentInfo не содержит SignedData")
     signed_data = content[0]
@@ -312,20 +336,28 @@ def parse_signed_data(data: bytes) -> SignedDataInfo:
     index = 0
     decode_integer(fields[index])  # version
     index += 1
-    digest_algorithms = parse_all(expect(fields[index], TAG_SET, "digestAlgorithms").content)
+    digest_algorithms = parse_all(
+        expect(fields[index], TAG_SET, "digestAlgorithms").content
+    )
     if not digest_algorithms:
         raise AuthentiCodeError("bad_pkcs7", "digestAlgorithms пуст")
-    decode_oid(expect(digest_algorithms[0], TAG_SEQUENCE, "AlgorithmIdentifier").children[0])
+    decode_oid(
+        expect(digest_algorithms[0], TAG_SEQUENCE, "AlgorithmIdentifier").children[0]
+    )
     index += 1
     # encapContentInfo
     encap = expect(fields[index], TAG_SEQUENCE, "encapContentInfo")
     index += 1
     encap_items = encap.children
     if len(encap_items) != 2:
-        raise AuthentiCodeError("bad_pkcs7", "encapContentInfo обязан содержать тип и контент")
+        raise AuthentiCodeError(
+            "bad_pkcs7", "encapContentInfo обязан содержать тип и контент"
+        )
     econtent_type = decode_oid(encap_items[0])
     if encap_items[1].tag != TAG_CONTEXT0:
-        raise AuthentiCodeError("bad_pkcs7", "контент SignedData обязан быть в [0] EXPLICIT")
+        raise AuthentiCodeError(
+            "bad_pkcs7", "контент SignedData обязан быть в [0] EXPLICIT"
+        )
     econtent = _unwrap_content(encap_items[1])
 
     certificates: list[x509.Certificate] = []
@@ -339,7 +371,7 @@ def parse_signed_data(data: bytes) -> SignedDataInfo:
                     continue
                 try:
                     certificates.append(x509.load_der_x509_certificate(candidate.der()))
-                except Exception:  # посторонняя структура — не сертификат
+                except (ValueError, TypeError):  # посторонняя структура — не сертификат
                     continue
         elif field_node.tag == TAG_SET:  # signerInfos
             entries = parse_all(field_node.content)
@@ -379,7 +411,9 @@ def _attributes_from(set_node: Node) -> dict[str, list[Node]]:
             raise AuthentiCodeError("bad_pkcs7", "атрибут подписи обязан быть SEQUENCE")
         parts = attribute.children
         if len(parts) != 2:
-            raise AuthentiCodeError("bad_pkcs7", "атрибут подписи обязан содержать OID и значения")
+            raise AuthentiCodeError(
+                "bad_pkcs7", "атрибут подписи обязан содержать OID и значения"
+            )
         oid = decode_oid(parts[0])
         values = parse_all(expect(parts[1], TAG_SET, "значения атрибута").content)
         attributes.setdefault(oid, []).extend(values)
@@ -401,7 +435,10 @@ def _find_certificate(
         serial = decode_integer(parts[1])
         issuer_der = parts[0].der()
         for certificate in certificates:
-            if certificate.serial_number == serial and certificate.issuer.public_bytes() == issuer_der:
+            if (
+                certificate.serial_number == serial
+                and certificate.issuer.public_bytes() == issuer_der
+            ):
                 return certificate
         # Некоторые реализации кодируют issuer иначе — сверяем только серийный номер.
         matches = [c for c in certificates if c.serial_number == serial]
@@ -413,21 +450,32 @@ def _find_certificate(
         matches = [
             c
             for c in certificates
-            if c.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value.digest == key_id
+            if c.extensions.get_extension_for_class(
+                x509.SubjectKeyIdentifier
+            ).value.digest
+            == key_id
         ]
         if len(matches) == 1:
             return matches[0]
-        raise AuthentiCodeError("signer_not_found", "сертификат подписанта не найден по SKI")
-    raise AuthentiCodeError("bad_pkcs7", "неподдерживаемый тип идентификатора подписанта")
+        raise AuthentiCodeError(
+            "signer_not_found", "сертификат подписанта не найден по SKI"
+        )
+    raise AuthentiCodeError(
+        "bad_pkcs7", "неподдерживаемый тип идентификатора подписанта"
+    )
 
 
-def _signature_algorithm(oid: str, digest_algorithm: hashes.HashAlgorithm) -> hashes.HashAlgorithm:
+def _signature_algorithm(
+    oid: str, digest_algorithm: hashes.HashAlgorithm
+) -> hashes.HashAlgorithm:
     if oid in _ECDSA_SIGNATURE_OIDS:
         return _ECDSA_SIGNATURE_OIDS[oid]()
     if oid in _RSA_SIGNATURE_OIDS:
         fixed = _RSA_SIGNATURE_OIDS[oid]
         return fixed() if fixed is not None else digest_algorithm
-    raise AuthentiCodeError("unsupported_algorithm", f"неподдерживаемый алгоритм подписи: {oid}")
+    raise AuthentiCodeError(
+        "unsupported_algorithm", f"неподдерживаемый алгоритм подписи: {oid}"
+    )
 
 
 def _verify_public_key_signature(
@@ -439,7 +487,9 @@ def _verify_public_key_signature(
         elif isinstance(public_key, ec.EllipticCurvePublicKey):
             public_key.verify(signature, data, ec.ECDSA(algorithm))
         else:
-            raise AuthentiCodeError("unsupported_key", "неподдерживаемый тип публичного ключа")
+            raise AuthentiCodeError(
+                "unsupported_key", "неподдерживаемый тип публичного ключа"
+            )
     except InvalidSignature as exc:
         raise AuthentiCodeError("bad_signature", "подпись CMS недействительна") from exc
 
@@ -471,7 +521,9 @@ def verify_signer_info(signed_data: SignedDataInfo) -> SignerOutcome:
     )
     index += 1
     signature = expect(fields[index], 0x04, "signature").content
-    signature_algorithm = _signature_algorithm(signature_algorithm_oid, digest_algorithm)
+    signature_algorithm = _signature_algorithm(
+        signature_algorithm_oid, digest_algorithm
+    )
     # unsignedAttrs [1] IMPLICIT SET OF Attribute — здесь лежит метка времени.
     unsigned_attributes: dict[str, list[Node]] = {}
     if index + 1 < len(fields) and fields[index + 1].tag == TAG_CONTEXT1:
@@ -481,7 +533,8 @@ def verify_signer_info(signed_data: SignedDataInfo) -> SignerOutcome:
         # Authenticode всегда подписывает атрибуты; подпись «сырого» контента
         # здесь не принимается (fail closed).
         raise AuthentiCodeError(
-            "missing_signed_attrs", "Authenticode-подпись обязана содержать signed attributes"
+            "missing_signed_attrs",
+            "Authenticode-подпись обязана содержать signed attributes",
         )
     # Подпись вычисляется по DER SET OF signedAttrs (тег SET, не [0]).
     attrs_der = encode_tlv(TAG_SET, signed_attrs.content)
@@ -518,16 +571,21 @@ def _parse_authenticode_content(econtent: bytes) -> tuple[bytes, str]:
     try:
         spc = parse_one(econtent)
     except DerError as exc:
-        raise AuthentiCodeError("bad_spc", f"некорректный SpcIndirectDataContent: {exc}") from exc
+        raise AuthentiCodeError(
+            "bad_spc", f"некорректный SpcIndirectDataContent: {exc}"
+        ) from exc
     expect(spc, TAG_SEQUENCE, "SpcIndirectDataContent")
     fields = spc.children
     if len(fields) != 2:
-        raise AuthentiCodeError("bad_spc", "SpcIndirectDataContent обязан содержать два поля")
+        raise AuthentiCodeError(
+            "bad_spc", "SpcIndirectDataContent обязан содержать два поля"
+        )
     data_type = expect(fields[0], TAG_SEQUENCE, "SpcAttributeTypeAndOptionalValue")
     type_items = data_type.children
     if not type_items or decode_oid(type_items[0]) != OID_SPC_PE_IMAGE_DATA:
         raise AuthentiCodeError(
-            "bad_spc", "Authenticode-содержимое обязано описывать PE-образ (SpcPeImageData)"
+            "bad_spc",
+            "Authenticode-содержимое обязано описывать PE-образ (SpcPeImageData)",
         )
     digest_info = expect(fields[1], TAG_SEQUENCE, "DigestInfo")
     digest_items = digest_info.children
@@ -537,7 +595,8 @@ def _parse_authenticode_content(econtent: bytes) -> tuple[bytes, str]:
     algorithm_oid = decode_oid(algorithm.children[0])
     if algorithm_oid not in _DIGESTS:
         raise AuthentiCodeError(
-            "unsupported_algorithm", f"неподдерживаемый digest Authenticode: {algorithm_oid}"
+            "unsupported_algorithm",
+            f"неподдерживаемый digest Authenticode: {algorithm_oid}",
         )
     digest = expect(digest_items[1], 0x04, "messageDigest").content
     return digest, algorithm_oid
@@ -548,12 +607,15 @@ def _parse_timestamp_token(value_der: bytes, signer_signature: bytes) -> dict:
     token = parse_signed_data(value_der)
     if token.econtent_type != OID_CT_TSTINFO:
         raise AuthentiCodeError(
-            "bad_timestamp", f"timestamp token имеет неожиданный тип {token.econtent_type}"
+            "bad_timestamp",
+            f"timestamp token имеет неожиданный тип {token.econtent_type}",
         )
     try:
         tst = parse_one(token.econtent)
     except DerError as exc:
-        raise AuthentiCodeError("bad_timestamp", f"некорректный TSTInfo: {exc}") from exc
+        raise AuthentiCodeError(
+            "bad_timestamp", f"некорректный TSTInfo: {exc}"
+        ) from exc
     expect(tst, TAG_SEQUENCE, "TSTInfo")
     outcome = verify_signer_info(token)
     tsa_certificate = outcome.certificate
@@ -568,11 +630,16 @@ def _parse_timestamp_token(value_der: bytes, signer_signature: bytes) -> dict:
     message_imprint = expect(fields[2], TAG_SEQUENCE, "messageImprint")
     imprint_items = message_imprint.children
     if len(imprint_items) != 2:
-        raise AuthentiCodeError("bad_timestamp", "messageImprint обязан содержать алгоритм и хеш")
-    imprint_algorithm = decode_oid(expect(imprint_items[0], TAG_SEQUENCE, "AlgorithmIdentifier").children[0])
+        raise AuthentiCodeError(
+            "bad_timestamp", "messageImprint обязан содержать алгоритм и хеш"
+        )
+    imprint_algorithm = decode_oid(
+        expect(imprint_items[0], TAG_SEQUENCE, "AlgorithmIdentifier").children[0]
+    )
     if imprint_algorithm not in _DIGESTS:
         raise AuthentiCodeError(
-            "unsupported_algorithm", f"неподдерживаемый digest метки времени: {imprint_algorithm}"
+            "unsupported_algorithm",
+            f"неподдерживаемый digest метки времени: {imprint_algorithm}",
         )
     imprint = expect(imprint_items[1], 0x04, "hashedMessage").content
     if imprint != _digest_of(signer_signature, imprint_algorithm):
@@ -595,7 +662,9 @@ def _parse_timestamp_token(value_der: bytes, signer_signature: bytes) -> dict:
 
 def _extended_key_usage(certificate: x509.Certificate) -> list[str]:
     try:
-        extension = certificate.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+        extension = certificate.extensions.get_extension_for_class(
+            x509.ExtendedKeyUsage
+        )
     except x509.ExtensionNotFound:
         return []
     return [usage.dotted_string for usage in extension.value]
@@ -603,9 +672,13 @@ def _extended_key_usage(certificate: x509.Certificate) -> list[str]:
 
 def _publisher_names(certificate: x509.Certificate) -> list[str]:
     names: list[str] = []
-    for attribute in certificate.subject.get_attributes_for_oid(x509.oid.NameOID.ORGANIZATION_NAME):
+    for attribute in certificate.subject.get_attributes_for_oid(
+        x509.oid.NameOID.ORGANIZATION_NAME
+    ):
         names.append(str(attribute.value))
-    for attribute in certificate.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME):
+    for attribute in certificate.subject.get_attributes_for_oid(
+        x509.oid.NameOID.COMMON_NAME
+    ):
         names.append(str(attribute.value))
     return names
 
@@ -629,8 +702,7 @@ def _parse_certificate_time(value: str) -> datetime:
     дробная часть для сверки с окном сертификата не нужна.
     """
     text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1]
+    text = text.removesuffix("Z")
     if "." in text:
         text = text.partition(".")[0]
     try:
@@ -638,7 +710,9 @@ def _parse_certificate_time(value: str) -> datetime:
             return datetime.strptime(text, "%y%m%d%H%M%S").replace(tzinfo=UTC)
         return datetime.strptime(text, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
     except ValueError as exc:
-        raise AuthentiCodeError("bad_time", f"некорректное время подписи: {value!r}") from exc
+        raise AuthentiCodeError(
+            "bad_time", f"некорректное время подписи: {value!r}"
+        ) from exc
 
 
 def load_pem_certificates(path: Path) -> list[x509.Certificate]:
@@ -651,61 +725,234 @@ def load_pem_certificates(path: Path) -> list[x509.Certificate]:
         try:
             certificates.append(x509.load_der_x509_certificate(base64.b64decode(body)))
         except Exception as exc:  # pragma: no cover - защита от битого входа
-            raise AuthentiCodeError("bad_root", f"некорректный PEM-сертификат: {exc}") from exc
+            raise AuthentiCodeError(
+                "bad_root", f"некорректный PEM-сертификат: {exc}"
+            ) from exc
     if not certificates:
         raise AuthentiCodeError("bad_root", f"в {path} нет PEM-сертификатов")
     return certificates
 
 
-def _verify_chain(
+def _is_self_signed(certificate: x509.Certificate) -> bool:
+    """Self-signed: subject == issuer и криптографическая подпись корректна."""
+    if certificate.subject != certificate.issuer:
+        return False
+    try:
+        sig_alg = _signature_algorithm(
+            certificate.signature_algorithm_oid.dotted_string,
+            certificate.signature_hash_algorithm,
+        )
+        _verify_public_key_signature(
+            certificate.public_key(),
+            certificate.signature,
+            certificate.tbs_certificate_bytes,
+            sig_alg,
+        )
+        return True
+    except AuthentiCodeError:
+        return False
+
+
+def _check_ca_constraints(certificate: x509.Certificate) -> None:
+    """CA-сертификат обязан иметь BasicConstraints.ca=True.
+
+    Если KeyUsage присутствует, обязан содержать keyCertSign (RFC 5280 §4.2.1.3).
+    """
+    try:
+        bc = certificate.extensions.get_extension_for_class(x509.BasicConstraints)
+    except x509.ExtensionNotFound:
+        raise AuthentiCodeError(
+            "bad_chain",
+            f"CA-сертификат {certificate.subject.rfc4514_string()} не имеет BasicConstraints",
+        )
+    if not bc.value.ca:
+        raise AuthentiCodeError(
+            "bad_chain",
+            f"сертификат {certificate.subject.rfc4514_string()} не является CA "
+            f"(BasicConstraints.ca=False)",
+        )
+    # Path length constraint проверяется при сборке chain (см. _verify_chain).
+    try:
+        ku = certificate.extensions.get_extension_for_class(x509.KeyUsage)
+        if not ku.value.key_cert_sign:
+            raise AuthentiCodeError(
+                "bad_chain",
+                f"CA-сертификат {certificate.subject.rfc4514_string()} не имеет keyCertSign",
+            )
+    except x509.ExtensionNotFound:
+        pass  # KeyUsage может отсутствовать — не критично
+
+
+def _check_leaf_validity(
     certificate: x509.Certificate,
+    *,
+    at: datetime,
+    required_eku: str | None = None,
+) -> None:
+    """Проверка leaf-сертификата: срок действия и EKU."""
+    if certificate.not_valid_before_utc > at or certificate.not_valid_after_utc < at:
+        raise AuthentiCodeError(
+            "certificate_expired",
+            f"сертификат {certificate.subject.rfc4514_string()} недействителен "
+            f"на момент {at.isoformat()}",
+        )
+    if required_eku:
+        eku = _extended_key_usage(certificate)
+        if required_eku not in eku:
+            raise AuthentiCodeError(
+                "missing_eku",
+                f"сертификат {certificate.subject.rfc4514_string()} не имеет "
+                f"требуемого EKU {required_eku}",
+            )
+
+
+def _verify_chain(
+    leaf: x509.Certificate,
     intermediates: list[x509.Certificate],
     roots: list[x509.Certificate],
+    *,
     at: datetime,
+    required_leaf_eku: str | None = None,
 ) -> None:
-    """Минимальная проверка цепочки: подписи, сроки, доведение до корня."""
-    root_ders = {root.public_bytes(serialization.Encoding.DER) for root in roots}
-    pool = list(intermediates) + list(roots)
-    current = certificate
-    seen = {current.serial_number}
-    for _ in range(8):
-        if current.not_valid_before_utc > at or current.not_valid_after_utc < at:
-            raise AuthentiCodeError(
-                "certificate_expired",
-                f"сертификат {current.subject.rfc4514_string()} недействителен на момент {at.isoformat()}",
-            )
-        if current.public_bytes(serialization.Encoding.DER) in root_ders:
-            return
-        candidates = [
-            candidate
-            for candidate in pool
-            if candidate.subject == current.issuer and candidate.serial_number not in seen
-        ]
-        signature_algorithm = _signature_algorithm(
-            current.signature_algorithm_oid.dotted_string, current.signature_hash_algorithm
+    """Полная X.509 chain validation (fail closed).
+
+    Trust model:
+    - ``roots`` — ЕДИНСТВЕННЫЙ источник доверия (externally provided trust anchors);
+    - ``intermediates`` — недоверенные кандидаты для построения chain (из SignedData);
+    - ``leaf`` — конечный сертификат (signer или TSA);
+    - leaf НЕ может быть trust anchor сам по себе (кроме случая, когда leaf == root);
+    - chain обязана довестись до корня из ``roots`` через криптографические подписи;
+    - каждый intermediate обязан иметь BasicConstraints.ca=True и keyCertSign;
+    - каждый сертификат обязан быть валиден на момент ``at``;
+    - leaf обязан иметь требуемый EKU (codeSigning для подписанта, timeStamping для TSA);
+    - циклы обнаруживаются по DER (не только по serial number);
+    - максимальная длина chain — 10 сертификатов (включая leaf и root).
+
+    Ограничения (не полная RFC 5280):
+    - Name constraints не проверяются;
+    - CRL/OCSP revocation не проверяется;
+    - Policy constraints не проверяются;
+    - critical extensions, не распознанные здесь, пропускаются (не fail-closed).
+    """
+    if not roots:
+        raise AuthentiCodeError(
+            "untrusted_root", "нет доверенных корней для проверки цепочки"
         )
+    root_ders = {root.public_bytes(serialization.Encoding.DER) for root in roots}
+    # Проверка leaf: срок действия и EKU.
+    _check_leaf_validity(leaf, at=at, required_eku=required_leaf_eku)
+    # Если leaf сам является root (self-signed и в списке roots) — принимаем.
+    leaf_der = leaf.public_bytes(serialization.Encoding.DER)
+    if leaf_der in root_ders:
+        if _is_self_signed(leaf):
+            return
+        # Leaf не self-signed, но его DER в roots — аномалия: возможно,
+        # signer пытается подменить root своим leaf. Fail closed.
+        raise AuthentiCodeError(
+            "untrusted_root",
+            "leaf-сертификат не является self-signed, но присутствует в trust roots "
+            "(отказ: leaf из подписанного файла не может быть trust anchor)",
+        )
+    # Построение chain: leaf → intermediate(s) → root.
+    seen = {leaf_der}
+    current = leaf
+    max_chain_depth = 10
+    for depth in range(max_chain_depth):
+        candidates = [c for c in intermediates if c.subject == current.issuer]
         issuer = None
         for candidate in candidates:
+            candidate_der = candidate.public_bytes(serialization.Encoding.DER)
+            if candidate_der in seen:
+                continue  # цикл
+            # Проверка CA-ограничений intermediate.
+            _check_ca_constraints(candidate)
+            # Проверка срока действия intermediate.
+            if (
+                candidate.not_valid_before_utc > at
+                or candidate.not_valid_after_utc < at
+            ):
+                continue  # невалидный — не подходит как issuer
+            # Проверка path length constraint.
             try:
+                bc = candidate.extensions.get_extension_for_class(x509.BasicConstraints)
+                if bc.value.path_length is not None and depth > bc.value.path_length:
+                    continue  # превышена длина path
+            except x509.ExtensionNotFound:
+                pass
+            # Криптографическая подпись.
+            try:
+                sig_alg = _signature_algorithm(
+                    current.signature_algorithm_oid.dotted_string,
+                    current.signature_hash_algorithm,
+                )
                 _verify_public_key_signature(
                     candidate.public_key(),
                     current.signature,
                     current.tbs_certificate_bytes,
-                    signature_algorithm,
+                    sig_alg,
                 )
             except AuthentiCodeError:
-                continue  # одноимённый, но не тот издатель — пробуем следующий
+                continue  # не тот issuer — пробуем следующий
             issuer = candidate
             break
-        if issuer is None:
-            raise AuthentiCodeError(
-                "untrusted_root",
-                f"цепочка сертификатов не доводится до доверенного корня: "
-                f"{current.issuer.rfc4514_string()}",
-            )
-        seen.add(issuer.serial_number)
-        current = issuer
-    raise AuthentiCodeError("untrusted_root", "слишком длинная цепочка сертификатов")
+        if issuer is not None:
+            issuer_der = issuer.public_bytes(serialization.Encoding.DER)
+            seen.add(issuer_der)
+            # Если issuer — root, chain построена.
+            if issuer_der in root_ders:
+                # Проверка root: self-signed, validity, CA constraints.
+                if not _is_self_signed(issuer):
+                    raise AuthentiCodeError(
+                        "untrusted_root",
+                        f"trust root {issuer.subject.rfc4514_string()} не является self-signed",
+                    )
+                if issuer.not_valid_before_utc > at or issuer.not_valid_after_utc < at:
+                    raise AuthentiCodeError(
+                        "certificate_expired",
+                        f"trust root {issuer.subject.rfc4514_string()} недействителен "
+                        f"на момент {at.isoformat()}",
+                    )
+                return
+            current = issuer
+            continue
+        # Не нашли issuer среди intermediates — ищем среди roots.
+        for root in roots:
+            if root.subject != current.issuer:
+                continue
+            root_der = root.public_bytes(serialization.Encoding.DER)
+            if root_der in seen:
+                continue
+            # Root — trust anchor: проверяем self-signed, validity, CA.
+            if not _is_self_signed(root):
+                raise AuthentiCodeError(
+                    "untrusted_root",
+                    f"trust root {root.subject.rfc4514_string()} не является self-signed",
+                )
+            if root.not_valid_before_utc > at or root.not_valid_after_utc < at:
+                continue
+            try:
+                sig_alg = _signature_algorithm(
+                    current.signature_algorithm_oid.dotted_string,
+                    current.signature_hash_algorithm,
+                )
+                _verify_public_key_signature(
+                    root.public_key(),
+                    current.signature,
+                    current.tbs_certificate_bytes,
+                    sig_alg,
+                )
+            except AuthentiCodeError:
+                continue
+            # Chain доведена до доверенного root.
+            return
+        raise AuthentiCodeError(
+            "untrusted_root",
+            f"цепочка сертификатов не доводится до доверенного корня: "
+            f"{current.issuer.rfc4514_string()}",
+        )
+    raise AuthentiCodeError(
+        "chain_too_long", "слишком длинная цепочка сертификатов (максимум 10)"
+    )
 
 
 def verify_authenticode(
@@ -732,7 +979,9 @@ def verify_authenticode(
             timestamp_roots=timestamp_roots,
         )
     except DerError as exc:
-        raise AuthentiCodeError("bad_pkcs7", f"некорректная структура подписи: {exc}") from exc
+        raise AuthentiCodeError(
+            "bad_pkcs7", f"некорректная структура подписи: {exc}"
+        ) from exc
 
 
 def _verify_authenticode_inner(
@@ -763,7 +1012,9 @@ def _verify_authenticode_inner(
     if content_type_attr is None:
         raise AuthentiCodeError("bad_signature", "в подписи нет атрибута contentType")
     if decode_oid(parse_one(content_type_attr)) != OID_SPC_INDIRECT_DATA:
-        raise AuthentiCodeError("bad_signature", "contentType подписи не SpcIndirectDataContent")
+        raise AuthentiCodeError(
+            "bad_signature", "contentType подписи не SpcIndirectDataContent"
+        )
     message_digest_attr = _attribute_bytes(outcome.attributes, OID_PKCS9_MESSAGE_DIGEST)
     if message_digest_attr is None:
         raise AuthentiCodeError("bad_signature", "в подписи нет атрибута messageDigest")
@@ -783,7 +1034,8 @@ def _verify_authenticode_inner(
     }
     if declared_digest not in expected_digests:
         raise AuthentiCodeError(
-            "bad_signature", "messageDigest подписанных атрибутов не совпал с содержимым подписи"
+            "bad_signature",
+            "messageDigest подписанных атрибутов не совпал с содержимым подписи",
         )
     spc_digest, spc_digest_oid = _parse_authenticode_content(signed_data.econtent)
     computed = pe_authenticode_digest(data, pe, _DIGESTS[spc_digest_oid])
@@ -798,13 +1050,16 @@ def _verify_authenticode_inner(
     eku = _extended_key_usage(signer)
     if OID_EKU_CODE_SIGNING not in eku:
         raise AuthentiCodeError(
-            "missing_eku", "сертификат подписанта не имеет Extended Key Usage codeSigning"
+            "missing_eku",
+            "сертификат подписанта не имеет Extended Key Usage codeSigning",
         )
     publisher_names = _publisher_names(signer)
     publisher_match: bool | None = None
     if expected_publisher:
         normalized = expected_publisher.strip().casefold()
-        publisher_match = any(name.strip().casefold() == normalized for name in publisher_names)
+        publisher_match = any(
+            name.strip().casefold() == normalized for name in publisher_names
+        )
         if not publisher_match:
             raise AuthentiCodeError(
                 "publisher_mismatch",
@@ -815,14 +1070,19 @@ def _verify_authenticode_inner(
     timestamp_attr = None
     for oid, values in outcome.unsigned_attributes.items():
         # id-aa-timeStampToken (RFC 3161) либо устаревшая counterSignature.
-        if oid in (OID_PKCS9_TIMESTAMP_TOKEN, OID_MS_TIMESTAMP_TOKEN, "1.2.840.113549.1.9.6"):
+        if oid in (
+            OID_PKCS9_TIMESTAMP_TOKEN,
+            OID_MS_TIMESTAMP_TOKEN,
+            "1.2.840.113549.1.9.6",
+        ):
             timestamp_attr = values[0].der()
     timestamp_info: dict = {"present": False}
     if timestamp_attr is not None:
         timestamp_info = _parse_timestamp_token(timestamp_attr, outcome.signature)
     if require_timestamp and not timestamp_info["present"]:
         raise AuthentiCodeError(
-            "missing_timestamp", "Authenticode-подпись не содержит метки времени (RFC 3161)"
+            "missing_timestamp",
+            "Authenticode-подпись не содержит метки времени (RFC 3161)",
         )
 
     # 4. Действительность сертификата подписанта на момент подписания.
@@ -830,23 +1090,37 @@ def _verify_authenticode_inner(
         signed_at = _parse_certificate_time(timestamp_info["gen_time"])
         if signed_at < signer.not_valid_before_utc:
             raise AuthentiCodeError(
-                "certificate_expired", "метка времени раньше начала срока действия сертификата"
+                "certificate_expired",
+                "метка времени раньше начала срока действия сертификата",
             )
     else:
         signing_time_attr = _attribute_bytes(outcome.attributes, OID_PKCS9_SIGNING_TIME)
         if signing_time_attr is not None:
-            signed_at = _parse_certificate_time(decode_time(parse_one(signing_time_attr)))
+            signed_at = _parse_certificate_time(
+                decode_time(parse_one(signing_time_attr))
+            )
         else:
             signed_at = at or datetime.now(UTC)
-        if signer.not_valid_before_utc > signed_at or signer.not_valid_after_utc < signed_at:
+        if (
+            signer.not_valid_before_utc > signed_at
+            or signer.not_valid_after_utc < signed_at
+        ):
             raise AuthentiCodeError(
-                "certificate_expired", "сертификат подписанта недействителен на момент подписания"
+                "certificate_expired",
+                "сертификат подписанта недействителен на момент подписания",
             )
 
     # 5. Доверие: проверка цепочки только при явно переданных корнях.
     chain_verified: bool | None = None
+    policy_time = at or datetime.now(UTC)
     if trust_roots:
-        _verify_chain(signer, signed_data.certificates, trust_roots, at or datetime.now(UTC))
+        _verify_chain(
+            signer,
+            signed_data.certificates,
+            trust_roots,
+            at=policy_time,
+            required_leaf_eku=OID_EKU_CODE_SIGNING,
+        )
         chain_verified = True
     timestamp_chain_verified: bool | None = None
     if timestamp_info["present"] and timestamp_roots:
@@ -854,7 +1128,8 @@ def _verify_authenticode_inner(
             timestamp_info["certificate"],
             timestamp_info["certificates"],
             timestamp_roots,
-            at or datetime.now(UTC),
+            at=policy_time,
+            required_leaf_eku=OID_EKU_TIME_STAMPING,
         )
         timestamp_chain_verified = True
 
@@ -882,16 +1157,22 @@ def _verify_authenticode_inner(
         "signer_not_after": signer.not_valid_after_utc.isoformat(),
         "signer_eku": eku,
         "timestamp": {
-            key: value for key, value in timestamp_info.items() if key not in {"certificate", "certificates"}
+            key: value
+            for key, value in timestamp_info.items()
+            if key not in {"certificate", "certificates"}
         },
         "timestamp_present": bool(timestamp_info["present"]),
     }
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
-    trust_roots = load_pem_certificates(Path(args.trust_roots)) if args.trust_roots else None
+    trust_roots = (
+        load_pem_certificates(Path(args.trust_roots)) if args.trust_roots else None
+    )
     timestamp_roots = (
-        load_pem_certificates(Path(args.timestamp_roots)) if args.timestamp_roots else trust_roots
+        load_pem_certificates(Path(args.timestamp_roots))
+        if args.timestamp_roots
+        else trust_roots
     )
     result = verify_authenticode(
         Path(args.file),
@@ -909,8 +1190,14 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(f"Authenticode валиден: {result['signer_subject']}")
-        print(f"издатель: {result['publisher']!r}, хеш файла: {result['file_sha256'][:16]}…")
-        stamp = result["timestamp"].get("gen_time") if result["timestamp_present"] else "нет"
+        print(
+            f"издатель: {result['publisher']!r}, хеш файла: {result['file_sha256'][:16]}…"
+        )
+        stamp = (
+            result["timestamp"].get("gen_time")
+            if result["timestamp_present"]
+            else "нет"
+        )
         print(f"метка времени: {stamp}")
     return 0
 
@@ -924,7 +1211,9 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--require-timestamp", action="store_true")
     verify.add_argument("--trust-roots", default=None, help="PEM с доверенными корнями")
     verify.add_argument("--timestamp-roots", default=None, help="PEM с корнями TSA")
-    verify.add_argument("--at", default=None, help="ISO-время проверки (по умолчанию now UTC)")
+    verify.add_argument(
+        "--at", default=None, help="ISO-время проверки (по умолчанию now UTC)"
+    )
     verify.add_argument("--json", action="store_true")
     verify.add_argument("--json-out", default=None)
     verify.set_defaults(func=_cmd_verify)
