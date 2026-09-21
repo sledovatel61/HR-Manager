@@ -196,7 +196,7 @@
 | `pytest tests/test_release_policy.py test_release_authenticode.py test_trust_store.py` | 61 passed |
 | `pytest tests/test_release_pipeline.py test_channel_network.py test_staging_recovery.py test_updates_api.py` | 51 passed |
 | `npm ci`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm audit --audit-level=high` | lint/typecheck/build OK; **160 tests passed**; **0 vulnerabilities** |
-| `python infra/windows/tests/lint-engine.py` | структурная проверка пройдена (16 файлов) |
+| `python infra/windows/tests/lint-engine.py` | структурная проверка пройдена (18 файлов: движок + `installer/build.ps1`, `installer/sign.ps1`) |
 | `python infra/scripts/pilot_drill.py --out-dir drill` | **aggregator**: signature-policy 61 passed, channel-tamper-refusal 51 passed, readiness-api 18 passed; windows-engine и backup/restore — `skipped` (в контейнере нет PowerShell и PostgreSQL) → вердикт `incomplete`, exit 1 (не E2E, manual приёмка — отдельно) |
 | `python infra/scripts/pilot_drill_live_compose.py --out-dir drill-live` | **live Compose E2E**: 17 шагов `skipped` (no Docker in contour) → вердикт `incomplete`, exit 1; требуется Docker host (ubuntu-latest/owner) для happy-path (first-run/bootstrap, synthetic data, backup/restore, channel) — 401 только отдельный negative stage |
 | `git diff --check` | чисто (проверено перед коммитом) |
@@ -305,6 +305,92 @@ review-artifacts: `review-artifacts/ci.phase14.yml(.patch)` и
   readiness), `infra/windows/tests/channel.tests.ps1` (хост-отчёт).
 * Не закрывать PR #23 и его ветку/handoff: они остаются аудируемым контекстом
   Phase 13.
+
+## 8. Доведение Phase 14 до зелёного CI (сессия-преемник)
+
+Разделы 4–6 выше описывают более раннее состояние. Ниже — факты, проверенные
+по коду и по CI-ранам в текущем checkout.
+
+**Что было не так.** Exact-SHA CI на `f19067f` (run
+[35584010691](https://github.com/sledovatel61/HR-Manager/actions/runs/35584010691))
+был красным: падал job `Windows engine tests + installer smoke`, шаг
+`Authenticode-sign with ephemeral test certificate (never production)`,
+annotation `Process completed with exit code 1`. При этом лог подписи,
+опубликованный ботом в PR #24, показывал, что `signtool sign` **успешен**, а
+`signtool verify /pa` вернул 1 («A certificate chain processed, but terminated
+in a root certificate which is not trusted by the trust provider») — штатно для
+ephemeral-корня.
+
+**Первопричина 1 — утечка `$LASTEXITCODE`.** `installer/sign.ps1` не завершался
+явным `exit`, поэтому последней внешней командой оставался `signtool verify /pa`
+с кодом 1; шаг CI читал `$LASTEXITCODE` и бросал `throw`, хотя подпись была
+выполнена. Исправление: `try/catch/finally` + `exit $scriptExitCode` (0/1),
+отказ дополнительно печатается как `::error title=HRM-AUTHENTICODE::…`.
+
+**Первопричина 2 — нечестная attestation.** `signtool_verify_ok` и
+`authenticode_present` были захардкожены как `$true`, хотя `signtool verify /pa`
+фактически завершился с кодом 1. Теперь оба значения выводятся из фактического
+результата, добавлены `signtool_verify_exit_code`, `windows_signature_status`,
+`windows_chain_trusted` и блок `independent_verification`.
+
+**Первопричина 3 — test-режим проверял «подпись существует», а не «подпись
+верна».** Допуск «продолжаем, потому что подпись есть» принимал любой
+не-`NotSigned` статус. Теперь разрешена ровно одна причина — недоверенный корень
+цепочки (`NotTrusted` / `UnknownError` с сообщением `not trusted by the trust
+provider`), и только если подписант — тот самый ephemeral-сертификат, созданный
+этим запуском. `HashMismatch`, `NotSigned` и любые прочие статусы — отказ; в
+production отказ всегда. Поверх этого подпись проверяется независимо:
+`infra/release/authenticode.py verify` (Authenticode-хеш PE + CMS + цепочка до
+экспортированного корня) в обоих режимах, в production — с
+`--require-timestamp`.
+
+**Первопричина 4 — Authenticode-хеш PE считался с несуществующим нулевым
+дополнением.** `pe_authenticode_digest()` дописывала нули до границы 8 байт;
+алгоритм Microsoft этого не содержит. Round-trip с `sign_test_pe()` расхождение
+скрывал (подписант считал хеш той же функцией), а реальный `signtool.exe` — нет.
+Подтверждение с реального Windows-раннера (аннотации run
+[34958012131](https://github.com/sledovatel61/HR-Manager/actions/runs/34958012131)):
+`expected=4c64684e…` (digest из подписи signtool) совпал с хешем **без**
+дополнения, тогда как прежняя реализация давала `computed=d7b7725b…`.
+Дополнение удалено; добавлены регрессионные тесты, которые на прежней
+реализации падают (проверено).
+
+**Первопричина 5 — BOM в JSON-артефактах релиза.** `Set-Content -Encoding UTF8`
+в Windows PowerShell 5.1 пишет BOM, а `publish_channel.py` читал
+`release.json`/attestation через `json.loads` с `encoding="utf-8"` — такой
+артефакт не разбирался бы на production-выпуске. Теперь `build.ps1` и `sign.ps1`
+пишут UTF-8 без BOM, а Python-сторона читает `utf-8-sig` (как уже делал
+`trust_store.py`).
+
+**CI-шаг валидации trust store перестал быть диагностикой.** Прежний шаг
+оборачивал python-проверку в `try/catch` с `Write-Host` — провал проглатывался.
+Добавлена подкоманда `trust_store.py ci-contract`: она проверяет строгую схему
+fixture-набора, наличие активного и **отозванного** ключей и то, что
+production-политика по-прежнему этот набор отклоняет (`assert_no_revoked_keys`
+и `assert_no_fixture_keys`). Production-флаг `--require-unrevoked` не ослаблен:
+fixture-набор он отклоняет, а production-набор без отозванных ключей принимает.
+
+**Убрано маскирование.** Из CI удалены: повторная попытка сборки с
+пересчитанным SHA256 trust store (обесценивала проверку встроенного trust
+store), диагностический шаг загрузки Inno Setup и постинг 30-КБ логов
+комментариями в PR с захардкоженным `issue_number: 24`. Логи остались в job
+summary и в артефакте `authenticode-logs`. Сужены `permissions` (убраны
+`pull-requests: write` / `issues: write`), закреплены последние floating action
+references (`actions/checkout@v4`, `actions/upload-artifact@v4`).
+
+**Статическая проверка PowerShell расширена и включена в CI.**
+`infra/windows/tests/lint-engine.py` теперь проверяет `installer/build.ps1` и
+`installer/sign.ps1` (запрет `certutil` и `Set-Content -Encoding UTF8`,
+обязательный явный `exit`, отсутствие захардкоженного `signtool_verify_ok`,
+наличие независимого верификатора и production-требований) и запускается в job
+`Backend checks`; `infra/windows/tests/static.tests.ps1` дублирует те же
+контракты уже настоящим парсером PowerShell на windows-latest.
+
+**Что эта сессия не проверяла.** `installer/build.ps1`, `installer/sign.ps1` и
+`infra/windows/tests/run-tests.ps1` не исполнялись локально: в контуре нет ни
+Windows, ни PowerShell, ни `signtool`, ни Inno Setup. Локально подтверждены
+только Python-тесты, ruff/mypy, структурный линт и разбор YAML-workflow.
+Утверждение «Windows installer проверен локально» было бы ложным.
 
 ---
 
