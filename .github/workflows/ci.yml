@@ -511,7 +511,7 @@ jobs:
           # Обязательные артефакты: честная attestation, тестовый корень и
           # отчёт независимого верификатора (authenticode.py).
           foreach ($artifact in @("installer/authenticode-attestation.json",
-              "installer/authenticode-roots.pem", "installer/authenticode-verification.json")) {
+              "installer/authenticode-chain-certs.pem", "installer/authenticode-verification.json")) {
             if (-not (Test-Path $artifact)) { throw "sign.ps1 не создал обязательный артефакт: $artifact" }
           }
           # Attestation обязана честно отражать режим: в test mode
@@ -609,7 +609,7 @@ jobs:
             installer/output/*.exe
             installer/release-manifest.json
             installer/authenticode-attestation.json
-            installer/authenticode-roots.pem
+            installer/authenticode-chain-certs.pem
             installer/authenticode-verification.json
           if-no-files-found: error
 
@@ -647,7 +647,7 @@ jobs:
           signed = sign_test_pe(pe, authority)
           installer = work / "HR-Manager-Setup-0.14.0.exe"
           installer.write_bytes(signed)
-          roots = work / "authenticode-roots.pem"
+          roots = work / "authenticode-chain-certs.pem"
           roots.write_bytes(authority.ca_pem())
           result = subprocess.run([sys.executable, "infra/release/authenticode.py", "verify", "--file", str(installer), "--trust-roots", str(roots), "--json-out", str(work / "verified.json")], capture_output=True, text=True)
           if result.returncode != 0:
