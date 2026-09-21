@@ -187,6 +187,25 @@ def check_installer_script(path: Path) -> None:
             fail("sign.ps1: нет production-ветки")
 
 
+def check_ps_encoding(path: Path) -> None:
+    """PowerShell-файл с кириллицей обязан быть UTF-8 **с BOM**.
+
+    Windows PowerShell 5.1 читает .ps1 без BOM в текущей ANSI-кодировке
+    (на GitHub-раннере cp1252), кириллица превращается в мусор и парсер
+    рассыпается на незакрытых кавычках. pwsh читает UTF-8 корректно, поэтому
+    локально/в линте ошибка не видна — только на windows-latest.
+    """
+    data = path.read_bytes()
+    has_bom = data.startswith(b"\xef\xbb\xbf")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        fail(f"{path}: файл не в UTF-8")
+        return
+    if any(ord(ch) > 127 for ch in text) and not has_bom:
+        fail(f"{path}: нет UTF-8 BOM — PowerShell 5.1 прочитает кириллицу как ANSI и не распарсит файл")
+
+
 def main() -> int:
     engine_files = (
         sorted(WINDOWS.glob("*.ps1"))
@@ -206,6 +225,8 @@ def main() -> int:
     for path in installer_files:
         check_installer_script(path)
     files = engine_files + test_files + installer_files
+    for path in files:
+        check_ps_encoding(path)
     # Секреты-литералы.
     patterns = [
         "AdminAdmin123",

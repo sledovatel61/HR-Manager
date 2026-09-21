@@ -1,4 +1,4 @@
-# Phase 14: подпись Setup.exe (Authenticode) + attestation для release-пайплайна.
+﻿# Phase 14: подпись Setup.exe (Authenticode) + attestation для release-пайплайна.
 #
 # Две НЕЗАВИСИМЫЕ подписи релиза:
 #   1. Ed25519-подпись канала (update-channel.json) — всегда обязательна;
@@ -280,6 +280,7 @@ try {
             -KeyAlgorithm RSA `
             -HashAlgorithm SHA256 `
             -CertStoreLocation "Cert:\CurrentUser\My" `
+            -NotBefore (Get-Date).AddMinutes(-5) `
             -NotAfter (Get-Date).AddDays(2) `
             -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
         Write-Host ("Ephemeral test certificate created: thumbprint={0}, CurrentUser\My only" -f $testCertificate.Thumbprint)
