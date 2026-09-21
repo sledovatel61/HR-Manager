@@ -6,7 +6,7 @@
 #   SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
 # Никакие другие версии/источники не используются; установщик запускается
 # молча (/VERYSILENT) ТОЛЬКО на сборочной машине/CI, никогда на машине
-# пользователя — пользователю доставляется готовый HR-Manager-Setup.exe.
+# пользователя - пользователю доставляется готовый HR-Manager-Setup.exe.
 #
 # Результат: installer/output/HR-Manager-Setup-<Version>.exe и
 # installer/release-manifest.json (release_sha, версия, хеши пакета и exe).
@@ -97,11 +97,11 @@ Write-Host "Final ISCC path: $iscc exists $(Test-Path $iscc)"
 
 $appStaging = Join-Path $stagingDir "app"
 New-Item -ItemType Directory -Path $appStaging -Force | Out-Null
-Write-Host "Staging backend/…"
+Write-Host "Staging backend/..."
 Invoke-RobocopyMirror (Join-Path $repoRoot "backend") (Join-Path $appStaging "backend") @("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "tests", ".venv", "venv")
-Write-Host "Staging frontend/ (без node_modules и dist)…"
+Write-Host "Staging frontend/ (без node_modules и dist)..."
 Invoke-RobocopyMirror (Join-Path $repoRoot "frontend") (Join-Path $appStaging "frontend") @("node_modules", "dist", ".vite")
-Write-Host "Staging infra/…"
+Write-Host "Staging infra/..."
 Invoke-RobocopyMirror (Join-Path $repoRoot "infra") (Join-Path $appStaging "infra") @()
 
 Write-Host "Resolving release_sha..."
@@ -133,13 +133,13 @@ if ($TrustStoreFile) {
     $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Host "Trust store actual SHA256: $actualSha"
     Write-Host "Trust store expected SHA256: '$TrustStoreSha256'"
-    if (-not $TrustStoreSha256) { throw "TrustStoreSha256 is empty — GITHUB_ENV not propagated? actual $actualSha" }
+    if (-not $TrustStoreSha256) { throw "TrustStoreSha256 is empty - GITHUB_ENV not propagated? actual $actualSha" }
     if ($actualSha -ne $TrustStoreSha256.ToLowerInvariant()) {
         throw ("SHA256 trust store не совпал: {0} (ожидался {1})" -f $actualSha, $TrustStoreSha256)
     }
     $trustStoreText = [System.IO.File]::ReadAllText($trustStorePath, [System.Text.Encoding]::UTF8)
     if ($trustStoreText -match "PRIVATE KEY|BEGIN .*PRIVATE") {
-        throw "trust store содержит приватный материал — сборка installer'а остановлена"
+        throw "trust store содержит приватный материал - сборка installer'а остановлена"
     }
     $trustStoreJson = $trustStoreText | ConvertFrom-Json
     $keyIds = @()
@@ -179,7 +179,7 @@ Write-Host "ISCC succeeded"
 $setupExe = Join-Path $outputDir ("HR-Manager-Setup-" + $Version + ".exe")
 if (-not (Test-Path $setupExe)) { throw "Установщик не создан: $setupExe" }
 
-Write-Host "Writing release manifest…"
+Write-Host "Writing release manifest..."
 $fileHashes = [ordered]@{}
 $packageFiles = Get-ChildItem -Path $appStaging -Recurse -File | Sort-Object FullName
 foreach ($file in $packageFiles) {
@@ -204,7 +204,7 @@ $manifest = [ordered]@{
     trust_store = $trustStoreInfo
     signing = [ordered]@{
         status = "unsigned"
-        instruction = "installer/README.md (раздел «Кодовая подпись») и installer/sign.ps1"
+        instruction = "installer/README.md (раздел "Кодовая подпись") и installer/sign.ps1"
     }
     package_files_sha256 = $fileHashes
 }
