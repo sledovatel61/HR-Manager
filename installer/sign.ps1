@@ -58,16 +58,30 @@ if (-not $RootsPath) { $RootsPath = Join-Path $installerDir "authenticode-roots.
 
 function Get-HrmSigntool {
     # Только закреплённый Windows SDK; никаких загрузок из сети.
+    Write-Host "Searching for signtool.exe..."
     $roots = @(
         (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"),
         (Join-Path $env:ProgramFiles "Windows Kits\10\bin")
     )
     foreach ($root in $roots) {
-        if (-not (Test-Path $root)) { continue }
-        $candidates = @(Get-ChildItem -Path $root -Recurse -Filter "signtool.exe" -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
-            Sort-Object FullName -Descending)
-        if ($candidates.Count -gt 0) { return $candidates[0].FullName }
+        if (-not (Test-Path $root)) { Write-Host "Root not found: $root"; continue }
+        Write-Host "Scanning $root for signtool.exe (x64)..."
+        # Fast path: use where.exe if available, fallback to optimized Get-ChildItem
+        $candidates = @()
+        try {
+            $where = (where.exe signtool.exe 2>$null) | Where-Object { $_ -match "\\x64\\signtool\.exe$" }
+            if ($where) { $candidates = @($where | ForEach-Object { Get-Item $_ }) }
+        } catch {}
+        if ($candidates.Count -eq 0) {
+            $candidates = @(Get-ChildItem -Path $root -Filter "signtool.exe" -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
+                Sort-Object FullName -Descending)
+        }
+        Write-Host "Found $($candidates.Count) candidates in $root"
+        if ($candidates.Count -gt 0) {
+            Write-Host "Using signtool: $($candidates[0].FullName)"
+            return $candidates[0].FullName
+        }
     }
     throw "signtool.exe не найден: Windows SDK обязателен для подписи релиза"
 }
