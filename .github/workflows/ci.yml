@@ -432,18 +432,19 @@ jobs:
             Write-Host "Expected SHA env: '$env:TRUST_STORE_SHA256'"
           }
           Write-Host "=== Running installer/build.ps1 ==="
-          $logFile = Join-Path $env:TEMP "build.log"
-          Write-Host "Logging to $logFile"
-          Write-Host "Command: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256"
-          powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256 2>&1 | Tee-Object -FilePath $logFile -Encoding utf8
+          $logFile = Join-Path $env:RUNNER_TEMP "build.log"
+          if (-not $logFile -or -not $env:RUNNER_TEMP) { $logFile = Join-Path $env:TEMP "build.log" }
+          Write-Host "Logging to $logFile (RUNNER_TEMP=$env:RUNNER_TEMP TEMP=$env:TEMP)"
+          Write-Host "Command: ./installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256"
+          & ./installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256 2>&1 | Tee-Object -FilePath $logFile -Encoding utf8
           $code = $LASTEXITCODE
           Write-Host "build.ps1 exit code: $code"
-          if (Test-Path $logFile) { Write-Host "=== build log ==="; Get-Content $logFile | Write-Host }
+          if (Test-Path $logFile) { Write-Host "=== build log ==="; Get-Content $logFile | Write-Host } else { Write-Host "No log file at $logFile"; Get-ChildItem $env:RUNNER_TEMP | Write-Host; Get-ChildItem $env:TEMP | Write-Host }
           if ($code -ne 0) {
             Write-Host "=== First attempt failed, retrying with actual SHA ==="
             $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
             Write-Host "Retry with actual SHA: $actualSha"
-            powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $actualSha 2>&1 | Tee-Object -FilePath $logFile -Encoding utf8 -Append
+            & ./installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $actualSha 2>&1 | Tee-Object -FilePath $logFile -Encoding utf8 -Append
             $code2 = $LASTEXITCODE
             Write-Host "Retry exit code: $code2"
             if (Test-Path $logFile) { Write-Host "=== retry log ==="; Get-Content $logFile | Write-Host }
@@ -466,7 +467,8 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Continue"
-          $logFile = Join-Path $env:TEMP "build.log"
+          $logFile = Join-Path $env:RUNNER_TEMP "build.log"
+          if (-not $logFile -or -not $env:RUNNER_TEMP) { $logFile = Join-Path $env:TEMP "build.log" }
           if (Test-Path $logFile) {
             Write-Host "=== Build log file exists, posting to summary ==="
             $content = Get-Content $logFile -Raw
@@ -488,7 +490,7 @@ jobs:
           script: |
             const fs = require('fs');
             const path = require('path');
-            const logPath = path.join(process.env.TEMP || process.env.RUNNER_TEMP || '/tmp', 'build.log');
+            const logPath = path.join(process.env.RUNNER_TEMP || process.env.TEMP || '/tmp', 'build.log');
             let content = '';
             try {
               if (fs.existsSync(logPath)) {
