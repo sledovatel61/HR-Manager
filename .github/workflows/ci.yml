@@ -447,7 +447,15 @@ jobs:
             $code2 = $LASTEXITCODE
             Write-Host "Retry exit code: $code2"
             if (Test-Path $logFile) { Write-Host "=== retry log ==="; Get-Content $logFile | Write-Host }
-            if ($code2 -ne 0) { throw "build.ps1 failed both attempts: first $code, retry $code2" }
+            if ($code2 -ne 0) {
+              Write-Host "=== Build failed, writing to summary ==="
+              if (Test-Path $logFile) {
+                $content = Get-Content $logFile -Raw
+                if ($content.Length -gt 50000) { $content = $content.Substring(0,50000) + "`n...truncated" }
+                try { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Build failed`n``````n$content`n``````" } catch { Write-Host "summary write failed: $_" }
+              }
+              throw "build.ps1 failed both attempts: first $code, retry $code2"
+            }
           }
           Write-Host "Build succeeded"
           Get-ChildItem installer/output -Recurse | ForEach-Object { Write-Host $_.FullName }
@@ -457,25 +465,21 @@ jobs:
         if: always()
         shell: powershell
         run: |
+          $ErrorActionPreference = "Continue"
           $logFile = Join-Path $env:TEMP "build.log"
           if (Test-Path $logFile) {
             Write-Host "=== Build log file exists, posting to summary ==="
             $content = Get-Content $logFile -Raw
             if ($content.Length -gt 60000) { $content = $content.Substring(0,60000) + "`n...truncated" }
-            # Write to GITHUB_STEP_SUMMARY (visible in Actions UI)
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Build log for $env:GITHUB_SHA`n``````n$content`n``````"
-            Write-Host "Posted to step summary"
-            # Also try to post as PR comment via gh
             try {
-              $body = "Build log for $env:GITHUB_SHA (run $env:GITHUB_RUN_ID):`n``````n$content`n``````"
-              $body | Out-File -FilePath (Join-Path $env:TEMP "pr_comment.txt") -Encoding utf8
-              gh pr comment 24 --body-file (Join-Path $env:TEMP "pr_comment.txt") 2>&1 | Write-Host
-              Write-Host "Attempted PR comment"
-            } catch { Write-Host "PR comment failed: $_" }
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Build log for $env:GITHUB_SHA`n``````n$content`n``````"
+              Write-Host "Posted to step summary"
+            } catch { Write-Host "Failed to write summary: $_" }
           } else {
             Write-Host "No build log found at $logFile"
-            Get-ChildItem $env:TEMP | Write-Host
+            try { Get-ChildItem $env:TEMP | Write-Host } catch { Write-Host "no temp" }
           }
+          Write-Host "Post step done"
 
       - name: Authenticode-sign with ephemeral test certificate (never production)
         shell: powershell
