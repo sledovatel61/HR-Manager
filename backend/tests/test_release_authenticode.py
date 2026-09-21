@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import sys
 from datetime import UTC, datetime, timedelta
@@ -35,14 +36,18 @@ sys.path.insert(0, str(RELEASE))
 
 import authenticode  # type: ignore[import-not-found]  # noqa: E402
 from authenticode import (  # noqa: E402
+    OID_PKCS9_MESSAGE_DIGEST,
     AuthentiCodeError,
     PeInfo,
     extract_pkcs7_blob,
     load_pem_certificates,
     parse_pe,
+    parse_signed_data,
     pe_authenticode_digest,
     verify_authenticode,
+    verify_signer_info,
 )
+from der import parse_one  # type: ignore[import-not-found]  # noqa: E402
 from sign_authenticode import (  # type: ignore[import-not-found]  # noqa: E402
     EphemeralAuthority,
     build_signed_pkcs7,
@@ -489,3 +494,37 @@ def test_verify_rejects_nonzero_record_padding(
     with pytest.raises(AuthentiCodeError) as excinfo:
         verify_authenticode(target, expected_publisher=PUBLISHER, require_timestamp=False)
     assert excinfo.value.code == "bad_certificate_table"
+
+
+SIGNTOOL_BLOB = RELEASE / "testdata" / "signtool-message-digest.der"
+
+
+def _message_digest_of(blob: bytes) -> tuple[bytes, bytes, bytes]:
+    """(messageDigest, тело SpcIndirectDataContent, весь TLV eContent)."""
+    signed = parse_signed_data(blob)
+    outcome = verify_signer_info(signed)
+    declared = parse_one(
+        authenticode._attribute_bytes(outcome.attributes, OID_PKCS9_MESSAGE_DIGEST)
+    ).content
+    spc_node = parse_one(signed.econtent)
+    return declared, spc_node.content, signed.econtent
+
+
+@pytest.mark.parametrize("source", ["signtool", "repo-signer"])
+def test_message_digest_hashes_spc_body_not_tlv(source: str, authority: EphemeralAuthority) -> None:
+    """messageDigest = SHA256(тела SpcIndirectDataContent), без заголовка SEQUENCE.
+
+    Так считает настоящий signtool: golden-блоб реальной подписи установщика
+    (CI run 35610245011, ephemeral test-сертификат) даёт
+    sha256(spc_body) == messageDigest, тогда как sha256(всего TLV) — нет.
+    Тестовый подписант репозитория обязан повторять эталон, иначе независимый
+    верификатор невозможно сверять с signtool.
+    """
+    if source == "signtool":
+        blob = SIGNTOOL_BLOB.read_bytes()
+    else:
+        blob = build_signed_pkcs7(make_test_pe(), authority, with_timestamp=False)
+
+    declared, spc_body, econtent_tlv = _message_digest_of(blob)
+    assert declared == hashlib.sha256(spc_body).digest()
+    assert declared != hashlib.sha256(econtent_tlv).digest()

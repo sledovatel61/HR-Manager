@@ -774,7 +774,12 @@ def _verify_authenticode_inner(
     if message_digest_attr is None:
         raise AuthentiCodeError("bad_signature", "в подписи нет атрибута messageDigest")
     declared_digest = parse_one(message_digest_attr).content
-    computed_content_digest = _digest_of(signed_data.econtent, outcome.digest_algorithm_oid)
+    # messageDigest в Authenticode — хеш ТЕЛА SpcIndirectDataContent (без
+    # заголовка SEQUENCE), а не всего TLV: именно так считает signtool, что
+    # подтверждено разбором реальной подписи установщика. Интерпретация ровно
+    # одна — «пробовать оба варианта» верификатор не будет.
+    spc_node = parse_one(signed_data.econtent)
+    computed_content_digest = _digest_of(spc_node.content, outcome.digest_algorithm_oid)
     if declared_digest != computed_content_digest:
         # Диапазон econtent — единственное место, где разбор может разойтись с
         # тем, что реально хешировал signtool, поэтому в отказ кладём длину и
@@ -782,6 +787,7 @@ def _verify_authenticode_inner(
         # что именно прочитано не так. Секретов здесь нет — только публичная
         # структура подписи.
         candidates = {
+            "spc_body": spc_node.content,
             "econtent": signed_data.econtent,
             "encap0_raw": signed_data.econtent_raw,
             "encap0_tlv": _tlv_of(signed_data.econtent_raw),
@@ -798,6 +804,7 @@ def _verify_authenticode_inner(
             "messageDigest подписанных атрибутов не совпал с содержимым подписи: "
             f"declared={declared_digest.hex()} computed={computed_content_digest.hex()} "
             f"oid={outcome.digest_algorithm_oid} econtent_len={len(signed_data.econtent)} "
+            f"spc_body_len={len(spc_node.content)} "
             f"encap0_raw_len={len(signed_data.econtent_raw)} matched={matched or 'none'} "
             f"pkcs7_b64={base64.b64encode(signed_data.raw).decode()}",
         )
@@ -807,7 +814,9 @@ def _verify_authenticode_inner(
         raise AuthentiCodeError(
             "digest_mismatch",
             "Authenticode-хеш файла не совпал с подписанным SpcIndirectDataContent "
-            "(файл изменён после подписи)",
+            f"(файл изменён после подписи): computed={computed.hex()} "
+            f"signed={spc_digest.hex()} oid={spc_digest_oid} file_len={len(data)} "
+            f"cert_table_off={pe.cert_table_offset} cert_table_size={pe.cert_table_size}",
         )
 
     # 2. EKU и издатель.
