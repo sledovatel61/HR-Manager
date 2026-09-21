@@ -12,9 +12,29 @@
 #     попадает в артефакты: PFX импортируется в пользовательское хранилище и
 #     удаляется после подписи; пароль приходит только через переменную
 #     окружения и никогда не попадает в командную строку signtool.
+#     Подпись обязана быть полностью подтверждена: `signtool verify /pa`
+#     возвращает Valid, издатель совпадает с ожидаемым, метка времени есть,
+#     независимый верификатор подтверждает цепочку до production-корня.
 #   -Mode test — ephemeral самоподписанный сертификат ТОЛЬКО для CI-проверки
 #     контракта (PR/CI без production-секретов). Attestation получает
-#     mode="test", поэтому production policy такой релиз не пропускает.
+#     mode="test" и честный signtool_verify_ok, поэтому production policy
+#     такой релиз не пропускает.
+#
+# ПОЧЕМУ TEST-РЕЖИМ НЕ ТРОГАЕТ СИСТЕМНЫЕ ХРАНИЛИЩА:
+#   добавление самоподписанного корня в Root/TrustedPublisher (certutil или
+#   X509Store) на GitHub-hosted runner показывает диалог подтверждения
+#   безопасности и висит до таймаута job'а. Test-режим держит сертификат
+#   только в Cert:\CurrentUser\My, ничего не добавляет в доверенные корни и
+#   не выдаёт себя за доверенную Windows-подпись.
+#
+# ЧЕСТНОСТЬ ПРОВЕРКИ В TEST-РЕЖИМЕ:
+#   Windows не может подтвердить цепочку ephemeral-корня — это единственный
+#   допустимый «недостаток», и он разрешён ТОЛЬКО когда статус подписи ровно
+#   «корень не доверен». Любая другая причина (HashMismatch, NotSigned и т.п.)
+#   — ошибка. Дополнительно подпись проверяется независимо:
+#   infra/release/authenticode.py пересчитывает Authenticode-хеш PE, проверяет
+#   CMS-подпись и доводит цепочку до экспортированного корня. То есть
+#   test-режим проверяет криптографию, а не «файл чем-то подписан».
 #
 # Использование:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File installer\sign.ps1 `
@@ -26,9 +46,15 @@
 #     -ExpectedPublisher "ООО «Ромашка»" -TimestampUrl "http://timestamp.digicert.com" `
 #     -TrustStoreFile "$env:RUNNER_TEMP\trust-store.json"
 #
-# Результат: installer/authenticode-attestation.json и
+# Код возврата: 0 — подпись выполнена и проверена, 1 — любой отказ (fail closed).
+# Скрипт всегда завершается явным exit: без этого $LASTEXITCODE вызывающей
+# стороны остаётся от последней внешней команды (signtool verify), и CI
+# ошибочно считал успешную подпись провалом.
+#
+# Результат: installer/authenticode-attestation.json,
 # installer/authenticode-roots.pem (публичные сертификаты для независимой
-# проверки вне Windows), обновлённый installer/release-manifest.json.
+# проверки вне Windows), installer/authenticode-verification.json (отчёт
+# независимого верификатора) и обновлённый installer/release-manifest.json.
 
 [CmdletBinding()]
 param(
@@ -41,13 +67,15 @@ param(
     [string]$TimestampUrl = "",
     [string]$TrustStoreFile = "",
     [string]$AttestationPath = "",
-    [string]$RootsPath = ""
+    [string]$RootsPath = "",
+    [string]$VerificationPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
 $installerDir = $PSScriptRoot
+$repoRoot = Split-Path $installerDir -Parent
 if (-not $Version) { throw "нужен -Version" }
 if (-not $SetupExe) {
     $SetupExe = Join-Path (Join-Path $installerDir "output") ("HR-Manager-Setup-" + $Version + ".exe")
@@ -55,23 +83,60 @@ if (-not $SetupExe) {
 if (-not (Test-Path $SetupExe)) { throw "Setup.exe не найден: $SetupExe" }
 if (-not $AttestationPath) { $AttestationPath = Join-Path $installerDir "authenticode-attestation.json" }
 if (-not $RootsPath) { $RootsPath = Join-Path $installerDir "authenticode-roots.pem" }
+if (-not $VerificationPath) { $VerificationPath = Join-Path $installerDir "authenticode-verification.json" }
+
+function Write-HrmUtf8NoBom {
+    # Python-часть release-пайплайна читает JSON через json.loads без BOM-фильтра:
+    # Set-Content -Encoding UTF8 в Windows PowerShell 5.1 пишет BOM и ломает разбор.
+    param([string]$Path, [string]$Text)
+    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Invoke-HrmNative {
+    # Внешняя команда с полным выводом в лог. В Windows PowerShell 5.1 связка
+    # "$ErrorActionPreference='Stop'" + "2>&1" превращает stderr внешней
+    # программы в terminating error, поэтому на время вызова предпочтение
+    # снижается, а код возврата читается явно из $LASTEXITCODE.
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$Label
+    )
+    Write-Host ("Running: {0} {1}" -f $FilePath, ($Arguments -join " "))
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $FilePath @Arguments 2>&1 | Out-String
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+    $code = $LASTEXITCODE
+    if ($output) {
+        foreach ($line in ($output -split "`r?`n")) {
+            if ($line.Trim().Length -gt 0) { Write-Host ("  [{0}] {1}" -f $Label, $line) }
+        }
+    }
+    return [pscustomobject]@{ ExitCode = $code; Output = $output }
+}
 
 function Get-HrmSigntool {
     # Только закреплённый Windows SDK; никаких загрузок из сети.
     Write-Host "Searching for signtool.exe..."
-    $roots = @(
-        (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"),
-        (Join-Path $env:ProgramFiles "Windows Kits\10\bin")
-    )
+    $roots = @()
+    if ($env:ProgramFiles) { $roots += (Join-Path $env:ProgramFiles "Windows Kits\10\bin") }
+    $x86 = [System.Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    if ($x86) { $roots += (Join-Path $x86 "Windows Kits\10\bin") }
     foreach ($root in $roots) {
         if (-not (Test-Path $root)) { Write-Host "Root not found: $root"; continue }
         Write-Host "Scanning $root for signtool.exe (x64)..."
-        # Fast path: use where.exe if available, fallback to optimized Get-ChildItem
+        # Быстрый путь: where.exe; запасной — обход каталога SDK.
         $candidates = @()
         try {
             $where = (where.exe signtool.exe 2>$null) | Where-Object { $_ -match "\\x64\\signtool\.exe$" }
             if ($where) { $candidates = @($where | ForEach-Object { Get-Item $_ }) }
-        } catch {}
+        }
+        catch {}
         if ($candidates.Count -eq 0) {
             $candidates = @(Get-ChildItem -Path $root -Filter "signtool.exe" -Recurse -ErrorAction SilentlyContinue |
                 Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
@@ -84,6 +149,16 @@ function Get-HrmSigntool {
         }
     }
     throw "signtool.exe не найден: Windows SDK обязателен для подписи релиза"
+}
+
+function Get-HrmPython {
+    # Независимая проверка Authenticode выполняется Python-верификатором
+    # репозитория; без него подпись не считается подтверждённой.
+    foreach ($name in @("python", "python3")) {
+        if (Get-Command $name -ErrorAction SilentlyContinue) { return @($name) }
+    }
+    if (Get-Command "py" -ErrorAction SilentlyContinue) { return @("py", "-3") }
+    throw "python не найден: независимая проверка Authenticode обязательна"
 }
 
 function Get-HrmPublisherName {
@@ -112,6 +187,16 @@ function Get-HrmSha256Hex {
     finally { $sha.Dispose() }
 }
 
+function Test-HrmUntrustedRootOnly {
+    # Единственная причина неподтверждённой цепочки, которую test-режим имеет
+    # право пережить: корень не входит в доверенные корни Windows. Всё
+    # остальное (битый хеш, отсутствующая подпись, несовместимый формат) — отказ.
+    param([string]$Status, [string]$Message)
+    if ($Status -eq "NotTrusted") { return $true }
+    if ($Status -ne "UnknownError") { return $false }
+    return [bool]($Message -match "not trusted by the trust provider|untrusted root|CERT_E_UNTRUSTEDROOT")
+}
+
 function Export-HrmCertificatePem {
     param(
         [System.Security.Cryptography.X509Certificates.X509Certificate2[]]$Certificates,
@@ -124,7 +209,7 @@ function Export-HrmCertificatePem {
         [void]$builder.AppendLine([Convert]::ToBase64String($raw, [Base64FormattingOptions]::InsertLineBreaks))
         [void]$builder.AppendLine("-----END CERTIFICATE-----")
     }
-    [System.IO.File]::WriteAllText($Path, $builder.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+    Write-HrmUtf8NoBom -Path $Path -Text $builder.ToString()
 }
 
 function Read-HrmTrustStoreFacts {
@@ -159,7 +244,7 @@ function Read-HrmTrustStoreFacts {
 $signtool = Get-HrmSigntool
 $testCertificate = $null
 $importedCertificate = $null
-$passwordForSigning = ""
+$scriptExitCode = 0
 
 Write-Host ("== HR Manager Authenticode signing ({0}) ==" -f $Mode)
 
@@ -185,7 +270,8 @@ try {
         $signingThumbprint = $importedCertificate.Thumbprint
     }
     else {
-        # Ephemeral тестовый сертификат: только CurrentUser, только CI-контракт.
+        # Ephemeral тестовый сертификат: только CurrentUser\My, только CI-контракт.
+        # Ни Root, ни TrustedPublisher не трогаем (см. заголовок скрипта).
         $testCertificate = New-SelfSignedCertificate `
             -Subject "O=HR Manager CI (test only), CN=HR Manager CI Test Publisher" `
             -Type Custom `
@@ -196,43 +282,61 @@ try {
             -CertStoreLocation "Cert:\CurrentUser\My" `
             -NotAfter (Get-Date).AddDays(2) `
             -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
-        Write-Host "Test certificate created (thumbprint=$($testCertificate.Thumbprint)), skipping Root/TrustedPublisher add to avoid UI hang in CI"
-        # For test mode we keep cert only in CurrentUser\My (where New-SelfSignedCertificate placed it).
-        # Adding to Root/TrustedPublisher via certutil or X509Store triggers a UI confirmation dialog on
-        # GitHub's Windows runner and hangs indefinitely. Verification for test mode is lenient:
-        # we only require that a signature exists, not that Windows trusts the chain (Python verifier
-        # checks the exported PEM roots). Production still uses real PFX and full verification.
+        Write-Host ("Ephemeral test certificate created: thumbprint={0}, CurrentUser\My only" -f $testCertificate.Thumbprint)
         $signingThumbprint = $testCertificate.Thumbprint
     }
 
     # 1. Подпись. /fd SHA256 и /sha1 — без приватного материала в командной
-    #    строке; /tr — RFC3161 TSA владельца.
+    #    строке; /tr — RFC3161 TSA владельца (только production).
     Write-Host "Signing $SetupExe with thumbprint $signingThumbprint (mode=$Mode)..."
     $signArgs = @("sign", "/fd", "SHA256", "/sha1", $signingThumbprint, "/d", "HR Manager")
     if ($Mode -eq "production") { $signArgs += @("/tr", $TimestampUrl, "/td", "SHA256") }
     $signArgs += $SetupExe
-    Write-Host "Running: $signtool $($signArgs -join ' ')"
-    & $signtool @signArgs
-    if ($LASTEXITCODE -ne 0) { throw ("signtool sign завершился с кодом {0}" -f $LASTEXITCODE) }
+    $signResult = Invoke-HrmNative -FilePath $signtool -Arguments $signArgs -Label "signtool sign"
+    if ($signResult.ExitCode -ne 0) {
+        throw ("signtool sign завершился с кодом {0}" -f $signResult.ExitCode)
+    }
     Write-Host "signtool sign succeeded"
 
     # 2. Проверка подписи средствами Windows.
     Write-Host "Verifying signature (signtool verify /pa)..."
-    & $signtool verify /pa $SetupExe
-    $verifyExit = $LASTEXITCODE
+    $verifyResult = Invoke-HrmNative -FilePath $signtool -Arguments @("verify", "/pa", $SetupExe) -Label "signtool verify"
+    $verifyExit = [int]$verifyResult.ExitCode
     Write-Host "signtool verify /pa exit code: $verifyExit"
-    # For test mode we do not require /pa /all to succeed (needs Root trust which hangs in CI).
-    # We only throw for production; for test we log and continue if signature exists.
 
     $signature = Get-AuthenticodeSignature -FilePath $SetupExe
-    Write-Host "Get-AuthenticodeSignature status: $($signature.Status) - $($signature.StatusMessage)"
+    $windowsStatus = [string]$signature.Status
+    $windowsStatusMessage = [string]$signature.StatusMessage
+    Write-Host "Get-AuthenticodeSignature status: $windowsStatus - $windowsStatusMessage"
+
     if ($null -eq $signature.SignerCertificate) { throw "после подписи у файла нет SignerCertificate" }
-    if ($Mode -eq "production" -and $signature.Status -ne "Valid") { throw ("production: статус подписи {0} вместо Valid" -f $signature.Status) }
-    if ($Mode -eq "test" -and $signature.Status -eq "NotSigned") { throw ("test: файл не подписан, статус {0}" -f $signature.Status) }
-    if ($Mode -eq "test" -and $verifyExit -ne 0) {
-        Write-Host "WARNING: signtool verify /pa failed for test cert (expected without Root trust), continuing because signature exists"
-    } elseif ($verifyExit -ne 0) {
-        throw ("signtool verify /pa не подтвердил подпись (код {0})" -f $verifyExit)
+    if ($windowsStatus -eq "NotSigned") { throw ("файл не подписан: статус {0}" -f $windowsStatus) }
+    if ($windowsStatus -eq "HashMismatch") {
+        throw "Authenticode-хеш файла не совпал с подписью (HashMismatch): файл изменён после подписи"
+    }
+
+    $windowsChainTrusted = ($windowsStatus -eq "Valid")
+    $signtoolVerifyOk = ($verifyExit -eq 0) -and $windowsChainTrusted
+    if (-not $signtoolVerifyOk) {
+        if ($windowsChainTrusted) {
+            throw ("Windows считает подпись действительной, но signtool verify /pa вернул код {0}" -f $verifyExit)
+        }
+        if (-not (Test-HrmUntrustedRootOnly -Status $windowsStatus -Message $windowsStatusMessage)) {
+            throw ("Windows не подтвердил подпись: статус {0} ({1}); это не «недоверенный корень»" -f `
+                $windowsStatus, $windowsStatusMessage)
+        }
+        if ($Mode -eq "production") {
+            throw ("production: подпись не подтверждена Windows: статус {0} ({1}), код signtool {2}" -f `
+                $windowsStatus, $windowsStatusMessage, $verifyExit)
+        }
+        if ($signature.SignerCertificate.Thumbprint -ne $testCertificate.Thumbprint) {
+            throw ("test: подпись выполнена сертификатом {0}, а не созданным ephemeral-сертификатом {1}" -f `
+                $signature.SignerCertificate.Thumbprint, $testCertificate.Thumbprint)
+        }
+        Write-Host ("TEST MODE ONLY: цепочка не доводится до доверенного корня Windows ({0})." -f $windowsStatusMessage)
+        Write-Host "test-сертификат намеренно НЕ добавляется в Root/TrustedPublisher, поэтому"
+        Write-Host "подпись подтверждается независимым верификатором ниже, а attestation"
+        Write-Host "получает mode=test и signtool_verify_ok=false (production policy такой релиз не примет)."
     }
 
     $publisher = Get-HrmPublisherName -Certificate $signature.SignerCertificate
@@ -249,15 +353,56 @@ try {
     if ($signature.TimeStamperCertificate) { $chainCerts += $signature.TimeStamperCertificate }
     Export-HrmCertificatePem -Certificates $chainCerts -Path $RootsPath
 
-    # 4. Attestation: только публичные факты (ни ключей, ни паролей).
+    # 4. Независимая проверка: Authenticode-хеш PE + CMS + цепочка до корня.
+    #    Не зависит от системного Root trust, поэтому одинаково строга в обоих
+    #    режимах и не позволяет «подписи существовать» вместо «подпись верна».
+    Write-Host "Independent Authenticode verification (infra/release/authenticode.py)..."
+    $verifier = Join-Path (Join-Path $repoRoot "infra") (Join-Path "release" "authenticode.py")
+    if (-not (Test-Path $verifier)) { throw "независимый верификатор не найден: $verifier" }
+    $pythonCommand = @(Get-HrmPython)
+    $verifyArgs = @($verifier, "verify", "--file", $SetupExe, "--trust-roots", $RootsPath,
+        "--expected-publisher", $publisher, "--json-out", $VerificationPath)
+    if ($Mode -eq "production") { $verifyArgs += "--require-timestamp" }
+    $pythonExe = [string]$pythonCommand[0]
+    $pythonPrefix = @()
+    if ($pythonCommand.Count -gt 1) { $pythonPrefix = @($pythonCommand[1..($pythonCommand.Count - 1)]) }
+    $verifyPy = Invoke-HrmNative -FilePath $pythonExe -Arguments (@($pythonPrefix) + $verifyArgs) -Label "verify"
+    if ($verifyPy.ExitCode -ne 0) {
+        throw ("независимая проверка Authenticode не прошла (код {0})" -f $verifyPy.ExitCode)
+    }
+    if (-not (Test-Path $VerificationPath)) {
+        throw "независимый верификатор не создал отчёт: $VerificationPath"
+    }
+    $independent = [System.IO.File]::ReadAllText($VerificationPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ([bool]$independent.signed -ne $true) { throw "независимая проверка: файл не подписан" }
+    if ([bool]$independent.chain_verified -ne $true) {
+        throw "независимая проверка: цепочка сертификатов не доведена до доверенного корня"
+    }
+    if ([string]$independent.signer_thumbprint_sha256 -ne (Get-HrmSha256Hex $signature.SignerCertificate.RawData)) {
+        throw "независимая проверка: отпечаток подписанта не совпал с сертификатом Windows"
+    }
+    Write-Host ("Independent verification passed: digest={0}, chain_verified=True" -f $independent.digest_algorithm)
+
+    # 5. Attestation: только публичные факты (ни ключей, ни паролей) и только
+    #    фактические результаты проверок — ничего не «дорисовывается».
     $trustStore = Read-HrmTrustStoreFacts -Path $TrustStoreFile
     $trustStoreSha = ""
     if ($trustStore) { $trustStoreSha = $trustStore.sha256 }
     $attestation = [ordered]@{
         schema = 1
         mode = $Mode
-        authenticode_present = $true
-        signtool_verify_ok = $true
+        authenticode_present = ($windowsStatus -ne "NotSigned")
+        signtool_verify_ok = $signtoolVerifyOk
+        signtool_verify_exit_code = $verifyExit
+        windows_signature_status = $windowsStatus
+        windows_chain_trusted = $windowsChainTrusted
+        independent_verification = [ordered]@{
+            tool = "infra/release/authenticode.py"
+            passed = $true
+            chain_verified = [bool]$independent.chain_verified
+            digest_algorithm = [string]$independent.digest_algorithm
+            signer_thumbprint_sha256 = [string]$independent.signer_thumbprint_sha256
+        }
         timestamp_present = $timestampPresent
         publisher = $publisher
         installer = (Split-Path $SetupExe -Leaf)
@@ -269,12 +414,13 @@ try {
         tool = "installer/sign.ps1"
         trust_store = $trustStore
     }
-    $attestation | ConvertTo-Json -Depth 6 | Set-Content -Path $AttestationPath -Encoding UTF8
+    Write-HrmUtf8NoBom -Path $AttestationPath -Text ($attestation | ConvertTo-Json -Depth 6)
 
-    # 5. Манифест релиза: честный статус подписи.
+    # 6. Манифест релиза: честный статус подписи.
     $manifestPath = Join-Path $installerDir "release-manifest.json"
     if (Test-Path $manifestPath) {
-        $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        $manifestText = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8)
+        $manifest = $manifestText | ConvertFrom-Json
     }
     else {
         $manifest = New-Object System.Management.Automation.PSCustomObject
@@ -285,15 +431,24 @@ try {
         attestation = (Split-Path $AttestationPath -Leaf)
         installer_sha256 = $attestation.installer_sha256
         publisher = $publisher
+        signtool_verify_ok = $signtoolVerifyOk
+        windows_chain_trusted = $windowsChainTrusted
         timestamp_present = $timestampPresent
         trust_store_sha256 = $trustStoreSha
     }
     $manifest | Add-Member -NotePropertyName "signing" -NotePropertyValue $signingInfo -Force
-    $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $manifestPath -Encoding UTF8
+    Write-HrmUtf8NoBom -Path $manifestPath -Text ($manifest | ConvertTo-Json -Depth 8)
 
-    Write-Host ("Подпись проверена: {0}" -f $SetupExe)
-    Write-Host ("Издатель: {0}; метка времени: {1}" -f $publisher, $timestampPresent)
+    Write-Host ("Подпись выполнена: {0}" -f $SetupExe)
+    Write-Host ("Издатель: {0}; метка времени: {1}; Windows chain trusted: {2}; signtool verify ok: {3}" -f `
+        $publisher, $timestampPresent, $windowsChainTrusted, $signtoolVerifyOk)
     Write-Host ("Attestation: {0}" -f $AttestationPath)
+}
+catch {
+    $scriptExitCode = 1
+    $message = ($_.Exception.Message -replace "[`r`n]+", " | ")
+    Write-Host ("::error title=HRM-AUTHENTICODE::sign.ps1 ({0}) отказал: {1}" -f $Mode, $message)
+    if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace }
 }
 finally {
     if ($importedCertificate) {
@@ -307,7 +462,8 @@ finally {
         finally { $store.Close() }
     }
     if ($testCertificate) {
-        foreach ($storeName in @("Root", "TrustedPublisher", "My")) {
+        # Test-сертификат создавался только в CurrentUser\My — там же и удаляется.
+        foreach ($storeName in @("My")) {
             $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, "CurrentUser")
             $store.Open("ReadWrite")
             try {
@@ -322,3 +478,5 @@ finally {
         Remove-Item $PfxPath -Force -ErrorAction SilentlyContinue
     }
 }
+
+exit $scriptExitCode
