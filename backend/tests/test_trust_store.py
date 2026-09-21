@@ -10,6 +10,7 @@ fail-closed отзыв, отсутствие приватного материа
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -284,3 +285,113 @@ def test_backend_validator_is_strict_on_real_inputs() -> None:
     assert backend_describe({"k1": {"key": PUBLIC_KEY_A, "revoked": True}}) == [
         {"key_id": "k1", "fingerprint": key_fingerprint(PUBLIC_KEY_A), "revoked": True}
     ]
+
+
+# --- Phase 14: контракт CI-набора fixtures (не ослабляет production) -----------
+
+FIXTURE_STORE = REPO / "infra" / "release" / "testdata" / "trusted_keys.json"
+
+
+def test_ci_fixture_set_keeps_active_and_revoked_keys() -> None:
+    """Негативный fixture обязан оставаться в наборе: на нём живут отказы канала."""
+    data = load_trust_store_file(FIXTURE_STORE)
+    assert data["pilot-test-key"]["revoked"] is False
+    assert data["pilot-revoked-key"]["revoked"] is True
+
+
+def test_ci_contract_command_accepts_the_repository_fixture(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import trust_store
+
+    assert trust_store.main(["ci-contract", "--file", str(FIXTURE_STORE)]) == 0
+    printed = capsys.readouterr().out
+    assert f"TRUST_STORE_SHA256={hashlib.sha256(FIXTURE_STORE.read_bytes()).hexdigest()}" in printed
+
+
+def test_ci_contract_fails_if_the_revoked_fixture_disappears(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Если отозванный ключ «потеряли», CI не должен становиться зелёным молча."""
+    import trust_store
+
+    data = json.loads(FIXTURE_STORE.read_text(encoding="utf-8"))
+    del data["pilot-revoked-key"]
+    path = tmp_path / "trusted_keys.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert trust_store.main(["ci-contract", "--file", str(path)]) == 1
+    assert "revoked" in capsys.readouterr().err.lower()
+
+
+def test_ci_contract_accepts_independently_computed_sha256(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """CI-шаг передаёт SHA из Get-FileHash: совпадение (регистр не важен) — ок."""
+    import trust_store
+
+    raw = hashlib.sha256(FIXTURE_STORE.read_bytes()).hexdigest()
+    assert (
+        trust_store.main(
+            ["ci-contract", "--file", str(FIXTURE_STORE), "--expected-sha256", raw.upper()]
+        )
+        == 0
+    )
+    assert f"TRUST_STORE_SHA256={raw}" in capsys.readouterr().out
+
+
+def test_ci_contract_rejects_sha256_mismatch(capsys: pytest.CaptureFixture[str]) -> None:
+    """Если файл подменили между Get-FileHash и инструментом — отказ, а не зелёный CI."""
+    import trust_store
+
+    wrong = "0" * 64
+    assert (
+        trust_store.main(["ci-contract", "--file", str(FIXTURE_STORE), "--expected-sha256", wrong])
+        == 1
+    )
+    assert "sha256" in capsys.readouterr().err.lower()
+
+
+def test_ci_contract_fails_if_revoked_flag_is_cleared(tmp_path: Path) -> None:
+    import trust_store
+
+    data = json.loads(FIXTURE_STORE.read_text(encoding="utf-8"))
+    data["pilot-revoked-key"]["revoked"] = False
+    path = tmp_path / "trusted_keys.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert trust_store.main(["ci-contract", "--file", str(path)]) == 1
+
+
+def test_production_require_unrevoked_still_rejects_the_ci_fixture(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Production-флаг не ослаблен: fixture-набор с отозванным ключом он отклоняет."""
+    import trust_store
+
+    assert trust_store.main(["validate", "--file", str(FIXTURE_STORE), "--require-unrevoked"]) == 1
+    assert "revoked_key_present" in capsys.readouterr().err
+
+
+def test_production_store_without_revoked_keys_passes_require_unrevoked(tmp_path: Path) -> None:
+    import trust_store
+
+    path = tmp_path / "production-store.json"
+    path.write_text(
+        json.dumps(
+            {
+                "pilot-release-2026": {"key": PUBLIC_KEY_A, "revoked": False},
+                "pilot-release-2027": {"key": PUBLIC_KEY_B, "revoked": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert trust_store.main(["validate", "--file", str(path), "--require-unrevoked"]) == 0
+
+
+def test_load_trust_store_tolerates_utf8_bom(tmp_path: Path) -> None:
+    """Windows PowerShell 5.1 пишет JSON с BOM: разбор не должен падать."""
+    path = tmp_path / "bom-store.json"
+    path.write_bytes(
+        b"\xef\xbb\xbf"
+        + json.dumps({"pilot-release-2026": {"key": PUBLIC_KEY_A, "revoked": False}}).encode()
+    )
+    assert load_trust_store_file(path)["pilot-release-2026"]["key"] == PUBLIC_KEY_A

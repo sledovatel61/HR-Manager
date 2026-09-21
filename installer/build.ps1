@@ -1,4 +1,4 @@
-# Сборка HR Manager Setup.exe из исходников репозитория.
+﻿# Сборка HR Manager Setup.exe из исходников репозитория.
 #
 # Инструментальная цепочка ЗАКРЕПЛЕНА (см. installer/README.md):
 #   Inno Setup 6.7.3, официальный установщик с GitHub Releases.
@@ -32,6 +32,14 @@ $cacheDir = Join-Path $installerDir ".cache"
 
 $InnoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
 $InnoSha256 = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+
+function Write-HrmUtf8NoBom {
+    # Windows PowerShell 5.1 пишет Set-Content -Encoding UTF8 с BOM, а Python
+    # (publish_channel.py, sign.ps1-верификатор) читает JSON через json.loads,
+    # который BOM не принимает. Все JSON-артефакты пишем без BOM.
+    param([string]$Path, [string]$Text)
+    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+}
 
 function Invoke-RobocopyMirror {
     param([string]$Source, [string]$Destination, [string[]]$ExcludeDirs = @())
@@ -102,7 +110,8 @@ Invoke-RobocopyMirror (Join-Path $repoRoot "backend") (Join-Path $appStaging "ba
 Write-Host "Staging frontend/ (без node_modules и dist)..."
 Invoke-RobocopyMirror (Join-Path $repoRoot "frontend") (Join-Path $appStaging "frontend") @("node_modules", "dist", ".vite")
 Write-Host "Staging infra/..."
-Invoke-RobocopyMirror (Join-Path $repoRoot "infra") (Join-Path $appStaging "infra") @()
+$pythonCruft = @("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv")
+Invoke-RobocopyMirror (Join-Path $repoRoot "infra") (Join-Path $appStaging "infra") $pythonCruft
 
 Write-Host "Resolving release_sha..."
 $releaseSha = if ($env:HRM_RELEASE_SHA) {
@@ -122,7 +131,7 @@ $releaseJson = [ordered]@{
     built_at = (Get-Date).ToString("o")
     installer_commit = $releaseSha
 }
-$releaseJson | ConvertTo-Json | Set-Content -Path (Join-Path $appStaging "release.json") -Encoding UTF8
+Write-HrmUtf8NoBom -Path (Join-Path $appStaging "release.json") -Text ($releaseJson | ConvertTo-Json)
 
 $trustStoreInfo = $null
 if ($TrustStoreFile) {
@@ -170,8 +179,11 @@ else {
 Write-Host "Compiling installer with ISCC..."
 Write-Host "ISCC path: $iscc exists $(Test-Path $iscc)"
 Write-Host "ISS path: $(Join-Path $installerDir 'installer.iss') exists $(Test-Path (Join-Path $installerDir 'installer.iss'))"
-Write-Host "Staging dir contents first 20:"
-Get-ChildItem $stagingDir -Recurse | Select-Object FullName -First 20 | ForEach-Object { Write-Host $_.FullName }
+$stagedCount = @(Get-ChildItem $stagingDir -Recurse -File).Count
+Write-Host "Staged files: $stagedCount"
+if (@(Get-ChildItem $stagingDir -Recurse -Directory -Filter "__pycache__").Count -gt 0) {
+    throw "в staging попал __pycache__: исключение кэша Python не сработало"
+}
 & $iscc (Join-Path $installerDir "installer.iss") ("/DAppVersion=" + $Version)
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
 Write-Host "ISCC succeeded"
@@ -209,9 +221,15 @@ $manifest = [ordered]@{
     package_files_sha256 = $fileHashes
 }
 $manifestPath = Join-Path $installerDir "release-manifest.json"
-$manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $manifestPath -Encoding UTF8
+Write-HrmUtf8NoBom -Path $manifestPath -Text ($manifest | ConvertTo-Json -Depth 8)
 
 Write-Host ""
 Write-Host "Готово: $setupExe"
 Write-Host ("SHA256 установщика: {0}" -f $manifest.installer_exe.sha256)
 Write-Host "Манифест: $manifestPath"
+
+# Явный код успеха: вызывающий CI-шаг запускает скрипт как дочерний процесс
+# (`powershell -File ...`) и читает $LASTEXITCODE. 0 возвращается ТОЛЬКО
+# после полного успеха (Inno Setup, staging, ISCC, манифест); при любом
+# терминирующем исключении выше процесс завершается с кодом 1.
+exit 0

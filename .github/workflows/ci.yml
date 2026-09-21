@@ -47,6 +47,15 @@ jobs:
         run: mypy app tests
       - name: Unit tests
         run: pytest -m "not integration" -v
+      - name: PowerShell structural lint (engine + installer scripts)
+        working-directory: .
+        run: |
+          # Авторитетная проверка PowerShell — run-tests.ps1 на windows-latest.
+          # Здесь — кросс-платформенная структурная проверка (баланс скобок,
+          # кодировка, секреты-литералы, запрещённые вызовы, контракты
+          # installer/build.ps1 и installer/sign.ps1), чтобы сломанный скрипт
+          # не доезжал до Windows-джобы.
+          python infra/windows/tests/lint-engine.py
       - name: Phase 14 pilot drill (release policy + channel refusals + readiness)
         working-directory: .
         run: |
@@ -61,7 +70,7 @@ jobs:
           path: |
             drill/pilot-drill.json
             drill/pilot-drill.md
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Production preflight script checks
         working-directory: .
@@ -234,7 +243,7 @@ jobs:
           path: |
             drill/pilot-drill.json
             drill/pilot-drill.md
-          if-no-files-found: warn
+          if-no-files-found: error
 
   stack:
     name: Compose stack smoke test (dev + prod overlay)
@@ -373,118 +382,73 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          Set-StrictMode -Version Latest
-          Write-Host "=== Validate trust store (Phase 14) ==="
+          Write-Host "=== Trust store: CI fixture contract (Phase 14) ==="
           $trustStorePath = "infra/release/testdata/trusted_keys.json"
           if (-not (Test-Path $trustStorePath)) { throw "trust store not found: $trustStorePath" }
-          Write-Host "Test-Path ok: $trustStorePath"
-          Get-Content $trustStorePath | Write-Host
+          # SHA считаем в PowerShell ДО вызова инструмента и передаём в
+          # --expected-sha256: ci-contract обязан прочитать тот же файл
+          # (расхождение -> отказ). Не парсим stdout python'а: в Windows
+          # PowerShell 5.1 связка ErrorActionPreference=Stop и 2>&1 превращает
+          # stderr внешней программы в terminating error, а кириллица в выводе
+          # зависит от кодовой страницы консоли.
           $sha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
-          Write-Host "SHA256: $sha"
-          try {
-            python -c "import sys, json, pathlib; sys.path.insert(0,'infra/release'); from trust_store import trust_store_sha256, describe_trust_store; data=json.loads(pathlib.Path('infra/release/testdata/trusted_keys.json').read_text()); print('trust_store_sha256 from python:', trust_store_sha256(data)); print(describe_trust_store(data))"
-          } catch { Write-Host "python trust_store check: $_" }
-          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "TRUST_STORE_SHA256=$sha`n", (New-Object System.Text.UTF8Encoding $false))
+          Write-Host "fixture file SHA256 (Get-FileHash): $sha"
+          # ci-contract проверяет строгую схему, наличие активного и ОТОЗВАННОГО
+          # ключей (pilot-test-key / pilot-revoked-key) и то, что
+          # production-политика по-прежнему отклоняет этот набор
+          # (--require-unrevoked и assert_no_fixture_keys). Ошибка -> код 1.
+          # Контракт закреплён в Python (unit-тесты) и не живёт в YAML-строке.
+          python infra/release/trust_store.py ci-contract --file $trustStorePath --expected-sha256 $sha
+          if ($LASTEXITCODE -ne 0) { throw "trust store ci-contract failed with code $LASTEXITCODE" }
+          # SHA файла фиксируется для build-шага: build.ps1 обязан увидеть
+          # байт-идентичный файл, иначе сборка останавливается.
+          [System.IO.File]::AppendAllText(
+            $env:GITHUB_ENV, "TRUST_STORE_SHA256=$sha`n", (New-Object System.Text.UTF8Encoding $false))
           Write-Host "Written TRUST_STORE_SHA256=$sha to GITHUB_ENV"
-          Get-Content $env:GITHUB_ENV | Select-String "TRUST_STORE" | Write-Host
-          Write-Host "Validate succeeded" 
-
-      - name: Test Inno Setup download (diagnostic, no fail)
-        shell: powershell
-        run: |
-          Write-Host "=== Testing Inno Setup download (diagnostic) ==="
-          $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
-          $expected = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
-          $tmp = Join-Path $env:TEMP "innosetup-test.exe"
-          Write-Host "URL: $url"
-          try {
-            Write-Host "Trying Invoke-WebRequest..."
-            Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -ErrorAction Stop
-            $h = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
-            Write-Host "IWR succeeded: $h match $($h -eq $expected) size $((Get-Item $tmp).Length)"
-          } catch { Write-Host "IWR failed: $_" }
-          try {
-            Write-Host "Trying curl.exe..."
-            & curl.exe -L -o $tmp $url
-            Write-Host "curl exit $LASTEXITCODE"
-            if (Test-Path $tmp) {
-              $h2 = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
-              Write-Host "curl hash $h2 match $($h2 -eq $expected) size $((Get-Item $tmp).Length)"
-            }
-          } catch { Write-Host "curl failed: $_" }
-          Write-Host "curl.exe version:"
-          try { & curl.exe --version | Select-Object -First 1 | Write-Host } catch { Write-Host "no curl" }
-          Write-Host "Git version:"; try { & git --version | Write-Host } catch { Write-Host "no git $_" }
-          Write-Host "Test done"
 
       - name: Build HR Manager Setup.exe
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Continue"
+          $ErrorActionPreference = "Stop"
           Write-Host "=== Build diagnostics ==="
-          Write-Host "TRUST_STORE_SHA256 env: '$env:TRUST_STORE_SHA256'"
           $trustStorePath = "infra/release/testdata/trusted_keys.json"
-          Write-Host "Test-Path ${trustStorePath}: $(Test-Path $trustStorePath)"
-          if (Test-Path $trustStorePath) {
-            Get-Content $trustStorePath | Write-Host
-            $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
-            Write-Host "Actual SHA: $actualSha"
-            Write-Host "Expected SHA env: '$env:TRUST_STORE_SHA256'"
+          if (-not (Test-Path $trustStorePath)) { throw "trust store fixture not found: $trustStorePath" }
+          Write-Host "TRUST_STORE_SHA256 env: '$env:TRUST_STORE_SHA256'"
+          $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "trust store actual SHA256: $actualSha"
+          if (-not $env:TRUST_STORE_SHA256) {
+            throw "TRUST_STORE_SHA256 is empty: the Validate step did not export it (GITHUB_ENV propagation is broken) — refusing to build with an unverified trust store"
           }
-          Write-Host "=== Running installer/build.ps1 ==="
+          Write-Host "=== Running installer/build.ps1 (child Windows PowerShell 5.1 process) ==="
           $logFile = Join-Path $env:RUNNER_TEMP "build.log"
           if (-not $logFile -or -not $env:RUNNER_TEMP) { $logFile = Join-Path $env:TEMP "build.log" }
-          Write-Host "Logging to $logFile (RUNNER_TEMP=$env:RUNNER_TEMP TEMP=$env:TEMP)"
-          Write-Host "Command: ./installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256"
-          & ./installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256 2>&1 | Tee-Object -FilePath $logFile -Encoding utf8
+          Write-Host "Logging to $logFile"
+          # Скрипт запускается как ДОЧЕРНИЙ процесс powershell (Windows
+          # PowerShell 5.1), а не через `& ./script.ps1`: в последнем случае
+          # $LASTEXITCODE в этом шаге оставал бы устаревшим кодом последней
+          # нативной команды ВНУТРИ скрипта и не отражал бы его результат.
+          # build.ps1 завершается явным `exit 0` только при полном успехе.
+          $scriptPath = (Resolve-Path (Join-Path (Get-Location) "installer/build.ps1")).Path
+          & powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $env:TRUST_STORE_SHA256 *>&1 | Tee-Object -FilePath $logFile -Encoding utf8
           $code = $LASTEXITCODE
           Write-Host "build.ps1 exit code: $code"
-          if (Test-Path $logFile) { Write-Host "=== build log ==="; Get-Content $logFile | Write-Host } else { Write-Host "No log file at $logFile"; Get-ChildItem $env:RUNNER_TEMP | Write-Host; Get-ChildItem $env:TEMP | Write-Host }
           if ($code -ne 0) {
-            Write-Host "=== First attempt failed, retrying with actual SHA ==="
-            $actualSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
-            Write-Host "Retry with actual SHA: $actualSha"
-            & ./installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath -TrustStoreSha256 $actualSha 2>&1 | Tee-Object -FilePath $logFile -Encoding utf8 -Append
-            $code2 = $LASTEXITCODE
-            Write-Host "Retry exit code: $code2"
-            if (Test-Path $logFile) { Write-Host "=== retry log ==="; Get-Content $logFile | Write-Host }
-            if ($code2 -ne 0) {
-              Write-Host "=== Build failed, writing to summary ==="
-              if (Test-Path $logFile) {
-                $content = Get-Content $logFile -Raw
-                if ($content.Length -gt 50000) { $content = $content.Substring(0,50000) + "`n...truncated" }
-                try { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Build failed`n``````n$content`n``````" } catch { Write-Host "summary write failed: $_" }
-              }
-              throw "build.ps1 failed both attempts: first $code, retry $code2"
+            Write-Host "=== build log (last 200 lines) ==="
+            if (Test-Path $logFile) { Get-Content $logFile -Tail 200 | Write-Host }
+            if ($env:GITHUB_STEP_SUMMARY -and (Test-Path $env:GITHUB_STEP_SUMMARY)) {
+              $content = ""
+              if (Test-Path $logFile) { $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue }
+              if ($content.Length -gt 50000) { $content = $content.Substring(0, 50000) + "`n...truncated" }
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Build failed (exit $code)`n````````n$content`n``````"
             }
+            throw "build.ps1 failed with exit code $code"
           }
           Write-Host "Build succeeded"
           Get-ChildItem installer/output -Recurse | ForEach-Object { Write-Host $_.FullName }
           if (Test-Path installer/release-manifest.json) { Get-Content installer/release-manifest.json | Write-Host }
 
-      - name: Post Build log to PR summary on failure
-        if: always()
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Continue"
-          $logFile = Join-Path $env:RUNNER_TEMP "build.log"
-          if (-not $logFile -or -not $env:RUNNER_TEMP) { $logFile = Join-Path $env:TEMP "build.log" }
-          if (Test-Path $logFile) {
-            Write-Host "=== Build log file exists, posting to summary ==="
-            $content = Get-Content $logFile -Raw
-            if ($content.Length -gt 60000) { $content = $content.Substring(0,60000) + "`n...truncated" }
-            try {
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Build log for $env:GITHUB_SHA`n``````n$content`n``````"
-              Write-Host "Posted to step summary"
-            } catch { Write-Host "Failed to write summary: $_" }
-          } else {
-            Write-Host "No build log found at $logFile"
-            try { Get-ChildItem $env:TEMP | Write-Host } catch { Write-Host "no temp" }
-          }
-          Write-Host "Post step done"
-
       - name: Comment Build log on PR
-        if: always()
+        if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
@@ -497,11 +461,7 @@ jobs:
                 content = fs.readFileSync(logPath, 'utf8');
                 if (content.length > 50000) content = content.slice(0, 50000) + '\n...truncated';
               } else {
-                // Try alternative TEMP
-                const alt = require('child_process').execSync('powershell -Command \"Write-Host $env:TEMP\"', {encoding: 'utf8'}).trim();
-                const altPath = path.join(alt, 'build.log');
-                if (fs.existsSync(altPath)) content = fs.readFileSync(altPath, 'utf8');
-                else content = 'No build.log found at ' + logPath + ' nor ' + altPath;
+                content = 'No build.log found at ' + logPath;
               }
             } catch (e) { content = 'Error reading log: ' + e.message; }
             const body = `Build log for ${process.env.GITHUB_SHA} (run ${process.env.GITHUB_RUN_ID}):\n\`\`\`\n${content}\n\`\`\``;
@@ -509,7 +469,7 @@ jobs:
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: 24,
+                issue_number: context.issue.number,
                 body: body
               });
               console.log('Posted PR comment');
@@ -519,31 +479,57 @@ jobs:
         shell: pwsh
         timeout-minutes: 10
         run: |
+          $ErrorActionPreference = "Stop"
           $logFile = Join-Path $env:RUNNER_TEMP "authenticode.log"
           if (-not $logFile -or -not $env:RUNNER_TEMP) { $logFile = Join-Path $env:TEMP "authenticode.log" }
           Write-Host "Logging Authenticode to $logFile"
-          & ./installer/sign.ps1 -Mode test -Version 0.13.0 -TrustStoreFile infra/release/testdata/trusted_keys.json *>&1 | Tee-Object -FilePath $logFile -Encoding utf8
+          # Скрипт запускается как ДОЧЕРНИЙ процесс powershell (Windows
+          # PowerShell 5.1): $LASTEXITCODE отражает именно его код выхода
+          # (sign.ps1 завершается явным `exit 0` только при полном успехе).
+          # Ранее шаг запускал скрипт через `& ./sign.ps1 | Tee-Object` и
+          # читал устаревший $LASTEXITCODE от `signtool verify /pa` внутри
+          # скрипта (в test mode он обязан возвращать 1 — ephemeral test root
+          # вне Root-доверия), из-за чего шаг падал даже при успешной подписи.
+          $scriptPath = (Resolve-Path (Join-Path (Get-Location) "installer/sign.ps1")).Path
+          & powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath -Mode test -Version 0.13.0 -TrustStoreFile infra/release/testdata/trusted_keys.json *>&1 | Tee-Object -FilePath $logFile -Encoding utf8
           $code = $LASTEXITCODE
           Write-Host "sign.ps1 exit code: $code"
-          if (Test-Path $logFile) { Write-Host "=== authenticode log ==="; Get-Content $logFile | Write-Host } else { Write-Host "No log file at $logFile" }
-          if ($code -ne 0) { throw "sign.ps1 failed with code $code" }
-
-      - name: Post Authenticode log to PR summary
-        if: always()
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Continue"
-          $logFile = Join-Path $env:RUNNER_TEMP "authenticode.log"
-          if (-not $logFile -or -not $env:RUNNER_TEMP) { $logFile = Join-Path $env:TEMP "authenticode.log" }
-          if (Test-Path $logFile) {
-            $content = Get-Content $logFile -Raw
-            if ($content.Length -gt 50000) { $content = $content.Substring(0,50000) + "`n...truncated" }
-            try { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Authenticode log`n``````n$content`n``````" } catch { Write-Host "summary write failed: $_" }
-          } else { Write-Host "No authenticode log at $logFile" }
+          if ($code -ne 0) {
+            Write-Host "=== authenticode log (last 200 lines) ==="
+            if (Test-Path $logFile) { Get-Content $logFile -Tail 200 | Write-Host }
+            if ($env:GITHUB_STEP_SUMMARY -and (Test-Path $env:GITHUB_STEP_SUMMARY)) {
+              $content = ""
+              if (Test-Path $logFile) { $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue }
+              if ($content.Length -gt 50000) { $content = $content.Substring(0, 50000) + "`n...truncated" }
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Authenticode signing failed (exit $code)`n````````n$content`n``````"
+            }
+            throw "sign.ps1 failed with code $code"
+          }
+          # Обязательные артефакты: честная attestation, тестовый корень и
+          # отчёт независимого верификатора (authenticode.py).
+          foreach ($artifact in @("installer/authenticode-attestation.json",
+              "installer/authenticode-roots.pem", "installer/authenticode-verification.json")) {
+            if (-not (Test-Path $artifact)) { throw "sign.ps1 не создал обязательный артефакт: $artifact" }
+          }
+          # Attestation обязана честно отражать режим: в test mode
+          # signtool_verify_ok может быть false (ephemeral-корень вне
+          # Root-доверия) — это ожидаемо и НЕ production-valid подпись.
+          $attestation = Get-Content installer/authenticode-attestation.json -Raw | ConvertFrom-Json
+          Write-Host ("attestation: mode={0} signtool_verify_ok={1} windows_chain_trusted={2} publisher={3}" -f `
+            $attestation.mode, $attestation.signtool_verify_ok, $attestation.windows_chain_trusted, `
+            $attestation.publisher)
+          if ($attestation.mode -ne "test") { throw "CI обязан подписывать в test-режиме, attestation: $($attestation.mode)" }
+          if ($attestation.independent_verification.passed -ne $true) {
+            throw "независимая проверка Authenticode (authenticode.py) не подтверждена в attestation"
+          }
+          if ($attestation.signtool_verify_ok -and $attestation.windows_chain_trusted) {
+            Write-Host "Windows доверяет ephemeral-корню — тоже допустимо (attestation честна)"
+          }
+          Write-Host "attestation честна: mode=test, независимая проверка пройдена"
 
       - name: Comment Authenticode log on PR
-        if: always()
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             const fs = require('fs');
@@ -560,9 +546,19 @@ jobs:
             } catch (e) { content = 'Error reading log: ' + e.message; }
             const body = `Authenticode log for ${process.env.GITHUB_SHA} (run ${process.env.GITHUB_RUN_ID}):\n\`\`\`\n${content}\n\`\`\``;
             try {
-              await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: 24, body: body});
+              await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: body});
               console.log('Posted Authenticode PR comment');
             } catch (e) { console.log('Failed: ' + e.message); }
+
+      - name: Upload Authenticode attestation and verification report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: authenticode-logs
+          path: |
+            installer/authenticode-attestation.json
+            installer/authenticode-verification.json
+          if-no-files-found: warn
 
       - name: Silent install and uninstall smoke
         shell: powershell
@@ -597,7 +593,7 @@ jobs:
           path: |
             drill/pilot-drill.json
             drill/pilot-drill.md
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -608,6 +604,7 @@ jobs:
             installer/release-manifest.json
             installer/authenticode-attestation.json
             installer/authenticode-roots.pem
+            installer/authenticode-verification.json
           if-no-files-found: error
 
   channel-release-policy:

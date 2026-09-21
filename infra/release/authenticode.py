@@ -101,10 +101,15 @@ _ECDSA_SIGNATURE_OIDS = {
     "1.2.840.10045.4.3.4": hashes.SHA512,
 }
 
-# Authenticode-хеш PE считается по документированному алгоритму: пропускаются
-# поле контрольной суммы и таблица сертификатов (вместе с её записью в data
-# directory), а результат дополняется нулями до границы 8 байт.
-PE_PAD_BOUNDARY = 8
+# Authenticode-хеш PE считается по документированному алгоритму Microsoft
+# («Windows Authenticode Portable Executable Signature Format»): хешируются
+# все байты образа КРОМЕ (1) 4-байтового поля CheckSum в optional header,
+# (2) 8-байтовой записи Certificate Table в data directory и (3) самой таблицы
+# сертификатов. Никакого дополнения нулями до границы 8 байт алгоритм НЕ
+# содержит: выравнивание по 8 байт есть только у записей WIN_CERTIFICATE внутри
+# таблицы, и в хеш оно не входит. Прежняя версия добавляла нулевой хвост,
+# из-за чего digest никогда не совпадал с реальным выводом signtool.exe
+# (расхождение видно на любом PE, где длина хешируемой части не кратна 8).
 
 
 class AuthentiCodeError(ValueError):
@@ -193,7 +198,12 @@ def pe_authenticode_digest(
     pe: PeInfo,
     algorithm: type[hashes.HashAlgorithm] | hashes.HashAlgorithm | None = None,
 ) -> bytes:
-    """Authenticode-хеш PE-образа (без checksum и таблицы сертификатов)."""
+    """Authenticode-хеш PE-образа (без checksum и таблицы сертификатов).
+
+    Регионы: [0, CheckSum) + [CheckSum+4, CertificateTable entry) +
+    [entry+8, начало таблицы сертификатов) + [конец таблицы, EOF).
+    Никакого дополнения нулями: алгоритм Microsoft его не содержит.
+    """
     hasher = hashes.Hash(_hash_algorithm(algorithm))
     regions: list[tuple[int, int]] = [
         (0, pe.checksum_offset),
@@ -202,15 +212,10 @@ def pe_authenticode_digest(
     ]
     if pe.has_certificate_table:
         regions.append((pe.cert_table_offset + pe.cert_table_size, len(data)))
-    hashed_length = 0
     for start, end in regions:
         if start > end or end > len(data):
             raise AuthentiCodeError("bad_pe", "некорректные границы Authenticode-хеша")
         hasher.update(data[start:end])
-        hashed_length += end - start
-    remainder = hashed_length % PE_PAD_BOUNDARY
-    if remainder:
-        hasher.update(b"\x00" * (PE_PAD_BOUNDARY - remainder))
     return hasher.finalize()
 
 
