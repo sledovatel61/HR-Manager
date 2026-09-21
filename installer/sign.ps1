@@ -405,6 +405,13 @@ try {
         # Явно: корни TSA не наследуются от корней издателя.
         $verifyArgs += @("--require-timestamp", "--timestamp-roots", $timestampRootsFile)
     }
+    else {
+        # Test-режим: якорь — эфемерный self-signed сертификат БЕЗ CA-бита,
+        # созданный этим запуском. Верификатор по умолчанию такой якорь
+        # отвергает (leaf_as_trust_anchor), поэтому разрешаем его явно и только
+        # здесь. Production этот флаг не получает никогда.
+        $verifyArgs += "--allow-leaf-anchor"
+    }
     $pythonExe = [string]$pythonCommand[0]
     $pythonPrefix = @()
     if ($pythonCommand.Count -gt 1) { $pythonPrefix = @($pythonCommand[1..($pythonCommand.Count - 1)]) }

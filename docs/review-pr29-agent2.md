@@ -189,3 +189,79 @@ timestamp_roots = load_pem_certificates(args.timestamp_roots) if args.timestamp_
 - либо попросить агента 2 перенести этот фикс в свою ветку.
 
 История агента 2 не менялась, merge не выполнялся.
+
+---
+
+# Дополнение: отдельный корень TSA и ужесточение цепочки
+
+## Блокер, найденный при повторной приёмке
+
+`publish_channel.py` на финальном production-гейте подставлял signer-корни в
+качестве `timestamp_roots`:
+
+```python
+roots = load_pem_certificates(Path(args.authenticode_roots))
+result = verify_authenticode(..., trust_roots=roots, timestamp_roots=roots)
+```
+
+В production signer CA и TSA CA независимы, поэтому корректная метка времени
+отклонялась. PoC с двумя независимыми CA (цепочка издателя от CA-A, TSA от
+CA-B):
+
+```
+РАЗДЕЛЬНЫЕ корни (signer + TSA)            PASS chain=True ts_chain=True
+ПОВТОР signer-корней как TSA (сейчас)      FAIL untrusted_root: цепочка
+                                           сертификатов не доводится до
+                                           доверенного корня: CN=HR Manager ...
+```
+
+Все прежние тесты использовали `create_test_authority`, где TSA подписан тем же
+`ca_key`, то есть одно-CA схему, — поэтому блокер не проявлялся.
+
+## Исправление
+
+1. `publish_channel.py`: новый `--authenticode-timestamp-roots`; в production
+   оба якоря обязательны (`missing_authenticode_timestamp_roots` fail-closed);
+   загрузка и передача раздельные.
+2. `update-channel.yml`: publish-шаг получает
+   `UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS` отдельно от signer-корней.
+3. `ci.yml`: production-вызовы доведены до нового контракта; негативные
+   сценарии ужесточены до проверки конкретного кода отказа
+   (`installer_changed_after_signing`, `untrusted_root`, `unsigned`), чтобы они
+   не могли пройти по ложной причине; добавлена негативная проверка
+   `missing_authenticode_timestamp_roots`.
+4. `authenticode.py`, `_cmd_verify`: `--require-timestamp` теперь требует
+   `--timestamp-roots` — корень TSA больше не наследуется от корня издателя
+   молча.
+
+## Ужесточение проверки цепочки
+
+- Пустой набор корней — отказ `empty_trust_roots`, а не «проверка не
+  запрашивалась»; явно переданный пустой список больше не等同于 `None`.
+- Якорь обязан быть CA: `BasicConstraints cA=TRUE` + `keyCertSign`
+  (`issuer_not_ca`, `issuer_cannot_sign_certificates`).
+- Сертификат подписанта больше не считается якорем: если в наборе корней есть
+  настоящий CA, цепочка достраивается до него; если единственное совпадение —
+  сам leaf, отказ `leaf_as_trust_anchor`.
+- Исключение `allow_leaf_anchor` (CLI: `--allow-leaf-anchor`) — точный пинн
+  байт-в-байт совпадающего самоподписанного сертификата. Используется только
+  test-режимом CI, где эфемерный сертификат создаётся через
+  `New-SelfSignedCertificate -Type Custom` без CA-бита. Production этот флаг не
+  получает никогда.
+- Идентичность в обходе цепочки считается по DER, а не по `serial_number`
+  (последний может совпасть у разных издателей).
+
+## Тесты
+
+- `test_production_accepts_independent_tsa_ca` — регрессия блокера (две CA,
+  раздельные корни → выпуск проходит).
+- `test_production_requires_separate_timestamp_roots` — fail-closed.
+- `test_production_rejects_signer_root_reused_as_tsa_root` — подстановка
+  signer-корня видна как `untrusted_root`.
+- `test_trust_roots_must_come_from_outside_the_artifact` — leaf-якорь отвергается,
+  opt-in работает, внешний CA отвергает чужого издателя, набор CA+leaf проходит.
+- `test_trust_anchor_must_be_a_ca`, `test_empty_trust_roots_fail_closed`.
+
+Негативная проверка выполнена: возврат `timestamp_roots=signer_roots` в
+`publish_channel.py` роняет `test_production_accepts_independent_tsa_ca`
+(1 failed, 20 passed).

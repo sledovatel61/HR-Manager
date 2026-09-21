@@ -220,6 +220,13 @@ def _enforce_production_policy(
             "production-релиз требует --authenticode-roots: цепочка подписи обязана "
             "доводиться до корня из защищённого release input",
         )
+    if not args.authenticode_timestamp_roots:
+        raise PolicyError(
+            "missing_authenticode_timestamp_roots",
+            "production-релиз требует --authenticode-timestamp-roots: цепочка метки "
+            "времени обязана доводиться до корня TSA. Подставлять вместо него корни "
+            "издателя нельзя — у signer CA и TSA CA разные центры доверия",
+        )
     attestation = _load_attestation(Path(args.authenticode_attestation))
     if attestation.get("mode") != "production":
         raise PolicyError(
@@ -250,13 +257,17 @@ def _enforce_production_policy(
 
     # Независимая проверка Authenticode прямо здесь (не доверяем одному
     # attestation: проверяем содержимое подписи и Authenticode-хеш файла).
-    roots = load_pem_certificates(Path(args.authenticode_roots))
+    # Якоря загружаются РАЗДЕЛЬНО. Signer CA и TSA CA в production независимы:
+    # повтор signer-корней в качестве timestamp_roots отклонил бы корректную
+    # метку времени с untrusted_root (подтверждено PoC с двумя CA).
+    signer_roots = load_pem_certificates(Path(args.authenticode_roots))
+    timestamp_roots = load_pem_certificates(Path(args.authenticode_timestamp_roots))
     result = verify_authenticode(
         installer,
         expected_publisher=expected_publisher,
         require_timestamp=True,
-        trust_roots=roots,
-        timestamp_roots=roots,
+        trust_roots=signer_roots,
+        timestamp_roots=timestamp_roots,
     )
     if result["signer_thumbprint_sha256"] != attestation.get("signer_thumbprint_sha256"):
         raise PolicyError(
@@ -359,7 +370,15 @@ def main() -> int:
         dest="authenticode_attestation",
         help="attestation от Windows-шага (signtool verify + метка времени)",
     )
-    parser.add_argument("--authenticode-roots", help="PEM с доверенными корнями Authenticode")
+    parser.add_argument(
+        "--authenticode-roots",
+        help="PEM с закрепёнными корнями ЦЕПОЧКИ ИЗДАТЕЛЯ (code signing)",
+    )
+    parser.add_argument(
+        "--authenticode-timestamp-roots",
+        dest="authenticode_timestamp_roots",
+        help="PEM с закрепёнными корнями TSA (RFC3161); в production обязателен",
+    )
     parser.add_argument("--expected-publisher", help="ожидаемый издатель сертификата")
     parser.add_argument(
         "--release-metadata",
