@@ -386,10 +386,53 @@ references (`actions/checkout@v4`, `actions/upload-artifact@v4`).
 `Backend checks`; `infra/windows/tests/static.tests.ps1` дублирует те же
 контракты уже настоящим парсером PowerShell на windows-latest.
 
+**Итерации по точным SHA (обратная связь от CI).**
+
+Ветка `arena/01a0c3bb-hr-manager`, PR #28. Три прогона CI на точных SHA:
+
+| SHA | Run | Итог |
+| --- | --- | --- |
+| `b5d3cb7548fe43ba7b4aa198d1a48882dee64840` | [35598144007](https://github.com/sledovatel61/HR-Manager/actions/runs/35598144007) | 5 job'ов зелёные; красный `Windows engine tests + installer smoke`, шаг 5 «PowerShell engine tests» |
+| `7c60ab6b2450a93bda9d9b4d3051d1a6e721693c` | [35599374836](https://github.com/sledovatel61/HR-Manager/actions/runs/35599374836) | 5 job'ов зелёные; шаг 5 прошёл, красный шаг 6 «Validate ephemeral CI trust store» |
+| `9ec7246…` | — | **не запушен и не прогнан**: токен GitHub истёк в середине сессии |
+
+Прогон `35598144007` вскрыл регрессию, внесённую этой же сессией: при правках
+потерялся UTF-8 BOM у `infra/windows/tests/static.tests.ps1`, и Windows
+PowerShell 5.1 прочитал файл в ANSI (на раннере cp1252). В аннотации текст
+шага читался как «Ñ‚ÐµÑ€Ð°Ð»Ð¾Ð²», а парсер сыпался на незакрытых кавычках —
+кириллические UTF-8-байты 0x93/0x94 в cp1252 дают «умные» кавычки `“`/`”`,
+которые PowerShell считает ограничителями строк. BOM восстановлен в
+`static.tests.ps1` и добавлен в `installer/sign.ps1`/`installer/build.ps1`
+(последние в `update-channel.yml` вызываются через `powershell`, то есть 5.1).
+`lint-engine.py` теперь требует BOM у любого `.ps1`/`.psm1` с не-ASCII.
+
+Прогон `35599374836` вскрыл ещё две первопричины, обе воспроизведены локально:
+
+1. **`UnicodeEncodeError` в кодовой странице Windows.** Python кодирует
+   перенаправленный stdout в кодовой странице консоли, а `trust_store.py`
+   печатает русские строки production-политики:
+   `PYTHONIOENCODING=cp1252 python infra/release/trust_store.py ci-contract …`
+   падал с кодом 1 при том, что сама проверка прошла. Лечится в коде:
+   `_force_utf8_stdio()` в `trust_store.py`, `authenticode.py` и
+   `publish_channel.py`; плюс `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8` на уровне
+   job'ов `windows-installer` в `ci.yml` и `update-channel.yml`. Регрессионные
+   тесты прогоняют CLI именно с `PYTHONIOENCODING=cp1252`; без фикса оба падают.
+2. **Незакрытая строка в шагах job summary.** В `-Value "### Build log\`n```text\`n$content\`n```"`
+   последовательность `` `" `` — это *экранированная кавычка*, поэтому строка не
+   закрывалась и валился весь шаг (в аннотациях видно только «Process completed
+   with exit code 1»). Ограждение собирается из одинарных кавычек
+   (`$fence = '```'`); `lint-engine.py` запрещает 3+ бэктика в PowerShell-коде и
+   в `run:`-шагах workflow.
+
+Полные логи CI прочитать нельзя: `gh api …/actions/runs/{id}/logs` отдаёт
+`401 Bad credentials`/обрыв потока с Azure blob, поэтому диагностика велась по
+check-run аннотациям и локальному воспроизведению.
+
 **Что эта сессия не проверяла.** `installer/build.ps1`, `installer/sign.ps1` и
 `infra/windows/tests/run-tests.ps1` не исполнялись локально: в контуре нет ни
 Windows, ни PowerShell, ни `signtool`, ни Inno Setup. Локально подтверждены
-только Python-тесты, ruff/mypy, структурный линт и разбор YAML-workflow.
+Python-тесты (697 passed, `-m "not integration"`), ruff/mypy, `pilot_drill.py`
+(verdict `passed`), структурный линт (18 файлов) и разбор YAML-workflow.
 Утверждение «Windows installer проверен локально» было бы ложным.
 
 ---
