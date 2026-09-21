@@ -59,6 +59,7 @@ from der import (  # noqa: E402
     expect,
     parse_all,
     parse_one,
+    read_tlv,
 )
 
 # --- OID, встречающиеся в Authenticode -----------------------------------------
@@ -219,6 +220,32 @@ def pe_authenticode_digest(
     return hasher.finalize()
 
 
+def _strip_record_padding(record: bytes) -> bytes:
+    """Убирает выравнивание записи WIN_CERTIFICATE до границы 8 байт.
+
+    Записи таблицы сертификатов выравниваются по 8 байт, и ``signtool`` включает
+    это выравнивание в ``dwLength`` — то есть «сырой» срез записи не является
+    валидным DER (``parse_one`` падает на trailing-байтах). Собственный подписант
+    репозитория (``embed_signature``) в ``dwLength`` выравнивание НЕ включает,
+    поэтому round-trip тестами расхождение не ловится — только реальным
+    ``signtool``.
+
+    Дополнение обязано быть нулевым: любой другой хвост — отказ. Fail-closed
+    правило DER («никаких произвольных trailing-байтов») сохраняется.
+    """
+    try:
+        _, end = read_tlv(record, 0)
+    except DerError as exc:
+        raise AuthentiCodeError("bad_certificate_table", f"PKCS#7 в записи не читается: {exc}") from exc
+    tail = record[end:]
+    if tail.strip(b"\x00"):
+        raise AuthentiCodeError(
+            "bad_certificate_table",
+            "после PKCS#7 в записи WIN_CERTIFICATE не нулевое выравнивание",
+        )
+    return record[:end]
+
+
 def extract_pkcs7_blob(data: bytes, pe: PeInfo) -> bytes:
     """Извлекает PKCS#7 (SignedData) из WIN_CERTIFICATE-таблицы."""
     if not pe.has_certificate_table:
@@ -237,7 +264,7 @@ def extract_pkcs7_blob(data: bytes, pe: PeInfo) -> bytes:
                 "bad_certificate_table", f"неподдерживаемая revision: 0x{revision:04x}"
             )
         if cert_type == 0x0002:  # WIN_CERT_TYPE_PKCS_SIGNED_DATA
-            records.append(data[offset + 8 : offset + length])
+            records.append(_strip_record_padding(data[offset + 8 : offset + length]))
         offset += (length + 7) & ~7  # записи выровнены по 8 байт
     if not records:
         raise AuthentiCodeError("unsigned", "PKCS#7-подпись в таблице сертификатов не найдена")
