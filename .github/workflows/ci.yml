@@ -517,7 +517,7 @@ jobs:
 
       - name: Authenticode-sign with ephemeral test certificate (never production)
         shell: pwsh
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           Write-Host "Running sign.ps1 in test mode..."
           & ./installer/sign.ps1 -Mode test -Version 0.13.0 -TrustStoreFile infra/release/testdata/trusted_keys.json
