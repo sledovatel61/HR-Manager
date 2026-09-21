@@ -419,3 +419,73 @@ def test_verify_cli_reports_machine_readable_failure(tmp_path: Path) -> None:
     assert payload["signed"] is False
     assert payload["error_code"] == "digest_mismatch"
     assert payload["error_detail"]
+
+
+def _embed_signtool_style(pe_bytes: bytes, pkcs7: bytes) -> tuple[bytes, int]:
+    """Таблица сертификатов в том виде, в каком её пишет реальный signtool.
+
+    Отличие от `embed_signature`: `dwLength` записи WIN_CERTIFICATE включает
+    выравнивание до границы 8 байт. Возвращает (файл, число байт выравнивания).
+    """
+    data = bytearray(pe_bytes)
+    pe = parse_pe(bytes(data))
+    length = 8 + len(pkcs7)
+    padded = (length + 7) & ~7
+    if padded == length:
+        padded += 8  # гарантируем ненулевое выравнивание, чтобы тест был осмысленным
+    record = (
+        padded.to_bytes(4, "little")
+        + (0x0200).to_bytes(2, "little")
+        + (0x0002).to_bytes(2, "little")
+        + pkcs7
+        + b"\x00" * (padded - length)
+    )
+    offset = len(data)
+    data.extend(record)
+    data[pe.cert_entry_offset : pe.cert_entry_offset + 4] = offset.to_bytes(4, "little")
+    data[pe.cert_entry_offset + 4 : pe.cert_entry_offset + 8] = padded.to_bytes(4, "little")
+    return bytes(data), padded - length
+
+
+def test_verify_accepts_signtool_record_padding(
+    authority: EphemeralAuthority, tmp_path: Path
+) -> None:
+    """signtool включает выравнивание записи в dwLength — подпись обязана читаться.
+
+    Именно на этом падала реальная подпись установщика в CI:
+    bad_pkcs7 «после DER-элемента остались лишние байты». Собственный подписант
+    репозитория выравнивание в dwLength не включает, поэтому round-trip тестами
+    расхождение не ловилось.
+    """
+    pe = make_test_pe()
+    pkcs7 = build_signed_pkcs7(pe, authority, with_timestamp=False)
+    signed, padding = _embed_signtool_style(pe, pkcs7)
+    assert padding > 0, "тест должен проверять ненулевое выравнивание"
+
+    target = tmp_path / "signtool-layout.exe"
+    target.write_bytes(signed)
+    verified = verify_authenticode(
+        target,
+        expected_publisher=PUBLISHER,
+        require_timestamp=False,
+        trust_roots=[authority.ca_certificate],
+    )
+    assert verified["signed"] is True
+    assert verified["publisher_match"] is True
+    assert verified["chain_verified"] is True
+
+
+def test_verify_rejects_nonzero_record_padding(
+    authority: EphemeralAuthority, tmp_path: Path
+) -> None:
+    """Выравнивание обязано быть нулевым: любой другой хвост — отказ."""
+    pe = make_test_pe()
+    pkcs7 = build_signed_pkcs7(pe, authority, with_timestamp=False)
+    signed, _ = _embed_signtool_style(pe, pkcs7)
+    tampered = bytearray(signed)
+    tampered[-1] = 0x41  # последний байт выравнивания больше не ноль
+    target = tmp_path / "signtool-badpad.exe"
+    target.write_bytes(bytes(tampered))
+    with pytest.raises(AuthentiCodeError) as excinfo:
+        verify_authenticode(target, expected_publisher=PUBLISHER, require_timestamp=False)
+    assert excinfo.value.code == "bad_certificate_table"
