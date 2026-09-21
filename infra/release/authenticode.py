@@ -767,9 +767,19 @@ def _verify_authenticode_inner(
     if message_digest_attr is None:
         raise AuthentiCodeError("bad_signature", "в подписи нет атрибута messageDigest")
     declared_digest = parse_one(message_digest_attr).content
-    if declared_digest != _digest_of(signed_data.econtent, outcome.digest_algorithm_oid):
+    computed_content_digest = _digest_of(signed_data.econtent, outcome.digest_algorithm_oid)
+    if declared_digest != computed_content_digest:
+        # Диапазон econtent — единственное место, где разбор может разойтись с
+        # тем, что реально хешировал signtool, поэтому в отказ кладём длину и
+        # начало байтов: без полных логов джоба это единственный способ понять,
+        # что именно прочитано не так. Секретов здесь нет — только публичная
+        # структура подписи.
         raise AuthentiCodeError(
-            "bad_signature", "messageDigest подписанных атрибутов не совпал с содержимым подписи"
+            "bad_signature",
+            "messageDigest подписанных атрибутов не совпал с содержимым подписи: "
+            f"declared={declared_digest.hex()} computed={computed_content_digest.hex()} "
+            f"oid={outcome.digest_algorithm_oid} econtent_len={len(signed_data.econtent)} "
+            f"econtent_head={signed_data.econtent[:32].hex()}",
         )
     spc_digest, spc_digest_oid = _parse_authenticode_content(signed_data.econtent)
     computed = pe_authenticode_digest(data, pe, _DIGESTS[spc_digest_oid])
