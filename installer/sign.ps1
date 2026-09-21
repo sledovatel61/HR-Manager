@@ -1,4 +1,4 @@
-﻿# Phase 14: подпись Setup.exe (Authenticode) + attestation для release-пайплайна.
+# Phase 14: подпись Setup.exe (Authenticode) + attestation для release-пайплайна.
 #
 # Две НЕЗАВИСИМЫЕ подписи релиза:
 #   1. Ed25519-подпись канала (update-channel.json) — всегда обязательна;
@@ -185,13 +185,14 @@ try {
         # signtool verify обязан доверять тестовой цепочке — временно
         # добавляем самоподписанный сертификат в пользовательские Root и
         # TrustedPublisher; в finally он удаляется.
-        $cerPath = Join-Path ([System.IO.Path]::GetTempPath()) ("hrm-test-signing-" + [Guid]::NewGuid().ToString("N") + ".cer")
-        [System.IO.File]::WriteAllBytes($cerPath, $testCertificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
-        & certutil.exe -user -f -addstore Root $cerPath | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "certutil: не удалось добавить тестовый корень в CurrentUser\Root" }
-        & certutil.exe -user -f -addstore TrustedPublisher $cerPath | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "certutil: не удалось добавить тестовый издатель" }
-        Remove-Item $cerPath -Force -ErrorAction SilentlyContinue
+        Write-Host "Adding test certificate to CurrentUser Root and TrustedPublisher (thumbprint=$($testCertificate.Thumbprint))..."
+        $storeRoot = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root", "CurrentUser")
+        $storeRoot.Open("ReadWrite")
+        try { $storeRoot.Add($testCertificate); Write-Host "Added to Root" } finally { $storeRoot.Close() }
+        $storeTP = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher", "CurrentUser")
+        $storeTP.Open("ReadWrite")
+        try { $storeTP.Add($testCertificate); Write-Host "Added to TrustedPublisher" } finally { $storeTP.Close() }
+        Write-Host "Test certificate added to stores"
         $signingThumbprint = $testCertificate.Thumbprint
     }
 

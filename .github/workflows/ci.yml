@@ -516,10 +516,12 @@ jobs:
             } catch (e) { console.log('Failed to post comment: ' + e.message); }
 
       - name: Authenticode-sign with ephemeral test certificate (never production)
-        shell: powershell
+        shell: pwsh
+        timeout-minutes: 5
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File installer/sign.ps1 `
-            -Mode test -Version 0.13.0 -TrustStoreFile infra/release/testdata/trusted_keys.json
+          Write-Host "Running sign.ps1 in test mode..."
+          & ./installer/sign.ps1 -Mode test -Version 0.13.0 -TrustStoreFile infra/release/testdata/trusted_keys.json
+          Write-Host "sign.ps1 completed with exit code $LASTEXITCODE" 
 
       - name: Silent install and uninstall smoke
         shell: powershell
