@@ -522,7 +522,7 @@ jobs:
           $logFile = Join-Path $env:RUNNER_TEMP "authenticode.log"
           if (-not $logFile -or -not $env:RUNNER_TEMP) { $logFile = Join-Path $env:TEMP "authenticode.log" }
           Write-Host "Logging Authenticode to $logFile"
-          & ./installer/sign.ps1 -Mode test -Version 0.13.0 -TrustStoreFile infra/release/testdata/trusted_keys.json 2>&1 | Tee-Object -FilePath $logFile -Encoding utf8
+          & ./installer/sign.ps1 -Mode test -Version 0.13.0 -TrustStoreFile infra/release/testdata/trusted_keys.json *>&1 | Tee-Object -FilePath $logFile -Encoding utf8
           $code = $LASTEXITCODE
           Write-Host "sign.ps1 exit code: $code"
           if (Test-Path $logFile) { Write-Host "=== authenticode log ==="; Get-Content $logFile | Write-Host } else { Write-Host "No log file at $logFile" }
