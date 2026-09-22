@@ -124,3 +124,12 @@ function Get-HrmOpsStatus {
     }
     catch { return $null }
 }
+
+function Remove-HrmPilotDataVolume {
+    # Explicit allowlist, derived from the fixed Compose project and the volume
+    # key in compose.pilot.yml. Never enumerate all project volumes or use -f:
+    # pilot_backups and volumes of other projects must survive ordinary purge.
+    $name = $script:ProjectName + "_pilot_pgdata"
+    $result = Invoke-HrmDocker -Arguments @("volume", "rm", $name) -IgnoreExitCode
+    if ($result.ExitCode -ne 0) { throw "Том данных не удалён (занят или недоступен). Бэкапы сохранены." }
+}

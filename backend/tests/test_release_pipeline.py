@@ -443,3 +443,53 @@ def test_workflow_yaml_security_invariants() -> None:
     assert reject_idx < write_idx
     # Deploy/rollback workflow не затронут.
     assert (REPO / ".github" / "workflows" / "release.yml").exists()
+
+
+def test_test_mode_sums_match_all_four_channel_assets(tmp_path: Path) -> None:
+    import hashlib
+
+    result = _run_publish(
+        tmp_path, ["--private-key", str(TESTDATA / "test_key.priv"), "--key-id", "pilot-test-key"]
+    )
+    assert result.returncode == 0, result.stderr
+    out = tmp_path / "dist/channel"
+    lines = (out / "SHA256SUMS").read_text().splitlines()
+    names = [
+        "hr-manager-windows-0.14.0.zip",
+        "update-channel.json",
+        "release-metadata.json",
+        "trust-store.json",
+    ]
+    assert lines == [
+        f"{hashlib.sha256((out / name).read_bytes()).hexdigest()}  {name}" for name in sorted(names)
+    ]
+
+
+@pytest.mark.parametrize(
+    "missing", ["Setup.exe", "authenticode-verification.json", "authenticode-attestation.json"]
+)
+def test_sums_fail_closed_for_missing_final_asset(tmp_path: Path, missing: str) -> None:
+    sys.path.insert(0, str(RELEASE))
+    from publish_channel import PolicyError, write_sha256sums  # type: ignore[import-not-found]
+
+    paths = [
+        tmp_path / name
+        for name in ("Setup.exe", "authenticode-verification.json", "authenticode-attestation.json")
+    ]
+    for path in paths:
+        if path.name != missing:
+            path.write_bytes(b"final bytes")
+    with pytest.raises(PolicyError, match="missing or unreadable"):
+        write_sha256sums(paths, tmp_path / "SHA256SUMS")
+    assert not (tmp_path / "SHA256SUMS").exists()
+
+
+def test_sums_reject_duplicate_basenames_and_self_reference(tmp_path: Path) -> None:
+    sys.path.insert(0, str(RELEASE))
+    from publish_channel import PolicyError, write_sha256sums
+
+    target = tmp_path / "SHA256SUMS"
+    for paths in ([target], [tmp_path / "one/Setup.exe", tmp_path / "two/Setup.exe"]):
+        with pytest.raises(PolicyError, match="duplicate/self-referencing"):
+            write_sha256sums(paths, target)
+        assert not target.exists()

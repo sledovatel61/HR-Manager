@@ -11,11 +11,18 @@ $testsDir = $PSScriptRoot
 $harness = Join-Path $testsDir "test-harness.ps1"
 
 $exitCode = 0
+$totalPassed = 0
+$failures = @()
 try {
-    foreach ($file in @("static.tests.ps1", "engine.tests.ps1", "channel.tests.ps1")) {
+    foreach ($file in @("static.tests.ps1", "engine.tests.ps1", "channel.tests.ps1", "installer-roots.tests.ps1")) {
         $path = Join-Path $testsDir $file
         & (Resolve-Path $path).Path -HarnessPath $testsDir
         if (-not $?) { $exitCode = 1 }
+        # Each suite reloads the harness and resets counters. Preserve failures
+        # before the next suite can reset them (purge failures must fail CI).
+        $totalPassed += $global:HRM_TestPassed
+        $failures += $global:HRM_TestFailures
+        if ($global:HRM_TestFailed -gt 0) { $exitCode = 1 }
     }
 }
 catch {
@@ -29,7 +36,10 @@ catch {
     exit 2
 }
 
-# Итоговый вердикт по глобальным счётчикам.
+# Итоговый вердикт по всем suites, а не только последнему.
+$global:HRM_TestPassed = $totalPassed
+$global:HRM_TestFailures = $failures
+$global:HRM_TestFailed = $failures.Count
 if ($global:HRM_TestFailed -gt 0) { $exitCode = 1 }
 if ($exitCode -eq 0) {
     Write-Host ("ВСЕ ТЕСТЫ ПРОЙДЕНЫ ({0})" -f $global:HRM_TestPassed) -ForegroundColor Green

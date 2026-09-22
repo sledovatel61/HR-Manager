@@ -31,17 +31,18 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
-from cryptography.x509.oid import ExtendedKeyUsageOID, ObjectIdentifier
+from cryptography.x509.oid import ExtendedKeyUsageOID
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -88,14 +89,14 @@ _DIGEST_NAMES = {
     "2.16.840.1.101.3.4.2.2": "sha384",
     "2.16.840.1.101.3.4.2.3": "sha512",
 }
-_RSA_SIGNATURE_OIDS = {
+_RSA_SIGNATURE_OIDS: dict[str, Callable[[], hashes.HashAlgorithm] | None] = {
     "1.2.840.113549.1.1.1": None,  # rsaEncryption (digest из digestAlgorithm)
     "1.2.840.113549.1.1.5": hashes.SHA1,
     "1.2.840.113549.1.1.11": hashes.SHA256,
     "1.2.840.113549.1.1.12": hashes.SHA384,
     "1.2.840.113549.1.1.13": hashes.SHA512,
 }
-_ECDSA_SIGNATURE_OIDS = {
+_ECDSA_SIGNATURE_OIDS: dict[str, Callable[[], hashes.HashAlgorithm]] = {
     "1.2.840.10045.4.1": hashes.SHA1,
     "1.2.840.10045.4.3.2": hashes.SHA256,
     "1.2.840.10045.4.3.3": hashes.SHA384,
@@ -435,12 +436,15 @@ def _find_certificate(
     raise AuthentiCodeError("bad_pkcs7", "неподдерживаемый тип идентификатора подписанта")
 
 
-def _signature_algorithm(oid: str, digest_algorithm: hashes.HashAlgorithm) -> hashes.HashAlgorithm:
+def _signature_algorithm(oid: str, digest_algorithm: hashes.HashAlgorithm | None) -> hashes.HashAlgorithm:
     if oid in _ECDSA_SIGNATURE_OIDS:
         return _ECDSA_SIGNATURE_OIDS[oid]()
     if oid in _RSA_SIGNATURE_OIDS:
         fixed = _RSA_SIGNATURE_OIDS[oid]
-        return fixed() if fixed is not None else digest_algorithm
+        if fixed is not None:
+            return fixed()
+        if digest_algorithm is not None:
+            return digest_algorithm
     raise AuthentiCodeError("unsupported_algorithm", f"неподдерживаемый алгоритм подписи: {oid}")
 
 
@@ -671,20 +675,40 @@ def load_pem_certificates(path: Path) -> list[x509.Certificate]:
         raise AuthentiCodeError("bad_root", f"PEM-файл пуст: {path.name}")
     if b"PRIVATE KEY" in data:
         raise AuthentiCodeError("bad_root", f"PEM содержит приватный материал: {path.name}")
-    certificates: list[x509.Certificate] = []
-    for block in data.split(b"-----END CERTIFICATE-----"):
-        if b"-----BEGIN CERTIFICATE-----" not in block:
-            continue
-        body = block.split(b"-----BEGIN CERTIFICATE-----", 1)[1].strip()
-        try:
-            certificates.append(x509.load_der_x509_certificate(base64.b64decode(body)))
-        except Exception as exc:
-            raise AuthentiCodeError(
-                "bad_root", f"некорректный PEM-сертификат: {path.name}"
-            ) from exc
-    if not certificates:
-        raise AuthentiCodeError("bad_root", f"в {path} нет PEM-сертификатов")
-    return certificates
+    try:
+        text = data.decode("utf-8", errors="strict")
+        pattern = r"-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----"
+        blocks = list(re.finditer(pattern, text))
+        if not blocks or re.sub(pattern, "", text).strip():
+            raise ValueError("incomplete certificate or non-certificate material")
+        return [
+            x509.load_der_x509_certificate(
+                base64.b64decode(re.sub(r"\s", "", block.group(1)), validate=True)
+            )
+            for block in blocks
+        ]
+    except (ValueError, UnicodeError) as exc:
+        raise AuthentiCodeError(
+            "bad_root", f"некорректный PEM-сертификат: {path.name}"
+        ) from exc
+
+
+def assert_disjoint_roots(
+    signer_roots: list[x509.Certificate], timestamp_roots: list[x509.Certificate]
+) -> None:
+    """Production boundary: SHA-256 of certificate DER, never PEM/file hashes.
+
+    Do not print fingerprints or PEM contents in errors. Each input must first
+    pass load_pem_certificates; empty lists also fail closed for direct callers.
+    """
+    if not signer_roots or not timestamp_roots:
+        raise AuthentiCodeError("empty_trust_roots", "оба набора корней обязательны")
+    signer = {cert.fingerprint(hashes.SHA256()) for cert in signer_roots}
+    timestamp = {cert.fingerprint(hashes.SHA256()) for cert in timestamp_roots}
+    if signer & timestamp:
+        raise AuthentiCodeError(
+            "overlapping_trust_roots", "signer/TSA наборы корней пересекаются"
+        )
 
 
 def _is_ca_certificate(certificate: x509.Certificate) -> bool:

@@ -63,7 +63,7 @@ param(
     # Неинтерактивно + открыть браузер после первого запуска (установщик).
     [switch]$OpenBrowser,
 
-    # uninstall: удалить данные Postgres и бэкапы (требует фразу-подтверждение).
+    # uninstall: удалить данные Postgres после backup gate; бэкапы сохраняются.
     [switch]$PurgeData,
 
     # diagnostics: вывод в формате JSON.
