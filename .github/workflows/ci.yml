@@ -682,7 +682,7 @@ jobs:
           import hashlib, json, pathlib, shutil, subprocess, sys, tempfile
           from pathlib import Path
           sys.path.insert(0, "infra/release")
-          from sign_authenticode import create_test_authority, make_test_pe, sign_test_pe
+          from sign_authenticode import EphemeralAuthority, create_test_authority, make_test_pe, sign_test_pe
           from trust_store import describe_trust_store, trust_store_sha256
           work = Path("policy/ephemeral")
           publisher = (work / "publisher.txt").read_text(encoding="utf-8").strip() if (work / "publisher.txt").exists() else "HR Manager CI Test Publisher"
@@ -701,7 +701,16 @@ jobs:
           public_b64 = base64.b64encode(key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
           trust_store = tmp / "trust-store.json"
           trust_store.write_text(json.dumps({"pilot-test-key": {"key": public_b64, "revoked": False}}), encoding="utf-8")
-          fresh_auth = create_test_authority(publisher)
+          signer_auth = create_test_authority(publisher)
+          tsa_auth = create_test_authority("Independent CI TSA")
+          fresh_auth = EphemeralAuthority(
+              ca_certificate=signer_auth.ca_certificate, ca_key=signer_auth.ca_key,
+              leaf_certificate=signer_auth.leaf_certificate, leaf_key=signer_auth.leaf_key,
+              tsa_certificate=tsa_auth.tsa_certificate, tsa_key=tsa_auth.tsa_key,
+              publisher=publisher,
+          )
+          tsa_roots = Path("policy/timestamp-roots.pem")
+          tsa_roots.write_bytes(tsa_auth.ca_pem())
           fresh_signed = sign_test_pe(make_test_pe(b"HRM-TEST-PE-BODY-FOR-CI"), fresh_auth)
           installer.write_bytes(fresh_signed)
           roots.write_bytes(fresh_auth.ca_pem())
@@ -718,7 +727,7 @@ jobs:
           tampered_att = dict(valid_attestation); tampered_att["mode"]="production"
           tampered_att_path = tmp / "tampered_att.json"
           tampered_att_path.write_text(json.dumps(tampered_att), encoding="utf-8")
-          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-tampered"), "--release-mode", "production", "--installer", str(tampered), "--authenticode-roots", str(roots), "--authenticode-timestamp-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(tampered_att_path)]
+          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-tampered"), "--release-mode", "production", "--installer", str(tampered), "--authenticode-roots", str(roots), "--authenticode-timestamp-roots", str(tsa_roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(tampered_att_path)]
           result = subprocess.run(cmd, capture_output=True, text=True)
           # Отказ обязан быть по своей причине, а не из-за отсутствующего параметра.
           assert result.returncode != 0 and "installer_changed_after_signing" in (result.stdout + result.stderr), result.stderr[-400:]
@@ -728,7 +737,7 @@ jobs:
           wrong_att = dict(valid_attestation); wrong_att["mode"]="production"
           wrong_att_path = tmp / "wrong_att.json"
           wrong_att_path.write_text(json.dumps(wrong_att), encoding="utf-8")
-          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-wrong"), "--release-mode", "production", "--installer", str(installer), "--authenticode-roots", str(wrong_roots), "--authenticode-timestamp-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(wrong_att_path)]
+          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-wrong"), "--release-mode", "production", "--installer", str(installer), "--authenticode-roots", str(wrong_roots), "--authenticode-timestamp-roots", str(tsa_roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(wrong_att_path)]
           result = subprocess.run(cmd, capture_output=True, text=True)
           assert result.returncode != 0 and "untrusted_root" in (result.stdout + result.stderr), result.stderr[-400:]
           unsigned = tmp / "unsigned.exe"
@@ -741,7 +750,7 @@ jobs:
           cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-no-tsa-roots"), "--release-mode", "production", "--installer", str(installer), "--authenticode-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(attestation_path)]
           result = subprocess.run(cmd, capture_output=True, text=True)
           assert result.returncode != 0 and "missing_authenticode_timestamp_roots" in (result.stdout + result.stderr), result.stderr[-400:]
-          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-missing"), "--release-mode", "production", "--installer", str(unsigned), "--authenticode-roots", str(roots), "--authenticode-timestamp-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(unsigned_att_path)]
+          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-missing"), "--release-mode", "production", "--installer", str(unsigned), "--authenticode-roots", str(roots), "--authenticode-timestamp-roots", str(tsa_roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(unsigned_att_path)]
           result = subprocess.run(cmd, capture_output=True, text=True)
           assert result.returncode != 0 and "unsigned" in (result.stdout + result.stderr), result.stderr[-400:]
           PY

@@ -29,7 +29,11 @@ work = Path(sys.argv[2])
 for name in ("signer", "tsa"):
     (work / (name + ".pem")).write_bytes(create_test_authority(name).ca_pem())
 '@
-    & python -c $code $repo $work
+    # Windows PowerShell 5.1 native argument passing can strip quotes from -c.
+    # A UTF-8 script file avoids shell-dependent source-code quoting entirely.
+    $generator = Join-Path $work "public-fixtures.py"
+    [System.IO.File]::WriteAllText($generator, $code, (New-Object System.Text.UTF8Encoding($false)))
+    & python $generator $repo $work
     if ($LASTEXITCODE -ne 0) { throw "Ephemeral certificate setup failed" }
     $signer = Join-Path $work "signer.pem"
     $tsa = Join-Path $work "tsa.pem"
