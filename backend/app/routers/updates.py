@@ -34,9 +34,12 @@ from app.channel import channel_enabled, compare_semver, download_package, verif
 from app.config import Settings
 from app.db import get_db
 from app.deps import get_current_user
+from app.host_evidence import PilotHostEvidenceStore
 from app.models import AccessGrant, AccessGrantScope, AuditAction, User, UserRole
 from app.rate_limiting import SlidingWindowRateLimiter
 from app.schemas import (
+    PilotHostReportAck,
+    UpdateEngineHostReportRequest,
     UpdateEnginePollResponse,
     UpdateEngineReportRequest,
     UpdateInstallResponse,
@@ -394,6 +397,32 @@ def updates_install(
 
 
 # --- Движковые эндпоинты (loopback + машинный токен) ----------------------------------
+
+
+@router.post(
+    "/engine-host-report",
+    response_model=PilotHostReportAck,
+    summary="Отчёт движка о Windows-хосте (только для readiness)",
+)
+def engine_host_report(
+    request: Request,
+    payload: UpdateEngineHostReportRequest,
+) -> PilotHostReportAck:
+    """Приём redacted-фактов о хосте.
+
+    Схема с ``extra="ignore"`` гарантирует, что на сервер попадут только
+    известные поля (никаких путей, токенов и PII из окружения движка).
+    Хранилище — только память процесса; после перезапуска backend
+    readiness честно деградирует до warning до следующего отчёта.
+    """
+    _engine_token_check(request)
+    store = _host_evidence(request)
+    received = store.record(payload.model_dump())
+    return PilotHostReportAck(received_at=received.strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+
+def _host_evidence(request: Request) -> PilotHostEvidenceStore:
+    return request.app.state.host_evidence
 
 
 @router.get(

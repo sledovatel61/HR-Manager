@@ -181,4 +181,73 @@ Test-Case "деинсталлятор удаляет обновлённые фа
     Assert-HrmNotContains $installer 'Type: filesandordirs; Name: "{localappdata}\HRManager"' "деинсталлятор не должен удалять StateDir"
 }
 
+# --- Phase 14: installer-скрипты (сборка и Authenticode-подпись) --------------
+
+$script:InstallerDir = Join-Path $RepoRoot "installer"
+
+Test-Case "installer-скрипты проходят парсер PowerShell" {
+    $files = Get-ChildItem -Path $InstallerDir -File -Filter *.ps1 | ForEach-Object { $_.FullName }
+    Assert-HrmTrue ($files.Count -ge 2) "ожидались build.ps1 и sign.ps1"
+    foreach ($file in $files) {
+        $tokens = $null
+        $errors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null
+        if ($errors -and $errors.Count -gt 0) {
+            throw ("Ошибки парсера в {0}: {1}" -f $file, ($errors[0].Message))
+        }
+    }
+}
+
+Test-Case "подпись релиза не трогает системные хранилища сертификатов" {
+    # certutil -addstore Root/TrustedPublisher на CI-раннере показывает диалог
+    # подтверждения и висит до таймаута job'а: test-режим обязан обходиться
+    # только Cert:\CurrentUser\My.
+    $sign = Get-Content -Path (Join-Path $InstallerDir "sign.ps1") -Raw -Encoding UTF8
+    Assert-HrmNotContains $sign "certutil -addstore" "certutil -addstore зависает в CI"
+    Assert-HrmNotContains $sign 'X509Store("Root"' "запись в системный Root запрещена"
+    Assert-HrmNotContains $sign 'X509Store("TrustedPublisher"' "запись в TrustedPublisher запрещена"
+    Assert-HrmContains $sign 'CertStoreLocation "Cert:\CurrentUser\My"' "test-сертификат обязан жить в CurrentUser\My"
+}
+
+Test-Case "sign.ps1 завершается явным кодом возврата" {
+    # Без явного exit $LASTEXITCODE вызывающей стороны остаётся от signtool
+    # verify, и CI ошибочно считает успешную подпись провалом.
+    $sign = Get-Content -Path (Join-Path $InstallerDir "sign.ps1") -Raw -Encoding UTF8
+    Assert-HrmContains $sign "exit `$scriptExitCode" "нет явного exit с кодом возврата"
+    Assert-HrmContains $sign 'Write-Host ("::error title=HRM-AUTHENTICODE::' "отказ не виден в check-runs"
+}
+
+Test-Case "attestation отражает фактический результат проверки подписи" {
+    $sign = Get-Content -Path (Join-Path $InstallerDir "sign.ps1") -Raw -Encoding UTF8
+    Assert-HrmNotContains $sign "signtool_verify_ok = `$true" "signtool_verify_ok захардкожен"
+    Assert-HrmContains $sign "signtool_verify_ok = `$signtoolVerifyOk" "attestation не берёт фактический результат"
+    Assert-HrmContains $sign "authenticode_present = (`$windowsStatus -ne ""NotSigned"")" "authenticode_present захардкожен"
+    Assert-HrmContains $sign "windows_chain_trusted = `$windowsChainTrusted" "нет фактического статуса доверия Windows"
+    Assert-HrmContains $sign "Test-HrmUntrustedRootOnly" "недоверенный корень не отличён от других ошибок"
+    Assert-HrmContains $sign '"authenticode.py"' "нет независимой проверки подписи"
+}
+
+Test-Case "production-режим подписи остаётся fail-closed" {
+    $sign = Get-Content -Path (Join-Path $InstallerDir "sign.ps1") -Raw -Encoding UTF8
+    Assert-HrmContains $sign "production: нужен -PfxPath" "production без PFX"
+    Assert-HrmContains $sign "production: нужен -TimestampUrl" "production без обязательной метки времени"
+    Assert-HrmContains $sign "production: нужен -ExpectedPublisher" "production без ожидаемого издателя"
+    Assert-HrmContains $sign "HRM_AUTHENTICODE_PFX_PASSWORD" "пароль PFX не берётся из переменной окружения"
+    Assert-HrmContains $sign "production: подпись не подтверждена Windows" "production терпит недоверенную цепочку"
+    Assert-HrmContains $sign "--require-timestamp" "production не требует метку времени у верификатора"
+}
+
+Test-Case "JSON-артефакты релиза пишутся без BOM" {
+    # Python-часть release-пайплайна читает их через json.loads, который BOM
+    # не принимает; Set-Content -Encoding UTF8 в PowerShell 5.1 BOM добавляет.
+    foreach ($name in @("build.ps1", "sign.ps1")) {
+        $text = Get-Content -Path (Join-Path $InstallerDir $name) -Raw -Encoding UTF8
+        foreach ($line in ($text -split "`r?`n")) {
+            if ($line.TrimStart().StartsWith("#")) { continue }
+            Assert-HrmFalse ($line -match "Set-Content.*-Encoding\s+UTF8") ("BOM-запись JSON в {0}: {1}" -f $name, $line.Trim())
+        }
+        Assert-HrmContains $text "New-Object System.Text.UTF8Encoding(`$false)" "нет записи UTF-8 без BOM"
+    }
+}
+
 Write-Host ("Статические проверки: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)
