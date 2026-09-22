@@ -9,6 +9,7 @@ Fixture-ключ разрешён ТОЛЬКО тестам и не входит
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -185,6 +186,40 @@ def _resolve_release_script() -> str:
     raise AssertionError("resolve release step не найден в workflow")
 
 
+def _find_real_bash() -> str | None:
+    """Возвращает путь к действительно исполняемому ``bash`` или ``None``.
+
+    Одного ``shutil.which("bash")`` недостаточно: на машине с включённым, но
+    не установленным дистрибутивом WSL ``C:\\Windows\\System32\\bash.exe`` —
+    это shim, который формально находится в PATH и даже стартует как процесс,
+    но команды как POSIX-shell не исполняет. Поэтому исполнимость проверяется
+    фактическим запуском зонда.
+
+    Решение принимается ТОЛЬКО по коду возврата и по наличию собственного
+    ASCII-маркера в stdout — никогда по тексту чужого сообщения об ошибке
+    (оно может прийти в чужой кодировке, т.е. «модзибаке», и вводить в
+    заблуждение).
+    """
+    candidate = shutil.which("bash")
+    if candidate is None:
+        return None
+    marker = "HRM_BASH_PROBE_OK"
+    try:
+        probe = subprocess.run(
+            [candidate, "-c", f"echo {marker}"],
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0:
+        return None
+    # Сравниваем байты, чтобы не зависеть от кодировки консоли.
+    if marker.encode("utf-8") not in probe.stdout:
+        return None
+    return candidate
+
+
 def _run_resolve_script(
     script: str, tmp_path: Path, version: str, notes: str
 ) -> subprocess.CompletedProcess:
@@ -194,11 +229,13 @@ def _run_resolve_script(
     становится no-op); атакующие/валидные notes передаются через env, как
     в настоящем workflow_dispatch.
     """
-    import os
-    import shutil
-
-    if shutil.which("bash") is None:
-        pytest.skip("bash требуется для исполняемого теста resolve-шага")
+    bash_path = _find_real_bash()
+    if bash_path is None:
+        pytest.skip(
+            "исполняемый bash недоступен (например, в PATH найден лишь "
+            "нерабочий WSL shim): исполняемый тест resolve-шага пропущен, "
+            "а не ослаблен"
+        )
     head_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, check=True
     ).stdout.strip()
@@ -215,7 +252,7 @@ def _run_resolve_script(
         "GITHUB_REPOSITORY": "sledovatel61/HR-Manager",
     }
     return subprocess.run(
-        ["bash", "-c", script], cwd=REPO, env=env, capture_output=True, text=True, timeout=120
+        [bash_path, "-c", script], cwd=REPO, env=env, capture_output=True, text=True, timeout=120
     )
 
 
@@ -234,6 +271,26 @@ def _git_checkout_safe_restore() -> Iterator[None]:
     finally:
         restore = head if branch == "HEAD" else branch
         subprocess.run(["git", "checkout", "-q", restore], cwd=REPO, check=True)
+
+
+def test_find_real_bash_rejects_stub_that_does_not_execute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Регрессия на ошибку детекции: «bash», который присутствует в PATH, но
+    не исполняет команды (как сломанный WSL shim), не должен считаться
+    пригодным — одного ``shutil.which`` для этого решения недостаточно."""
+    stub_dir = tmp_path / "stubbin"
+    stub_dir.mkdir()
+    if os.name == "nt":
+        # PATHEXT включает .BAT — shutil.which("bash") находит заглушку,
+        # но как процесс она команду не исполняет (симуляция отказа шима).
+        (stub_dir / "bash.bat").write_bytes(b"@exit /b 1\r\n")
+    else:
+        stub = stub_dir / "bash"
+        stub.write_bytes(b"#!/bin/sh\nexit 1\n")
+        os.chmod(stub, 0o755)
+    monkeypatch.setenv("PATH", str(stub_dir) + os.pathsep + os.environ.get("PATH", os.defpath))
+    assert _find_real_bash() is None
 
 
 def test_dispatch_notes_crlf_rejected_before_output(tmp_path: Path) -> None:

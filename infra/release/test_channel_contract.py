@@ -190,10 +190,25 @@ def test_valid_package_zip_matches_manifest() -> None:
 
 
 def test_attack_packages_are_zip_archives_with_expected_entries() -> None:
+    # Имена записей читаются через ZipInfo.orig_filename — это байт-точное имя
+    # из central directory. namelist()/ZipInfo.filename нормализуются самим
+    # Python: на платформах с os.sep != '/' (Windows) обратные слэши имен
+    # заменяются на '/' и при записи, и при чтении — ожидания не должны
+    # зависеть от этой нормализации.
+    #
+    # Каноническое имя для атаки через UNC — '//server/share/evil.txt':
+    # спецификация ZIP (APPNOTE 4.4.17.1) допускает в именах записей только
+    # прямые слэши, и эта форма байт-точно одинакова на любой платформе.
+    # Варианты '\\server\share\...' и со смешанными разделителями отклоняются
+    # тем же fail-closed правилом «любой обратный слэш в имени записи»,
+    # которое покрывает отдельная фикстура package.backslash.zip; варианты
+    # '//...' — правилом абсолютного пути и белого списка корней. Обе проверки
+    # исполняются в Assert-HrmSafeEntry (infra/windows/engine/Channel.psm1),
+    # поэтому UNC-угроза остаётся покрытой во всех вариантах написания.
     expectations = {
         "package.zipslip.zip": "../evil.txt",
         "package.abs.zip": "/abs/evil.txt",
-        "package.unc.zip": "\\\\server\\share\\evil.txt",
+        "package.unc.zip": "//server/share/evil.txt",
         "package.ads.zip": "release.json:stream",
         "package.backslash.zip": "backend\\evil.txt",
         "package.extra_root.zip": "unexpected.txt",
@@ -202,7 +217,8 @@ def test_attack_packages_are_zip_archives_with_expected_entries() -> None:
     }
     for name, entry in expectations.items():
         with zipfile.ZipFile(TESTDATA / name) as zf:
-            assert entry in zf.namelist(), name
+            raw_names = [info.orig_filename for info in zf.infolist()]
+            assert entry in raw_names, name
 
 
 def test_symlink_fixture_has_symlink_mode() -> None:
