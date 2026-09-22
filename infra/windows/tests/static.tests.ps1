@@ -250,4 +250,21 @@ Test-Case "JSON-артефакты релиза пишутся без BOM" {
     }
 }
 
+Test-Case "production pre-flight PEM выполняется до signtool sign" {
+    # Битый/пустой/отсутствующий PEM обязан отказаться до подписи. Здесь только
+    # структурный контракт: исполняемый pre-flight на Windows — sign.ps1 в CI,
+    # поведенческие случаи PEM закрыты pytest без production PFX.
+    $sign = Get-Content -Path (Join-Path $InstallerDir "sign.ps1") -Raw -Encoding UTF8
+    Assert-HrmContains $sign "function Assert-HrmPinnedRootsPem" "нет функции pre-flight"
+    Assert-HrmContains $sign "Assert-HrmPinnedRootsPem -Mode `$Mode" "pre-flight не вызывается"
+    Assert-HrmContains $sign "production pre-flight: PEM не найден" "нет отказа на отсутствующий PEM"
+    Assert-HrmContains $sign "production pre-flight: PEM пуст" "нет отказа на пустой PEM"
+    Assert-HrmContains $sign "production pre-flight: невалидный PEM" "нет отказа на невалидный PEM"
+    Assert-HrmContains $sign "X509Certificate2" "PEM не разбирается как сертификат"
+    Assert-HrmContains $sign 'if ($Mode -ne "production") { return }' "test-режим требует operator PEM"
+    $call = $sign.IndexOf("Assert-HrmPinnedRootsPem -Mode")
+    $signed = $sign.IndexOf('Label "signtool sign"')
+    Assert-HrmTrue ($call -ge 0 -and $signed -gt $call) "pre-flight не раньше signtool sign"
+}
+
 Write-Host ("Статические проверки: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

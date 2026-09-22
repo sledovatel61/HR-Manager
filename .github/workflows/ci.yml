@@ -632,7 +632,7 @@ jobs:
       - name: Release tooling unit tests (contract, trust store, Authenticode)
         run: |
           pytest -q infra/release/test_channel_contract.py
-          pytest -q backend/tests/test_trust_store.py backend/tests/test_release_authenticode.py backend/tests/test_release_policy.py backend/tests/test_release_pipeline.py
+          pytest -q backend/tests/test_trust_store.py backend/tests/test_release_authenticode.py backend/tests/test_release_policy.py backend/tests/test_release_pipeline.py backend/tests/test_authenticode_pem_preflight.py
 
       - name: Ephemeral Authenticode fixture — valid must verify, tampered/wrong/missing must fail
         run: |

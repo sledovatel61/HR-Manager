@@ -93,6 +93,7 @@ STEPS: dict[str, Step] = {
         targets=[
             "backend/tests/test_release_policy.py",
             "backend/tests/test_release_authenticode.py",
+            "backend/tests/test_authenticode_pem_preflight.py",
             "backend/tests/test_trust_store.py",
         ],
     ),

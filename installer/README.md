@@ -133,13 +133,14 @@ installer/
   проверяет CMS-подпись и доводит цепочку до экспортированного корня.
   Production policy такой релиз не пропускает: `mode="test"`.
 - `sign.ps1 -Mode production -PfxPath <pfx> -ExpectedPublisher <издатель>
-  -TimestampUrl <RFC3161> -TrustStoreFile <файл>` требует пароль PFX только
-  из переменной окружения `HRM_AUTHENTICODE_PFX_PASSWORD`, выполняет
-  `signtool sign /fd SHA256 /tr /td SHA256` и обязательно проверяет
-  `signtool verify /pa`, статус `Valid`, наличие метки времени, совпадение
-  издателя и независимую проверку `infra/release/authenticode.py` с
-  `--require-timestamp`. Пароль и ключ никогда не попадают в командную
-  строку, логи и артефакты.
+  -TimestampUrl <RFC3161> -TrustStoreFile <файл> -SignerRootsPath <pem>
+  -TimestampRootsPath <pem>` до `signtool sign` делает pre-flight двух разных
+  PEM (файл есть, не пуст, без BOM, хотя бы один разобранный сертификат).
+  Пароль PFX только из `HRM_AUTHENTICODE_PFX_PASSWORD`. Дальше —
+  `signtool sign /fd SHA256 /tr /td SHA256`, `signtool verify /pa`, статус
+  `Valid`, метка времени, издатель и `infra/release/authenticode.py` с
+  `--require-timestamp`. Пароль, ключ и тело PEM в логи не попадают. Цепочку
+  PFX → корень владелец проверяет вручную (runbook), скрипт её не строит.
 - `sign.ps1` всегда завершается явным кодом возврата (0 — подпись выполнена и
   проверена, 1 — отказ). Без этого `$LASTEXITCODE` вызывающей стороны
   оставался от `signtool verify`, и CI считал успешную подпись провалом.
