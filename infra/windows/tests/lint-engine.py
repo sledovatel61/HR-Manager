@@ -180,11 +180,26 @@ def check_installer_script(path: Path) -> None:
             ("production: нужен -TimestampUrl", "production без обязательной метки времени"),
             ("production: нужен -ExpectedPublisher", "production без ожидаемого издателя"),
             ("HRM_AUTHENTICODE_PFX_PASSWORD", "production без пароля PFX из переменной окружения"),
+            ("Assert-HrmPinnedRootsPem", "нет pre-flight закреплённых PEM"),
+            ("production pre-flight: PEM не найден", "нет отказа на отсутствующий PEM"),
+            ("production pre-flight: PEM пуст", "нет отказа на пустой PEM"),
+            ("production pre-flight: невалидный PEM", "нет отказа на невалидный PEM"),
+            ("X509Certificate2", "PEM не разбирается как сертификат"),
         ):
             if required not in code:
                 fail(f"sign.ps1: {why}")
         if 'Mode -eq "production"' not in code:
             fail("sign.ps1: нет production-ветки")
+        call_at = code.find("Assert-HrmPinnedRootsPem -Mode")
+        sign_at = code.find('Label "signtool sign"')
+        if call_at < 0 or sign_at < 0 or call_at > sign_at:
+            fail("sign.ps1: pre-flight PEM должен выполняться до signtool sign")
+        if 'if ($Mode -ne "production") { return }' not in code:
+            fail("sign.ps1: test-режим не должен требовать operator PEM")
+        pinned = code.split("function Assert-HrmPinnedRootsPem", 1)[1]
+        pinned = pinned.split("$signtool = Get-HrmSigntool", 1)[0]
+        if "signtool" in pinned.lower():
+            fail("sign.ps1: pre-flight не должен вызывать signtool")
 
 
 def check_ps_encoding(path: Path) -> None:
