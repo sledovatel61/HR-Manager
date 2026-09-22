@@ -177,6 +177,17 @@ def _prepare_snapshot(snapshot: Path, staging_root: Path) -> Path:
     return target
 
 
+def _load_pinned_pem(path: str, role: str) -> list:
+    """Закреплённый PEM корней. Fail closed, без traceback и без содержимого файла.
+
+    Код ошибки стабильный: ``missing_pem``, ``unreadable_pem`` или ``bad_root``.
+    """
+    try:
+        return load_pem_certificates(Path(path))
+    except AuthentiCodeError as exc:
+        raise PolicyError(exc.code, f"{role}: {exc}") from exc
+
+
 def _load_attestation(path: Path) -> dict:
     try:
         data = json.loads(_read_text(path))
@@ -260,8 +271,8 @@ def _enforce_production_policy(
     # Якоря загружаются РАЗДЕЛЬНО. Signer CA и TSA CA в production независимы:
     # повтор signer-корней в качестве timestamp_roots отклонил бы корректную
     # метку времени с untrusted_root (подтверждено PoC с двумя CA).
-    signer_roots = load_pem_certificates(Path(args.authenticode_roots))
-    timestamp_roots = load_pem_certificates(Path(args.authenticode_timestamp_roots))
+    signer_roots = _load_pinned_pem(args.authenticode_roots, "корни издателя")
+    timestamp_roots = _load_pinned_pem(args.authenticode_timestamp_roots, "корни TSA")
     result = verify_authenticode(
         installer,
         expected_publisher=expected_publisher,

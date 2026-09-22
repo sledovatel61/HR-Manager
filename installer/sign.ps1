@@ -15,6 +15,10 @@
 #     Подпись обязана быть полностью подтверждена: `signtool verify /pa`
 #     возвращает Valid, издатель совпадает с ожидаемым, метка времени есть,
 #     независимый верификатор подтверждает цепочку до production-корня.
+#     До любого signtool sign production-режим делает pre-flight закреплённых
+#     PEM (-SignerRootsPath и -TimestampRootsPath): файл есть, не пуст, без BOM
+#     и содержит хотя бы один разобранный сертификат. Это не проверка цепочки
+#     PFX -> корень: её владелец выполняет вручную (docs/runbook-pilot-release.md).
 #   -Mode test — ephemeral самоподписанный сертификат ТОЛЬКО для CI-проверки
 #     контракта (PR/CI без production-секретов). Attestation получает
 #     mode="test" и честный signtool_verify_ok, поэтому production policy
@@ -44,7 +48,9 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File installer\sign.ps1 `
 #     -Mode production -Version 0.14.0 -PfxPath "$env:RUNNER_TEMP\cert.pfx" `
 #     -ExpectedPublisher "ООО «Ромашка»" -TimestampUrl "http://timestamp.digicert.com" `
-#     -TrustStoreFile "$env:RUNNER_TEMP\trust-store.json"
+#     -TrustStoreFile "$env:RUNNER_TEMP\trust-store.json" `
+#     -SignerRootsPath "$env:RUNNER_TEMP\signer-roots.pem" `
+#     -TimestampRootsPath "$env:RUNNER_TEMP\timestamp-roots.pem"
 #
 # Код возврата: 0 — подпись выполнена и проверена, 1 — любой отказ (fail closed).
 # Скрипт всегда завершается явным exit: без этого $LASTEXITCODE вызывающей
@@ -89,15 +95,6 @@ if (-not (Test-Path $SetupExe)) { throw "Setup.exe не найден: $SetupExe"
 if (-not $AttestationPath) { $AttestationPath = Join-Path $installerDir "authenticode-attestation.json" }
 if (-not $RootsPath) { $RootsPath = Join-Path $installerDir "authenticode-roots.pem" }
 if (-not $VerificationPath) { $VerificationPath = Join-Path $installerDir "authenticode-verification.json" }
-if ($Mode -eq "production") {
-    # Production обязан проверять цепочку до заранее закреплённого корня.
-    # Корни из самой подписи здесь запрещены: это не проверка, а тавтология.
-    if (-not $SignerRootsPath) { throw "production: нужен -SignerRootsPath (закреплённый корень издателя)" }
-    if (-not (Test-Path $SignerRootsPath)) { throw "production: -SignerRootsPath не найден: $SignerRootsPath" }
-    if (-not $TimestampRootsPath) { throw "production: нужен -TimestampRootsPath (закреплённый корень TSA)" }
-    if (-not (Test-Path $TimestampRootsPath)) { throw "production: -TimestampRootsPath не найден: $TimestampRootsPath" }
-}
-
 function Write-HrmUtf8NoBom {
     # Python-часть release-пайплайна читает JSON через json.loads без BOM-фильтра:
     # Set-Content -Encoding UTF8 в Windows PowerShell 5.1 пишет BOM и ломает разбор.
@@ -254,6 +251,120 @@ function Read-HrmTrustStoreFacts {
     }
 }
 
+function Assert-HrmPemCertificateFile {
+    # Публичный PEM: существует, не пуст, без BOM, без приватного материала,
+    # хотя бы один разобранный сертификат. Содержимое, отпечатки и пароли
+    # не печатаются — в ошибке только роль файла.
+    param(
+        [string]$Path,
+        [string]$Role
+    )
+    if (-not $Path) {
+        throw ("production pre-flight: нужен PEM ({0})" -f $Role)
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw ("production pre-flight: PEM не найден ({0})" -f $Role)
+    }
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($null -eq $bytes -or $bytes.Length -eq 0) {
+        throw ("production pre-flight: PEM пуст ({0})" -f $Role)
+    }
+    $hasBom = $false
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $hasBom = $true
+    }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        $hasBom = $true
+    }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        $hasBom = $true
+    }
+    if ($hasBom) {
+        throw ("production pre-flight: PEM содержит BOM ({0})" -f $Role)
+    }
+    $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+    if (-not $text.Trim()) {
+        throw ("production pre-flight: PEM пуст ({0})" -f $Role)
+    }
+    if ($text.Contains("PRIVATE KEY")) {
+        throw ("production pre-flight: PEM содержит приватный материал ({0})" -f $Role)
+    }
+    $begin = "-----BEGIN CERTIFICATE-----"
+    $end = "-----END CERTIFICATE-----"
+    $parsed = 0
+    $cursor = 0
+    while ($cursor -lt $text.Length) {
+        $start = $text.IndexOf([string]$begin, [int]$cursor)
+        if ($start -lt 0) { break }
+        $stop = $text.IndexOf([string]$end, [int]($start + $begin.Length))
+        if ($stop -lt 0) {
+            throw ("production pre-flight: PEM оборван ({0})" -f $Role)
+        }
+        $compact = ($text.Substring($start + $begin.Length, $stop - ($start + $begin.Length)) -replace "\s", "")
+        if (-not $compact) {
+            throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
+        }
+        $der = $null
+        try {
+            $der = [Convert]::FromBase64String($compact)
+        }
+        catch {
+            throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
+        }
+        if ($null -eq $der -or $der.Length -eq 0) {
+            throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
+        }
+        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+        $importError = $false
+        try {
+            # Import(byte[]) грузит только публичный сертификат в объект,
+            # не в Root/TrustedPublisher и не в командную строку.
+            $cert.Import($der)
+        }
+        catch {
+            $importError = $true
+        }
+        finally {
+            if ($importError) { $cert.Dispose() }
+        }
+        if ($importError) {
+            throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
+        }
+        try {
+            if ($cert.HasPrivateKey) {
+                throw ("production pre-flight: PEM содержит приватный материал ({0})" -f $Role)
+            }
+            if ($null -eq $cert.RawData -or $cert.RawData.Length -eq 0) {
+                throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
+            }
+            $parsed++
+        }
+        finally {
+            $cert.Dispose()
+        }
+        $cursor = $stop + $end.Length
+    }
+    if ($parsed -lt 1) {
+        throw ("production pre-flight: в PEM нет сертификата ({0})" -f $Role)
+    }
+}
+
+function Assert-HrmPinnedRootsPem {
+    # Вызывается до любого signtool sign. Test-режим не требует operator PEM:
+    # ephemeral-корень создаётся этим запуском и не является production trust root.
+    # Полная цепочка PFX -> signer root и TSA -> timestamp root здесь НЕ
+    # проверяется — это ручной production pre-flight из runbook.
+    param(
+        [string]$Mode,
+        [string]$SignerRootsPath,
+        [string]$TimestampRootsPath
+    )
+    if ($Mode -ne "production") { return }
+    Assert-HrmPemCertificateFile -Path $SignerRootsPath -Role "signer-roots"
+    Assert-HrmPemCertificateFile -Path $TimestampRootsPath -Role "timestamp-roots"
+    Write-Host "pre-flight: pinned signer-roots and timestamp-roots accepted"
+}
+
 $signtool = Get-HrmSigntool
 $testCertificate = $null
 $importedCertificate = $null
@@ -262,6 +373,10 @@ $scriptExitCode = 0
 Write-Host ("== HR Manager Authenticode signing ({0}) ==" -f $Mode)
 
 try {
+    # До импорта PFX и до signtool sign: битый/пустой/отсутствующий PEM
+    # завершает скрипт через catch ($scriptExitCode = 1), файл не подписывается.
+    Assert-HrmPinnedRootsPem -Mode $Mode -SignerRootsPath $SignerRootsPath -TimestampRootsPath $TimestampRootsPath
+
     if ($Mode -eq "production") {
         if (-not $PfxPath -or -not (Test-Path $PfxPath)) { throw "production: нужен -PfxPath (из защищённого секрета)" }
         if (-not $TimestampUrl) { throw "production: нужен -TimestampUrl: метка времени обязательна" }
