@@ -324,20 +324,14 @@ function Assert-HrmPemCertificateFile {
         if ($null -eq $der -or $der.Length -eq 0) {
             throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
         }
-        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-        $importError = $false
+        $cert = $null
         try {
-            # Import(byte[]) грузит только публичный сертификат в объект,
-            # не в Root/TrustedPublisher и не в командную строку.
-            $cert.Import($der)
+            # Constructor(byte[]) works on .NET Framework (PS 5.1) and modern
+            # .NET (pwsh, where mutating Import is unsupported). Public object
+            # only: no import into Root/TrustedPublisher or persistent storage.
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList (, $der)
         }
         catch {
-            $importError = $true
-        }
-        finally {
-            if ($importError) { $cert.Dispose() }
-        }
-        if ($importError) {
             throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
         }
         try {
