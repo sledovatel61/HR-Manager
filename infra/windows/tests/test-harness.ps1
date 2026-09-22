@@ -130,6 +130,9 @@ function New-HrmMockWorld {
         ComposeVersion = "v2.29.7"
         AlembicCurrent = "0013 (head)"
         AlembicUpgradeCount = 0
+        RemovedVolumes = @()
+        DownOk = $true
+        BackupNowOk = $true
         BackupNowCount = 0
         BackupCheckOk = $true
         WorkerCheckOk = $true
@@ -201,6 +204,9 @@ function New-HrmMockWorld {
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "started"; Stderr = "" }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "down")) {
+                if (-not $global:HRM_MockWorld.DownOk) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "down failed" }
+                }
                 $global:HRM_MockWorld.Running = $false
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "stopped"; Stderr = "" }
             }
@@ -237,6 +243,9 @@ function New-HrmMockWorld {
                 $joined = ($Arguments -join " ")
                 if ($joined -match "backup-now|\bbackup oneshot\b") {
                     $global:HRM_MockWorld.BackupNowCount++
+                    if (-not $global:HRM_MockWorld.BackupNowOk) {
+                        return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "backup failed" }
+                    }
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "backup ok"; Stderr = "" }
                 }
                 if ($joined -match "backup-check|\bbackup check\b") {
@@ -248,6 +257,10 @@ function New-HrmMockWorld {
                 if ($joined -match "backup-list") {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "2026-09-09T01:00:00Z ok abc.enc"; Stderr = "" }
                 }
+            }
+            if ($Arguments.Count -eq 3 -and $Arguments[0] -eq "volume" -and $Arguments[1] -eq "rm") {
+                $global:HRM_MockWorld.RemovedVolumes += $Arguments[2]
+                return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "removed"; Stderr = "" }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "image" -and $Arguments[1] -eq "inspect") {
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "sha256:old-image-id"; Stderr = "" }
