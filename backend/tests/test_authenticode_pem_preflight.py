@@ -147,9 +147,7 @@ def _run_publish(
         str(inputs["trust_store"]),
         *extra,
     ]
-    return subprocess.run(
-        command, capture_output=True, text=True, encoding="utf-8", timeout=180
-    )
+    return subprocess.run(command, capture_output=True, text=True, encoding="utf-8", timeout=180)
 
 
 def _assert_not_published(
