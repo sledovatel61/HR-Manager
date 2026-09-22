@@ -147,7 +147,9 @@ def _run_publish(
         str(inputs["trust_store"]),
         *extra,
     ]
-    return subprocess.run(command, capture_output=True, text=True, timeout=180)
+    return subprocess.run(
+        command, capture_output=True, text=True, encoding="utf-8", timeout=180
+    )
 
 
 def _assert_not_published(
@@ -184,6 +186,7 @@ def test_load_pem_certificates_unreadable_directory_is_fail_closed(tmp_path: Pat
     assert isinstance(excinfo.value.__cause__, OSError)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="chmod(0) does not deny reads on Windows")
 def test_load_pem_certificates_permission_error_is_unreadable(tmp_path: Path) -> None:
     """Реальный PermissionError при чтении PEM, не IsADirectoryError."""
     denied = tmp_path / "denied.pem"
@@ -305,6 +308,7 @@ def test_verify_cli_missing_pem_has_stable_code(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert result.returncode == 1
@@ -321,6 +325,7 @@ def test_production_refuses_missing_signer_pem(tmp_path: Path) -> None:
     _assert_not_published(tmp_path, result, "missing_pem")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="chmod(0) does not deny reads on Windows")
 def test_production_refuses_permission_denied_pem_without_traceback(tmp_path: Path) -> None:
     inputs = _production_inputs(tmp_path)
     denied = tmp_path / "denied-signer.pem"
