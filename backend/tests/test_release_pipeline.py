@@ -186,6 +186,155 @@ def _resolve_release_script() -> str:
     raise AssertionError("resolve release step не найден в workflow")
 
 
+_CI_GATE_JOB = "ci-gate"
+_CI_GATE_RESOLVE_STEP = "Resolve exact release SHA (tag ref or owner dispatch)"
+_CI_GATE_CHECK_STEP = "Require successful CI run for exact release SHA (fail closed)"
+
+# Mock `gh`: отвечает заканоненным JSON и fail closed, если workflow-скрипт
+# запрашивает CI не для exact SHA (в URL нет head_sha=<MOCK_GH_SHA>).
+# Значение GH_TOKEN mock'ом не читается и не печатается.
+_MOCK_GH_SCRIPT = """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" != "api" ]; then
+  echo "mock-gh: unsupported invocation: $*" >&2
+  exit 64
+fi
+url="${2:-}"
+case "$url" in
+  *"head_sha=${MOCK_GH_SHA:?}"*) ;;
+  *)
+    echo "mock-gh: query is not pinned to exact SHA head_sha" >&2
+    exit 65
+    ;;
+esac
+if [ "${MOCK_GH_EXIT:-0}" -ne 0 ]; then
+  echo "HTTP 403: Resource not accessible by integration" >&2
+  exit "${MOCK_GH_EXIT}"
+fi
+cat "${MOCK_GH_RESPONSE:?}"
+"""
+
+
+def _ci_gate_step_run(name: str) -> str:
+    """run-скрипт именованного шага job `ci-gate` (точная копия)."""
+    data = _workflow_data()
+    for step in data["jobs"][_CI_GATE_JOB]["steps"]:
+        if step.get("name") == name:
+            return step["run"]
+    raise AssertionError(f"ci-gate step не найден в workflow: {name}")
+
+
+def _transitive_needs(job_name: str, jobs: dict) -> set[str]:
+    """Transitive closure прямых `needs` job (граф запуска GitHub Actions)."""
+    seen: set[str] = set()
+    stack = [job_name]
+    while stack:
+        current = stack.pop()
+        needs = jobs[current].get("needs", [])
+        if isinstance(needs, str):
+            needs = [needs]
+        for dependency in needs:
+            if dependency not in seen:
+                seen.add(dependency)
+                stack.append(dependency)
+    return seen
+
+
+def _ci_run(sha: str, **overrides: object) -> dict:
+    run: dict = {
+        "id": 35754211766,
+        "name": "CI",
+        "head_sha": sha,
+        "status": "completed",
+        "conclusion": "success",
+        "event": "push",
+    }
+    run.update(overrides)
+    return run
+
+
+def _run_ci_gate(
+    tmp_path: Path,
+    script: str,
+    *,
+    sha: str = "a" * 40,
+    payload: dict | None = None,
+    gh_exit: int = 0,
+) -> subprocess.CompletedProcess:
+    """Исполнение CI-check скрипта ci-gate с mock `gh` на первом месте PATH.
+
+    Успех требует (1) корректного вывода mock'а, (2) запроса с
+    head_sha=<exact SHA> — mock отказывает на любом другом URL, (3) разбора
+    status/conclusion самим скриптом: exit code `gh` без успешного conclusion
+    успехом не считается.
+    """
+    bash_path = _find_real_bash()
+    if bash_path is None:
+        pytest.skip("исполняемый bash недоступен: тест ci-gate пропущен, а не ослаблен")
+    if shutil.which("python3") is None:
+        pytest.skip("python3 недоступен: тест ci-gate пропущен, а не ослаблен")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    gh_mock = bin_dir / "gh"
+    gh_mock.write_text(_MOCK_GH_SCRIPT, encoding="utf-8")
+    gh_mock.chmod(0o755)
+    response = tmp_path / "gh-runs.json"
+    body = payload if payload is not None else {"workflow_runs": []}
+    response.write_text(json.dumps(body), encoding="utf-8")
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
+        "HOME": str(tmp_path),
+        "GH_TOKEN": "unit-test-placeholder-token",
+        "GITHUB_REPOSITORY": "sledovatel61/HR-Manager",
+        "SHA": sha,
+        "MOCK_GH_RESPONSE": str(response),
+        "MOCK_GH_SHA": sha,
+        "MOCK_GH_EXIT": str(gh_exit),
+    }
+    return subprocess.run(
+        [bash_path, "-c", script],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def _run_ci_gate_resolve(
+    tmp_path: Path,
+    script: str,
+    *,
+    event_name: str,
+    input_sha: str,
+) -> subprocess.CompletedProcess:
+    """Исполнение resolve-скрипта ci-gate с поддельным GITHUB_OUTPUT."""
+    bash_path = _find_real_bash()
+    if bash_path is None:
+        pytest.skip("исполняемый bash недоступен: тест ci-gate пропущен, а не ослаблен")
+    output_file = tmp_path / "github-output.txt"
+    env = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "HOME": str(tmp_path),
+        "EVENT_NAME": event_name,
+        "INPUT_SHA": input_sha,
+        "GITHUB_OUTPUT": str(output_file),
+    }
+    return subprocess.run(
+        [bash_path, "-c", script],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def _ci_gate_output(tmp_path: Path) -> str:
+    output_file = tmp_path / "github-output.txt"
+    return output_file.read_text(encoding="utf-8") if output_file.exists() else ""
+
+
 def _find_real_bash() -> str | None:
     """Возвращает путь к действительно исполняемому ``bash`` или ``None``.
 
@@ -424,7 +573,9 @@ def test_workflow_yaml_security_invariants() -> None:
         assert "git checkout -q" in text  # checkout строго по SHA
     # Значения dispatch-пользователя не попадают в shell напрямую — только
     # через env (никаких inline-expressions от пользователя в run-блоках).
-    for step in jobs["windows-installer"]["steps"] + signing_job["steps"]:
+    for step in (
+        jobs["ci-gate"]["steps"] + jobs["windows-installer"]["steps"] + signing_job["steps"]
+    ):
         run = step.get("run", "") if isinstance(step, dict) else ""
         assert "${{ inputs." not in run, f"user input inlined in run block: {run[:80]}"
         assert "${{ github.event_name }}" not in run
@@ -443,6 +594,198 @@ def test_workflow_yaml_security_invariants() -> None:
     assert reject_idx < write_idx
     # Deploy/rollback workflow не затронут.
     assert (REPO / ".github" / "workflows" / "release.yml").exists()
+
+
+def test_ci_gate_resolve_dispatch_rejects_bad_sha_format(tmp_path: Path) -> None:
+    """Dispatch: неверный формат release_sha отклоняется ДО записи вывода."""
+    script = _ci_gate_step_run(_CI_GATE_RESOLVE_STEP)
+    for bad_sha in ("main", "a" * 39, "g" * 40, "", f"{'a' * 40}\nmain"):
+        result = _run_ci_gate_resolve(
+            tmp_path, script, event_name="workflow_dispatch", input_sha=bad_sha
+        )
+        assert result.returncode != 0, f"плохой release_sha принят: {bad_sha!r}"
+        assert "sha=" not in _ci_gate_output(tmp_path)
+
+
+def test_ci_gate_resolve_dispatch_rejects_missing_commit(tmp_path: Path) -> None:
+    """Dispatch: несуществующий commit отклоняется (git cat-file -e)."""
+    script = _ci_gate_step_run(_CI_GATE_RESOLVE_STEP)
+    result = _run_ci_gate_resolve(
+        tmp_path, script, event_name="workflow_dispatch", input_sha="0" * 40
+    )
+    assert result.returncode != 0
+    assert "does not exist" in result.stderr
+    assert "sha=" not in _ci_gate_output(tmp_path)
+
+
+def test_ci_gate_resolve_dispatch_uses_exact_requested_sha(tmp_path: Path) -> None:
+    """Dispatch: в вывод попадает ровно запрошенный exact SHA (40 hex)."""
+    script = _ci_gate_step_run(_CI_GATE_RESOLVE_STEP)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    with _git_checkout_safe_restore():
+        result = _run_ci_gate_resolve(
+            tmp_path, script, event_name="workflow_dispatch", input_sha=head_sha
+        )
+    assert result.returncode == 0, result.stderr
+    assert _ci_gate_output(tmp_path).strip() == f"sha={head_sha}"
+
+
+def test_ci_gate_resolve_push_uses_tagged_commit_sha(tmp_path: Path) -> None:
+    """Tag-push: exact SHA коммита защищённого ref, не branch name."""
+    script = _ci_gate_step_run(_CI_GATE_RESOLVE_STEP)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    result = _run_ci_gate_resolve(tmp_path, script, event_name="push", input_sha="")
+    assert result.returncode == 0, result.stderr
+    assert _ci_gate_output(tmp_path).strip() == f"sha={head_sha}"
+
+
+def test_ci_gate_passes_for_completed_successful_ci_exact_sha(tmp_path: Path) -> None:
+    """CI completed/success для exact SHA → gate проходит.
+
+    Mock дополнительно отказывает, если скрипт не запрашивает head_sha=<SHA>
+    (т.е. success здесь также подтверждает запрос именно exact SHA).
+    """
+    sha = "c" * 40
+    script = _ci_gate_step_run(_CI_GATE_CHECK_STEP)
+    result = _run_ci_gate(tmp_path, script, sha=sha, payload={"workflow_runs": [_ci_run(sha)]})
+    assert result.returncode == 0, result.stderr
+    assert f"CI completed successfully for exact SHA {sha}" in result.stdout
+    assert "unit-test-placeholder-token" not in result.stdout + result.stderr
+
+
+def test_ci_gate_rejects_missing_ci_run(tmp_path: Path) -> None:
+    """CI отсутствует → fail closed (не последний успешный run другого SHA)."""
+    sha = "c" * 40
+    script = _ci_gate_step_run(_CI_GATE_CHECK_STEP)
+    result = _run_ci_gate(tmp_path, script, sha=sha, payload={"workflow_runs": []})
+    assert result.returncode != 0
+    assert "no CI workflow run found" in result.stderr
+    assert f"exact SHA {sha}" in result.stderr
+
+
+def test_ci_gate_rejects_non_ci_workflow_run(tmp_path: Path) -> None:
+    """Успех workflow с другим именем (не `CI`) gate не проходит."""
+    sha = "c" * 40
+    script = _ci_gate_step_run(_CI_GATE_CHECK_STEP)
+    payload = {"workflow_runs": [_ci_run(sha, name="Release")]}
+    result = _run_ci_gate(tmp_path, script, sha=sha, payload=payload)
+    assert result.returncode != 0
+    assert "no CI workflow run found" in result.stderr
+
+
+@pytest.mark.parametrize("status", ["queued", "in_progress"])
+def test_ci_gate_rejects_ci_in_progress(tmp_path: Path, status: str) -> None:
+    """CI ещё выполняется → отказ, а не ожидание и не зачёт по exit code."""
+    sha = "c" * 40
+    script = _ci_gate_step_run(_CI_GATE_CHECK_STEP)
+    payload = {"workflow_runs": [_ci_run(sha, status=status, conclusion=None)]}
+    result = _run_ci_gate(tmp_path, script, sha=sha, payload=payload)
+    assert result.returncode != 0
+    assert "CI still in progress" in result.stderr
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped"])
+def test_ci_gate_rejects_unsuccessful_ci_conclusion(tmp_path: Path, conclusion: str) -> None:
+    """CI completed с failure/cancelled/skipped → отказ.
+
+    gh api при этом завершается успешно (exit 0): решение принимается по
+    conclusion, а не только по локальному exit code.
+    """
+    sha = "c" * 40
+    script = _ci_gate_step_run(_CI_GATE_CHECK_STEP)
+    payload = {"workflow_runs": [_ci_run(sha, conclusion=conclusion)]}
+    result = _run_ci_gate(tmp_path, script, sha=sha, payload=payload)
+    assert result.returncode != 0
+    assert "CI not successful" in result.stderr
+    assert conclusion in result.stderr
+
+
+def test_ci_gate_rejects_ci_run_for_different_sha(tmp_path: Path) -> None:
+    """Успешный CI для другого SHA → отказ для запрошенного exact SHA."""
+    sha = "c" * 40
+    other_sha = "d" * 40
+    script = _ci_gate_step_run(_CI_GATE_CHECK_STEP)
+    payload = {"workflow_runs": [_ci_run(other_sha)]}
+    result = _run_ci_gate(tmp_path, script, sha=sha, payload=payload)
+    assert result.returncode != 0
+    assert "no CI workflow run found" in result.stderr
+    assert f"exact SHA {sha}" in result.stderr
+
+
+def test_ci_gate_rejects_when_api_query_fails(tmp_path: Path) -> None:
+    """Ошибка GitHub API / нехватка permissions → fail closed, без токенов в логе."""
+    sha = "c" * 40
+    script = _ci_gate_step_run(_CI_GATE_CHECK_STEP)
+    result = _run_ci_gate(tmp_path, script, sha=sha, gh_exit=1)
+    assert result.returncode != 0
+    assert "fail closed" in result.stderr
+    assert "403" in result.stderr
+    assert "unit-test-placeholder-token" not in result.stdout + result.stderr
+
+
+def test_ci_gate_rejects_non_hex_resolved_sha(tmp_path: Path) -> None:
+    """Resolved SHA вне 40-hex → отказ до похода в API."""
+    script = _ci_gate_step_run(_CI_GATE_CHECK_STEP)
+    result = _run_ci_gate(tmp_path, script, sha="branch-name")
+    assert result.returncode != 0
+    assert "40 hex" in result.stderr
+
+
+def test_workflow_ci_gate_orders_production_signing_after_exact_sha_ci() -> None:
+    """Структурный контракт порядка: CI exact SHA — до production signing.
+
+    * `ci-gate` не имеет `environment: update-channel-signing` и не ссылается
+      на secrets.* — production signing material gate недоступен по построению;
+    * `windows-installer` (production signing inputs + Authenticode) имеет
+      `needs: ci-gate` — при failed/skipped gate GitHub dependent-джоб не
+      стартует (environment approval и signing inputs не запрашиваются);
+    * `channel-release` сохраняет зависимость от `windows-installer`;
+    * production secrets syntactically доступны только в jobs, transitively
+      depending on `ci-gate`.
+    """
+    data = _workflow_data()
+    jobs = data["jobs"]
+    assert _CI_GATE_JOB in jobs
+    gate = jobs[_CI_GATE_JOB]
+    # ci-gate — без production environment и без secrets.
+    assert "environment" not in gate
+    gate_blob = json.dumps(gate, ensure_ascii=False)
+    assert "secrets." not in gate_blob
+    assert "UPDATE_CHANNEL_" not in gate_blob
+    assert "update-channel-signing" not in gate_blob
+    # Gate реально проверяет CI для exact SHA: формат, существование, HEAD
+    # == release_sha и запрос actions/runs по head_sha с разбором conclusion.
+    gate_text = "\n".join(step.get("run", "") for step in gate["steps"] if isinstance(step, dict))
+    assert "head_sha=" in gate_text
+    assert 'run.get("name") == "CI"' in gate_text
+    assert "release refused" in gate_text
+    assert "git cat-file -e" in gate_text
+    assert "checkout HEAD != release_sha" in gate_text
+    # Порядок: windows-installer зависит от ci-gate; его шаг signing inputs
+    # присутствует и выполняется GitHub только после успешного needs.
+    installer_needs = jobs["windows-installer"].get("needs", [])
+    if isinstance(installer_needs, str):
+        installer_needs = [installer_needs]
+    assert _CI_GATE_JOB in installer_needs
+    installer_names = [step.get("name", "") for step in jobs["windows-installer"]["steps"]]
+    assert "Require production Authenticode signing inputs (fail closed)" in installer_names
+    # channel-release: текущий порядок сохранён (после windows-installer) и
+    # прямая зависимость от ci-gate (повторный gate до публикации).
+    channel_needs = jobs["channel-release"].get("needs", [])
+    if isinstance(channel_needs, str):
+        channel_needs = [channel_needs]
+    assert "windows-installer" in channel_needs
+    assert _CI_GATE_JOB in channel_needs
+    # Production secrets — только в jobs, стартующих после ci-gate.
+    for job_name, job in jobs.items():
+        if "secrets.UPDATE_CHANNEL_" in json.dumps(job, ensure_ascii=False):
+            assert _CI_GATE_JOB in _transitive_needs(job_name, jobs), (
+                f"job {job_name} ссылается на production secrets без needs на ci-gate"
+            )
 
 
 def test_test_mode_sums_match_all_four_channel_assets(tmp_path: Path) -> None:

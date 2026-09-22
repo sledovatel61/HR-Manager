@@ -38,6 +38,14 @@
 # Fail closed: без любой из этих величин release job падает ДО публикации —
 # unsigned/непроверенный manifest не создаётся никогда.
 #
+# Порядок production gates: job `ci-gate` (БЕЗ environment `update-channel-
+# signing` и БЕЗ любых secrets.*) выполняется ПЕРЫМ и подтверждает успешный
+# workflow `CI` для exact release SHA (tag-ref либо dispatch `release_sha`).
+# Только после успешного ci-gate стартует `windows-installer` (чтение
+# production signing inputs и Authenticode-подпись), затем `channel-release`.
+# CI gate для exact release SHA выполняется до production signing inputs и
+# до signing job: без зелёного CI точного SHA production-подпись не начинается.
+#
 # Production signing secrets НЕ доступны коду из PR/fork: триггеров
 # pull_request нет, signing выполняется только внутри environment-джобов.
 # CI-PR контур проверяет тот же контракт ephemeral тестовыми ключами и
@@ -84,8 +92,158 @@ env:
   MINIMUM_SUPPORTED_VERSION: "0.13.0"
 
 jobs:
+  # Fail-closed вход в production signing: проверяет успешный CI для EXACT
+  # release SHA ДО любого production signing input/job. Намеренно БЕЗ
+  # environment `update-channel-signing` и БЕЗ ссылок на secrets.* — gate не
+  # получает production signing material по построению. windows-installer
+  # зависит через `needs: ci-gate`: при failed/skipped gate dependent-джобы
+  # GitHub не стартует, environment approval и production secrets не запрашиваются.
+  ci-gate:
+    name: CI gate for exact release SHA (no secrets)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve exact release SHA (tag ref or owner dispatch)
+        id: release-sha
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          reject_newline() {
+            case "$1" in
+              *$'\r'*|*$'\n'*)
+                echo "error: $2 must be a single line (CR/LF rejected)" >&2
+                exit 2
+                ;;
+            esac
+          }
+          if [ "$EVENT_NAME" = "push" ]; then
+            # Защищённый SemVer-тег: exact SHA коммита, на который указывает
+            # ref — не branch name и не «последний успешный CI run».
+            sha="$(git rev-parse HEAD)"
+          else
+            sha="$INPUT_SHA"
+          fi
+          # Fail closed ДО записи в $GITHUB_OUTPUT: CR/LF дали бы возможность
+          # подмешать поддельные строки-выводы (например sha=<другой SHA>).
+          reject_newline "$sha" "release_sha"
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "$sha" | grep -Eq '^[0-9a-fA-F]{40}$' || {
+              echo "error: release_sha must be a full 40-char git SHA" >&2; exit 2; }
+            git cat-file -e "$sha^{commit}" || {
+              echo "error: release_sha does not exist in the repository" >&2; exit 2; }
+            git checkout -q "$sha"
+          fi
+          # Точка отсчёта CI-gate: только exact requested SHA.
+          [ "$(git rev-parse HEAD)" = "$sha" ] || {
+            echo "error: checkout HEAD != release_sha" >&2; exit 2; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful CI run for exact release SHA (fail closed)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.release-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?GH_TOKEN is required to query CI runs (fail closed)}"
+          case "${SHA:-}" in
+            ''|*[!0-9a-fA-F]*)
+              echo "error: resolved release SHA must be 40 hex chars" >&2
+              exit 2
+              ;;
+          esac
+          [ "${#SHA}" -eq 40 ] || {
+            echo "error: resolved release SHA must be 40 hex chars" >&2; exit 2; }
+          # Решение ТОЛЬКО по status/conclusion runs для exact SHA (запрос
+          # actions/runs зафиксирован на head_sha=<SHA>): отсутствие CI,
+          # незавершённый CI, failure/cancelled/skipped, CI другого SHA,
+          # ошибка API/нехватка permissions — всё это отказ (fail closed).
+          # Exit code gh сам по себе успехом не считается; branch/ref вместо
+          # exact SHA не принимается. Значения токенов/secrets в лог не пишутся.
+          python3 - "$SHA" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          sha = sys.argv[1]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          url = f"repos/{repo}/actions/runs?head_sha={sha}&per_page=50"
+          try:
+              proc = subprocess.run(
+                  ["gh", "api", url],
+                  capture_output=True,
+                  text=True,
+                  timeout=60,
+              )
+          except (OSError, subprocess.SubprocessError) as exc:
+              print(
+                  f"error: CI run query failed for exact SHA {sha} (fail closed): {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          if proc.returncode != 0:
+              detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+              tail = detail[-1] if detail else "no detail"
+              print(
+                  f"error: CI run query for exact SHA {sha} failed "
+                  f"(rc={proc.returncode}, fail closed): {tail}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          try:
+              payload = json.loads(proc.stdout)
+          except json.JSONDecodeError:
+              print(
+                  f"error: CI run query for exact SHA {sha} returned non-JSON (fail closed)",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          runs = [
+              run
+              for run in payload.get("workflow_runs") or []
+              if run.get("name") == "CI" and run.get("head_sha") == sha
+          ]
+          if not runs:
+              print(
+                  f"error: no CI workflow run found for exact SHA {sha}; release refused",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          incomplete = [run for run in runs if run.get("status") != "completed"]
+          if incomplete:
+              print(
+                  f"error: CI still in progress for exact SHA {sha}; release refused",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          unsuccessful = [run for run in runs if run.get("conclusion") != "success"]
+          if unsuccessful:
+              conclusions = sorted({str(run.get("conclusion")) for run in unsuccessful})
+              print(
+                  f"error: CI not successful for exact SHA {sha} "
+                  f"(conclusion: {', '.join(conclusions)}); release refused",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          print(f"CI completed successfully for exact SHA {sha}")
+          PY
+
   windows-installer:
     name: Build and Authenticode-sign Windows installer
+    # Без зелёного CI exact release SHA (failed/skipped ci-gate) этот job
+    # GitHub не стартует: environment approval не запрашивается, production
+    # signing inputs не читаются, Authenticode-подпись не выполняется.
+    needs: ci-gate
     runs-on: windows-latest
     env:
       # sign.ps1/build.ps1 вызываются через Windows PowerShell 5.1 и дёргают
@@ -241,13 +399,17 @@ jobs:
 
   channel-release:
     name: Build, sign, verify and publish update channel
-    needs: windows-installer
+    # ci-gate — повтор порядка (defense in depth); windows-installer — текущий
+    # порядок сохранён: публикация только после сборки/подписи installer.
+    needs: [ci-gate, windows-installer]
     runs-on: ubuntu-latest
     environment: update-channel-signing
     permissions:
       contents: write
       id-token: write
       attestations: write
+      # Сохранённый шаг «Mandatory CI checks» опрашивает actions/runs.
+      actions: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
