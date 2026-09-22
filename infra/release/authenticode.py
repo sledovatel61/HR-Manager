@@ -648,7 +648,29 @@ def _parse_certificate_time(value: str) -> datetime:
 
 
 def load_pem_certificates(path: Path) -> list[x509.Certificate]:
-    data = path.read_bytes()
+    """Публичные сертификаты из PEM.
+
+    Отсутствующий или недоступный файл не поднимает необработанный traceback:
+    вызывающая сторона получает ``AuthentiCodeError`` со стабильным кодом
+    ``missing_pem`` / ``unreadable_pem``. Пустой, битый, BOM и приватный
+    материал — ``bad_root``. Содержимое файла в сообщение не попадает.
+    """
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError as exc:
+        raise AuthentiCodeError("missing_pem", f"PEM-файл не найден: {path}") from exc
+    except PermissionError as exc:
+        # Подкласс OSError, но не missing_pem и не bad_root: отзыв прав на файл
+        # обязан быть машиночитаемым отказом, без traceback.
+        raise AuthentiCodeError("unreadable_pem", f"PEM-файл недоступен: {path}") from exc
+    except OSError as exc:
+        raise AuthentiCodeError("unreadable_pem", f"PEM-файл недоступен: {path}") from exc
+    if data.startswith((b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff")):
+        raise AuthentiCodeError("bad_root", f"PEM содержит BOM: {path.name}")
+    if not data.strip():
+        raise AuthentiCodeError("bad_root", f"PEM-файл пуст: {path.name}")
+    if b"PRIVATE KEY" in data:
+        raise AuthentiCodeError("bad_root", f"PEM содержит приватный материал: {path.name}")
     certificates: list[x509.Certificate] = []
     for block in data.split(b"-----END CERTIFICATE-----"):
         if b"-----BEGIN CERTIFICATE-----" not in block:
@@ -656,8 +678,10 @@ def load_pem_certificates(path: Path) -> list[x509.Certificate]:
         body = block.split(b"-----BEGIN CERTIFICATE-----", 1)[1].strip()
         try:
             certificates.append(x509.load_der_x509_certificate(base64.b64decode(body)))
-        except Exception as exc:  # pragma: no cover - защита от битого входа
-            raise AuthentiCodeError("bad_root", f"некорректный PEM-сертификат: {exc}") from exc
+        except Exception as exc:
+            raise AuthentiCodeError(
+                "bad_root", f"некорректный PEM-сертификат: {path.name}"
+            ) from exc
     if not certificates:
         raise AuthentiCodeError("bad_root", f"в {path} нет PEM-сертификатов")
     return certificates

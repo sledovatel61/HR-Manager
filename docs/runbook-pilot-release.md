@@ -82,11 +82,86 @@
    | `UPDATE_CHANNEL_AUTHENTICODE_PFX_PASSWORD` | пароль PFX |
    | `UPDATE_CHANNEL_EXPECTED_PUBLISHER` | ожидаемый издатель (`O`/`CN` сертификата) |
    | `UPDATE_CHANNEL_TIMESTAMP_URL` | RFC3161 TSA владельца |
+   | `UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS` | PEM закреплённых корней издателя (code signing). Не корни TSA |
+   | `UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS` | PEM закреплённых корней TSA. Другой набор, не копия signer roots |
 
 4. Tag protection rules: разрешить создание тегов только владельцу/CI и
    ограничить шаблоном `v[0-9]+.[0-9]+.[0-9]+` (SemVer).
 5. Проверить, что CI на `main` зелёный: релиз отказывается собираться без
    успешного прогона CI для того же SHA.
+
+### PEM-корни Authenticode — два разных набора
+
+`UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS` и
+`UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS` — это **разные** PEM-наборы.
+Корни издателя не подставляются вместо корней TSA и наоборот: у signer CA и
+TSA CA разные центры доверия. Повтор одного и того же корня в обеих ролях
+production-выпуск отклоняет.
+
+Формат каждого секрета:
+
+- текст PEM, один или несколько блоков `-----BEGIN CERTIFICATE-----` /
+  `-----END CERTIFICATE-----`;
+- UTF-8 **без BOM** (ни UTF-8 `EF BB BF`, ни UTF-16);
+- значение непустое: пустой секрет, файл из одних пробелов и обрыв блока —
+  отказ;
+- хотя бы один сертификат, который разбирается как X.509;
+- **без** приватного материала (`PRIVATE KEY`, PFX, пароль). В секрет кладётся
+  только публичный сертификат корня.
+
+Не брать trust roots из артефакта, который создал сам signing job
+(`installer/authenticode-roots.pem`, asset релиза, сертификат из подписи
+`Setup.exe`). Этот файл фиксирует, какой якорь уже использован; если положить
+его же в `--trust-roots`, проверка цепочки становится тавтологией. Источник
+корней — офлайн-копия владельца, записанная в environment secrets **до**
+запуска workflow.
+
+Fail closed, до публикации и до подписи:
+
+- `installer/sign.ps1 -Mode production` вызывает `Assert-HrmPinnedRootsPem`
+  **до** `signtool sign`. Нет файла, файл пуст, есть BOM, нет разобранного
+  сертификата или в PEM есть приватный материал — exit 1, installer не
+  подписывается, успешная attestation не создаётся. В лог попадает только роль
+  (`signer-roots` / `timestamp-roots`), не тело PEM, не отпечаток и не пароль.
+- `publish_channel.py --release-mode production` читает те же два PEM.
+  Отсутствующий файл — `ОШИБКА[missing_pem]`, недоступный —
+  `ОШИБКА[unreadable_pem]`, пустой/битый/BOM/приватный материал —
+  `ОШИБКА[bad_root]`. Код возврата 1, traceback нет, `update-channel.json` не
+  создаётся.
+- Test-режим CI (`sign.ps1 -Mode test`) operator PEM не требует: там
+  ephemeral-сертификат, и production policy такой релиз не пропускает.
+
+### Ручной production pre-flight цепочки
+
+Полную проверку `PFX → signer root` и `TSA → timestamp root` скрипт подписи
+**не** делает. Её выполняет владелец на своей машине до записи секретов.
+Пароль PFX берётся из менеджера паролей и не попадает в репозиторий, логи и
+артефакты. Приватный ключ на диск не выписывается (`-nokeys`).
+
+1. Два локальных файла вне репозитория: `signer-roots.pem` и
+   `timestamp-roots.pem`. `sha256sum` у них должен различаться.
+2. Публичный leaf из PFX, без ключа:
+
+   ```bash
+   openssl pkcs12 -in owner.pfx -clcerts -nokeys -out leaf.pem
+   openssl verify -CAfile signer-roots.pem leaf.pem
+   ```
+
+   Если между leaf и корнем есть промежуточные CA, добавить
+   `-untrusted intermediates.pem`. Успех — строка `leaf.pem: OK`. Иной результат
+   — секрет не записывать и релиз не запускать.
+3. Сертификат TSA получить у оператора TSA (или отдельным запросом к
+   `UPDATE_CHANNEL_TIMESTAMP_URL`), **не** из подписанного `Setup.exe` и не из
+   `authenticode-roots.pem`:
+
+   ```bash
+   openssl verify -CAfile timestamp-roots.pem tsa.pem
+   ```
+
+   Успех — `tsa.pem: OK`, и цепочка заканчивается на корне из timestamp PEM, а
+   не на корне издателя.
+4. Только после обеих проверок вставить текст PEM в два environment secret.
+   Значения в runbook, git и логи не копировать.
 
 ## 4. Церемония ключей канала (Ed25519)
 
@@ -144,12 +219,18 @@ PY
      --public-key <base64 публичного ключа>       # Ed25519 канала
    python infra/release/authenticode.py verify --file /tmp/rel/HR-Manager-Setup-0.14.0.exe \
      --expected-publisher "<издатель>" --require-timestamp \
-     --trust-roots /tmp/rel/authenticode-roots.pem
+     --trust-roots /path/to/owner-signer-roots.pem \
+     --timestamp-roots /path/to/owner-timestamp-roots.pem
    ```
-4. Проверить, что `trust-store.json` в релизе совпадает с тем, что встроен в
+4. `--trust-roots` и `--timestamp-roots` — локальные копии двух secrets из
+   раздела 3, не файл `authenticode-roots.pem` из скачанного релиза и не
+   артефакт signing job. Совпадение SHA256 релизного `authenticode-roots.pem`
+   с owner signer PEM допустимо как аудит «подписали тем якорем, который
+   закрепили», но доверие задаёт owner PEM, а не артефакт сборки.
+5. Проверить, что `trust-store.json` в релизе совпадает с тем, что встроен в
    installer (`authenticode-attestation.json` → `trust_store.sha256`), и что в
    наборе нет отозванных/тестовых ключей.
-5. Только после этого — публикация draft-релиза (promotion) и объявление
+6. Только после этого — публикация draft-релиза (promotion) и объявление
    версии пилоту.
 
 ## 6. Обновление, откат, resume
