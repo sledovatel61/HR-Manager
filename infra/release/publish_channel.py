@@ -49,7 +49,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from authenticode import AuthentiCodeError, load_pem_certificates, verify_authenticode  # noqa: E402
+from authenticode import (  # noqa: E402
+    AuthentiCodeError,
+    assert_disjoint_roots,
+    load_pem_certificates,
+    verify_authenticode,
+)
 from build_package import build_package  # noqa: E402
 from channel_contract import (  # noqa: E402
     SEMVER_RE,
@@ -91,6 +96,27 @@ MAX_SCAN_FILE_BYTES = 8 * 1024 * 1024
 
 class PolicyError(ChannelError):
     """Нарушение production-политики выпуска."""
+
+
+def write_sha256sums(artifacts: list[Path], destination: Path) -> None:
+    """Hash final asset bytes, by unique basename, excluding the sums itself.
+
+    Read every file before creating SHA256SUMS; missing/unreadable assets or
+    ambiguous names are fatal. Call only after verification and metadata writes.
+    """
+    names = [path.name for path in artifacts]
+    if len(names) != len(set(names)) or destination.name in names:
+        raise PolicyError("bad_release_assets", "duplicate/self-referencing release asset")
+    if any("\n" in name or "\r" in name or "\\" in name for name in names):
+        raise PolicyError("bad_release_assets", "unsafe release asset basename")
+    lines = []
+    for path in sorted(artifacts, key=lambda item: item.name):
+        try:
+            digest = _sha256_file(path)
+        except OSError as exc:
+            raise PolicyError("missing_release_asset", "release asset missing or unreadable") from exc
+        lines.append(f"{digest}  {path.name}")
+    destination.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _read_text(path: Path) -> str:
@@ -273,6 +299,7 @@ def _enforce_production_policy(
     # метку времени с untrusted_root (подтверждено PoC с двумя CA).
     signer_roots = _load_pinned_pem(args.authenticode_roots, "корни издателя")
     timestamp_roots = _load_pinned_pem(args.authenticode_timestamp_roots, "корни TSA")
+    assert_disjoint_roots(signer_roots, timestamp_roots)
     result = verify_authenticode(
         installer,
         expected_publisher=expected_publisher,
@@ -308,6 +335,7 @@ def _enforce_production_policy(
                 "встроенный в пакет trust store не совпадает с release trust store",
             )
     return {
+        "verification": {**result, "ok": True},
         "installer": {
             "file": installer.name,
             "sha256": installer_sha,
@@ -549,8 +577,20 @@ def main() -> int:
 
         # 7. SHA256SUMS поверх проверенных артефактов.
         artifacts = [package_path, manifest_path, metadata_path, trust_store_path_out]
-        sums = "\n".join(f"{_sha256_file(item)}  {item.name}" for item in artifacts)
-        (out_dir / "SHA256SUMS").write_text(sums + "\n", encoding="utf-8")
+        if args.installer:
+            artifacts.append(Path(args.installer))
+        if args.authenticode_attestation:
+            artifacts.append(Path(args.authenticode_attestation))
+        if args.release_mode == "production":
+            # Final report is produced by this independent verification, not
+            # copied/reformatted from the Windows artifact. The workflow uploads
+            # this exact path. No writes to any release asset after SHA256SUMS.
+            verification_path = out_dir / "authenticode-verification.json"
+            verification_path.write_text(
+                canonical_json(installer_metadata["verification"]), encoding="utf-8"
+            )
+            artifacts.append(verification_path)
+        write_sha256sums(artifacts, out_dir / "SHA256SUMS")
 
         print(f"канал собран и проверен: {args.version} (release_sha {args.release_sha[:12]})")
         print(f"режим: {args.release_mode}")

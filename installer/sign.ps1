@@ -282,7 +282,8 @@ function Assert-HrmPemCertificateFile {
     if ($hasBom) {
         throw ("production pre-flight: PEM содержит BOM ({0})" -f $Role)
     }
-    $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+    try { $text = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($bytes) }
+    catch { throw ("production pre-flight: невалидный PEM ({0})" -f $Role) }
     if (-not $text.Trim()) {
         throw ("production pre-flight: PEM пуст ({0})" -f $Role)
     }
@@ -292,10 +293,19 @@ function Assert-HrmPemCertificateFile {
     $begin = "-----BEGIN CERTIFICATE-----"
     $end = "-----END CERTIFICATE-----"
     $parsed = 0
+    $fingerprints = @()
     $cursor = 0
     while ($cursor -lt $text.Length) {
         $start = $text.IndexOf([string]$begin, [int]$cursor)
-        if ($start -lt 0) { break }
+        if ($start -lt 0) {
+            if ($text.Substring($cursor).Trim()) {
+                throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
+            }
+            break
+        }
+        if ($text.Substring($cursor, $start - $cursor).Trim()) {
+            throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
+        }
         $stop = $text.IndexOf([string]$end, [int]($start + $begin.Length))
         if ($stop -lt 0) {
             throw ("production pre-flight: PEM оборван ({0})" -f $Role)
@@ -314,20 +324,14 @@ function Assert-HrmPemCertificateFile {
         if ($null -eq $der -or $der.Length -eq 0) {
             throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
         }
-        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-        $importError = $false
+        $cert = $null
         try {
-            # Import(byte[]) грузит только публичный сертификат в объект,
-            # не в Root/TrustedPublisher и не в командную строку.
-            $cert.Import($der)
+            # Constructor(byte[]) works on .NET Framework (PS 5.1) and modern
+            # .NET (pwsh, where mutating Import is unsupported). Public object
+            # only: no import into Root/TrustedPublisher or persistent storage.
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList (, $der)
         }
         catch {
-            $importError = $true
-        }
-        finally {
-            if ($importError) { $cert.Dispose() }
-        }
-        if ($importError) {
             throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
         }
         try {
@@ -337,6 +341,7 @@ function Assert-HrmPemCertificateFile {
             if ($null -eq $cert.RawData -or $cert.RawData.Length -eq 0) {
                 throw ("production pre-flight: невалидный PEM ({0})" -f $Role)
             }
+            $fingerprints += (Get-HrmSha256Hex $cert.RawData)
             $parsed++
         }
         finally {
@@ -347,6 +352,7 @@ function Assert-HrmPemCertificateFile {
     if ($parsed -lt 1) {
         throw ("production pre-flight: в PEM нет сертификата ({0})" -f $Role)
     }
+    return $fingerprints
 }
 
 function Assert-HrmPinnedRootsPem {
@@ -360,8 +366,13 @@ function Assert-HrmPinnedRootsPem {
         [string]$TimestampRootsPath
     )
     if ($Mode -ne "production") { return }
-    Assert-HrmPemCertificateFile -Path $SignerRootsPath -Role "signer-roots"
-    Assert-HrmPemCertificateFile -Path $TimestampRootsPath -Role "timestamp-roots"
+    $signer = @(Assert-HrmPemCertificateFile -Path $SignerRootsPath -Role "signer-roots")
+    $timestamp = @(Assert-HrmPemCertificateFile -Path $TimestampRootsPath -Role "timestamp-roots")
+    foreach ($fingerprint in $signer) {
+        if ($timestamp -contains $fingerprint) {
+            throw "production pre-flight: overlapping_trust_roots (signer/TSA)"
+        }
+    }
     Write-Host "pre-flight: pinned signer-roots and timestamp-roots accepted"
 }
 
