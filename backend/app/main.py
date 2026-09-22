@@ -119,6 +119,9 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         installed_version=app_settings.update_installed_version,
         installed_release_sha=app_settings.update_installed_sha,
     )
+    from app.host_evidence import PilotHostEvidenceStore
+
+    app.state.host_evidence = PilotHostEvidenceStore()
 
     app.add_middleware(MetricsMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)

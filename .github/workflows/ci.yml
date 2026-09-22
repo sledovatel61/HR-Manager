@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   PYTHON_VERSION: "3.12"
   # Keep in sync with frontend/Dockerfile and frontend/package.json engines.
@@ -18,8 +21,8 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -42,6 +45,30 @@ jobs:
         run: mypy app tests
       - name: Unit tests
         run: pytest -m "not integration" -v
+      - name: PowerShell structural lint (engine + installer scripts)
+        working-directory: .
+        run: |
+          # Авторитетная проверка PowerShell — run-tests.ps1 на windows-latest.
+          # Здесь — кросс-платформенная структурная проверка (баланс скобок,
+          # кодировка, секреты-литералы, запрещённые вызовы), чтобы сломанный
+          # скрипт не доезжал до Windows-джобы.
+          python infra/windows/tests/lint-engine.py
+      - name: Phase 14 pilot drill (release policy + channel refusals + readiness)
+        working-directory: .
+        run: |
+          python infra/scripts/pilot_drill.py --out-dir drill \
+            --steps signature-policy,channel-tamper-refusal,readiness-api
+
+      - name: Upload pilot drill report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pilot-drill-backend
+          path: |
+            drill/pilot-drill.json
+            drill/pilot-drill.md
+          if-no-files-found: warn
+
       - name: Production preflight script checks
         working-directory: .
         run: |
@@ -121,8 +148,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -166,8 +193,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -194,13 +221,33 @@ jobs:
           BACKUP_PGDUMP_BIN: pg_dump
           BACKUP_RESTORE_BIN: pg_restore
         run: pytest -m integration -v
+      - name: Phase 14 pilot drill (encrypted backup + restore into isolated DB)
+        working-directory: .
+        env:
+          APP_ENV: test
+          TEST_DATABASE_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/hr_manager_test
+          BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/postgres
+          BACKUP_PGDUMP_BIN: pg_dump
+          BACKUP_RESTORE_BIN: pg_restore
+        run: |
+          python infra/scripts/pilot_drill.py --out-dir drill \
+            --database-url "$TEST_DATABASE_URL" --steps backup-restore-isolated-db
+      - name: Upload pilot drill report (backup/restore)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pilot-drill-integration
+          path: |
+            drill/pilot-drill.json
+            drill/pilot-drill.md
+          if-no-files-found: warn
 
   stack:
     name: Compose stack smoke test (dev + prod overlay)
     runs-on: ubuntu-latest
     needs: [backend, frontend]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Validate dev Compose configuration
         run: docker compose -f infra/docker-compose.yml config
@@ -287,16 +334,240 @@ jobs:
   windows-installer:
     name: Windows engine tests + installer smoke
     runs-on: windows-latest
+    env:
+      # Python на Windows кодирует перенаправленный stdout в кодовой странице
+      # консоли (cp1252/cp437); русские сообщения release-CLI тогда падают с
+      # UnicodeEncodeError и кодом 1, хотя сама проверка прошла.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install cryptography for trust-store tooling (pinned)
+        shell: powershell
+        run: |
+          Write-Host "Installing cryptography via python -m pip..."
+          python -m pip install cryptography==50.0.1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "python -m pip failed, trying python3..."
+            python3 -m pip install cryptography==50.0.1
+          }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "python3 failed, trying py -3..."
+            py -3 -m pip install cryptography==50.0.1
+          }
+          Write-Host "Check cryptography import:"
+          python -c "import cryptography; print(cryptography.__version__)" 2>&1 | Write-Host
+          if ($LASTEXITCODE -ne 0) {
+            python3 -c "import cryptography; print(cryptography.__version__)" 2>&1 | Write-Host
+          }
+          if ($LASTEXITCODE -ne 0) {
+            py -3 -c "import cryptography; print(cryptography.__version__)" 2>&1 | Write-Host
+          }
+          Write-Host "pip list:"
+          pip list 2>&1 | Select-String "cryptography" | Write-Host
 
       - name: PowerShell engine tests (Windows PowerShell 5.1)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
 
-      - name: Build HR Manager Setup.exe
+      - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1 -Version 0.13.0
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Python пишет UTF-8 (PYTHONUTF8=1); научим PowerShell 5.1 так же его
+          # декодировать, иначе в логе будет кракозябра вместо русского текста.
+          # Косметика, поэтому под try/catch: на раннере без консольного хендла
+          # сеттер бросает IOException, а падать из-за этого шаг не должен.
+          # Ключевая строка TRUST_STORE_SHA256= — чистый ASCII, она парсится
+          # одинаково в любой кодовой странице.
+          try {
+            [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+          }
+          catch {
+            Write-Host "Console.OutputEncoding не переключён: $($_.Exception.Message)"
+          }
+          Write-Host "=== Trust store: CI fixture contract (Phase 14) ==="
+          $trustStorePath = "infra/release/testdata/trusted_keys.json"
+          if (-not (Test-Path $trustStorePath)) { throw "trust store not found: $trustStorePath" }
+          # ci-contract проверяет строгую схему, наличие активного и ОТОЗВАННОГО
+          # ключей и то, что production-политика по-прежнему отклоняет этот
+          # набор (--require-unrevoked и assert_no_fixture_keys). Ошибка -> код 1.
+          # В Windows PowerShell 5.1 связка ErrorActionPreference=Stop и 2>&1
+          # превращает stderr внешней программы в terminating error, поэтому на
+          # время вызова предпочтение снижается, а вердикт читается из кода.
+          $previousEap = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          try {
+            $output = & python infra/release/trust_store.py ci-contract --file $trustStorePath 2>&1 | Out-String
+            $code = $LASTEXITCODE
+          }
+          finally { $ErrorActionPreference = $previousEap }
+          Write-Host $output
+          if ($code -ne 0) { throw "trust store ci-contract failed with code $code" }
+          $line = ($output -split "`r?`n") | Where-Object { $_ -match "^TRUST_STORE_SHA256=" } | Select-Object -First 1
+          if (-not $line) { throw "ci-contract did not report TRUST_STORE_SHA256" }
+          $sha = ($line -split "=", 2)[1].Trim()
+          $fileSha = (Get-FileHash -Path $trustStorePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne $fileSha) { throw "trust store sha256 mismatch: tool=$sha file=$fileSha" }
+          [System.IO.File]::AppendAllText(
+            $env:GITHUB_ENV, "TRUST_STORE_SHA256=$sha`n", (New-Object System.Text.UTF8Encoding $false))
+          Write-Host "Written TRUST_STORE_SHA256=$sha to GITHUB_ENV"
+
+      - name: Build HR Manager Setup.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "=== Build HR Manager Setup.exe ==="
+          $trustStorePath = "infra/release/testdata/trusted_keys.json"
+          Write-Host "TRUST_STORE_SHA256 env: '$env:TRUST_STORE_SHA256'"
+          if (-not $env:TRUST_STORE_SHA256) {
+            throw "TRUST_STORE_SHA256 пуст: шаг валидации trust store не записал GITHUB_ENV"
+          }
+          $logFile = Join-Path $env:RUNNER_TEMP "build.log"
+          Write-Host "Logging to $logFile"
+          # build.ps1 сверяет переданный SHA256 с фактическим хешем файла и
+          # отказывает при расхождении. Пересчитывать хеш «на месте» нельзя:
+          # это превратило бы проверку встроенного trust store в формальность.
+          # *>&1 превращает ошибки build.ps1 в записи потока, поэтому вердикт
+          # читается и по коду, и по $?, и по фактическому наличию артефактов:
+          # отказ до запуска ISCC оставил бы $LASTEXITCODE от предыдущей внешней
+          # команды (git rev-parse = 0) и молча «позеленел» бы шаг.
+          $previousEap = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          try {
+            & ./installer/build.ps1 -Version 0.13.0 -TrustStoreFile $trustStorePath `
+              -TrustStoreSha256 $env:TRUST_STORE_SHA256 *>&1 |
+              Tee-Object -FilePath $logFile -Encoding utf8
+            $code = $LASTEXITCODE
+            $ok = $?
+          }
+          finally { $ErrorActionPreference = $previousEap }
+          Write-Host "build.ps1 exit code: $code, success flag: $ok"
+          $setup = @(Get-ChildItem installer/output/HR-Manager-Setup-*.exe -ErrorAction SilentlyContinue)
+          $manifest = Test-Path installer/release-manifest.json
+          Write-Host "setup artifacts: $($setup.Count), release-manifest.json: $manifest"
+          if (-not $ok -or $code -ne 0 -or $setup.Count -eq 0 -or -not $manifest) {
+            throw ("build.ps1 не собрал установщик (exit={0}, ok={1}, setup={2}, manifest={3}); лог выше" -f `
+              $code, $ok, $setup.Count, $manifest)
+          }
+          Write-Host "Build succeeded"
+          Get-ChildItem installer/output -Recurse | ForEach-Object { Write-Host $_.FullName }
+          Get-Content installer/release-manifest.json -Raw | Write-Host
+
+      - name: Post Build log to the job summary on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $logFile = Join-Path $env:RUNNER_TEMP "build.log"
+          if (Test-Path $logFile) {
+            $content = Get-Content $logFile -Raw
+            if ($content.Length -gt 60000) { $content = $content.Substring(0, 60000) + "`n...truncated" }
+            # Ограждение кода собираем из одинарных кавычек: в двойной строке
+            # PowerShell последовательность ```" разбирается как экранированная
+            # кавычка, и строка остаётся незакрытой (parse error на весь шаг).
+            $fence = '```'
+            $body = "### Build log" + "`n" + $fence + "text" + "`n" + $content + "`n" + $fence
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $body
+            Write-Host "Build log posted to the job summary"
+          }
+          else {
+            Write-Host "No build log at $logFile (сборка не запускалась)"
+          }
+
+      - name: Authenticode-sign with ephemeral test certificate (never production)
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = "Stop"
+          $logFile = Join-Path $env:RUNNER_TEMP "authenticode.log"
+          Write-Host "Logging Authenticode to $logFile"
+          # sign.ps1 завершается явным exit: 0 — подпись выполнена и проверена
+          # (включая независимый верификатор), 1 — отказ. Test-режим не трогает
+          # Root/TrustedPublisher, поэтому диалога подтверждения и зависания нет.
+          $previousEap = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          try {
+            & ./installer/sign.ps1 -Mode test -Version 0.13.0 `
+              -TrustStoreFile infra/release/testdata/trusted_keys.json *>&1 |
+              Tee-Object -FilePath $logFile -Encoding utf8
+            $code = $LASTEXITCODE
+            $ok = $?
+          }
+          finally { $ErrorActionPreference = $previousEap }
+          Write-Host "sign.ps1 exit code: $code, success flag: $ok"
+          foreach ($artifact in @("installer/authenticode-attestation.json",
+              "installer/authenticode-roots.pem", "installer/authenticode-verification.json")) {
+            Write-Host "${artifact}: $(Test-Path $artifact)"
+          }
+          if (-not $ok -or $code -ne 0) { throw "sign.ps1 failed with code $code (см. лог выше)" }
+          foreach ($artifact in @("installer/authenticode-attestation.json",
+              "installer/authenticode-roots.pem", "installer/authenticode-verification.json")) {
+            if (-not (Test-Path $artifact)) { throw "sign.ps1 не создал обязательный артефакт: $artifact" }
+          }
+          $attestation = Get-Content installer/authenticode-attestation.json -Raw | ConvertFrom-Json
+          Write-Host ("attestation: mode={0} signtool_verify_ok={1} windows_chain_trusted={2} publisher={3}" -f `
+            $attestation.mode, $attestation.signtool_verify_ok, $attestation.windows_chain_trusted, `
+            $attestation.publisher)
+          if ($attestation.mode -ne "test") { throw "CI обязан подписывать в test-режиме" }
+          # Test-подпись НЕ обязана быть доверена Windows, но attestation не
+          # имеет права выдавать её за production-valid.
+          if ($attestation.signtool_verify_ok -and $attestation.windows_chain_trusted) {
+            Write-Host "Windows доверяет ephemeral-корню — тоже допустимо (attestation честна)"
+          }
+          if ($attestation.independent_verification.passed -ne $true) {
+            throw "независимая проверка Authenticode не подтверждена в attestation"
+          }
+
+      - name: Post Authenticode log to the job summary
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $logFile = Join-Path $env:RUNNER_TEMP "authenticode.log"
+          if (Test-Path $logFile) {
+            $content = Get-Content $logFile -Raw
+            if ($content.Length -gt 60000) { $content = $content.Substring(0, 60000) + "`n...truncated" }
+            # Ограждение кода собираем из одинарных кавычек: в двойной строке
+            # PowerShell последовательность ```" разбирается как экранированная
+            # кавычка, и строка остаётся незакрытой (parse error на весь шаг).
+            $fence = '```'
+            $body = "### Authenticode log" + "`n" + $fence + "text" + "`n" + $content + "`n" + $fence
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $body
+            Write-Host "Authenticode log posted to the job summary"
+          }
+          else {
+            Write-Host "No authenticode log at $logFile (подпись не запускалась)"
+          }
+
+      - name: Upload Authenticode logs and attestation
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: authenticode-logs
+          path: |
+            installer/authenticode-attestation.json
+            installer/authenticode-verification.json
+            installer/authenticode-roots.pem
+          if-no-files-found: warn
+
+      - name: Upload signed installer for Authenticode diagnosis
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signed-installer-diagnostic
+          path: |
+            installer/output/HR-Manager-Setup-*.exe
+          if-no-files-found: warn
 
       - name: Silent install and uninstall smoke
         shell: powershell
@@ -317,11 +588,170 @@ jobs:
             throw "Installed application files survived uninstall"
           }
 
+      - name: Phase 14 pilot drill (Windows engine update/rollback/resume/uninstall)
+        shell: powershell
+        run: |
+          python infra/scripts/pilot_drill.py --out-dir drill --steps windows-engine
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload pilot drill report (Windows engine)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pilot-drill-windows
+          path: |
+            drill/pilot-drill.json
+            drill/pilot-drill.md
+          if-no-files-found: warn
+
       - name: Upload installer artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hr-manager-windows-setup
           path: |
             installer/output/*.exe
             installer/release-manifest.json
+            installer/authenticode-attestation.json
+            installer/authenticode-roots.pem
+            installer/authenticode-verification.json
           if-no-files-found: error
+
+  channel-release-policy:
+    name: Release pipeline fail-closed policy (ephemeral test signature)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install tooling (pinned, same as release job)
+        run: pip install cryptography==50.0.1 pytest pyyaml
+
+      - name: Release tooling unit tests (contract, trust store, Authenticode)
+        run: |
+          pytest -q infra/release/test_channel_contract.py
+          pytest -q backend/tests/test_trust_store.py backend/tests/test_release_authenticode.py backend/tests/test_release_policy.py backend/tests/test_release_pipeline.py
+
+      - name: Ephemeral Authenticode fixture — valid must verify, tampered/wrong/missing must fail
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import hashlib, json, pathlib, subprocess, sys
+          from pathlib import Path
+          sys.path.insert(0, "infra/release")
+          from sign_authenticode import create_test_authority, make_test_pe, sign_test_pe
+          work = Path("policy/ephemeral")
+          work.mkdir(parents=True, exist_ok=True)
+          publisher = "HR Manager CI Test Publisher"
+          authority = create_test_authority(publisher)
+          pe = make_test_pe(b"HRM-TEST-PE-BODY-FOR-CI")
+          signed = sign_test_pe(pe, authority)
+          installer = work / "HR-Manager-Setup-0.14.0.exe"
+          installer.write_bytes(signed)
+          roots = work / "authenticode-roots.pem"
+          roots.write_bytes(authority.ca_pem())
+          result = subprocess.run([sys.executable, "infra/release/authenticode.py", "verify", "--file", str(installer), "--trust-roots", str(roots), "--json-out", str(work / "verified.json")], capture_output=True, text=True)
+          if result.returncode != 0:
+              print(result.stdout); print(result.stderr, file=sys.stderr); sys.exit(1)
+          report = json.loads((work / "verified.json").read_text(encoding="utf-8"))
+          assert report["signed"] is True and report["chain_verified"] is True
+          tampered = work / "tampered.exe"
+          _data = bytearray(signed); _data[0x250] ^= 0xFF; tampered.write_bytes(_data)
+          result = subprocess.run([sys.executable, "infra/release/authenticode.py", "verify", "--file", str(tampered), "--trust-roots", str(roots)], capture_output=True, text=True)
+          assert result.returncode != 0 and "digest_mismatch" in result.stderr
+          other = create_test_authority("Other Publisher")
+          other_roots = work / "other-roots.pem"
+          other_roots.write_bytes(other.ca_pem())
+          result = subprocess.run([sys.executable, "infra/release/authenticode.py", "verify", "--file", str(installer), "--trust-roots", str(other_roots)], capture_output=True, text=True)
+          assert result.returncode != 0
+          unsigned = work / "unsigned.exe"
+          unsigned.write_bytes(make_test_pe(b"UNSIGNED"))
+          result = subprocess.run([sys.executable, "infra/release/authenticode.py", "verify", "--file", str(unsigned), "--trust-roots", str(roots)], capture_output=True, text=True)
+          assert result.returncode != 0
+          Path("policy/installer.exe").write_bytes(signed)
+          Path("policy/roots.pem").write_bytes(authority.ca_pem())
+          (work / "publisher.txt").write_text(publisher, encoding="utf-8")
+          PY
+
+      - name: Channel policy — valid / tampered / wrong signer / missing must be fail-closed
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import hashlib, json, pathlib, shutil, subprocess, sys, tempfile
+          from pathlib import Path
+          sys.path.insert(0, "infra/release")
+          from sign_authenticode import create_test_authority, make_test_pe, sign_test_pe
+          from trust_store import describe_trust_store, trust_store_sha256
+          work = Path("policy/ephemeral")
+          publisher = (work / "publisher.txt").read_text(encoding="utf-8").strip() if (work / "publisher.txt").exists() else "HR Manager CI Test Publisher"
+          installer = Path("policy/installer.exe")
+          roots = Path("policy/roots.pem")
+          tmp = Path(tempfile.mkdtemp())
+          snapshot = tmp / "app"
+          shutil.copytree("infra/release/testdata/snapshot", snapshot)
+          (snapshot / "release.json").write_text(json.dumps({"version": "0.14.0", "release_sha": "3"*40}), encoding="utf-8")
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          from cryptography.hazmat.primitives import serialization
+          import base64
+          key = Ed25519PrivateKey.generate()
+          private_path = tmp / "channel-priv.hex"
+          private_path.write_text(key.private_bytes_raw().hex() + "\n", encoding="utf-8")
+          public_b64 = base64.b64encode(key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
+          trust_store = tmp / "trust-store.json"
+          trust_store.write_text(json.dumps({"pilot-test-key": {"key": public_b64, "revoked": False}}), encoding="utf-8")
+          fresh_auth = create_test_authority(publisher)
+          fresh_signed = sign_test_pe(make_test_pe(b"HRM-TEST-PE-BODY-FOR-CI"), fresh_auth)
+          installer.write_bytes(fresh_signed)
+          roots.write_bytes(fresh_auth.ca_pem())
+          trust_data = json.loads(trust_store.read_text(encoding="utf-8"))
+          valid_attestation = {"mode": "test", "authenticode_present": True, "signtool_verify_ok": True, "timestamp_present": True, "publisher": publisher, "installer_sha256": hashlib.sha256(fresh_signed).hexdigest(), "signer_thumbprint_sha256": fresh_auth.leaf_certificate.fingerprint(__import__("cryptography").hazmat.primitives.hashes.SHA256()).hex(), "tool": "infra/release/sign_authenticode.py (ephemeral)", "trust_store": {"sha256": trust_store_sha256(trust_data), "keys": describe_trust_store(trust_data)}}
+          attestation_path = tmp / "attestation.json"
+          attestation_path.write_text(json.dumps(valid_attestation), encoding="utf-8")
+          out_dir = tmp / "out"
+          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(out_dir), "--release-mode", "test", "--installer", str(installer), "--authenticode-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(attestation_path)]
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          assert result.returncode == 0 and (out_dir / "update-channel.json").exists()
+          tampered = tmp / "tampered.exe"
+          _t = bytearray(fresh_signed); _t[0x250] ^= 0xFF; tampered.write_bytes(_t)
+          tampered_att = dict(valid_attestation); tampered_att["mode"]="production"
+          tampered_att_path = tmp / "tampered_att.json"
+          tampered_att_path.write_text(json.dumps(tampered_att), encoding="utf-8")
+          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-tampered"), "--release-mode", "production", "--installer", str(tampered), "--authenticode-roots", str(roots), "--authenticode-timestamp-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(tampered_att_path)]
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          # Отказ обязан быть по своей причине, а не из-за отсутствующего параметра.
+          assert result.returncode != 0 and "installer_changed_after_signing" in (result.stdout + result.stderr), result.stderr[-400:]
+          wrong_roots = tmp / "wrong.pem"
+          wrong_auth = create_test_authority("Other Publisher")
+          wrong_roots.write_bytes(wrong_auth.ca_pem())
+          wrong_att = dict(valid_attestation); wrong_att["mode"]="production"
+          wrong_att_path = tmp / "wrong_att.json"
+          wrong_att_path.write_text(json.dumps(wrong_att), encoding="utf-8")
+          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-wrong"), "--release-mode", "production", "--installer", str(installer), "--authenticode-roots", str(wrong_roots), "--authenticode-timestamp-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(wrong_att_path)]
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          assert result.returncode != 0 and "untrusted_root" in (result.stdout + result.stderr), result.stderr[-400:]
+          unsigned = tmp / "unsigned.exe"
+          unsigned.write_bytes(make_test_pe(b"UNSIGNED-PE"))
+          unsigned_att = dict(valid_attestation); unsigned_att["mode"]="production"; unsigned_att["installer_sha256"]=hashlib.sha256(unsigned.read_bytes()).hexdigest()
+          unsigned_att_path = tmp / "unsigned_att.json"
+          unsigned_att_path.write_text(json.dumps(unsigned_att), encoding="utf-8")
+          # Production без отдельного корня TSA обязан отказать fail-closed:
+          # signer CA и TSA CA независимы, повторять их друг в друге нельзя.
+          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-no-tsa-roots"), "--release-mode", "production", "--installer", str(installer), "--authenticode-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(attestation_path)]
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          assert result.returncode != 0 and "missing_authenticode_timestamp_roots" in (result.stdout + result.stderr), result.stderr[-400:]
+          cmd = [sys.executable, "infra/release/publish_channel.py", "--snapshot", str(snapshot), "--version", "0.14.0", "--release-sha", "3"*40, "--package-url", "https://github.com/example/example/releases/download/v0.14.0/hr-manager-windows-0.14.0.zip", "--minimum-supported-version", "0.13.0", "--private-key", str(private_path), "--key-id", "pilot-test-key", "--out-dir", str(tmp/"out-missing"), "--release-mode", "production", "--installer", str(unsigned), "--authenticode-roots", str(roots), "--authenticode-timestamp-roots", str(roots), "--expected-publisher", publisher, "--trust-store", str(trust_store), "--authenticode-attestation", str(unsigned_att_path)]
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          assert result.returncode != 0 and "unsigned" in (result.stdout + result.stderr), result.stderr[-400:]
+          PY
+
+      - name: No secrets in produced reports
+        run: |
+          set -euo pipefail
+          for pattern in "PRIVATE KEY" "BEGIN RSA" "test_key.priv"; do
+            if grep -rIl -- "$pattern" policy/ 2>/dev/null; then
+              echo "secret-like material found in policy artifacts: $pattern" >&2; exit 1
+            fi
+          done
+          echo "reports carry no private material"

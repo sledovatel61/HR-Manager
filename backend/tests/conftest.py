@@ -8,35 +8,78 @@ ORM schema is created directly from the models metadata. Integration tests
 they never fall back to SQLite.
 """
 
+from __future__ import annotations
+
 import os
 from collections.abc import Iterator
 from datetime import datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine, text
-from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
-from app.config import Settings
-from app.main import create_app
-from app.models import (
-    Base,
-    Candidate,
-    CandidateSource,
-    CandidateStage,
-    CandidateTransfer,
-    Event,
-    EventStatus,
-    EventType,
-    User,
-    UserRole,
-)
-from app.security import hash_password
-from app.utils import normalize_email, normalize_full_name, normalize_phone, utc_now
+# Heavy backend deps (fastapi, sqlalchemy, app.*) are optional at collection
+# time so that `channel-release-policy` job can run
+# `pytest backend/tests/test_trust_store.py ...` with only
+# `cryptography+pytest+pyyaml` installed. Fixtures that need those deps will
+# skip if they are unavailable; tests that do not touch the backend stack
+# (release policy, trust store) still pass.
+try:
+    from fastapi.testclient import TestClient
+    from sqlalchemy import Engine, create_engine, text
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import StaticPool
+
+    from app.config import Settings
+    from app.main import create_app
+    from app.models import (
+        Base,
+        Candidate,
+        CandidateSource,
+        CandidateStage,
+        CandidateTransfer,
+        Event,
+        EventStatus,
+        EventType,
+        User,
+        UserRole,
+    )
+    from app.security import hash_password
+    from app.utils import normalize_email, normalize_full_name, normalize_phone, utc_now
+
+    _HEAVY_AVAILABLE = True
+    _HEAVY_IMPORT_ERROR: Exception | None = None
+except ImportError as _exc:  # minimal tooling image (release policy job)
+    TestClient: Any = None  # type: ignore[no-redef]
+    Engine: Any = object  # type: ignore[no-redef]
+    Session: Any = object  # type: ignore[no-redef]
+    StaticPool: Any = None  # type: ignore[no-redef]
+    Settings: Any = object  # type: ignore[no-redef]
+    create_app: Any = None  # type: ignore[no-redef]
+    Base: Any = None  # type: ignore[no-redef]
+    Candidate: Any = None  # type: ignore[no-redef]
+    CandidateSource: Any = None  # type: ignore[no-redef]
+    CandidateStage: Any = None  # type: ignore[no-redef]
+    CandidateTransfer: Any = None  # type: ignore[no-redef]
+    Event: Any = None  # type: ignore[no-redef]
+    EventStatus: Any = None  # type: ignore[no-redef]
+    EventType: Any = None  # type: ignore[no-redef]
+    User: Any = None  # type: ignore[no-redef]
+    UserRole: Any = None  # type: ignore[no-redef]
+    hash_password: Any = None  # type: ignore[no-redef]
+    normalize_email: Any = lambda *a, **kw: None  # type: ignore[no-redef]  # noqa: E731
+    normalize_full_name: Any = normalize_email  # type: ignore[no-redef]
+    normalize_phone: Any = normalize_email  # type: ignore[no-redef]
+    utc_now: Any = normalize_email  # type: ignore[no-redef]
+    _HEAVY_AVAILABLE = False
+    _HEAVY_IMPORT_ERROR = _exc
 
 TEST_SQLITE_URL = "sqlite+pysqlite://"
+
+
+def _require_heavy() -> None:
+    if not _HEAVY_AVAILABLE:
+        pytest.skip(f"heavy backend deps not installed in this image: {_HEAVY_IMPORT_ERROR}")
 
 
 def _install_pg8000_error_translation() -> None:
@@ -100,6 +143,7 @@ FIXTURE_PASSWORD = "Str0ng-Pass-2026"
 
 @pytest.fixture()
 def unit_engine() -> Iterator[Engine]:
+    _require_heavy()
     engine = create_engine(
         TEST_SQLITE_URL,
         connect_args={"check_same_thread": False},
@@ -120,6 +164,9 @@ def _clean_login_limiter() -> Iterator[None]:
     client IP). This mirrors the fixture that used to live only in
     test_auth.py and applies the same isolation to the whole suite.
     """
+    if not _HEAVY_AVAILABLE:
+        yield
+        return
     from app.routers.auth import reset_login_limiter
     from app.routers.candidate_messages import reset_candidate_message_limiters
     from app.routers.integrations import reset_integration_limiters
@@ -141,6 +188,7 @@ def _clean_login_limiter() -> Iterator[None]:
 
 @pytest.fixture()
 def unit_settings() -> Settings:
+    _require_heavy()
     # model_validate mirrors how real environment variables map into the
     # settings (validation aliases), without touching the process env.
     return Settings.model_validate(
@@ -159,6 +207,7 @@ def unit_settings() -> Settings:
 @pytest.fixture()
 def client(unit_settings: Settings, unit_engine: Engine) -> Iterator[TestClient]:
     """TestClient backed by an in-memory SQLite engine with schema created."""
+    _require_heavy()
     app = create_app(unit_settings, engine=unit_engine)
     with TestClient(app) as test_client:
         yield test_client
@@ -167,6 +216,7 @@ def client(unit_settings: Settings, unit_engine: Engine) -> Iterator[TestClient]
 @pytest.fixture()
 def db_session(unit_engine: Engine) -> Iterator[Session]:
     """Direct ORM session over the in-memory test database."""
+    _require_heavy()
     with Session(unit_engine) as session:
         yield session
         session.rollback()
@@ -176,12 +226,15 @@ def make_user(
     db: Session,
     *,
     username: str,
-    role: UserRole = UserRole.HR,
+    role: UserRole | None = None,
     password: str = FIXTURE_PASSWORD,
     full_name: str = "",
     is_active: bool = True,
 ) -> User:
     """Create and persist a user with an Argon2id password hash."""
+    _require_heavy()
+    if role is None:
+        role = UserRole.HR
     user = User(
         username=username,
         full_name=full_name or username,
@@ -205,6 +258,7 @@ def make_transfer(
     reason: str = "Перераспределение нагрузки",
 ) -> CandidateTransfer:
     """Create and persist an immutable ownership-transfer record."""
+    _require_heavy()
     transfer = CandidateTransfer(
         candidate_id=candidate.id,
         initiator_user_id=initiator.id,
@@ -225,12 +279,17 @@ def make_candidate(
     full_name: str = "Иванов Иван Иванович",
     phone: str | None = None,
     email: str | None = None,
-    source: CandidateSource = CandidateSource.SITE,
+    source: CandidateSource | None = None,
     position: str = "",
-    stage: CandidateStage = CandidateStage.NEW,
+    stage: CandidateStage | None = None,
     deleted: bool = False,
 ) -> Candidate:
     """Create and persist a candidate owned by ``owner``."""
+    _require_heavy()
+    if source is None:
+        source = CandidateSource.SITE
+    if stage is None:
+        stage = CandidateStage.NEW
     from app.models import CANDIDATE_STAGE_POSITION
 
     candidate = Candidate(
@@ -259,10 +318,10 @@ def make_event(
     candidate: Candidate,
     author: User,
     assignee: User,
-    type_: EventType = EventType.CALL,
+    type_: EventType | None = None,
     title: str = "Созвон",
     note: str | None = None,
-    status: EventStatus = EventStatus.SCHEDULED,
+    status: EventStatus | None = None,
     starts_at: datetime | None = None,
     ends_at: datetime | None = None,
     remind_at: datetime | None = None,
@@ -271,6 +330,11 @@ def make_event(
 ) -> Event:
     """Create and persist a calendar event (times default around a fixed
     near-future moment so status/consistency checks hold)."""
+    _require_heavy()
+    if type_ is None:
+        type_ = EventType.CALL
+    if status is None:
+        status = EventStatus.SCHEDULED
     starts_at = starts_at or utc_now() + timedelta(hours=2)
     if status == EventStatus.COMPLETED:
         completed_at = completed_at or utc_now()
@@ -315,6 +379,7 @@ def pg_engine() -> Iterator[Engine]:
     ``alembic upgrade head`` beforehand; the migration tests manage upgrades
     themselves). Tables are truncated between tests for isolation.
     """
+    _require_heavy()
     url = _require_integration_url()
     engine = create_engine(url, pool_pre_ping=True)
     yield engine
@@ -323,6 +388,7 @@ def pg_engine() -> Iterator[Engine]:
 
 @pytest.fixture()
 def pg_settings(integration_url: str) -> Settings:
+    _require_heavy()
     return Settings.model_validate(
         {
             "APP_ENV": "test",
@@ -336,6 +402,7 @@ def pg_settings(integration_url: str) -> Settings:
 @pytest.fixture()
 def pg_client(pg_settings: Settings, pg_engine: Engine) -> Iterator[TestClient]:
     """TestClient against PostgreSQL. Tables are truncated for a clean state."""
+    _require_heavy()
     with pg_engine.begin() as connection:
         connection.execute(
             text(
@@ -358,6 +425,7 @@ def pg_client(pg_settings: Settings, pg_engine: Engine) -> Iterator[TestClient]:
 @pytest.fixture()
 def pg_db(pg_engine: Engine) -> Iterator[Session]:
     """Direct ORM session over the PostgreSQL integration database."""
+    _require_heavy()
     with Session(pg_engine) as session:
         yield session
         session.rollback()
@@ -365,11 +433,14 @@ def pg_db(pg_engine: Engine) -> Iterator[Session]:
 
 def user_id(user: User) -> UUID:
     """Typed helper for readability in tests."""
+    if not _HEAVY_AVAILABLE:
+        return user.id
     return user.id
 
 
 def make_document_set(db: Session, candidate: Candidate, names: list[str]) -> str:
     """Phase 11 fixture: persist server-owned content before sending a request."""
+    _require_heavy()
     from sqlalchemy import select
 
     from app.document_schemas import VersionOut

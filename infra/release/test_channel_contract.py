@@ -37,7 +37,9 @@ def load_json(name: str) -> dict:
     return parse_manifest_json(load(name))
 
 
-def test_keys() -> tuple[str, str]:
+def channel_keys() -> tuple[str, str]:
+    # Не test_*: это хелпер, pytest иначе собирает его как тест и ругается на
+    # непустой return (в pytest 9 PytestReturnNotNone становится ошибкой).
     return load("test_key.pub").strip(), load("test_key.priv").strip()
 
 
@@ -80,7 +82,7 @@ def test_canonical_rejects_control_characters() -> None:
 # --- Подпись -----------------------------------------------------------------
 
 def test_sign_and_verify_roundtrip() -> None:
-    pub, priv = test_keys()
+    pub, priv = channel_keys()
     manifest = signed_valid()
     payload = {k: v for k, v in manifest.items() if k != "signature"}
     signed = sign_manifest(payload, "pilot-test-key", priv)
@@ -88,21 +90,21 @@ def test_sign_and_verify_roundtrip() -> None:
 
 
 def test_verify_rejects_flipped_signature_bit() -> None:
-    pub, _ = test_keys()
+    pub, _ = channel_keys()
     with pytest.raises(ChannelError) as _exc:
             verify_signature(load_json("manifest.bad_sig.json"), pub)
     assert _exc.value.code == "bad_signature"
 
 
 def test_verify_rejects_tampered_signed_field() -> None:
-    pub, _ = test_keys()
+    pub, _ = channel_keys()
     with pytest.raises(ChannelError) as _exc:
             verify_signature(load_json("manifest.tampered.json"), pub)
     assert _exc.value.code == "bad_signature"
 
 
 def test_verify_rejects_malformed_signature_encoding() -> None:
-    pub, _ = test_keys()
+    pub, _ = channel_keys()
     with pytest.raises(ChannelError) as _exc:
             verify_signature(load_json("manifest.malformed_sig.json"), pub)
     assert _exc.value.code == "bad_signature"

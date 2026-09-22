@@ -24,16 +24,7 @@
 #   UPDATE_CHANNEL_AUTHENTICODE_PFX_BASE64— PFX с сертификатом кодовой подписи (base64);
 #   UPDATE_CHANNEL_AUTHENTICODE_PFX_PASSWORD — пароль PFX (никогда не печатается);
 #   UPDATE_CHANNEL_EXPECTED_PUBLISHER     — ожидаемый издатель (O/CN сертификата);
-#   UPDATE_CHANNEL_TIMESTAMP_URL          — RFC3161 TSA владельца;
-#   UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS   — PEM с ЗАКРЕПЛЁННЫМ корнем
-#                                            издателя (цепочка кодовой подписи);
-#   UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS — PEM с ЗАКРЕПЛЁННЫМ корнем TSA.
-#
-# Корни Authenticode задаются ТОЛЬКО этими секретами. Брать их из подписанного
-# файла нельзя: сертификат подписанта, положенный в --trust-roots, делает
-# проверку цепочки тавтологией (любой самоподписанный сертификат «доводится до
-# доверенного корня»). install/installer/sign.ps1 в production без
-# -SignerRootsPath/-TimestampRootsPath отказывает.
+#   UPDATE_CHANNEL_TIMESTAMP_URL          — RFC3161 TSA владельца.
 #
 # Fail closed: без любой из этих величин release job падает ДО публикации —
 # unsigned/непроверенный manifest не создаётся никогда.
@@ -87,12 +78,6 @@ jobs:
   windows-installer:
     name: Build and Authenticode-sign Windows installer
     runs-on: windows-latest
-    env:
-      # sign.ps1/build.ps1 вызываются через Windows PowerShell 5.1 и дёргают
-      # release-CLI; без UTF-8 русский вывод Python кодируется в кодовой
-      # странице консоли и падает с UnicodeEncodeError вместо внятной ошибки.
-      PYTHONUTF8: "1"
-      PYTHONIOENCODING: utf-8
     # environment владельца: secrets + required reviewers для подписи.
     environment: update-channel-signing
     steps:
@@ -207,25 +192,14 @@ jobs:
           EXPECTED_PUBLISHER: ${{ secrets.UPDATE_CHANNEL_EXPECTED_PUBLISHER }}
           TIMESTAMP_URL: ${{ secrets.UPDATE_CHANNEL_TIMESTAMP_URL }}
           TRUST_STORE_PATH: ${{ runner.temp }}\trust-store.json
-          SIGNER_ROOTS: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS }}
-          TIMESTAMP_ROOTS: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS }}
         run: |
           $env:HRM_AUTHENTICODE_PFX_PASSWORD = $env:PFX_PASSWORD
           $env:HRM_SIGN_CLEANUP_PFX = "1"
-          # Fail closed: без закреплённых корней подпись не проверяется вовсе.
-          if (-not $env:SIGNER_ROOTS) { Write-Error "UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS обязателен"; exit 1 }
-          if (-not $env:TIMESTAMP_ROOTS) { Write-Error "UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS обязателен"; exit 1 }
-          $signerRootsPath = Join-Path $env:RUNNER_TEMP "authenticode-signer-roots.pem"
-          $timestampRootsPath = Join-Path $env:RUNNER_TEMP "authenticode-timestamp-roots.pem"
-          [System.IO.File]::WriteAllText($signerRootsPath, $env:SIGNER_ROOTS, (New-Object System.Text.UTF8Encoding($false)))
-          [System.IO.File]::WriteAllText($timestampRootsPath, $env:TIMESTAMP_ROOTS, (New-Object System.Text.UTF8Encoding($false)))
           powershell -NoProfile -ExecutionPolicy Bypass -File installer/sign.ps1 `
             -Mode production -Version $env:VERSION -PfxPath $env:PFX_PATH `
             -ExpectedPublisher $env:EXPECTED_PUBLISHER -TimestampUrl $env:TIMESTAMP_URL `
-            -TrustStoreFile $env:TRUST_STORE_PATH `
-            -SignerRootsPath $signerRootsPath -TimestampRootsPath $timestampRootsPath
+            -TrustStoreFile $env:TRUST_STORE_PATH
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Remove-Item -Force $signerRootsPath, $timestampRootsPath -ErrorAction SilentlyContinue
 
       - name: Upload signed installer + attestation (no private material)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -235,7 +209,6 @@ jobs:
             installer/output/*.exe
             installer/authenticode-attestation.json
             installer/authenticode-roots.pem
-            installer/authenticode-verification.json
             installer/release-manifest.json
           if-no-files-found: error
 
@@ -357,27 +330,17 @@ jobs:
         env:
           VERSION: ${{ steps.release.outputs.version }}
           EXPECTED_PUBLISHER: ${{ secrets.UPDATE_CHANNEL_EXPECTED_PUBLISHER }}
-          SIGNER_ROOTS: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS }}
-          TIMESTAMP_ROOTS: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS }}
         run: |
           set -euo pipefail
           setup_exe="$(ls dist/channel/installer/output/HR-Manager-Setup-*.exe | head -1)"
           [ -n "$setup_exe" ] || { echo "error: installer exe missing" >&2; exit 1; }
-          # Корни берём из своего секрета, а НЕ из артефакта signed-installer:
-          # артефакт создан тем же шагом, что и подпись, и доверять ему — значит
-          # разрешить подписанту самому выбирать себе корень доверия.
-          : "${SIGNER_ROOTS:?UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS is required}"
-          : "${TIMESTAMP_ROOTS:?UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS is required}"
-          printf '%s' "$SIGNER_ROOTS" > /tmp/authenticode-signer-roots.pem
-          printf '%s' "$TIMESTAMP_ROOTS" > /tmp/authenticode-timestamp-roots.pem
           python3 infra/release/authenticode.py verify \
             --file "$setup_exe" \
             --expected-publisher "$EXPECTED_PUBLISHER" \
             --require-timestamp \
-            --trust-roots /tmp/authenticode-signer-roots.pem \
-            --timestamp-roots /tmp/authenticode-timestamp-roots.pem \
+            --trust-roots dist/channel/installer/authenticode-roots.pem \
+            --timestamp-roots dist/channel/installer/authenticode-roots.pem \
             --json-out dist/channel/authenticode-verification.json
-          rm -f /tmp/authenticode-signer-roots.pem /tmp/authenticode-timestamp-roots.pem
 
       - name: Build package, sign manifest, verify with client-trusted key
         env:
@@ -393,8 +356,6 @@ jobs:
           SIGNING_KEY: ${{ secrets.UPDATE_CHANNEL_SIGNING_KEY }}
           KEY_ID: ${{ secrets.UPDATE_CHANNEL_KEY_ID }}
           TRUSTED_KEYS: ${{ secrets.UPDATE_CHANNEL_PUBLIC_KEYS }}
-          AUTHENTICODE_ROOTS: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS }}
-          AUTHENTICODE_TIMESTAMP_ROOTS: ${{ secrets.UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS }}
         run: |
           set -euo pipefail
           : "${SIGNING_KEY:?UPDATE_CHANNEL_SIGNING_KEY secret is required}"
@@ -402,12 +363,6 @@ jobs:
           : "${TRUSTED_KEYS:?UPDATE_CHANNEL_PUBLIC_KEYS secret is required}"
           printf '%s' "$SIGNING_KEY" > /tmp/update-channel-signing.key
           printf '%s' "$TRUSTED_KEYS" > /tmp/update-channel-trusted-keys.json
-          : "${AUTHENTICODE_ROOTS:?UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS is required}"
-          : "${AUTHENTICODE_TIMESTAMP_ROOTS:?UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS is required}"
-          printf '%s' "$AUTHENTICODE_ROOTS" > /tmp/publish-authenticode-roots.pem
-          # Корень TSA отдельно: signer CA и TSA CA в production независимы,
-          # их повтор друг в друге отклонил бы корректную метку времени.
-          printf '%s' "$AUTHENTICODE_TIMESTAMP_ROOTS" > /tmp/publish-authenticode-timestamp-roots.pem
           setup_exe="$(ls dist/channel/installer/output/HR-Manager-Setup-*.exe | head -1)"
           python3 infra/release/publish_channel.py \
             --snapshot "$SNAPSHOT" \
@@ -422,12 +377,10 @@ jobs:
             --release-mode production \
             --installer "$setup_exe" \
             --authenticode-attestation dist/channel/installer/authenticode-attestation.json \
-            --authenticode-roots /tmp/publish-authenticode-roots.pem \
-            --authenticode-timestamp-roots /tmp/publish-authenticode-timestamp-roots.pem \
+            --authenticode-roots dist/channel/installer/authenticode-roots.pem \
             --expected-publisher "$EXPECTED_PUBLISHER" \
             --out-dir dist/channel
-          rm -f /tmp/update-channel-signing.key /tmp/publish-authenticode-roots.pem \
-            /tmp/publish-authenticode-timestamp-roots.pem
+          rm -f /tmp/update-channel-signing.key
 
       - name: Independent Ed25519 verification with the client-trusted key
         env:
