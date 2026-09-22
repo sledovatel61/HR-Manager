@@ -181,6 +181,43 @@ def test_load_pem_certificates_unreadable_directory_is_fail_closed(tmp_path: Pat
     with pytest.raises(AuthentiCodeError) as excinfo:
         load_pem_certificates(directory)
     assert excinfo.value.code == "unreadable_pem"
+    assert isinstance(excinfo.value.__cause__, OSError)
+
+
+def test_load_pem_certificates_permission_error_is_unreadable(tmp_path: Path) -> None:
+    """Реальный PermissionError при чтении PEM, не IsADirectoryError."""
+    denied = tmp_path / "denied.pem"
+    denied.write_bytes(b"not-a-certificate\n")
+    denied.chmod(0)
+    try:
+        with pytest.raises(AuthentiCodeError) as excinfo:
+            load_pem_certificates(denied)
+    finally:
+        denied.chmod(0o644)
+    assert excinfo.value.code == "unreadable_pem"
+    assert isinstance(excinfo.value.__cause__, PermissionError)
+    assert not isinstance(excinfo.value.__cause__, FileNotFoundError)
+    assert "Traceback" not in str(excinfo.value)
+    assert "not-a-certificate" not in str(excinfo.value)
+
+
+def test_load_pem_certificates_other_oserror_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Прочие OSError (не PermissionError и не FileNotFoundError) тоже fail closed."""
+    target = tmp_path / "io-error.pem"
+    target.write_bytes(b"pem")
+
+    def _raise_io_error(self: Path) -> bytes:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(Path, "read_bytes", _raise_io_error)
+    with pytest.raises(AuthentiCodeError) as excinfo:
+        load_pem_certificates(target)
+    assert excinfo.value.code == "unreadable_pem"
+    assert isinstance(excinfo.value.__cause__, OSError)
+    assert not isinstance(excinfo.value.__cause__, (FileNotFoundError, PermissionError))
+    assert "Traceback" not in str(excinfo.value)
 
 
 def test_load_pem_certificates_empty_file_is_bad_root(tmp_path: Path) -> None:
@@ -282,6 +319,19 @@ def test_production_refuses_missing_signer_pem(tmp_path: Path) -> None:
         tmp_path, inputs, ["--authenticode-roots", str(tmp_path / "missing-signer.pem")]
     )
     _assert_not_published(tmp_path, result, "missing_pem")
+
+
+def test_production_refuses_permission_denied_pem_without_traceback(tmp_path: Path) -> None:
+    inputs = _production_inputs(tmp_path)
+    denied = tmp_path / "denied-signer.pem"
+    denied.write_bytes(b"not-published\n")
+    denied.chmod(0)
+    try:
+        result = _run_publish(tmp_path, inputs, ["--authenticode-roots", str(denied)])
+    finally:
+        denied.chmod(0o644)
+    assert result.returncode == 1
+    _assert_not_published(tmp_path, result, "unreadable_pem")
 
 
 def test_production_refuses_missing_timestamp_pem(tmp_path: Path) -> None:

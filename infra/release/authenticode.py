@@ -659,6 +659,10 @@ def load_pem_certificates(path: Path) -> list[x509.Certificate]:
         data = path.read_bytes()
     except FileNotFoundError as exc:
         raise AuthentiCodeError("missing_pem", f"PEM-файл не найден: {path}") from exc
+    except PermissionError as exc:
+        # Подкласс OSError, но не missing_pem и не bad_root: отзыв прав на файл
+        # обязан быть машиночитаемым отказом, без traceback.
+        raise AuthentiCodeError("unreadable_pem", f"PEM-файл недоступен: {path}") from exc
     except OSError as exc:
         raise AuthentiCodeError("unreadable_pem", f"PEM-файл недоступен: {path}") from exc
     if data.startswith((b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff")):
