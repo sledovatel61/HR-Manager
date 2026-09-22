@@ -183,7 +183,7 @@ function Open-HrmApp {
 function Remove-HrmApp {
     # Удаление: контейнеры снимаются, тома Postgres/бэкапов СОХРАНЯЮТСЯ.
     # Docker Desktop и WSL2 никогда не удаляются. -PurgeData удаляет данные
-    # только после точной фразы-подтверждения и предложения бэкапа.
+    # только после точной фразы, свежего бэкапа и deep verification. Бэкапы сохраняются.
     param(
         [string]$InstallDir = "",
         [string]$StateDir = "",
@@ -196,9 +196,6 @@ function Remove-HrmApp {
         return
     }
     Stop-HrmChannelWatch -StateDir $StateDir
-    if (Test-HrmComposeRunning $InstallDir $StateDir) {
-        Stop-HrmStack $InstallDir $StateDir
-    }
     if ($PurgeData) {
         # Фраза-подтверждение. Неинтерактивно фраза берётся из
         # HRM_PURGE_CONFIRMATION (документировано в infra/windows/README.md).
@@ -210,14 +207,24 @@ function Remove-HrmApp {
         if ($typed -ne "УДАЛИТЬ ДАННЫЕ HR MANAGER") {
             throw "Фраза подтверждения не совпала — данные не удалены."
         }
-        $offer = Invoke-HrmConfirmationPrompt -Prompt "Создать шифрованный бэкап перед удалением? (рекомендуется)" -Default $true
-        if ($offer) {
-            Invoke-HrmCompose $InstallDir $StateDir @("run", "--rm", "backup", "python", "-m", "app.cli", "backup-now", "--as-scheduler", "--reason", "pre-uninstall backup") | Out-Null
-            Invoke-HrmCompose $InstallDir $StateDir @("run", "--rm", "backup", "python", "-m", "app.cli", "backup-check", "--deep", "--as-scheduler") | Out-Null
-            Write-HrmLog "info" "Бэкап перед удалением создан и проверен (том pilot_backups)."
-        }
-        Invoke-HrmCompose $InstallDir $StateDir @("down", "-v", "--remove-orphans") | Out-Null
-        Write-HrmLog "info" "Тома данных удалены."
+        $offer = Invoke-HrmConfirmationPrompt -Prompt "Создать и проверить обязательный шифрованный бэкап перед удалением?" -Default $true
+        if (-not $offer) { throw "Отказ от обязательного бэкапа — purge отменён, данные сохранены." }
+        # Keep the database available until a fresh encrypted backup AND the
+        # scheduler's deep integrity check succeed. Never accept an old backup
+        # or a successful oneshot without verification as permission to purge.
+        $backup = Invoke-HrmCompose $InstallDir $StateDir @("run", "--rm", "-e", "BACKUP_REASON=pre-uninstall backup", "backup", "oneshot") -IgnoreExitCode
+        if ($backup.ExitCode -ne 0) { throw "Бэкап не создан — purge запрещён." }
+        $check = Invoke-HrmCompose $InstallDir $StateDir @("run", "--rm", "backup", "check") -IgnoreExitCode
+        if ($check.ExitCode -ne 0) { throw "Бэкап не прошёл deep verification — purge запрещён." }
+        Write-HrmLog "info" "Свежий шифрованный бэкап создан и проверен; pilot_backups сохраняется."
+    }
+    # Always down without -v, also when only stopped containers remain. A failed
+    # down must not be followed by volume deletion (including under test mocks).
+    $down = Invoke-HrmCompose $InstallDir $StateDir @("down", "--remove-orphans") -IgnoreExitCode
+    if ($down.ExitCode -ne 0) { throw "Стек не остановлен — удаление данных запрещено." }
+    if ($PurgeData) {
+        Remove-HrmPilotDataVolume
+        Write-HrmLog "info" "Том данных удалён. Том бэкапов и каталог состояния сохранены."
     }
     # Каталоги состояния/установки удаляет деинсталлятор Inno Setup;
     # движок оставляет их, чтобы повторная установка восстановила данные.

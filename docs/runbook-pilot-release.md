@@ -95,8 +95,12 @@
 `UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS` и
 `UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS` — это **разные** PEM-наборы.
 Корни издателя не подставляются вместо корней TSA и наоборот: у signer CA и
-TSA CA разные центры доверия. Повтор одного и того же корня в обеих ролях
-production-выпуск отклоняет.
+TSA CA разные центры доверия. Наборы сертификатов должны быть **непересекающимися
+(disjoint)**: совпадение хотя бы одного SHA-256 fingerprint сырого DER в обеих
+ролях отклоняется до подписи в `installer/sign.ps1` и независимо до сборки
+пакета в `publish_channel.py`. Другие переносы строк, пробелы или длина строк
+base64 одного сертификата не обходят проверку. Сравнения только SHA256 файлов
+недостаточно; test signing mode этой production-политикой не меняется.
 
 Формат каждого секрета:
 
@@ -126,8 +130,9 @@ Fail closed, до публикации и до подписи:
 - `publish_channel.py --release-mode production` читает те же два PEM.
   Отсутствующий файл — `ОШИБКА[missing_pem]`, недоступный —
   `ОШИБКА[unreadable_pem]`, пустой/битый/BOM/приватный материал —
-  `ОШИБКА[bad_root]`. Код возврата 1, traceback нет, `update-channel.json` не
-  создаётся.
+  `ОШИБКА[bad_root]`, пересечение DER fingerprints —
+  `ОШИБКА[overlapping_trust_roots]`. Код возврата 1, traceback нет; при отказе
+  новые package ZIP, `update-channel.json` и `SHA256SUMS` не создаются.
 - Test-режим CI (`sign.ps1 -Mode test`) operator PEM не требует: там
   ephemeral-сертификат, и production policy такой релиз не пропускает.
 
@@ -139,7 +144,19 @@ Fail closed, до публикации и до подписи:
 артефакты. Приватный ключ на диск не выписывается (`-nokeys`).
 
 1. Два локальных файла вне репозитория: `signer-roots.pem` и
-   `timestamp-roots.pem`. `sha256sum` у них должен различаться.
+   `timestamp-roots.pem`. `sha256sum` у них должен различаться, но это не
+   доказывает отсутствие общих сертификатов. Проверить каждый сертификат по
+   SHA-256 DER, не выводя PEM contents:
+
+   ```bash
+   PYTHONPATH=/path/to/verified/HR-Manager/infra/release python - <<'PY'
+   from pathlib import Path
+   from authenticode import assert_disjoint_roots, load_pem_certificates
+   assert_disjoint_roots(load_pem_certificates(Path("signer-roots.pem")),
+                         load_pem_certificates(Path("timestamp-roots.pem")))
+   print("Signer/TSA root sets: disjoint")
+   PY
+   ```
 2. Публичный leaf из PFX, без ключа:
 
    ```bash
@@ -211,6 +228,15 @@ PY
    `hr-manager-windows-<version>.zip`, `update-channel.json`, `SHA256SUMS`,
    `release-metadata.json`, `trust-store.json`, `authenticode-verification.json`,
    `authenticode-attestation.json`, `HR-Manager-Setup-<version>.exe`.
+   `SHA256SUMS` покрывает **все семь** остальных assets (сам себя не включает):
+   ZIP, EXE, channel manifest, release metadata, trust store, verification и
+   attestation JSON. Строки отсортированы по basename; hash вычислен по
+   финальным bytes. Корни PEM, private keys и внутренние build-файлы не входят.
+   `publish_channel.py` после независимой production-проверки формирует финальный
+   `dist/channel/authenticode-verification.json`; attestation и EXE хешируются
+   прямо из installer artifact directory без копирования/переформатирования.
+   Metadata и verification записываются **до** SHA256SUMS. Отсутствующий asset
+   или повтор basename запрещает создание sums и публикацию.
 3. Владелец проверяет (не доверяя логам сборки):
    ```bash
    gh release download v0.14.0 --dir /tmp/rel
@@ -281,10 +307,25 @@ PY
    ```powershell
    powershell -File hr-manager.ps1 -Action uninstall -PurgeData
    ```
-   Purge требует подтверждения и свежего проверенного бэкапа (`-PurgeData`
-   отказывается работать без бэкап-ворота); том с бэкапами удаляется отдельным
-   шагом с явным подтверждением.
-3. Перед purge выгрузить диагностику и `backup-state.json` как доказательство.
+   Purge требует точной фразы `УДАЛИТЬ ДАННЫЕ HR MANAGER` и согласия на
+   обязательный свежий шифрованный backup. Отказ немедленно прекращает purge.
+   Движок вызывает scheduler `backup oneshot`, затем `backup check` (это
+   `backup-check --deep --as-scheduler`: freshness, checksum и authenticated
+   decrypt). Ошибка любого шага запрещает удаление volumes. Успешного создания
+   backup без deep verification недостаточно.
+   После проверки stack останавливается через `down --remove-orphans` **без
+   `-v`**. Только при успешной остановке удаляется data volume
+   `hr-manager-pilot_pilot_pgdata`. Backup volume
+   `hr-manager-pilot_pilot_backups` и StateDir с ключом расшифровки сохраняются.
+   Docker Desktop/WSL2 не удаляются.
+3. Обычный `-PurgeData` **не удаляет backup volume**. Отдельной команды удаления
+   backup volume в движке нет; такая операция не входит в эту процедуру и
+   требует отдельного owner approval, подтверждённой внешней копии и явного
+   подтверждения. Не использовать общий `down -v` вместо purge.
+4. До purge сохранить redacted diagnostics и evidence scheduler state
+   `/var/backups/hr-manager/state.json` из backup volume/readiness (не secrets
+   и не содержимое `pilot.env`). Результаты backup/check и сохранность backup
+   volume после purge включить в acceptance evidence.
 
 ## 9. Сбор диагностики и наблюдаемость
 

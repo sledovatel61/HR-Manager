@@ -427,6 +427,8 @@ Test-Case "удаление по умолчанию сохраняет данн�
     $withV = @($t.World.Calls | Where-Object { $_.Args -contains "down" -and $_.Args -contains "-v" })
     Assert-HrmEqual 0 $withV.Count "тома данных удалены без подтверждения"
     Assert-HrmEqual 0 $t.World.BackupNowCount "бэкап при обычном удалении не нужен"
+    Assert-HrmEqual 0 $t.World.RemovedVolumes.Count "обычный uninstall удалил volume"
+    Assert-HrmTrue (Test-Path $state) "обычный uninstall удалил state"
 }
 
 Test-Case "удаление данных: неверная фраза не удаляет, верная — удаляет с бэкапом" {
@@ -447,8 +449,52 @@ Test-Case "удаление данных: неверная фраза не уд�
     Remove-HrmApp -InstallDir $install -StateDir $state -PurgeData:$true | Out-Null
     Assert-HrmEqual 1 $t.World.BackupNowCount "бэкап перед удалением не создан"
     $withV = @($t.World.Calls | Where-Object { $_.Args -contains "down" -and $_.Args -contains "-v" })
-    Assert-HrmEqual 1 $withV.Count "тома данных не удалены после подтверждения"
+    Assert-HrmEqual 0 $withV.Count "down -v запрещён даже после подтверждения"
+    Assert-HrmEqual "hr-manager-pilot_pilot_pgdata" ($t.World.RemovedVolumes -join ",") "удалён не только data volume"
+    Assert-HrmTrue (Test-Path $state) "каталог состояния/ключи backup должны сохраняться"
+    $commands = @($t.World.Calls | ForEach-Object { $_.Args -join " " }) -join "`n"
+    Assert-HrmContains $commands "backup oneshot" "scheduler backup не вызван"
+    Assert-HrmContains $commands "backup check" "scheduler deep check не вызван"
+    Assert-HrmTrue ($commands.IndexOf("backup oneshot") -lt $commands.IndexOf("backup check")) "check раньше backup"
+    Assert-HrmTrue ($commands.IndexOf("backup check") -lt $commands.IndexOf("down --remove-orphans")) "стек остановлен до backup verification"
+    Assert-HrmTrue ($commands.IndexOf("down --remove-orphans") -lt $commands.IndexOf("volume rm")) "том удалён до остановки"
+    Assert-HrmNotContains $commands "volume rm hr-manager-pilot_pilot_backups" "backup volume удалён"
     Remove-Item Env:HRM_PURGE_CONFIRMATION -ErrorAction SilentlyContinue
+}
+
+foreach ($failure in @("no-confirmation", "declined-backup", "backup-failed", "verification-failed", "down-failed")) {
+    Test-Case ("purge fail closed, volumes preserved: " + $failure) {
+        Initialize-HrmTestEngine
+        $t = New-HrmTestWorld
+        $state = Get-HrmTestStateDir
+        $install = Get-HrmTestInstallDir
+        Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+        if ($failure -ne "no-confirmation") { $env:HRM_PURGE_CONFIRMATION = "УДАЛИТЬ ДАННЫЕ HR MANAGER" }
+        if ($failure -eq "declined-backup") {
+            & (Get-Module Install) { function script:Invoke-HrmConfirmationPrompt { param($Prompt, $Default) return $false } }
+        }
+        if ($failure -eq "backup-failed") { $t.World.BackupNowOk = $false }
+        if ($failure -eq "verification-failed") { $t.World.BackupCheckOk = $false }
+        if ($failure -eq "down-failed") { $t.World.DownOk = $false }
+        try {
+            Assert-HrmThrows "purge должен отказать" { Remove-HrmApp -InstallDir $install -StateDir $state -PurgeData:$true }
+            Assert-HrmEqual 0 $t.World.RemovedVolumes.Count "volume удалён при отказе"
+            $withV = @($t.World.Calls | Where-Object { $_.Args -contains "down" -and ($_.Args -contains "-v" -or $_.Args -contains "--volumes") })
+            Assert-HrmEqual 0 $withV.Count "обнаружен down с удалением volumes"
+            Assert-HrmTrue (Test-Path $state) "state удалён при отказе"
+            if ($failure -in @("no-confirmation", "declined-backup")) {
+                Assert-HrmEqual 0 $t.World.BackupNowCount "backup запускался без согласия"
+            }
+        }
+        finally { Remove-Item Env:HRM_PURGE_CONFIRMATION -ErrorAction SilentlyContinue }
+    }
+}
+
+Test-Case "purge implementation never removes backup volumes" {
+    $installCode = Get-Content (Join-Path $PSScriptRoot "..\engine\Install.psm1") -Raw
+    Assert-HrmNotContains $installCode '@("down", "-v"' "down -v запрещён"
+    $composeCode = Get-Content (Join-Path $PSScriptRoot "..\engine\Compose.psm1") -Raw
+    Assert-HrmContains $composeCode '$script:ProjectName + "_pilot_pgdata"' "data volume не ограничен allowlist"
 }
 
 Write-Host "== Статус и диагностика =="

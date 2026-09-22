@@ -82,7 +82,17 @@ def _ephemeral_signing_key(tmp_path: Path) -> tuple[Path, Path, str]:
 @pytest.fixture()
 def production_inputs(tmp_path: Path) -> dict:
     """Ephemeral «production» вход: CA, подписанный installer, attestation."""
-    authority = create_test_authority(PUBLISHER)
+    signer_ca = create_test_authority(PUBLISHER)
+    tsa_ca = create_test_authority("Independent TSA")
+    authority = EphemeralAuthority(
+        ca_certificate=signer_ca.ca_certificate,
+        ca_key=signer_ca.ca_key,
+        leaf_certificate=signer_ca.leaf_certificate,
+        leaf_key=signer_ca.leaf_key,
+        tsa_certificate=tsa_ca.tsa_certificate,
+        tsa_key=tsa_ca.tsa_key,
+        publisher=PUBLISHER,
+    )
     installer = tmp_path / "HR-Manager-Setup-0.14.0.exe"
     installer.write_bytes(sign_test_pe(make_test_pe(), authority))
     installer_sha = hashlib.sha256(installer.read_bytes()).hexdigest()
@@ -100,6 +110,8 @@ def production_inputs(tmp_path: Path) -> dict:
     }
     roots = tmp_path / "authenticode-roots.pem"
     roots.write_bytes(authority.ca_pem())
+    timestamp_roots = tmp_path / "timestamp-roots.pem"
+    timestamp_roots.write_bytes(tsa_ca.ca_pem())
     private_key, trust_store, public_key = _ephemeral_signing_key(tmp_path)
     store_data = json.loads(trust_store.read_text(encoding="utf-8"))
     attestation["trust_store"] = {
@@ -113,9 +125,7 @@ def production_inputs(tmp_path: Path) -> dict:
         "installer": installer,
         "attestation": attestation,
         "roots": roots,
-        # CI-фикстура честно одно-CA, поэтому корень TSA совпадает с корневым
-        # издателем. Раздельные CA покрыты отдельным тестом ниже.
-        "timestamp_roots": roots,
+        "timestamp_roots": timestamp_roots,
         "outside_roots": outside_roots,
         "trust_store": trust_store,
         "private_key": private_key,
@@ -131,7 +141,7 @@ def _run_production(
     snapshot = tmp_path / "app"
     if not snapshot.exists():
         shutil.copytree(TESTDATA / "snapshot", snapshot)
-    attestation_path = tmp_path / "attestation.json"
+    attestation_path = tmp_path / "authenticode-attestation.json"
     payload = dict(inputs["attestation"])
     if overwrite:
         payload.update(overwrite)
@@ -750,6 +760,81 @@ def test_production_accepts_independent_tsa_ca(tmp_path: Path) -> None:
 def test_production_rejects_signer_root_reused_as_tsa_root(tmp_path: Path) -> None:
     """Подстановка signer-корня вместо TSA-корня обязана быть видна как отказ."""
     inputs = _two_ca_production_inputs(tmp_path, tsa_root_reuse=True)
+    result = _run_production(tmp_path, inputs, [])
+    assert result.returncode != 0
+    assert "overlapping_trust_roots" in result.stderr
+
+
+def test_production_sha256sums_covers_final_release_assets(
+    production_inputs: dict, tmp_path: Path
+) -> None:
+    result = _run_production(tmp_path, production_inputs, [])
+    assert result.returncode == 0, result.stderr
+    out = tmp_path / "dist/channel"
+    assets = [
+        out / "hr-manager-windows-0.14.0.zip",
+        out / "update-channel.json",
+        out / "release-metadata.json",
+        out / "trust-store.json",
+        out / "authenticode-verification.json",
+        tmp_path / "authenticode-attestation.json",
+        production_inputs["installer"],
+    ]
+    lines = (out / "SHA256SUMS").read_text().splitlines()
+    assert lines == [
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+        for path in sorted(assets, key=lambda path: path.name)
+    ]
+    assert len(lines) == 7
+    assert not any("SHA256SUMS" in line or ".pem" in line or ".hex" in line for line in lines)
+    report = json.loads((out / "authenticode-verification.json").read_text())
+    assert report["ok"] is True
+    assert (
+        report["file_sha256"]
+        == hashlib.sha256(production_inputs["installer"].read_bytes()).hexdigest()
+    )
+    assert report["chain_verified"] is True
+    assert report["timestamp_chain_verified"] is True
+
+
+def test_sums_installer_digest_tracks_final_signed_bytes(
+    production_inputs: dict, tmp_path: Path
+) -> None:
+    result = _run_production(tmp_path, production_inputs, [])
+    assert result.returncode == 0, result.stderr
+    sums_before = (tmp_path / "dist/channel/SHA256SUMS").read_text()
+    old_hash = hashlib.sha256(production_inputs["installer"].read_bytes()).hexdigest()
+    # A different but valid signed installer, not a bypass of signature checks.
+    production_inputs["installer"].write_bytes(
+        sign_test_pe(make_test_pe(b"changed installer payload"), production_inputs["authority"])
+    )
+    new_hash = hashlib.sha256(production_inputs["installer"].read_bytes()).hexdigest()
+    assert new_hash != old_hash
+    result = _run_production(
+        tmp_path / "second", production_inputs, [], overwrite={"installer_sha256": new_hash}
+    )
+    assert result.returncode == 0, result.stderr
+    sums_after = (tmp_path / "second/dist/channel/SHA256SUMS").read_text()
+    assert f"{old_hash}  {production_inputs['installer'].name}" in sums_before
+    assert f"{new_hash}  {production_inputs['installer'].name}" in sums_after
+    assert old_hash not in sums_after
+
+
+@pytest.mark.parametrize("asset", ["installer", "attestation"])
+def test_missing_production_release_asset_refuses_publication(
+    production_inputs: dict, tmp_path: Path, asset: str
+) -> None:
+    option = "--installer" if asset == "installer" else "--authenticode-attestation"
+    result = _run_production(tmp_path, production_inputs, [option, str(tmp_path / "missing")])
+    assert result.returncode != 0
+    assert not (tmp_path / "dist/channel/SHA256SUMS").exists()
+    assert not (tmp_path / "dist/channel/update-channel.json").exists()
+    assert not list((tmp_path / "dist/channel").glob("*.zip"))
+
+
+def test_unrelated_timestamp_root_still_fails_chain_validation(tmp_path: Path) -> None:
+    inputs = _two_ca_production_inputs(tmp_path, tsa_root_reuse=False)
+    inputs["timestamp_roots"].write_bytes(create_test_authority("Unrelated TSA").ca_pem())
     result = _run_production(tmp_path, inputs, [])
     assert result.returncode != 0
     assert "untrusted_root" in result.stderr

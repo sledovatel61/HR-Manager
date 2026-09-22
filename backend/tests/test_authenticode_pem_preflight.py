@@ -27,6 +27,7 @@ from authenticode import (  # type: ignore[import-not-found]  # noqa: E402
     load_pem_certificates,
 )
 from sign_authenticode import (  # type: ignore[import-not-found]  # noqa: E402
+    EphemeralAuthority,
     create_test_authority,
     make_test_pe,
     sign_test_pe,
@@ -67,7 +68,17 @@ def _ephemeral_signing_key(tmp_path: Path) -> tuple[Path, Path]:
 def _production_inputs(tmp_path: Path) -> dict[str, Path]:
     from cryptography.hazmat.primitives import hashes
 
-    authority = create_test_authority(PUBLISHER)
+    signer_ca = create_test_authority(PUBLISHER)
+    tsa_ca = create_test_authority("Independent TSA")
+    authority = EphemeralAuthority(
+        ca_certificate=signer_ca.ca_certificate,
+        ca_key=signer_ca.ca_key,
+        leaf_certificate=signer_ca.leaf_certificate,
+        leaf_key=signer_ca.leaf_key,
+        tsa_certificate=tsa_ca.tsa_certificate,
+        tsa_key=tsa_ca.tsa_key,
+        publisher=PUBLISHER,
+    )
     installer = tmp_path / "HR-Manager-Setup-0.14.0.exe"
     installer.write_bytes(sign_test_pe(make_test_pe(), authority))
     installer_sha = hashlib.sha256(installer.read_bytes()).hexdigest()
@@ -91,7 +102,7 @@ def _production_inputs(tmp_path: Path) -> dict[str, Path]:
     roots = tmp_path / "authenticode-roots.pem"
     roots.write_bytes(authority.ca_pem())
     timestamp_roots = tmp_path / "authenticode-timestamp-roots.pem"
-    timestamp_roots.write_bytes(authority.ca_pem())
+    timestamp_roots.write_bytes(tsa_ca.ca_pem())
     attestation_path = tmp_path / "attestation.json"
     attestation_path.write_text(json.dumps(attestation), encoding="utf-8")
     return {
@@ -437,3 +448,58 @@ def test_sign_ps1_preflight_runs_before_signtool_and_fail_closes() -> None:
         assert "$compact" not in line
         assert "$bytes" not in line
         assert "$der" not in line
+
+
+@pytest.mark.parametrize("formatting", ["identical", "crlf-rewrapped", "bundle"])
+def test_production_rejects_overlapping_der_roots(tmp_path: Path, formatting: str) -> None:
+    import base64
+    import textwrap
+
+    from cryptography.hazmat.primitives import serialization
+
+    inputs = _production_inputs(tmp_path)
+    signer_pem = inputs["roots"].read_bytes()
+    if formatting == "crlf-rewrapped":
+        cert = load_pem_certificates(inputs["roots"])[0]
+        body = base64.b64encode(cert.public_bytes(serialization.Encoding.DER)).decode()
+        signer_pem = (
+            "\r\n  -----BEGIN CERTIFICATE-----\r\n"
+            + "\r\n".join(textwrap.wrap(body, 40))
+            + "\r\n-----END CERTIFICATE-----  \r\n"
+        ).encode()
+        assert signer_pem != inputs["roots"].read_bytes()
+    elif formatting == "bundle":
+        signer_pem = inputs["timestamp_roots"].read_bytes() + signer_pem
+    inputs["timestamp_roots"].write_bytes(signer_pem)
+    result = _run_publish(tmp_path, inputs, [])
+    _assert_not_published(tmp_path, result, "overlapping_trust_roots")
+    assert not (tmp_path / "dist/channel/SHA256SUMS").exists()
+    assert not (tmp_path / "dist/channel/release-metadata.json").exists()
+
+
+@pytest.mark.parametrize("role", ["roots", "timestamp_roots"])
+@pytest.mark.parametrize("damage", ["bom", "private", "truncated", "invalid-utf8"])
+def test_production_rejects_damaged_root_sets(tmp_path: Path, role: str, damage: str) -> None:
+    inputs = _production_inputs(tmp_path)
+    original = inputs[role].read_bytes()
+    damaged = {
+        "bom": b"\xef\xbb\xbf" + original,
+        "private": original + b"-----BEGIN PRIVATE KEY-----\nAAAA\n",
+        "truncated": original.replace(b"-----END CERTIFICATE-----", b""),
+        "invalid-utf8": b"\xff" + original,
+    }[damage]
+    inputs[role].write_bytes(damaged)
+    _assert_not_published(tmp_path, _run_publish(tmp_path, inputs, []), "bad_root")
+
+
+def test_disjoint_root_policy_compares_all_der_fingerprints(tmp_path: Path) -> None:
+    from authenticode import assert_disjoint_roots
+
+    a = create_test_authority("Signer").ca_certificate
+    b = create_test_authority("TSA").ca_certificate
+    assert_disjoint_roots([a], [b])
+    with pytest.raises(AuthentiCodeError, match="пересекаются"):
+        assert_disjoint_roots([a, b], [b])
+    with pytest.raises(AuthentiCodeError) as error:
+        assert_disjoint_roots([], [b])
+    assert error.value.code == "empty_trust_roots"
