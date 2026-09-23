@@ -468,25 +468,59 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # On Windows, RUNNER_TEMP is Windows path; try both slash variants and also /d/a/_temp style
-          for p in "$RUNNER_TEMP/engine.log" "$RUNNER_TEMP\\engine.log" "/tmp/engine.log"; do
+          set -x
+          echo "RUNNER_TEMP=$RUNNER_TEMP"
+          ls -la "$RUNNER_TEMP" 2>&1 | head -n 50 || true
+          LOG=""
+          for p in "$RUNNER_TEMP/engine.log" "$RUNNER_TEMP\\engine.log"; do
             if [ -f "$p" ]; then LOG="$p"; break; fi
           done
-          # Also try to find file via powershell temp dir listing
-          ls -la "$RUNNER_TEMP" 2>&1 | head -n 20 || true
-          if [ -n "${LOG:-}" ] && [ -f "$LOG" ]; then
-            echo "### Windows engine tests failed" > /tmp/comment.md
-            echo '```' >> /tmp/comment.md
-            tail -n 500 "$LOG" >> /tmp/comment.md || true
-            echo '```' >> /tmp/comment.md
-            gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md || true
-          else
-            echo "### Windows engine tests failed (no log at $RUNNER_TEMP)" > /tmp/comment.md
-            echo '```' >> /tmp/comment.md
-            ls -la "$RUNNER_TEMP" 2>&1 | tail -n 100 >> /tmp/comment.md || true
-            echo '```' >> /tmp/comment.md
-            gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md || true
+          if [ -z "$LOG" ]; then
+            # Try to find any engine.log via find
+            FOUND=$(find "$RUNNER_TEMP" -maxdepth 2 -name "engine.log" 2>/dev/null | head -n1)
+            if [ -n "$FOUND" ]; then LOG="$FOUND"; fi
           fi
+          echo "LOG=$LOG"
+          if [ -n "$LOG" ] && [ -f "$LOG" ]; then
+            TAIL=$(tail -n 500 "$LOG" 2>&1 | head -c 60000)
+          else
+            TAIL="no log found, listing temp: $(ls -la \"$RUNNER_TEMP\" 2>&1 | tail -n 100 | head -c 10000)"
+          fi
+          # Build JSON payload with jq or manual escaping
+          # Use python to create JSON to avoid escaping issues
+          python - <<PY2
+import json, os
+tail = os.environ.get('TAIL_CONTENT','')
+# Actually read from env var file
+import pathlib
+# We'll read tail from file /tmp/tail.txt if exists
+try:
+    txt = pathlib.Path('/tmp/tail_content.txt').read_text(encoding='utf-8', errors='ignore')
+except:
+    txt = os.environ.get('TAIL_FALLBACK','no log')
+body = f"### Windows engine tests failed\n```\n{txt[:60000]}\n```\n"
+print(body[:2000])
+# Write payload
+payload = {"body": body}
+pathlib.Path('/tmp/payload.json').write_text(json.dumps(payload), encoding='utf-8')
+PY2
+          # Prepare tail content
+          if [ -n "$LOG" ] && [ -f "$LOG" ]; then
+            tail -n 500 "$LOG" > /tmp/tail_content.txt 2>&1 || echo "no log" > /tmp/tail_content.txt
+          else
+            ls -la "$RUNNER_TEMP" > /tmp/tail_content.txt 2>&1 || true
+          fi
+          python - <<'PY2'
+import json, pathlib
+txt = pathlib.Path('/tmp/tail_content.txt').read_text(encoding='utf-8', errors='ignore')
+body = f"### Windows engine tests failed\n```\n{txt[:60000]}\n```\n"
+pathlib.Path('/tmp/payload.json').write_text(json.dumps({"body": body}), encoding='utf-8')
+print(f"payload size {len(body)}")
+PY2
+          curl -s -X POST -H "Authorization: token $GH_TOKEN" -H "Content-Type: application/json" -d @/tmp/payload.json "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" || true
+          # Also try gh if available
+          which gh && gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/tail_content.txt || true
+
       - name: Upload Windows engine log
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
