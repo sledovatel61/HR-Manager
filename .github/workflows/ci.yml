@@ -454,18 +454,26 @@ jobs:
         shell: powershell
         run: |
           $log = Join-Path $env:RUNNER_TEMP "engine.log"
-          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP log=$log"
-          Get-ChildItem $env:RUNNER_TEMP | Select-Object -First 20 | Write-Host
-          powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 2>&1 | Tee-Object -FilePath $log -Encoding utf8
+          $log2 = Join-Path $env:GITHUB_WORKSPACE "engine.log"
+          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP log=$log log2=$log2 workspace=$env:GITHUB_WORKSPACE"
+          Get-ChildItem $env:RUNNER_TEMP | Select-Object -First 20 | Format-List | Out-String | Write-Host
+          powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 2>&1 | Tee-Object -FilePath $log -FilePath $log2 -Encoding utf8
           $code = $LASTEXITCODE
-          Write-Host "exit code $code, log exists $(Test-Path $log)"
-          Get-ChildItem $env:RUNNER_TEMP -Filter "engine.log" | Write-Host
+          Write-Host "exit code $code, log exists $(Test-Path $log) log2 $(Test-Path $log2)"
+          if (Test-Path $log) { Get-ChildItem $log | Format-List | Out-String | Write-Host }
+          if (Test-Path $log2) { Get-ChildItem $log2 | Format-List | Out-String | Write-Host }
           if ($code -ne 0) {
             if (Test-Path $log) {
               Get-Content $log -Tail 200 | Write-Host
               "### Windows engine tests failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
               '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
               Get-Content $log -Tail 500 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            } elseif (Test-Path $log2) {
+              Get-Content $log2 -Tail 200 | Write-Host
+              "### Windows engine tests failed (log2)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              Get-Content $log2 -Tail 500 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
               '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             } else {
               "### Windows engine tests failed (no log)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
@@ -480,10 +488,15 @@ jobs:
             const fs = require('fs');
             const path = require('path');
             const temp = process.env.RUNNER_TEMP || '';
+            const ws = process.env.GITHUB_WORKSPACE || '';
             const candidates = [
               path.join(temp, 'engine.log'),
               `${temp}/engine.log`,
-              `${temp}\\engine.log`
+              `${temp}\\engine.log`,
+              path.join(ws, 'engine.log'),
+              `${ws}/engine.log`,
+              'engine.log',
+              './engine.log'
             ];
             let content = '';
             let found = '';
@@ -495,13 +508,14 @@ jobs:
             if (!content) {
               try {
                 const files = fs.readdirSync(temp);
-                content = 'No engine.log found. Temp files:\n' + files.slice(0,50).join('\n');
+                const wsFiles = fs.existsSync(ws) ? fs.readdirSync(ws).slice(0,50) : [];
+                content = `No engine.log found. Temp files:\n${files.slice(0,50).join('\n')}\nWorkspace files:\n${wsFiles.join('\n')}`;
               } catch (e) {
                 content = 'No engine.log and cannot list temp: ' + e.message;
               }
             } else {
               const lines = content.split('\n');
-              content = lines.slice(-500).join('\n');
+              content = lines.slice(-800).join('\n');
             }
             const body = `### Windows engine tests failed (log: ${found})\n\`\`\`\n${content.slice(0,60000)}\n\`\`\`\n`;
             await github.rest.issues.createComment({
