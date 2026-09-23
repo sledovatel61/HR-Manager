@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 env:
   PYTHON_VERSION: "3.12"
@@ -45,36 +44,7 @@ jobs:
       - name: Mypy typecheck
         run: mypy app tests
       - name: Unit tests
-        run: |
-          pytest -m "not integration" -v 2>&1 | tee /tmp/pytest.log
-          status=${PIPESTATUS[0]}
-          if [ $status -ne 0 ]; then
-            echo "=== pytest failures ==="
-            tail -n 500 /tmp/pytest.log
-            echo "### Pytest failures" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -n 1000 /tmp/pytest.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            exit $status
-          fi
-      - name: Upload pytest log on failure
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: pytest-log
-          path: /tmp/pytest.log
-          if-no-files-found: warn
-      - name: Post failure to PR comment (for debugging)
-        if: failure() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tail -n 200 /tmp/pytest.log > /tmp/tail.log
-          echo "### Backend unit tests failed" > /tmp/comment.md
-          echo '```' >> /tmp/comment.md
-          cat /tmp/tail.log >> /tmp/comment.md
-          echo '```' >> /tmp/comment.md
-          gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md || true
+        run: pytest -m "not integration" -v
       - name: PowerShell structural lint (engine + installer scripts)
         working-directory: .
         run: |
@@ -82,29 +52,7 @@ jobs:
           # Здесь — кросс-платформенная структурная проверка (баланс скобок,
           # кодировка, секреты-литералы, запрещённые вызовы), чтобы сломанный
           # скрипт не доезжал до Windows-джобы.
-          python infra/windows/tests/lint-engine.py 2>&1 | tee /tmp/lint-engine.log
-          status=${PIPESTATUS[0]}
-          if [ $status -ne 0 ]; then
-            cat /tmp/lint-engine.log
-            echo "### PowerShell lint failed" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            cat /tmp/lint-engine.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            exit $status
-          fi
-      - name: Post PowerShell lint failure to PR comment
-        if: failure() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -f /tmp/lint-engine.log ]; then
-            tail -n 200 /tmp/lint-engine.log > /tmp/tail.log
-            echo "### PowerShell lint failed" > /tmp/comment.md
-            echo '```' >> /tmp/comment.md
-            cat /tmp/tail.log >> /tmp/comment.md
-            echo '```' >> /tmp/comment.md
-            gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md || true
-          fi
+          python infra/windows/tests/lint-engine.py
       - name: Phase 14 pilot drill (release policy + channel refusals + readiness)
         working-directory: .
         run: |
@@ -272,28 +220,7 @@ jobs:
           BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/postgres
           BACKUP_PGDUMP_BIN: pg_dump
           BACKUP_RESTORE_BIN: pg_restore
-        run: |
-          pytest -m integration -v 2>&1 | tee /tmp/integration.log
-          status=${PIPESTATUS[0]}
-          if [ $status -ne 0 ]; then
-            tail -n 500 /tmp/integration.log
-            echo "### Integration tests failed" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -n 1000 /tmp/integration.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            exit $status
-          fi
-      - name: Post integration failure to PR comment
-        if: failure() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tail -n 200 /tmp/integration.log > /tmp/tail.log
-          echo "### Integration tests failed" > /tmp/comment.md
-          echo '```' >> /tmp/comment.md
-          cat /tmp/tail.log >> /tmp/comment.md
-          echo '```' >> /tmp/comment.md
-          gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md || true
+        run: pytest -m integration -v
       - name: Phase 14 pilot drill (encrypted backup + restore into isolated DB)
         working-directory: .
         env:
@@ -415,8 +342,6 @@ jobs:
       PYTHONIOENCODING: utf-8
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -452,97 +377,7 @@ jobs:
 
       - name: PowerShell engine tests (Windows PowerShell 5.1)
         shell: powershell
-        run: |
-          $log = Join-Path $env:RUNNER_TEMP "engine.log"
-          $log2 = Join-Path $env:GITHUB_WORKSPACE "engine.log"
-          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP log=$log log2=$log2 workspace=$env:GITHUB_WORKSPACE"
-          Get-ChildItem $env:RUNNER_TEMP | Select-Object -First 20 | Format-List | Out-String | Write-Host
-          # Run tests directly in this session to capture output and exit code reliably
-          $scriptPath = Join-Path $env:GITHUB_WORKSPACE "infra\windows\tests\run-tests.ps1"
-          Write-Host "scriptPath=$scriptPath exists $(Test-Path $scriptPath)"
-          $output = & $scriptPath *>&1 | Out-String
-          $code = $LASTEXITCODE
-          if ($null -eq $code) { $code = 0 }
-          # Fallback: if LASTEXITCODE not set, check $global:HRM_TestFailed from harness
-          $output | Out-File -FilePath $log -Encoding utf8
-          $output | Out-File -FilePath $log2 -Encoding utf8
-          Write-Host $output
-          Write-Host "exit code $code, log exists $(Test-Path $log) log2 $(Test-Path $log2)"
-          if (Test-Path $log) { Get-ChildItem $log | Format-List | Out-String | Write-Host }
-          if (Test-Path $log2) { Get-ChildItem $log2 | Format-List | Out-String | Write-Host }
-          # Also write a marker file to prove workspace write works
-          "test marker" | Out-File -FilePath (Join-Path $env:GITHUB_WORKSPACE "marker.txt") -Encoding utf8
-          if ($code -ne 0 -or $output -match "\[FAIL\]" -or $output -match "ЕСТЬ ПРОВАЛЫ") {
-            if (Test-Path $log) {
-              Get-Content $log -Tail 200 | Write-Host
-              "### Windows engine tests failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-              '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-              Get-Content $log -Tail 500 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-              '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            } elseif (Test-Path $log2) {
-              Get-Content $log2 -Tail 200 | Write-Host
-              "### Windows engine tests failed (log2)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-              '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-              Get-Content $log2 -Tail 500 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-              '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            } else {
-              "### Windows engine tests failed (no log)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            }
-            if ($code -eq 0) { $code = 1 }
-            exit $code
-          }
-      - name: Post Windows failure to PR comment
-        if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const temp = process.env.RUNNER_TEMP || '';
-            const ws = process.env.GITHUB_WORKSPACE || '';
-            const candidates = [
-              path.join(temp, 'engine.log'),
-              `${temp}/engine.log`,
-              `${temp}\\engine.log`,
-              path.join(ws, 'engine.log'),
-              `${ws}/engine.log`,
-              'engine.log',
-              './engine.log'
-            ];
-            let content = '';
-            let found = '';
-            for (const p of candidates) {
-              try {
-                if (fs.existsSync(p)) { content = fs.readFileSync(p, 'utf8'); found = p; break; }
-              } catch {}
-            }
-            if (!content) {
-              try {
-                const files = fs.readdirSync(temp);
-                const wsFiles = fs.existsSync(ws) ? fs.readdirSync(ws).slice(0,50) : [];
-                content = `No engine.log found. Temp files:\n${files.slice(0,50).join('\n')}\nWorkspace files:\n${wsFiles.join('\n')}`;
-              } catch (e) {
-                content = 'No engine.log and cannot list temp: ' + e.message;
-              }
-            } else {
-              const lines = content.split('\n');
-              content = lines.slice(-800).join('\n');
-            }
-            const body = `### Windows engine tests failed (log: ${found})\n\`\`\`\n${content.slice(0,60000)}\n\`\`\`\n`;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: body
-            });
-
-      - name: Upload Windows engine log
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: windows-engine-log
-          path: ${{ runner.temp }}\engine.log
-          if-no-files-found: warn
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
 
       - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
