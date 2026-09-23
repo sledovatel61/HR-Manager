@@ -415,6 +415,8 @@ jobs:
       PYTHONIOENCODING: utf-8
     permissions:
       contents: read
+      pull-requests: write
+      issues: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -452,14 +454,22 @@ jobs:
         shell: powershell
         run: |
           $log = Join-Path $env:RUNNER_TEMP "engine.log"
+          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP log=$log"
+          Get-ChildItem $env:RUNNER_TEMP | Select-Object -First 20 | Write-Host
           powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 2>&1 | Tee-Object -FilePath $log -Encoding utf8
           $code = $LASTEXITCODE
+          Write-Host "exit code $code, log exists $(Test-Path $log)"
+          Get-ChildItem $env:RUNNER_TEMP -Filter "engine.log" | Write-Host
           if ($code -ne 0) {
-            Get-Content $log -Tail 200 | Write-Host
-            "### Windows engine tests failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            Get-Content $log -Tail 500 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            if (Test-Path $log) {
+              Get-Content $log -Tail 200 | Write-Host
+              "### Windows engine tests failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              Get-Content $log -Tail 500 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            } else {
+              "### Windows engine tests failed (no log)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            }
             exit $code
           }
       - name: Post Windows failure to PR comment
