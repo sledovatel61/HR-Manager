@@ -452,6 +452,13 @@ jobs:
             $body | Out-File -FilePath $env:RUNNER_TEMP\comment.md -Encoding utf8
             gh pr comment ${{ github.event.pull_request.number }} --body-file $env:RUNNER_TEMP\comment.md 2>&1 | Write-Host
           }
+      - name: Upload Windows engine log
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-engine-log
+          path: ${{ runner.temp }}/engine.log
+          if-no-files-found: warn
 
       - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
