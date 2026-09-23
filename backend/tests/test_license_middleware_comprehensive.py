@@ -423,6 +423,7 @@ def test_public_key_chain_evidence() -> None:
     assert pub_b64 not in content
     assert fp in content
 
+
 def test_fail_closed_empty_public_key_middleware() -> None:
     """Direct middleware test: empty LICENSE_PUBLIC_KEY in pilot must block."""
     engine = create_engine(
