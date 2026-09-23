@@ -250,7 +250,28 @@ jobs:
           BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://hr_manager:hr_manager_ci_password@localhost:5432/postgres
           BACKUP_PGDUMP_BIN: pg_dump
           BACKUP_RESTORE_BIN: pg_restore
-        run: pytest -m integration -v
+        run: |
+          pytest -m integration -v 2>&1 | tee /tmp/integration.log
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            tail -n 500 /tmp/integration.log
+            echo "### Integration tests failed" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 1000 /tmp/integration.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit $status
+          fi
+      - name: Post integration failure to PR comment
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tail -n 200 /tmp/integration.log > /tmp/tail.log
+          echo "### Integration tests failed" > /tmp/comment.md
+          echo '```' >> /tmp/comment.md
+          cat /tmp/tail.log >> /tmp/comment.md
+          echo '```' >> /tmp/comment.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md || true
       - name: Phase 14 pilot drill (encrypted backup + restore into isolated DB)
         working-directory: .
         env:
@@ -407,7 +428,30 @@ jobs:
 
       - name: PowerShell engine tests (Windows PowerShell 5.1)
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 2>&1 | Tee-Object -FilePath $env:RUNNER_TEMP\engine.log -Encoding utf8
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Get-Content $env:RUNNER_TEMP\engine.log -Tail 200 | Write-Host
+            "### Windows engine tests failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            "```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Get-Content $env:RUNNER_TEMP\engine.log -Tail 500 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            "```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit $code
+          }
+      - name: Post Windows failure to PR comment
+        if: failure() && github.event_name == 'pull_request'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP "engine.log"
+          if (Test-Path $log) {
+            $tail = Get-Content $log -Tail 200 | Out-String
+            $body = "### Windows engine tests failed`n````n$tail`n````n"
+            $body | Out-File -FilePath $env:RUNNER_TEMP\comment.md -Encoding utf8
+            gh pr comment ${{ github.event.pull_request.number }} --body-file $env:RUNNER_TEMP\comment.md 2>&1 | Write-Host
+          }
 
       - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
