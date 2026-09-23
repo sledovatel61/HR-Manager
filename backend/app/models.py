@@ -2277,5 +2277,8 @@ class License(Base):
     uploaded_by: Mapped[User | None] = relationship(foreign_keys=[uploaded_by_user_id])
 
     def __repr__(self) -> str:  # pragma: no cover
-        return f"<License id={self.license_id} client={self.client_name!r} expires={self.expires_at}>"
+        return (
+            f"<License id={self.license_id} "
+            f"client={self.client_name!r} expires={self.expires_at}>"
+        )
 

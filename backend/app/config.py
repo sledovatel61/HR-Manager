@@ -455,11 +455,17 @@ class Settings(BaseSettings):
         url = make_url(self.database_url)
 
         # License public key: env first, then file fallback for pilot/production.
-        # File is baked by owner via installer/build.ps1 -> infra/license/public_key.b64 (public only).
+        # File is baked by owner via installer -> infra/license/public_key.b64
+        # (public only).
         license_key = (self.license_public_key or "").strip()
         if not license_key and (self.is_pilot or self.is_production):
             try:
-                candidate = Path(__file__).resolve().parents[2] / "infra" / "license" / "public_key.b64"
+                candidate = (
+                    Path(__file__).resolve().parents[2]
+                    / "infra"
+                    / "license"
+                    / "public_key.b64"
+                )
                 if candidate.is_file():
                     file_content = candidate.read_text(encoding="utf-8").strip()
                     if file_content:
@@ -477,7 +483,8 @@ class Settings(BaseSettings):
                     )
             except Exception:
                 problems.append(
-                    f"LICENSE_PUBLIC_KEY must be valid base64 ({LICENSE_PUBLIC_KEY_BASE64_LENGTH} chars)"
+                    f"LICENSE_PUBLIC_KEY must be valid base64 "
+                    f"({LICENSE_PUBLIC_KEY_BASE64_LENGTH} chars)"
                 )
 
         # SQLite is allowed ONLY for isolated unit tests (APP_ENV=test).
@@ -499,7 +506,9 @@ class Settings(BaseSettings):
             # Pilot/production must have a license public key (no disabled check)
             if not license_key:
                 problems.append(
-                    f"LICENSE_PUBLIC_KEY must be set in {label} (env LICENSE_PUBLIC_KEY or file infra/license/public_key.b64 baked by owner)"
+                    f"LICENSE_PUBLIC_KEY must be set in {label} "
+                    "(env LICENSE_PUBLIC_KEY or file "
+                    "infra/license/public_key.b64 baked by owner)"
                 )
             if not self.secret_key or self.secret_key == DEVELOPMENT_SECRET_KEY:
                 problems.append(f"SECRET_KEY must be set to a non-default value in {label}")
