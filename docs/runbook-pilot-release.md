@@ -88,7 +88,10 @@
 4. Tag protection rules: разрешить создание тегов только владельцу/CI и
    ограничить шаблоном `v[0-9]+.[0-9]+.[0-9]+` (SemVer).
 5. Проверить, что CI на `main` зелёный: релиз отказывается собираться без
-   успешного прогона CI для того же SHA.
+   успешного прогона CI для того же SHA. CI gate для exact release SHA
+   выполняется отдельным job `ci-gate` (без environment и без secrets) ДО
+   production signing inputs и до signing job `windows-installer`: без
+   зелёного CI точного SHA production-подпись не начинается.
 
 ### PEM-корни Authenticode — два разных набора
 
