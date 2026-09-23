@@ -82,7 +82,29 @@ jobs:
           # Здесь — кросс-платформенная структурная проверка (баланс скобок,
           # кодировка, секреты-литералы, запрещённые вызовы), чтобы сломанный
           # скрипт не доезжал до Windows-джобы.
-          python infra/windows/tests/lint-engine.py
+          python infra/windows/tests/lint-engine.py 2>&1 | tee /tmp/lint-engine.log
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            cat /tmp/lint-engine.log
+            echo "### PowerShell lint failed" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat /tmp/lint-engine.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit $status
+          fi
+      - name: Post PowerShell lint failure to PR comment
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f /tmp/lint-engine.log ]; then
+            tail -n 200 /tmp/lint-engine.log > /tmp/tail.log
+            echo "### PowerShell lint failed" > /tmp/comment.md
+            echo '```' >> /tmp/comment.md
+            cat /tmp/tail.log >> /tmp/comment.md
+            echo '```' >> /tmp/comment.md
+            gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md || true
+          fi
       - name: Phase 14 pilot drill (release policy + channel refusals + readiness)
         working-directory: .
         run: |
@@ -434,9 +456,9 @@ jobs:
           if ($code -ne 0) {
             Get-Content $env:RUNNER_TEMP\engine.log -Tail 200 | Write-Host
             "### Windows engine tests failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            "```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             Get-Content $env:RUNNER_TEMP\engine.log -Tail 500 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            "```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             exit $code
           }
       - name: Post Windows failure to PR comment
@@ -448,7 +470,8 @@ jobs:
           $log = Join-Path $env:RUNNER_TEMP "engine.log"
           if (Test-Path $log) {
             $tail = Get-Content $log -Tail 200 | Out-String
-            $body = "### Windows engine tests failed`n````n$tail`n````n"
+            $fence = '```'
+            $body = "### Windows engine tests failed`n$fence`n$tail`n$fence`n"
             $body | Out-File -FilePath $env:RUNNER_TEMP\comment.md -Encoding utf8
             gh pr comment ${{ github.event.pull_request.number }} --body-file $env:RUNNER_TEMP\comment.md 2>&1 | Write-Host
           }
