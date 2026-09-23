@@ -1,10 +1,11 @@
 # Final Verdict — Offline Licensing for Windows Pilot — PR #34 — Security-fix Pass
 
 ## Exact SHAs
-- **HEAD SHA**: `e51fc046ae35a1231d0caba42606191b8a01b2f9` (security-fix: fail-closed empty key, middleware order, real chain evidence, BLOCKED Windows)
+- **HEAD SHA**: `eb276c5709a3a00fd2bd139842c9f0c772db3afc` (security-fix: fail-closed empty key, middleware order, real chain evidence, BLOCKED Windows + docs final)
+- **Previous green SHA**: `e51fc046ae35a1231d0caba42606191b8a01b2f9` (security-fix pass)
 - **Base SHA**: `efb88d978440a0aae1940005fddffc7e465ad9ef` (origin/main)
 - **Base is ancestor**: YES, PR not outdated
-- **Last green CI**: `35884085961` success for e51fc04 (all 6 jobs: backend checks, integration, frontend, release policy, windows, compose)
+- **Last green CI**: `35884924437` success for eb276c5 (all 6 jobs: backend checks, integration, frontend, release policy, windows, compose) — previous 35884085961 success for e51fc04
 
 ## Security Fixes Implemented
 
@@ -55,12 +56,13 @@
 ## Mandatory Checks — PASS/FAIL/BLOCKED/NOT RUN
 
 ### PASS
-- Backend checks: success (ruff check PASS, ruff format PASS, mypy PASS for app/main.py + license_guard.py, pytest 798 non-integration PASS, lint-engine 19 PASS, pilot drill PASS)
-- Backend integration: success (105 tests, includes migration 0014)
-- Frontend checks: success
-- Release pipeline fail-closed policy: success
-- Windows engine tests + installer smoke: success (includes static 22 PASS, secrets, preflight, install, update, channel, installer-roots)
-- Compose smoke: success
+- Backend checks: success (ruff check PASS, ruff format PASS, mypy PASS for app/main.py + license_guard.py, pytest 798 non-integration PASS, lint-engine 19 PASS, pilot drill PASS) — verified run 35884924437
+- Backend integration: success (105 tests, includes migration 0014) — run 35884924437
+- Frontend checks: success — run 35884924437
+- Release pipeline fail-closed policy: success — run 35884924437
+- Windows engine tests + installer smoke: success (includes static 22 PASS, secrets, preflight, install, update, channel, installer-roots) — run 35884924437
+- Compose smoke: success — run 35884924437
+- Offline issuer CLI: PASS — Linux offline verification: `cli.py gen-keypair` → `public_key.b64` + `issue` → `.hrmlicense` JSON (license_id UUID, client_name, issued_at ISO8601Z, expires_at YYYY-MM-DD inclusive, max_users, Ed25519 128hex sig) → `verify` PASS, no network, no private key in logs (tested via /tmp/venv cryptography)
 - Direct license middleware comprehensive: 15 tests PASS
   - Protected endpoints /candidates, /api/candidates, /events, /api/events, /admin, /api/admin, /users, /api/users, /documents, /api/documents, /analytics, /api/analytics, /license/status, /api/license/status, /auth/login, /api/auth/login, /setup/..., /api/setup/... 
   - Allowed recovery 200, protected 403 no_license
