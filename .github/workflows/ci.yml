@@ -50,6 +50,10 @@ jobs:
           if [ $status -ne 0 ]; then
             echo "=== pytest failures ==="
             tail -n 500 /tmp/pytest.log
+            echo "### Pytest failures" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 1000 /tmp/pytest.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
             exit $status
           fi
       - name: Upload pytest log on failure
