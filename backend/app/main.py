@@ -68,6 +68,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class ApiPrefixStripMiddleware(BaseHTTPMiddleware):
+    """Strip /api prefix for compatibility with nginx rewrite and direct tests.
+
+    In production nginx rewrites /api/(.*) -> /$1. For direct TestClient calls
+    and for defense-in-depth, we also handle /api prefix inside the app so that
+    /api/candidates and /candidates behave identically.
+    """
+
+    async def dispatch(self, request: Request, call_next: object) -> Response:
+        path = request.scope.get("path", "")
+        while "//" in path:
+            path = path.replace("//", "/")
+        if path.startswith("/api/"):
+            request.scope["path"] = path[4:] or "/"
+        elif path == "/api":
+            request.scope["path"] = "/"
+        return await call_next(request)
+
+
 class MetricsMiddleware(BaseHTTPMiddleware):
     """Record aggregate request metrics (route template + status class only)."""
 
@@ -136,6 +155,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     from app.license_guard import LicenseGuardMiddleware
 
     app.add_middleware(LicenseGuardMiddleware)
+    # Strip /api prefix for direct API calls (nginx also does rewrite)
+    app.add_middleware(ApiPrefixStripMiddleware)
 
     app.include_router(health.router)
     app.include_router(ops.router)

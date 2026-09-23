@@ -1,0 +1,71 @@
+{
+  "fingerprint": "SHA256:31c719faf68d0cb2... (redacted)",
+  "public_key_b64_length": 44,
+  "public_key_b64_example": "MGMg3zxP...7hM= (redacted, 44 chars)",
+  "chain": [
+    {
+      "file": "tools/license-issuer/build.ps1",
+      "exists": true,
+      "size": 12766,
+      "sha256_prefix": "b31ff5eb3be6..."
+    },
+    {
+      "file": "tools/license-issuer/license-issuer.html",
+      "exists": true,
+      "size": 17087,
+      "sha256_prefix": "d8b39349bf86..."
+    },
+    {
+      "file": "tools/license-issuer/nacl-fast.js",
+      "exists": true,
+      "size": 61966,
+      "sha256_prefix": "6bcd37a3b20d..."
+    },
+    {
+      "file": "infra/windows/engine/Secrets.psm1",
+      "exists": true,
+      "size": 11470,
+      "sha256_prefix": "c771145bad06..."
+    },
+    {
+      "file": "infra/compose.pilot.yml",
+      "exists": true,
+      "size": 7777,
+      "sha256_prefix": "73ab469fde8b..."
+    },
+    {
+      "file": "backend/app/config.py",
+      "exists": true,
+      "size": 38120,
+      "sha256_prefix": "7dfca46dd351..."
+    },
+    {
+      "file": "backend/app/license_guard.py",
+      "exists": true,
+      "size": 7998,
+      "sha256_prefix": "2406ba776bff..."
+    },
+    {
+      "file": "backend/app/services/license_service.py",
+      "exists": true,
+      "size": 9806,
+      "sha256_prefix": "3ff96fe555a9..."
+    }
+  ],
+  "checks": {
+    "tools/license-issuer/build.ps1": true,
+    "tools/license-issuer/license-issuer.html": true,
+    "tools/license-issuer/nacl-fast.js": true,
+    "infra/windows/engine/Secrets.psm1": true,
+    "infra/compose.pilot.yml": true,
+    "backend/app/config.py": true,
+    "backend/app/license_guard.py": true,
+    "backend/app/services/license_service.py": true,
+    "Secrets.psm1 has Get-HrmLicensePublicKey": true,
+    "Secrets.psm1 writes HRM_LICENSE_PUBLIC_KEY": true,
+    "compose has pilot.env reference": true,
+    "config validates LICENSE_PUBLIC_KEY": true,
+    "guard has _is_allowed with slash boundary": true,
+    "guard blocks prefix bypass": false
+  }
+}
