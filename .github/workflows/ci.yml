@@ -460,7 +460,7 @@ jobs:
           # Run tests directly in this session to capture output and exit code reliably
           $scriptPath = Join-Path $env:GITHUB_WORKSPACE "infra\windows\tests\run-tests.ps1"
           Write-Host "scriptPath=$scriptPath exists $(Test-Path $scriptPath)"
-          $output = & $scriptPath 2>&1 | Out-String
+          $output = & $scriptPath *>&1 | Out-String
           $code = $LASTEXITCODE
           if ($null -eq $code) { $code = 0 }
           # Fallback: if LASTEXITCODE not set, check $global:HRM_TestFailed from harness
