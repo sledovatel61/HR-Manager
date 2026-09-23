@@ -13,6 +13,7 @@ pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap;
 .warning { color: #a00; background: #fff0f0; border: 1px solid #a00; padding: 8px; margin: 10px 0; }
 .ok { color: #060; background: #f0fff0; border: 1px solid #0a0; padding: 8px; margin: 10px 0; }
 </style>
+<script src="nacl-fast.js"></script>
 </head>
 <body>
 <h1>HR Manager — License Issuer (офлайн, только у владельца)</h1>
@@ -21,7 +22,8 @@ pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap;
 <strong>Приватный ключ — СЕКРЕТНО, только у владельца!</strong><br>
 Никогда не коммитьте private_key в git, не добавляйте в установщик, Docker, логи, диагностический архив.<br>
 Сделайте резервную копию в зашифрованном хранилище (VeraCrypt/BitLocker/зашифрованная флешка).<br>
-Публичный ключ (base64 44 символа) скопируйте в <code>infra/license/public_key.b64</code> перед сборкой пилотного образа или в <code>HRM_LICENSE_PUBLIC_KEY</code>.
+Публичный ключ (base64 44 символа) скопируйте в <code>infra/license/public_key.b64</code> перед сборкой пилотного образа или в <code>HRM_LICENSE_PUBLIC_KEY</code>.<br>
+<strong>Автономность:</strong> этот HTML работает без интернета. Для secure context (WebCrypto) откройте через <code>run-html.bat</code> (http://localhost:8765) или https. В file:// контексте Edge может блокировать crypto.subtle — тогда используйте <code>run-gui.bat</code> или <code>run-cli.bat</code> из автономного пакета (bundled Python, без интернета, без системного Python).
 </div>
 
 <h2>1. Ключи (Ed25519)</h2>
@@ -31,7 +33,7 @@ pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap;
 <input id="privB64" type="text" readonly>
 <label>Публичный ключ (base64 44 символа, для сборки):</label>
 <input id="pubB64" type="text" placeholder="base64">
-<button onclick="genKeypair()">Сгенерировать новую пару (WebCrypto)</button>
+<button onclick="genKeypair()">Сгенерировать новую пару (WebCrypto или TweetNaCl fallback)</button>
 <button onclick="derivePubFromPriv()">Вычислить публичный из приватного (если есть priv)</button>
 
 <h2>2. Выпустить лицензию</h2>
@@ -65,11 +67,14 @@ max_active_users:&lt;число&gt;
 <p>Дата <code>expires_at</code> действует включительно до конца дня 23:59:59 UTC. Например, 2026-12-31 значит валидна до 2026-12-31T23:59:59Z.</p>
 <p>Защита от перевода часов: сервер хранит <code>last_seen_at</code> и если текущее время &lt; last_seen_at - 1 час, лицензия блокируется (best-effort).</p>
 <p>Инструкция для Марии: Настройки → Лицензия → Загрузить файл .hrmlicense или вставить JSON → Сохранить. При истечении — админ может войти и загрузить новую лицензию, данные не удаляются.</p>
-<p>Офлайн: этот HTML работает без интернета, использует WebCrypto Ed25519 (Chrome 120+, Edge 120+, Firefox 120+). Для старых браузеров — используйте Python CLI: <code>python cli.py gen-keypair</code> и <code>python cli.py issue ...</code></p>
+<p>Офлайн: этот HTML работает без интернета. WebCrypto Ed25519 поддерживается в Edge 120+, Chrome 120+, Firefox 120+ (Windows 10/11 Edge по умолчанию — OK). Для file:// контекста crypto.subtle может быть недоступен — используйте run-html.bat (http://localhost) или run-gui.bat (автономный Python, без интернета, без системного Python). Fallback TweetNaCl (nacl-fast.js) используется если WebCrypto недоступен.</p>
 
 <script>
 function base64ToBytes(b64) {
-  const bin = atob(b64.trim());
+  b64 = b64.trim().replace(/-/g,'+').replace(/_/g,'/');
+  // Pad
+  while (b64.length %4!==0) b64+='=';
+  const bin = atob(b64);
   const arr = new Uint8Array(bin.length);
   for (let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
   return arr;
@@ -101,7 +106,7 @@ function uuidv4() {
   );
 }
 
-let lastKeyPair = null; // {privateKey, publicKey, privRaw 32, pubRaw 32}
+let lastKeyPair = null; // {privateKey, publicKey, privRaw 32, pubRaw 32, naclKeyPair}
 
 function setStatus(msg, ok=true) {
   const el = document.getElementById('status');
@@ -110,30 +115,59 @@ function setStatus(msg, ok=true) {
 }
 
 async function checkSupport() {
+  const hasNacl = (typeof nacl !== 'undefined' && nacl.sign);
+  let webCryptoOk = false;
   try {
-    if (!crypto.subtle) throw new Error('crypto.subtle not available (need https or localhost)');
-    // Try generate
-    const kp = await crypto.subtle.generateKey({name: "Ed25519"}, true, ["sign","verify"]);
-    await crypto.subtle.exportKey("raw", kp.publicKey);
-    setStatus('WebCrypto Ed25519 поддерживается — офлайн подпись готова.', true);
+    if (crypto.subtle) {
+      const kp = await crypto.subtle.generateKey({name: "Ed25519"}, true, ["sign","verify"]);
+      await crypto.subtle.exportKey("raw", kp.publicKey);
+      webCryptoOk = true;
+    }
   } catch (e) {
-    setStatus('WebCrypto Ed25519 НЕ поддерживается: '+e+'. Используйте Python CLI (tools/license-issuer/cli.py) для выпуска лицензий.', false);
+    webCryptoOk = false;
+  }
+  if (webCryptoOk) {
+    setStatus('WebCrypto Ed25519 поддерживается — офлайн подпись готова (Edge 120+/Chrome 120+). Fallback TweetNaCl '+(hasNacl?'доступен':'не загружен (скачайте nacl-fast.js для file://)'), true);
+  } else if (hasNacl) {
+    setStatus('WebCrypto Ed25519 НЕ доступен (file:// без secure context или старый браузер) — используется TweetNaCl fallback (офлайн, без интернета). Для WebCrypto откройте через run-html.bat http://localhost:8765', true);
+  } else {
+    setStatus('WebCrypto Ed25519 НЕ поддерживается и TweetNaCl не загружен: скачайте nacl-fast.js (https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.js) или используйте Python CLI (run-gui.bat / run-cli.bat) из автономного пакета.', false);
   }
 }
 checkSupport();
 
 async function genKeypair() {
   try {
-    const kp = await crypto.subtle.generateKey({name: "Ed25519"}, true, ["sign","verify"]);
-    const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
-    const privPkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
-    // PKCS8 for Ed25519: last 32 bytes are seed
-    const privRaw = privPkcs8.slice(-32);
-    lastKeyPair = {privateKey: kp.privateKey, publicKey: kp.publicKey, privRaw, pubRaw};
-    document.getElementById('privHex').value = bytesToHex(privRaw);
-    document.getElementById('privB64').value = bytesToBase64(privRaw);
-    document.getElementById('pubB64').value = bytesToBase64(pubRaw);
-    setStatus('Ключи сгенерированы. СОХРАНИТЕ приватный ключ в зашифрованном хранилище!', true);
+    // Try WebCrypto first
+    if (crypto.subtle) {
+      try {
+        const kp = await crypto.subtle.generateKey({name: "Ed25519"}, true, ["sign","verify"]);
+        const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+        const privPkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
+        const privRaw = privPkcs8.slice(-32);
+        lastKeyPair = {privateKey: kp.privateKey, publicKey: kp.publicKey, privRaw, pubRaw, naclKeyPair: null};
+        document.getElementById('privHex').value = bytesToHex(privRaw);
+        document.getElementById('privB64').value = bytesToBase64(privRaw);
+        document.getElementById('pubB64').value = bytesToBase64(pubRaw);
+        setStatus('Ключи сгенерированы via WebCrypto. СОХРАНИТЕ приватный ключ в зашифрованном хранилище!', true);
+        return;
+      } catch (e) {
+        console.warn('WebCrypto gen failed, fallback to nacl', e);
+      }
+    }
+    // Fallback to TweetNaCl
+    if (typeof nacl !== 'undefined' && nacl.sign && nacl.sign.keyPair) {
+      const kp = nacl.sign.keyPair();
+      const pubRaw = kp.publicKey;
+      const privRaw = kp.secretKey.slice(0,32);
+      lastKeyPair = {privateKey: null, publicKey: null, privRaw, pubRaw, naclKeyPair: kp};
+      document.getElementById('privHex').value = bytesToHex(privRaw);
+      document.getElementById('privB64').value = bytesToBase64(privRaw);
+      document.getElementById('pubB64').value = bytesToBase64(pubRaw);
+      setStatus('Ключи сгенерированы via TweetNaCl fallback (офлайн). СОХРАНИТЕ приватный!', true);
+      return;
+    }
+    throw new Error('No WebCrypto and no nacl available');
   } catch (e) {
     alert('Ошибка генерации: '+e);
     setStatus('Ошибка: '+e, false);
@@ -145,31 +179,15 @@ async function derivePubFromPriv() {
     const privHex = document.getElementById('privHex').value.trim();
     if (!/^[0-9a-fA-F]{64}$/.test(privHex)) { alert('Приватный ключ должен быть 64 hex'); return; }
     const privRaw = hexToBytes(privHex);
-    // Import private key via PKCS8? We need to construct PKCS8 from raw.
-    // Instead, we can import via jwk or via raw? WebCrypto doesn't support raw private import for Ed25519 in all browsers, but we can try jwk.
-    // Build jwk: d = base64url of privRaw, x = will be derived? For Ed25519, we need to derive public.
-    // Simplest: use private raw to generate keypair via subtle.importKey with pkcs8 constructed.
-    // Construct PKCS8 manually: sequence as per RFC 8410
-    // 30 2e 02 01 00 30 05 06 03 2b 65 70 04 22 04 20 <32 bytes>
-    const header = new Uint8Array([0x30,0x2e,0x02,0x01,0x00,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x04,0x22,0x04,0x20]);
-    const pkcs8 = new Uint8Array(header.length + privRaw.length);
-    pkcs8.set(header,0);
-    pkcs8.set(privRaw, header.length);
-    const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, {name:"Ed25519"}, true, ["sign"]);
-    // To get public, we need to sign something? Instead, we can generate public via keypair? We have privateKey, but we need publicKey.
-    // WebCrypto doesn't give public from private directly, so we sign and then? Actually we can export public from private? No.
-    // Workaround: we can use privateKey to sign and then we need public. We can derive public by using the fact that Ed25519 public can be derived, but WebCrypto doesn't expose.
-    // So we will import again with jwk that includes x? We don't have x.
-    // Alternative: we keep lastKeyPair if we generated, but if user pasted priv, we cannot derive pub via WebCrypto easily.
-    // We'll attempt to use a small JS Ed25519 derivation via tweetnacl fallback if available, else ask user to also paste pub or use Python CLI.
     if (typeof nacl !== 'undefined' && nacl.sign && nacl.sign.keyPair && nacl.sign.keyPair.fromSeed) {
       const kp = nacl.sign.keyPair.fromSeed(privRaw);
       const pubRaw = kp.publicKey;
       document.getElementById('pubB64').value = bytesToBase64(pubRaw);
+      document.getElementById('privB64').value = bytesToBase64(privRaw);
       setStatus('Публичный ключ выведен из приватного via TweetNaCl (fallback).', true);
       return;
     }
-    alert('WebCrypto не может вывести публичный ключ из приватного напрямую. Вставьте публичный ключ вручную или используйте Python CLI: python cli.py gen-keypair или python cli.py issue --private-key ... (он выведет публичный). Для этой сессии публичный ключ нужно вставить вручную, либо сгенерировать новую пару.');
+    alert('Для вывода публичного ключа из приватного нужен TweetNaCl (nacl-fast.js). WebCrypto не может вывести напрямую. Скачайте nacl-fast.js или используйте Python CLI: python cli.py gen-keypair');
   } catch (e) {
     alert('Ошибка вывода публичного: '+e);
   }
@@ -208,9 +226,34 @@ async function issueLicense() {
       max_active_users: maxUsers
     };
     const msg = canonicalBytes(payload);
-    const {privateKey} = await importPrivateKeyFromHex(privHex);
-    const sigBuf = await crypto.subtle.sign({name:"Ed25519"}, privateKey, msg);
-    const sigBytes = new Uint8Array(sigBuf);
+    let sigBytes;
+    // Try WebCrypto
+    if (crypto.subtle) {
+      try {
+        const {privateKey} = await importPrivateKeyFromHex(privHex);
+        const sigBuf = await crypto.subtle.sign({name:"Ed25519"}, privateKey, msg);
+        sigBytes = new Uint8Array(sigBuf);
+      } catch (e) {
+        console.warn('WebCrypto sign failed, fallback nacl', e);
+        sigBytes = null;
+      }
+    }
+    if (!sigBytes) {
+      // Fallback nacl
+      if (typeof nacl !== 'undefined' && nacl.sign && nacl.sign.detached) {
+        const privRaw = hexToBytes(privHex);
+        // nacl needs 64-byte secretKey: seed + publicKey
+        let kp;
+        if (nacl.sign.keyPair.fromSeed) {
+          kp = nacl.sign.keyPair.fromSeed(privRaw);
+        } else {
+          throw new Error('nacl.sign.keyPair.fromSeed not available');
+        }
+        sigBytes = nacl.sign.detached(msg, kp.secretKey);
+      } else {
+        throw new Error('No signing method available (WebCrypto failed and nacl not loaded)');
+      }
+    }
     const result = {...payload, signature: bytesToHex(sigBytes)};
     document.getElementById('result').textContent = JSON.stringify(result, null, 2);
     setStatus('Лицензия выпущена и подписана.', true);
@@ -224,9 +267,20 @@ async function verifyLicenseData(data, pubB64) {
   const pubBytes = base64ToBytes(pubB64);
   const msg = canonicalBytes(data);
   const sigBytes = hexToBytes(data.signature);
-  const publicKey = await crypto.subtle.importKey("raw", pubBytes, {name:"Ed25519"}, false, ["verify"]);
-  const ok = await crypto.subtle.verify({name:"Ed25519"}, publicKey, sigBytes, msg);
-  return ok;
+  // Try WebCrypto first
+  if (crypto.subtle) {
+    try {
+      const publicKey = await crypto.subtle.importKey("raw", pubBytes, {name:"Ed25519"}, false, ["verify"]);
+      const ok = await crypto.subtle.verify({name:"Ed25519"}, publicKey, sigBytes, msg);
+      return ok;
+    } catch (e) {
+      console.warn('WebCrypto verify failed, fallback nacl', e);
+    }
+  }
+  if (typeof nacl !== 'undefined' && nacl.sign && nacl.sign.detached && nacl.sign.detached.verify) {
+    return nacl.sign.detached.verify(msg, sigBytes, pubBytes);
+  }
+  throw new Error('No verify method');
 }
 
 async function verifyCurrent() {

@@ -253,7 +253,7 @@ def _process_upload(
 
         if active_count > new_max:
             raise HTTPException(
-                status_code=400,
+                status_code=409,
                 detail=f"Невозможно применить лицензию: сейчас активных пользователей {active_count}, а новый лимит {new_max}. Сначала отключите лишних пользователей, затем повторите загрузку.",
             )
 

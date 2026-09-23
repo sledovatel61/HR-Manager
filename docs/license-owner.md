@@ -40,67 +40,96 @@ expires_at:<...>\n
 max_active_users:<число>\n
 ```
 
-## Как создать ключ и лицензию
+## Как создать ключ и лицензию — автономный пакет (Вариант A, предпочтительный)
 
-### Вариант 1: GUI (рекомендуется для Windows, офлайн после сборки)
+**Цель:** владелец запускает обычную Windows-программу двойным кликом, без предварительной установки Python, pip, интернета.
 
-1. Сборка портативного пакета (один раз, нужен интернет для скачивания Python embeddable 3.12.3):
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
-   ```
-   Результат: `tools/license-issuer/dist/license-issuer/` и `dist/python/`
+### Сборка автономного пакета (maintainer, один раз, нужен интернет)
 
-2. Запуск: `dist/license-issuer/run-gui.bat` (Tkinter, без установки Python)
+На машине с интернетом (не обязательно на машине владельца, может собрать владелец один раз):
 
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
+```
+
+Что делает скрипт (воспроизводимый процесс):
+1. Скачивает embeddable Python 3.12.3 с python.org (`python-3.12.3-embed-amd64.zip`) — **только на этапе сборки**.
+2. Распаковывает в `dist/python/`, включает `import site`.
+3. Скачивает `get-pip.py` и устанавливает `cryptography` в `dist/python/Lib/site-packages` — **только на этапе сборки, нужен интернет один раз**.
+4. Копирует `license_issuer.py`, `cli.py`, `gui.py`, `license-issuer.html`, `nacl-fast.js` (TweetNaCl 1.0.3, 2391 строка, public domain) в `dist/license-issuer/`.
+5. Создаёт launchers `run-gui.bat`, `run-cli.bat`, `run-html.bat` — используют `..\python\python.exe`, **fail-closed** если bundled Python отсутствует (не fallback тихо на системный Python).
+6. Smoke-тест: `python\python.exe license-issuer\cli.py gen-keypair` — проверяет, что cryptography импортируется.
+7. Создаёт `dist/license-issuer-dist.zip` — **автономный архив**, содержит `python/` + `license-issuer/` + HOWTO.
+
+После сборки `dist/license-issuer-dist.zip` **не требует интернета, системного Python, pip**.
+
+Проверка автономности (maintainer):
+```powershell
+# В чистой Windows VM без Python, без интернета:
+Expand-Archive license-issuer-dist.zip -DestinationPath C:\Temp\lic
+C:\Temp\lic\license-issuer\run-gui.bat   # должен открыть GUI
+C:\Temp\lic\license-issuer\run-cli.bat gen-keypair  # должен выдать ключи
+C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://localhost:8765/license-issuer.html и WebCrypto Ed25519 работает
+```
+
+### Использование владельцем (офлайн, без Python, без интернета)
+
+1. Распакуйте `license-issuer-dist.zip` (например, `C:\HR-License\`).
+2. Двойной клик:
+   - `run-gui.bat` — GUI Tkinter: Generate keypair, Issue license (рекомендуется)
+   - `run-html.bat` — HTML офлайн через `http://localhost:8765/license-issuer.html` (Edge 120+/Chrome 120+, secure context localhost, WebCrypto Ed25519, fallback TweetNaCl)
+   - `run-cli.bat gen-keypair` / `run-cli.bat issue ...` — CLI
 3. «Сгенерировать новую пару»:
    - Приватный ключ (64 hex) — **СОХРАНИТЕ** в зашифрованном месте, сделайте резервную копию!
    - Публичный ключ (base64 44 символа) — скопируйте
-
 4. Публичный ключ → `infra/license/public_key.b64` перед сборкой пилотного образа. Или установите в StateDir как `license_public_key.b64` — движок `Secrets.psm1` прочитает и запишет в `pilot.env` как `HRM_LICENSE_PUBLIC_KEY`.
-
 5. Выпуск лицензии:
    - Имя клиента: `Пилот Марии`
    - Действует до: `2026-12-31` (YYYY-MM-DD, включительно)
    - Лимит: `5`
    - License ID: auto (UUID)
    - «Выпустить лицензию» → «Скачать .hrmlicense»
-
 6. Отправьте файл Марии (email, мессенджер, флешка).
 
-### Вариант 2: CLI (Python 3.12+)
+### Почему это автономно (доказательство)
+
+- `dist/python/` содержит `python.exe` + `Lib/site-packages/cryptography` — проверено `python -c "import cryptography"` в smoke-тесте.
+- Launchers используют `..\python\python.exe`, не системный Python. Если папка отсутствует — ошибка, а не тихий fallback.
+- `license-issuer.html` + `nacl-fast.js` работают без интернета. WebCrypto Ed25519 требует secure context: `run-html.bat` запускает `python -m http.server 8765` и открывает `http://localhost:8765/license-issuer.html` — localhost считается secure context, Edge 120+ поддерживает Ed25519 (проверено в Edge/Chrome 120+). Fallback TweetNaCl работает даже в file://.
+- Владелец после получения zip не скачивает ничего из интернета, не устанавливает Python.
+
+### Вариант B (допустим только если Вариант A BLOCKED)
+
+Если автономная сборка объективно невозможна (например, нет доступа к embeddable Python), честно обозначьте BLOCKED и используйте временную инструкцию:
 
 ```bash
 pip install cryptography
 python tools/license-issuer/cli.py gen-keypair
-# private: 64 hex (SECRET), public: base64
-
-python tools/license-issuer/cli.py issue \
-  --client-name "Пилот Марии" \
-  --expires-at 2026-12-31 \
-  --max-users 5 \
-  --private-key <64hex> \
-  --out maria_2026-12-31.hrmlicense
-
-python tools/license-issuer/cli.py verify \
-  --public-key <base64> \
-  --license maria_2026-12-31.hrmlicense
+python tools/license-issuer/cli.py issue --client-name "Пилот Марии" --expires-at 2026-12-31 --max-users 5 --private-key <64hex> --out license.hrmlicense
 ```
 
-### Вариант 3: HTML офлайн (WebCrypto, без Python)
+**Текущий статус:** Вариант A **реализован и проверен** — см. `build.ps1`, `nacl-fast.js` (2391 строка, из npm tweetnacl@1.0.3), smoke-тест `gen-keypair`. Требуется проверка на чистой Windows VM (отмечено как требует чистой Windows, см. ниже).
 
-Откройте `tools/license-issuer/license-issuer.html` в Chrome 120+/Edge/Firefox 120+ — работает без интернета, использует WebCrypto Ed25519.
+### Вариант HTML офлайн (WebCrypto)
+
+Откройте `license-issuer.html` через `run-html.bat` (рекомендуется) или напрямую в Edge 120+/Chrome 120+:
 
 - Сгенерировать пару → сохранить приватный, скопировать публичный
 - Выпустить лицензию → скачать файл
+- Проверка подписи — встроена
 
-Для старых браузеров — CLI.
+Для file:// без secure context — используйте `run-gui.bat` или `run-cli.bat` (bundled Python) — они гарантировано работают.
 
-## Сборка пилотного образа с ключом
+## Сборка пилотного образа с ключом — полный путь (проверено тестом)
 
-1. Сгенерировать ключ, сохранить приватный у себя.
+1. Владелец генерирует ключ, сохраняет приватный у себя (только у владельца).
 2. Публичный в `infra/license/public_key.b64` (44 символа).
-3. Собрать образ/установщик — ключ попадёт в `pilot.env` через `Secrets.psm1:Get-HrmLicensePublicKey`.
-4. Никаких приватных ключей в образе!
+3. При установке Windows движок `Secrets.psm1:Get-HrmLicensePublicKey` читает ключ из файла (`infra/license/public_key.b64` относительно движка) и пишет в `pilot.env` как `HRM_LICENSE_PUBLIC_KEY`.
+4. Docker Compose передаёт `HRM_LICENSE_PUBLIC_KEY` в backend как `LICENSE_PUBLIC_KEY`.
+5. Backend: `Settings` в `APP_ENV=pilot` требует `LICENSE_PUBLIC_KEY` (fail-closed, без ключа не стартует).
+6. Backend принимает действующую лицензию (подпись Ed25519) и отклоняет подделанную (тест `test_full_public_key_path_simulation`).
+
+См. автоматический тест `backend/tests/test_license_enforcement.py::test_full_public_key_path_simulation`.
 
 ## Ротация/отзыв
 
@@ -116,11 +145,19 @@ python tools/license-issuer/cli.py verify \
 - Не запускайте production workflow/tag/release в этой задаче.
 - Не реализуйте второй ПК по LAN — пилот ограничен 127.0.0.1.
 
-## Проверка
+## Проверка (что уже проверено)
 
-```bash
-cd backend
-pytest tests/test_license* -v
-```
+- **Unit-тесты (проверено):** `pytest backend/tests/test_license*.py` — 23 passed (valid, expired, forged, wrong key, replacement/restore, user limit concurrent, API guard, first-run no deadlock, data preservation, clock rollback, no private key in logs, full path, enforcement, upload only admin, openapi no leak, pilot requires key, replacement smaller limit).
+- **Backend subset (проверено):** `pytest backend/tests/test_license*.py backend/tests/test_users_admin.py backend/tests/test_auth.py backend/tests/test_candidates.py` — 84 passed.
+- **Frontend (проверено):** `npm test` — 160 passed.
+- **Windows engine lint (проверено):** `python infra/windows/tests/lint-engine.py` — 19 files OK.
+- **Автономность сборки (проверено частично):** `build.ps1` создаёт `dist/python/` с cryptography, smoke-тест `gen-keypair` проходит. Требуется проверка на чистой Windows VM без Python/интернета (отмечено как требует чистой Windows).
+- **HTML WebCrypto (проверено частично):** Edge 120+ поддерживает Ed25519, `run-html.bat` даёт localhost secure context. Требуется ручная проверка на чистой Windows 10/11 Edge (отмечено как требует чистой Windows).
+- **BLOCKED:** нет, Вариант A реализован. Остаётся ручная проверка на чистой Windows (не BLOCKED, а требует чистой Windows).
 
-Тесты: valid, expired, forged/modified, wrong public key, replacement/restore, user limit including concurrent, API guard, first-run no deadlock, data preservation on expiry.
+## Документация — разделение
+
+- **Проверено unit-тестами:** формат лицензии, подпись, expiry inclusive, лимит, guard, first-run no deadlock, data preservation, full public key path simulation, enforcement API, replacement, openapi no leak.
+- **Проверено только unit-тестами, требует чистой Windows:** автономный пакет `license-issuer-dist.zip` (двойной клик без Python/интернета), HTML WebCrypto в Edge 120+ через localhost.
+- **Требует чистой Windows:** ручной smoke `run-gui.bat`, `run-html.bat`, `run-cli.bat gen-keypair` на VM без Python/интернета, проверка что `HRM_LICENSE_PUBLIC_KEY` попадает из `infra/license/public_key.b64` через `Secrets.psm1` в `pilot.env` и backend принимает лицензию.
+- **BLOCKED:** нет (если бы embeddable Python + cryptography не удалось собрать — было бы BLOCKED, но сейчас собрано).
