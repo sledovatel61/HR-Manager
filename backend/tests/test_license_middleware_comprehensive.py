@@ -422,3 +422,98 @@ def test_public_key_chain_evidence() -> None:
     content = evidence_file.read_text()
     assert pub_b64 not in content
     assert fp in content
+
+def test_fail_closed_empty_public_key_middleware() -> None:
+    """Direct middleware test: empty LICENSE_PUBLIC_KEY in pilot must block."""
+    engine = create_engine(
+        SQLITE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    # Use pilot env with empty key - Settings validation would normally fail,
+    # so we bypass validation by creating Settings in test mode but then
+    # manually setting is_pilot flag via env var override in guard?
+    # Instead, we test guard logic directly: create settings with pilot=True
+    # but with empty key via model_construct (bypass validation) to simulate
+    # runtime unavailable key.
+    from app.config import Settings as S
+
+    # Create settings that bypasses validation for test purpose
+    settings = S.model_construct(
+        _env_file=None,
+        environment="pilot",
+        secret_key="strong-secret-key-1234567890abcdef1234567890",
+        database_url=SQLITE_URL,
+        license_public_key="",
+        pilot_bootstrap_exchange_token="a" * 32,
+    )
+    # Ensure is_pilot property returns True
+    assert settings.is_pilot is True
+
+    Base.metadata.create_all(engine)
+    app = create_app(settings, engine=engine)
+    client = TestClient(app)
+
+    # Protected endpoint should be blocked with check_failed, not bypass
+    resp = client.get("/candidates")
+    assert resp.status_code == 403, f"empty key should block, got {resp.status_code}"
+    assert resp.json().get("code") == "check_failed"
+
+    # Even /api/unknown should be blocked as check_failed (fail-closed)
+    resp2 = client.get("/api/unknown")
+    assert resp2.status_code == 403
+    assert resp2.json().get("code") == "check_failed"
+
+
+def test_unknown_paths_blocked_without_license() -> None:
+    """Ensure /unknown and /api/unknown do not bypass license guard."""
+    _, pub_b64 = gen_keypair()
+    engine = create_engine(
+        SQLITE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    app, _ = make_app_with_license(pub_b64, engine)
+    client = TestClient(app)
+
+    # /unknown is not a known route, but if it were added in future under
+    # protected area, it should still be blocked. Currently it will be 404
+    # or 403. The critical is it must NOT return 200 bypass.
+    for ep in ["/unknown", "/api/unknown", "/api/unknown/child"]:
+        resp = client.get(ep)
+        # Should not be 200 bypass
+        if resp.status_code == 200:
+            pytest.fail(f"{ep} returned 200 without license, bypass!")
+        # If 403, must be no_license (blocked)
+        if resp.status_code == 403:
+            assert resp.json().get("code") == "no_license"
+
+    # Existing future-like path: /api/candidates is protected, should be 403
+    resp = client.get("/api/candidates")
+    assert resp.status_code == 403
+    assert resp.json().get("code") == "no_license"
+
+    # Ensure that adding a new route under /unknown would still be blocked
+    # Simulate by checking that guard treats /unknown as protected if it looks
+    # like api-like? Currently /unknown is not api-like, so it returns 404,
+    # but /api/unknown is api-like and should be blocked.
+    resp_api_unknown = client.get("/api/unknown")
+    assert resp_api_unknown.status_code == 403
+    assert resp_api_unknown.json().get("code") == "no_license"
+
+
+def test_api_unknown_strictly_403_no_license() -> None:
+    """Task 2: /api/unknown without license must be strictly 403 code=no_license."""
+    _, pub_b64 = gen_keypair()
+    engine = create_engine(
+        SQLITE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    app, _ = make_app_with_license(pub_b64, engine)
+    client = TestClient(app)
+
+    resp = client.get("/api/unknown")
+    assert resp.status_code == 403, f"/api/unknown should be 403, got {resp.status_code}"
+    assert resp.json().get("code") == "no_license", f"code should be no_license, got {resp.json()}"
+
+    # Also test with original path before stripping participates in decision
+    # If guard stripped first, /api/unknown would become /unknown and might be 404 bypass.
+    # Our fix ensures LicenseGuard sees original /api/unknown before strip.
+    resp2 = client.get("/api/unknown/child")
+    assert resp2.status_code == 403
+    assert resp2.json().get("code") == "no_license"

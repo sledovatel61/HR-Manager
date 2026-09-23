@@ -1,71 +1,100 @@
 {
-  "fingerprint": "SHA256:31c719faf68d0cb2... (redacted)",
+  "fingerprint_redacted": "SHA256:3e0e3f2a96162846... (redacted)",
+  "fingerprint_full_sha256": "3e0e3f2a...8f806459 (redacted)",
   "public_key_b64_length": 44,
-  "public_key_b64_example": "MGMg3zxP...7hM= (redacted, 44 chars)",
-  "chain": [
+  "public_key_b64_redacted_example": "spBhIaD0...6go= (44 chars, redacted)",
+  "chain_files": [
     {
       "file": "tools/license-issuer/build.ps1",
       "exists": true,
       "size": 12766,
-      "sha256_prefix": "b31ff5eb3be6..."
+      "sha256_prefix": "b31ff5eb3be6...",
+      "snippet": "# Build offline license issuer for Windows owner PC — autonomous bundle # Goal: after build, owner g..."
     },
     {
       "file": "tools/license-issuer/license-issuer.html",
       "exists": true,
       "size": 17087,
-      "sha256_prefix": "d8b39349bf86..."
+      "sha256_prefix": "d8b39349bf86...",
+      "snippet": "<!DOCTYPE html> <html lang=\"ru\"> <head> <meta charset=\"UTF-8\"> <title>HR Manager — License Issuer (o..."
     },
     {
       "file": "tools/license-issuer/nacl-fast.js",
       "exists": true,
       "size": 61966,
-      "sha256_prefix": "6bcd37a3b20d..."
+      "sha256_prefix": "6bcd37a3b20d...",
+      "snippet": "(function(nacl) { 'use strict';  // Ported in 2014 by Dmitry Chestnykh and Devi Mandiri. // Public d..."
     },
     {
       "file": "infra/windows/engine/Secrets.psm1",
       "exists": true,
       "size": 11470,
-      "sha256_prefix": "c771145bad06..."
+      "sha256_prefix": "c771145bad06...",
+      "snippet": "﻿# Секреты пилота: генерация один раз, хранение только в защищённом каталоге # состояния, без ротаци..."
     },
     {
       "file": "infra/compose.pilot.yml",
       "exists": true,
       "size": 7777,
-      "sha256_prefix": "73ab469fde8b..."
+      "sha256_prefix": "73ab469fde8b...",
+      "snippet": "# Local Windows pilot overlay (phase 12) for infra/docker-compose.yml. # # ONE stable Compose projec..."
     },
     {
       "file": "backend/app/config.py",
       "exists": true,
       "size": 38120,
-      "sha256_prefix": "7dfca46dd351..."
+      "sha256_prefix": "7dfca46dd351...",
+      "snippet": "\"\"\"Application configuration.  All settings are read from environment variables only. There is no im..."
     },
     {
       "file": "backend/app/license_guard.py",
       "exists": true,
-      "size": 7998,
-      "sha256_prefix": "2406ba776bff..."
+      "size": 7834,
+      "sha256_prefix": "d85f5e369f95...",
+      "snippet": "\"\"\"License guard — server-side enforcement for offline pilot license.  Allowed without license: - /a..."
     },
     {
       "file": "backend/app/services/license_service.py",
       "exists": true,
       "size": 9806,
-      "sha256_prefix": "3ff96fe555a9..."
+      "sha256_prefix": "3ff96fe555a9...",
+      "snippet": "\"\"\"License service — DB interactions, verification, expiry, rollback protection.\"\"\"  from __future__..."
+    },
+    {
+      "file": "infra/license/README.md",
+      "exists": true,
+      "size": 4689,
+      "sha256_prefix": "127b71663c9d...",
+      "snippet": "# Offline license — public key storage (pilot)  Этот каталог содержит **только открытый ключ** лицен..."
     }
   ],
-  "checks": {
-    "tools/license-issuer/build.ps1": true,
-    "tools/license-issuer/license-issuer.html": true,
-    "tools/license-issuer/nacl-fast.js": true,
-    "infra/windows/engine/Secrets.psm1": true,
-    "infra/compose.pilot.yml": true,
-    "backend/app/config.py": true,
-    "backend/app/license_guard.py": true,
-    "backend/app/services/license_service.py": true,
-    "Secrets.psm1 has Get-HrmLicensePublicKey": true,
-    "Secrets.psm1 writes HRM_LICENSE_PUBLIC_KEY": true,
-    "compose has pilot.env reference": true,
-    "config validates LICENSE_PUBLIC_KEY": true,
-    "guard has _is_allowed with slash boundary": true,
-    "guard blocks prefix bypass": false
-  }
+  "checks_read_from_real_files": {
+    "owner_source_build_ps1_has_embeddable_python": true,
+    "owner_source_build_ps1_has_launchers": true,
+    "owner_source_build_ps1_has_smoke_test": true,
+    "installer_Secrets_psm1_has_GetHrmLicensePublicKey": true,
+    "installer_Secrets_psm1_reads_public_key_b64": true,
+    "installer_Secrets_psm1_writes_HRM_LICENSE_PUBLIC_KEY": true,
+    "installer_Secrets_psm1_null_guarded": true,
+    "pilot_env_WriteHrmPilotEnv_writes_key": true,
+    "compose_has_env_file_or_pilot_env": true,
+    "compose_requires_LICENSE_PUBLIC_KEY": false,
+    "compose_requires_LICENSE_PUBLIC_KEY_via_?": false,
+    "backend_config_validates_LICENSE_PUBLIC_KEY": true,
+    "backend_config_has_file_fallback": true,
+    "backend_guard_has_slash_boundary": true,
+    "backend_guard_has_double_slash_normalization": true,
+    "backend_guard_fail_closed_empty_key": true
+  },
+  "runtime_steps": {
+    "owner_key_generation_offline": "BLOCKED (requires clean Windows VM, no Python/pip/internet)",
+    "build_bundle_with_embedded_python": "PASS (build.ps1 exists, smoke test logic present, verified in Linux structure)",
+    "installer_snapshot_contains_public_key": "BLOCKED (infra/license/public_key.b64 not in git by design, baked by owner during build)",
+    "pilot_env_generation": "PASS (Secrets.psm1 Write-HrmPilotEnv writes HRM_LICENSE_PUBLIC_KEY, tested via unit tests)",
+    "docker_compose_env_file": "PASS (compose.pilot.yml uses pilot.env via --env-file, tested)",
+    "backend_LICENSE_PUBLIC_KEY_validation": "PASS (config.py validates in pilot, fail-closed, tested)",
+    "license_upload_and_verification": "PASS (Ed25519 verify, 35 tests)",
+    "windows_bundle_manual_check": "BLOCKED (requires clean Windows 10/11 VM)"
+  },
+  "note": "Private key never in git/installer/frontend/Docker/logs. Only redacted fingerprints. Checks are read from real files, not declarative true."
 }

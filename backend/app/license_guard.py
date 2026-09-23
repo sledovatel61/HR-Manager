@@ -154,6 +154,30 @@ class LicenseGuardMiddleware(BaseHTTPMiddleware):
             settings = get_settings()
         public_b64 = (settings.license_public_key or "").strip()
         if not public_b64:
+            # Fail-closed: if no public key, protected requests must not bypass.
+            # In pilot/production Settings validation already requires key, so this
+            # path should never happen in prod, but if it does (e.g., file fallback
+            # fails), return 403 check_failed instead of call_next.
+            # In test/dev we keep backward compat for unit_settings without key,
+            # but only for non-pilot env. For pilot/production we must block.
+            is_pilot = getattr(settings, "is_pilot", False)
+            is_prod = getattr(settings, "is_production", False)
+            if is_pilot or is_prod:
+                from fastapi.responses import JSONResponse
+
+                logger.warning(
+                    "license guard blocked %s code=check_failed reason=no_public_key",
+                    path,
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Ошибка проверки лицензии. Обратитесь к администратору.",
+                        "code": "check_failed",
+                    },
+                    headers={"X-License-Status": "check_failed"},
+                )
+            # In test/dev, allow bypass to keep existing fixtures working
             return await call_next(request)
 
         try:
