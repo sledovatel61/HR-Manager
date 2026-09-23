@@ -457,8 +457,11 @@ jobs:
           $log2 = Join-Path $env:GITHUB_WORKSPACE "engine.log"
           Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP log=$log log2=$log2 workspace=$env:GITHUB_WORKSPACE"
           Get-ChildItem $env:RUNNER_TEMP | Select-Object -First 20 | Format-List | Out-String | Write-Host
-          powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 2>&1 | Tee-Object -FilePath $log,$log2 -Encoding utf8
+          $output = powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 2>&1 | Out-String
+          $output | Tee-Object -FilePath $log -Encoding utf8 | Out-Null
+          $output | Out-File -FilePath $log2 -Encoding utf8
           $code = $LASTEXITCODE
+          Write-Host $output
           Write-Host "exit code $code, log exists $(Test-Path $log) log2 $(Test-Path $log2)"
           if (Test-Path $log) { Get-ChildItem $log | Format-List | Out-String | Write-Host }
           if (Test-Path $log2) { Get-ChildItem $log2 | Format-List | Out-String | Write-Host }
