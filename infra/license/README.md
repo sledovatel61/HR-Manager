@@ -5,14 +5,27 @@
 - `public_key.b64` — base64 32 байта Ed25519 публичного ключа (44 символа). Файл печётся в образ владельцем во время сборки/установки.
 - Приватный ключ **НИКОГДА** не попадает в git, образ, логи, диагностический архив, frontend, установщик (кроме защищённого хранилища владельца).
 
-## Как владелец создаёт ключ
+## Как владелец создаёт ключ — автономный пакет (Вариант A)
 
-На своём Windows-ПК (офлайн, без интернета):
+1. Соберите автономный пакет (один раз, нужен интернет для скачивания Python embeddable):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
+   ```
+   Результат: `dist/license-issuer-dist.zip` — содержит `python/` (embeddable + cryptography) + `license-issuer/` (GUI/CLI/HTML/nacl-fast.js), работает без системного Python/интернета.
 
-1. Запустите `tools/license-issuer/gui.py` или `cli.py` → Generate keypair.
-2. Приватный ключ сохраняется ТОЛЬКО у владельца в защищённом месте (например, VeraCrypt, BitLocker-папка, аппаратный токен, резервная копия на зашифрованной флешке).
-3. Публичный ключ (`public_key.b64`) копируется в `infra/license/public_key.b64` перед сборкой пилотного образа.
-4. В `infra/windows/engine/Secrets.psm1` при установке `HRM_LICENSE_PUBLIC_KEY` читается из этого файла и попадает в `pilot.env`.
+2. На своём Windows-ПК (офлайн, без интернета, без Python) распакуйте zip и запустите:
+   - `run-gui.bat` — GUI Tkinter (двойной клик)
+   - `run-html.bat` — HTML через http://localhost:8765 (Edge 120+, WebCrypto Ed25519, secure context localhost, fallback TweetNaCl 1.0.3)
+   - `run-cli.bat gen-keypair` — CLI
+
+3. Приватный ключ сохраняется ТОЛЬКО у владельца в защищённом месте (VeraCrypt/BitLocker/зашифрованная флешка).
+
+4. Публичный ключ (`public_key.b64`) копируется в `infra/license/public_key.b64` перед сборкой пилотного образа.
+
+5. Полный путь (проверено тестом `test_full_public_key_path_simulation`):
+   - `infra/license/public_key.b64` → `Secrets.psm1:Get-HrmLicensePublicKey` → `pilot.env:HRM_LICENSE_PUBLIC_KEY` → Docker Compose → backend `LICENSE_PUBLIC_KEY` → `APP_ENV=pilot` требует ключ (fail-closed) → backend принимает валидную лицензию и отклоняет подделанную.
+
+6. В `infra/windows/engine/Secrets.psm1` при установке `HRM_LICENSE_PUBLIC_KEY` читается из этого файла и попадает в `pilot.env`.
 
 ## Безопасность
 

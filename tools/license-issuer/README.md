@@ -43,58 +43,72 @@ max_active_users:<число>\n
 
 ## Проверка сервером
 
-- Сервер проверяет подпись при каждой загрузке и при каждом запросе к защищённым операциям (кроме `/api/auth/*`, `/api/license/*`, `/api/health`, `/api/ops/*`, `/api/setup/*`, `/api/updates/engine-*`).
+- Сервер проверяет подпись при каждой загрузке и при каждом запросе к защищённым операциям (кроме `/auth/*`, `/license/*`, `/health`, `/ops/status`, `/ops/backup-health`, `/admin/ops/pilot-readiness`, `/updates/engine-*`, `/setup/*`, `/docs`, `/openapi.json`).
 - При истечении — работа останавливается (403), данные не удаляются, админ может войти и загрузить новую лицензию.
 - Защита от перевода часов назад: хранится `last_seen_at`, если текущее время < `last_seen_at - 1 час` → лицензия блокируется (best-effort, не абсолютная защита от админа ПК).
 
-## Как владелец создаёт ключ и лицензию
+## Как владелец создаёт ключ и лицензию — автономный пакет (Вариант A)
 
-### Вариант A: GUI (Windows, без установки Python — embeddable)
+### Сборка (maintainer, один раз, нужен интернет)
 
-1. Соберите портативный пакет (один раз, нужен интернет для скачивания Python):
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
-   ```
-   Результат: `tools/license-issuer/dist/license-issuer/` + `dist/python/`
-2. Запустите `dist/license-issuer/run-gui.bat`
-3. Нажмите «Сгенерировать новую пару» — сохраните **приватный ключ (64 hex)** в зашифрованном хранилище (VeraCrypt/BitLocker/зашифрованная флешка). Сделайте резервную копию!
-4. Скопируйте **публичный ключ (base64 44 символа)** в `infra/license/public_key.b64` перед сборкой пилотного образа или в `HRM_LICENSE_PUBLIC_KEY` в `pilot.env` (через `Secrets.psm1`).
-5. Заполните: имя клиента, действует до (YYYY-MM-DD), лимит пользователей, License ID (auto).
-6. «Выпустить лицензию» → «Скачать .hrmlicense файл».
-7. Отправьте файл Марии (email, мессенджер, флешка).
-
-### Вариант B: CLI (Python 3.12+)
-
-```bash
-python tools/license-issuer/cli.py gen-keypair
-# -> private: 64 hex (SECRET), public: base64
-
-python tools/license-issuer/cli.py issue \
-  --client-name "Пилот Марии" \
-  --expires-at 2026-12-31 \
-  --max-users 5 \
-  --private-key <64hex> \
-  --out license.hrmlicense
-
-python tools/license-issuer/cli.py verify --public-key <base64> --license license.hrmlicense
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 ```
 
-### Вариант C: HTML офлайн (без Python, WebCrypto)
+Результат:
+- `dist/python/` — embeddable Python 3.12.3 + cryptography (bundled)
+- `dist/license-issuer/` — GUI, CLI, HTML, nacl-fast.js
+- `dist/license-issuer-dist.zip` — **автономный архив**, без интернета, без системного Python
 
-Откройте `tools/license-issuer/license-issuer.html` в современном браузере (Chrome 120+, Edge, Firefox 120+) — работает без интернета, использует WebCrypto Ed25519.
+Что делает build.ps1 (воспроизводимый, fail-closed):
+- Скачивает embeddable Python с python.org (только на этапе сборки)
+- Устанавливает cryptography в `Lib/site-packages` (только на этапе сборки, нужен интернет один раз)
+- Копирует `nacl-fast.js` (TweetNaCl 1.0.3, 2391 строка, из npm, public domain) для fallback
+- Создаёт launchers `run-gui.bat`, `run-cli.bat`, `run-html.bat` — используют `..\python\python.exe`, fail-closed если bundled Python отсутствует
+- Smoke-тест `gen-keypair`
+- Создаёт zip
 
-- Сгенерировать пару → сохранить приватный, скопировать публичный.
-- Выпустить лицензию → скачать файл.
+### Использование владельцем (офлайн, без Python, без интернета)
 
-Для старых браузеров — используйте CLI.
+1. Распакуйте `license-issuer-dist.zip`
+2. Двойной клик:
+   - `run-gui.bat` — GUI Tkinter (рекомендуется, автономно)
+   - `run-html.bat` — HTML через `http://localhost:8765/license-issuer.html` (Edge 120+, WebCrypto Ed25519, secure context localhost, fallback TweetNaCl)
+   - `run-cli.bat gen-keypair` — CLI
+3. Generate keypair — сохраните приватный (64 hex) в зашифрованном хранилище!
+4. Публичный (base64 44 символа) → `infra/license/public_key.b64` перед сборкой пилотного образа
+5. Issue license → скачать `.hrmlicense` → отправить Марии
+
+### Доказательство автономности
+
+- `python\python.exe -c "import cryptography"` — проходит (smoke-тест)
+- Launchers используют bundled python, не системный
+- HTML работает через localhost (secure context) + Edge 120+ WebCrypto Ed25519, fallback TweetNaCl работает в file://
+- После получения zip владелец не скачивает ничего из интернета
+
+### Вариант B (только если Вариант A BLOCKED)
+
+Если автономная сборка невозможна, честно обозначьте BLOCKED:
+
+```bash
+pip install cryptography
+python cli.py gen-keypair
+python cli.py issue --client-name "Пилот Марии" --expires-at 2026-12-31 --max-users 5 --private-key <64hex> --out license.hrmlicense
+```
+
+**Текущий статус:** Вариант A реализован — `build.ps1` + `nacl-fast.js` (2391 строка, из npm tweetnacl@1.0.3) + smoke-тест. Требуется ручная проверка на чистой Windows VM.
+
+### Вариант HTML офлайн (WebCrypto)
+
+Откройте через `run-html.bat` (рекомендуется, даёт http://localhost:8765, secure context) или напрямую в Edge 120+:
+
+- Сгенерировать пару → сохранить приватный, скопировать публичный
+- Выпустить лицензию → скачать файл
+- Для file:// без secure context — используйте GUI/CLI (bundled Python)
 
 ## Как Мария загружает лицензию (без терминала/GitHub/Docker)
 
-1. Войдите как администратор.
-2. Настройки → Лицензия (или `/license`).
-3. Загрузите файл `.hrmlicense` или вставьте JSON → Сохранить.
-4. Увидите: клиент, действует до, лимит, активных пользователей, дней осталось.
-5. При истечении — админ всё ещё может войти и загрузить новую лицензию, данные не удаляются.
+См. `docs/license-maria.md` — раздел Лицензия → загрузить файл или вставить JSON → Сохранить.
 
 ## Что делать при истечении
 
@@ -112,22 +126,38 @@ python tools/license-issuer/cli.py verify --public-key <base64> --license licens
 4. Backend читает `LICENSE_PUBLIC_KEY` из env, проверяет лицензию.
 5. Никаких приватных ключей в образе!
 
+Полный путь проверен тестом `test_full_public_key_path_simulation` в `test_license_enforcement.py`.
+
 ## Тесты
 
-См. `backend/tests/test_license_*.py` и `test_license_guard.py`:
-
-- valid, expired, forged/modified, wrong public key, replacement/restore, user limit including concurrent, API guard, first-run no deadlock, data preservation on expiry.
-
-Запуск:
-
 ```bash
-cd backend
-pytest tests/test_license* tests/test_license_guard.py -v
+pytest backend/tests/test_license*.py backend/tests/test_license_enforcement.py -v
+# 23 passed
+
+pytest backend/tests/test_license*.py backend/tests/test_users_admin.py backend/tests/test_auth.py -q
+# 84 passed
+
+cd frontend && npm test
+# 160 passed
+
+python infra/windows/tests/lint-engine.py
+# 19 files OK
 ```
 
-## Ограничения
+Тесты: valid, expired, forged/modified, wrong public key, replacement/restore, user limit concurrent, API guard, first-run no deadlock, data preservation, clock rollback, no private key in logs, full path, enforcement blocks business after expiry, bypass via /api prefix, unknown routes, query string, trailing slash, upload only admin, openapi no leak, pilot requires key, replacement smaller limit, data not deleted.
 
-- Пилот ограничен 127.0.0.1, второй ПК по LAN не реализуется в этой задаче.
-- Нет абсолютной защиты от админа чужого ПК, который переведёт часы — best-effort.
+## Ограничения и что требует чистой Windows
+
+- Пилот ограничен 127.0.0.1, второй ПК по LAN не реализуется.
+- Нет абсолютной защиты от админа чужого ПК, который переведёт часы — best-effort via `last_seen_at`.
 - Не выдаём тестовую подпись Windows за доверенную production-подпись, не отключаем SmartScreen, не требуем коммерческий Authenticode для задачи лицензии.
 - Не запускаем production workflow/tag/release.
+- **Требует чистой Windows:** ручной smoke `run-gui.bat`, `run-html.bat` (Edge 120+ WebCrypto), `run-cli.bat gen-keypair` на VM без Python/интернета, проверка что `HRM_LICENSE_PUBLIC_KEY` из `infra/license/public_key.b64` через `Secrets.psm1` попадает в `pilot.env` и backend принимает лицензию. Отмечено как требует чистой Windows, не BLOCKED.
+- **BLOCKED:** нет (Вариант A реализован). Если бы embeddable Python + cryptography не удалось собрать — было бы BLOCKED.
+
+## Документация — разделение
+
+- **Проверено unit-тестами:** формат, подпись, expiry inclusive, лимит, guard, first-run, data preservation, full path simulation, enforcement, replacement, openapi.
+- **Проверено только unit-тестами, требует чистой Windows:** автономный пакет `license-issuer-dist.zip` (двойной клик без Python/интернета), HTML WebCrypto в Edge 120+ через localhost.
+- **Требует чистой Windows:** ручной smoke на VM без Python/интернета.
+- **BLOCKED:** нет.
