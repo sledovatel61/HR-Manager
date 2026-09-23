@@ -203,21 +203,29 @@ export function LicensePage({ fetcher }: LicensePageProps) {
         </p>
 
         <Field label="Файл лицензии (.hrmlicense, JSON)">
-          <input
-            type="file"
-            accept=".hrmlicense,.json,application/json"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          />
-          {file && <p className="muted">Выбран: {file.name} ({Math.round(file.size / 1024)} КБ)</p>}
+          {(id) => (
+            <>
+              <input
+                id={id}
+                type="file"
+                accept=".hrmlicense,.json,application/json"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              />
+              {file && <p className="muted">Выбран: {file.name} ({Math.round(file.size / 1024)} КБ)</p>}
+            </>
+          )}
         </Field>
 
         <Field label="Или вставьте JSON лицензии">
-          <textarea
-            rows={10}
-            value={jsonText}
-            onChange={(e) => setJsonText(e.target.value)}
-            placeholder='{"license_id":"...","client_name":"Пилот Марии","issued_at":"...","expires_at":"2026-12-31","max_active_users":5,"signature":"..."}'
-          />
+          {(id) => (
+            <textarea
+              id={id}
+              rows={10}
+              value={jsonText}
+              onChange={(e) => setJsonText(e.target.value)}
+              placeholder='{"license_id":"...","client_name":"Пилот Марии","issued_at":"...","expires_at":"2026-12-31","max_active_users":5,"signature":"..."}'
+            />
+          )}
         </Field>
 
         {uploadError && (

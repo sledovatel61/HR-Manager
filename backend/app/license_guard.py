@@ -18,6 +18,7 @@ No private key, license texts or PII in logs — only redacted fingerprints.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -71,7 +72,7 @@ def _is_allowed(path: str) -> bool:
 
 
 class LicenseGuardMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
         path = request.url.path
 
         if _is_allowed(path):
@@ -95,8 +96,7 @@ class LicenseGuardMiddleware(BaseHTTPMiddleware):
             "/license",
         )
         is_api_like = path.startswith("/api/") or any(
-            path == r.rstrip("/") or path.startswith(r)
-            for r in protected_roots
+            path == r.rstrip("/") or path.startswith(r) for r in protected_roots
         )
         if not is_api_like:
             if not path.startswith("/api/") and not path.startswith("/"):
@@ -109,7 +109,8 @@ class LicenseGuardMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
 
         try:
-            settings = request.app.state.settings  # type: ignore[attr-defined]
+            state_settings = getattr(request.app.state, "settings", None)
+            settings = state_settings if state_settings is not None else get_settings()
         except Exception:
             settings = get_settings()
         public_b64 = (settings.license_public_key or "").strip()
@@ -150,10 +151,7 @@ class LicenseGuardMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=403,
                 content={
-                    "detail": (
-                        "Ошибка проверки лицензии. "
-                        "Обратитесь к администратору."
-                    ),
+                    "detail": ("Ошибка проверки лицензии. Обратитесь к администратору."),
                     "code": "check_failed",
                 },
             )

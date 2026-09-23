@@ -44,7 +44,7 @@ def issue_license(priv_hex, expires_at=None, issued_at=None):
     return {**payload, "signature": sig}
 
 
-def test_guard_allows_auth_and_license_without_license():
+def test_guard_allows_auth_and_license_without_license() -> None:
     _, pub_b64 = gen_keypair()
     settings = Settings.model_validate(
         {
@@ -76,7 +76,7 @@ def test_guard_allows_auth_and_license_without_license():
     assert resp2.json().get("code") == "no_license"
 
 
-def test_guard_blocks_when_expired_but_allows_license_upload():
+def test_guard_blocks_when_expired_but_allows_license_upload() -> None:
     priv_hex, pub_b64 = gen_keypair()
     settings = Settings.model_validate(
         {
@@ -104,9 +104,7 @@ def test_guard_blocks_when_expired_but_allows_license_upload():
             is_active=True,
         )
         s.add(admin)
-        two_days_ago = (
-            datetime.now(UTC) - timedelta(days=2)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        two_days_ago = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         expired = issue_license(
             priv_hex,
             expires_at=(date.today() - timedelta(days=1)).isoformat(),
@@ -119,9 +117,7 @@ def test_guard_blocks_when_expired_but_allows_license_upload():
     app = create_app(settings, engine=engine)
     client = TestClient(app)
 
-    login = client.post(
-        "/auth/login", json={"username": "admin", "password": "pass1234"}
-    )
+    login = client.post("/auth/login", json={"username": "admin", "password": "pass1234"})
     assert login.status_code == 200
 
     resp = client.get("/candidates")
@@ -145,7 +141,7 @@ def test_guard_blocks_when_expired_but_allows_license_upload():
     assert client.get("/candidates").status_code == 200
 
 
-def test_guard_disabled_when_no_public_key():
+def test_guard_disabled_when_no_public_key() -> None:
     settings = Settings.model_validate(
         {
             "APP_ENV": "test",

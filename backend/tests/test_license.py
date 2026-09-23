@@ -115,7 +115,7 @@ def settings_with_key(keypair):
     )
 
 
-def test_valid_license(keypair):
+def test_valid_license(keypair) -> None:
     lic = issue_license_dict(priv_hex=keypair["priv_hex"])
     verify_signature(lic, keypair["pub_b64"])
     text = json.dumps(lic, ensure_ascii=False)
@@ -123,11 +123,9 @@ def test_valid_license(keypair):
     assert parsed["license_id"] == lic["license_id"]
 
 
-def test_expired_license(keypair):
+def test_expired_license(keypair) -> None:
     yesterday = (date.today() - timedelta(days=1)).isoformat()
-    two_days_ago = (
-        datetime.now(UTC) - timedelta(days=2)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    two_days_ago = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     lic = issue_license_dict(
         expires_at=yesterday,
         issued_at=two_days_ago,
@@ -136,13 +134,11 @@ def test_expired_license(keypair):
     verify_signature(lic, keypair["pub_b64"])
     assert is_expired(lic["expires_at"]) is True
     with pytest.raises(LicenseError) as exc:
-        validate_time_consistency(
-            lic["issued_at"], lic["expires_at"], None, datetime.now(UTC)
-        )
+        validate_time_consistency(lic["issued_at"], lic["expires_at"], None, datetime.now(UTC))
     assert exc.value.code == "expired"
 
 
-def test_forged_modified_license(keypair):
+def test_forged_modified_license(keypair) -> None:
     lic = issue_license_dict(priv_hex=keypair["priv_hex"])
     lic2 = dict(lic)
     lic2["client_name"] = "Хакер"
@@ -159,36 +155,36 @@ def test_forged_modified_license(keypair):
         verify_signature(lic4, keypair["pub_b64"])
 
 
-def test_wrong_public_key(keypair, keypair2):
+def test_wrong_public_key(keypair, keypair2) -> None:
     lic = issue_license_dict(priv_hex=keypair["priv_hex"])
     with pytest.raises(LicenseError) as exc:
         verify_signature(lic, keypair2["pub_b64"])
     assert exc.value.code == "bad_signature"
 
 
-def test_replacement_and_restore(keypair, db_session, settings_with_key):
-    lic1 = issue_license_dict(
-        client_name="Пилот 1", max_users=5, priv_hex=keypair["priv_hex"]
-    )
+def test_replacement_and_restore(keypair, db_session, settings_with_key) -> None:
+    lic1 = issue_license_dict(client_name="Пилот 1", max_users=5, priv_hex=keypair["priv_hex"])
     row1 = build_license_row(lic1, uploaded_by_user_id=None)
     db_session.add(row1)
     db_session.commit()
 
-    assert get_active_license(db_session).license_id == lic1["license_id"]
+    got_db_session = get_active_license(db_session)
+    assert got_db_session is not None
+    assert got_db_session.license_id == lic1["license_id"]
 
-    lic2 = issue_license_dict(
-        client_name="Пилот 1", max_users=10, priv_hex=keypair["priv_hex"]
-    )
+    lic2 = issue_license_dict(client_name="Пилот 1", max_users=10, priv_hex=keypair["priv_hex"])
     active = get_active_license_for_update(db_session)
+    assert active is not None
     active.is_active = False
     row2 = build_license_row(lic2, uploaded_by_user_id=None)
     db_session.add(row2)
     db_session.commit()
 
-    assert get_active_license(db_session).license_id == lic2["license_id"]
-    old = db_session.scalar(
-        select(License).where(License.license_id == lic1["license_id"])
-    )
+    got = get_active_license(db_session)
+    assert got is not None
+    assert got.license_id == lic2["license_id"]
+    old = db_session.scalar(select(License).where(License.license_id == lic1["license_id"]))
+    assert old is not None
     assert old.is_active is False
 
     issue_license_dict(
@@ -198,18 +194,20 @@ def test_replacement_and_restore(keypair, db_session, settings_with_key):
         license_id=lic1["license_id"],
     )
     active2 = get_active_license_for_update(db_session)
+    assert active2 is not None
     active2.is_active = False
-    existing = db_session.scalar(
-        select(License).where(License.license_id == lic1["license_id"])
-    )
+    existing = db_session.scalar(select(License).where(License.license_id == lic1["license_id"]))
+    assert existing is not None
     existing.is_active = True
     existing.max_active_users = 5
     db_session.commit()
 
-    assert get_active_license(db_session).license_id == lic1["license_id"]
+    final = get_active_license(db_session)
+    assert final is not None
+    assert final.license_id == lic1["license_id"]
 
 
-def test_user_limit_including_concurrent(keypair, db_session, settings_with_key):
+def test_user_limit_including_concurrent(keypair, db_session, settings_with_key) -> None:
     from app.models import User
     from app.security import hash_password
 
@@ -255,7 +253,7 @@ def test_user_limit_including_concurrent(keypair, db_session, settings_with_key)
     assert (active_count + 1) > lic["max_active_users"]
 
 
-def test_first_run_no_deadlock(db_engine):
+def test_first_run_no_deadlock(db_engine) -> None:
     """License needs admin, admin needs license — should not deadlock."""
     from fastapi.testclient import TestClient
 
@@ -293,13 +291,11 @@ def test_first_run_no_deadlock(db_engine):
     data = resp2.json()
     assert data["has_license"] is False
 
-    resp3 = client.post(
-        "/auth/login", json={"username": "nonexist", "password": "x"}
-    )
+    resp3 = client.post("/auth/login", json={"username": "nonexist", "password": "x"})
     assert resp3.status_code != 403 or "Лицензия" not in resp3.text
 
 
-def test_data_preservation_on_expiry(keypair, db_engine):
+def test_data_preservation_on_expiry(keypair, db_engine) -> None:
     """On expiry data not deleted; admin can login and upload new license."""
     from fastapi.testclient import TestClient
 
@@ -328,9 +324,7 @@ def test_data_preservation_on_expiry(keypair, db_engine):
         )
         s.add(admin)
         yesterday = (date.today() - timedelta(days=1)).isoformat()
-        two_days_ago = (
-            datetime.now(UTC) - timedelta(days=2)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        two_days_ago = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         lic_expired = issue_license_dict(
             expires_at=yesterday,
             issued_at=two_days_ago,
@@ -357,9 +351,7 @@ def test_data_preservation_on_expiry(keypair, db_engine):
     app = create_app(settings, engine=db_engine)
     client = TestClient(app)
 
-    login_resp = client.post(
-        "/auth/login", json={"username": "admin", "password": "adminpass"}
-    )
+    login_resp = client.post("/auth/login", json={"username": "admin", "password": "adminpass"})
     assert login_resp.status_code == 200, login_resp.text
 
     cand_resp = client.get("/candidates")
@@ -390,7 +382,7 @@ def test_data_preservation_on_expiry(keypair, db_engine):
     assert cand_resp2.status_code == 200
 
 
-def test_license_survives_restart_and_backup_restore(keypair, db_engine):
+def test_license_survives_restart_and_backup_restore(keypair, db_engine) -> None:
     """License survives restart and backup/restore."""
     priv_hex, _, _, _ = gen_keypair()
     Base.metadata.create_all(db_engine)
@@ -407,19 +399,17 @@ def test_license_survives_restart_and_backup_restore(keypair, db_engine):
         assert active.license_id == lic_id
 
 
-def test_clock_rollback_protection(keypair):
+def test_clock_rollback_protection(keypair) -> None:
     lic = issue_license_dict(priv_hex=keypair["priv_hex"])
     now = datetime.now(UTC)
     last_seen = now + timedelta(hours=2)
     past = now - timedelta(hours=2)
     with pytest.raises(LicenseError) as exc:
-        validate_time_consistency(
-            lic["issued_at"], lic["expires_at"], last_seen, past
-        )
+        validate_time_consistency(lic["issued_at"], lic["expires_at"], last_seen, past)
     assert exc.value.code == "clock_rollback"
 
 
-def test_no_private_key_in_logs_and_redacted():
+def test_no_private_key_in_logs_and_redacted() -> None:
     _, pub_b64, _, pub_bytes = gen_keypair()
     fp = fingerprint_public_key(pub_b64)
     assert "SHA256:" in fp

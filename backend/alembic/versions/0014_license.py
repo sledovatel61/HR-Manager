@@ -16,7 +16,10 @@ Phase 15: adds ``licenses`` table for closed pilot offline license.
 No raw license file stored, only metadata + signature (PII-safe logs).
 """
 
+import contextlib
+
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0014"
@@ -56,7 +59,7 @@ def upgrade() -> None:
     op.create_index("ix_licenses_expires_at", "licenses", ["expires_at"], unique=False)
     # Partial unique: only one active license at a time (Postgres + SQLite)
     # Postgres: WHERE is_active = true, SQLite: WHERE is_active
-    try:
+    with contextlib.suppress(Exception):
         op.create_index(
             "uq_licenses_one_active",
             "licenses",
@@ -65,17 +68,11 @@ def upgrade() -> None:
             postgresql_where=sa.text("is_active = true"),
             sqlite_where=sa.text("is_active"),
         )
-    except Exception:
-        # Fallback if dialect doesn't support partial index creation via op
-        # (still create a plain unique check in application logic)
-        pass
 
 
 def downgrade() -> None:
-    try:
+    with contextlib.suppress(Exception):
         op.drop_index("uq_licenses_one_active", table_name="licenses")
-    except Exception:
-        pass
     op.drop_index("ix_licenses_expires_at", table_name="licenses")
     op.drop_index("ix_licenses_is_active", table_name="licenses")
     op.drop_index("ix_licenses_license_id", table_name="licenses")

@@ -81,7 +81,7 @@ def db_engine():
 # ------------------------------------------------------------------
 
 
-def test_full_public_key_path_simulation(db_engine):
+def test_full_public_key_path_simulation(db_engine) -> None:
     """Owner flow: keypair -> file -> Secrets.psm1 -> pilot.env -> backend."""
     priv_hex, pub_b64, _, _ = gen_keypair()
 
@@ -146,7 +146,7 @@ def test_full_public_key_path_simulation(db_engine):
         assert s_pilot.is_pilot is True
 
 
-def test_config_file_fallback():
+def test_config_file_fallback() -> None:
     """Env override works for license public key."""
     _, pub_b64, _, _ = gen_keypair()
     repo_infra = Path(__file__).resolve().parents[2] / "infra" / "license"
@@ -170,7 +170,7 @@ def test_config_file_fallback():
 # ------------------------------------------------------------------
 
 
-def test_enforcement_blocks_business_endpoints_after_expiry(db_engine):
+def test_enforcement_blocks_business_endpoints_after_expiry(db_engine) -> None:
     from fastapi.testclient import TestClient
 
     from app.main import create_app
@@ -189,9 +189,7 @@ def test_enforcement_blocks_business_endpoints_after_expiry(db_engine):
     Base.metadata.create_all(db_engine)
 
     yesterday = (date.today() - timedelta(days=1)).isoformat()
-    two_days_ago = (
-        datetime.now(UTC) - timedelta(days=2)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    two_days_ago = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     with Session(db_engine) as s:
         admin = User(
@@ -312,18 +310,14 @@ def test_enforcement_blocks_business_endpoints_after_expiry(db_engine):
 
     for path in allowed_paths:
         if "engine-" in path:
-            r = client.post(
-                path, json={}, headers={"x-engine-token": "invalid"}
-            )
+            r = client.post(path, json={}, headers={"x-engine-token": "invalid"})
             assert r.status_code != 403 or r.json().get("code") != "expired", (
                 f"{path} should be allowed, got {r.status_code}"
             )
         else:
             r = client.get(path)
             if r.status_code == 403:
-                assert r.json().get("code") != "expired", (
-                    f"{path} should be allowed"
-                )
+                assert r.json().get("code") != "expired", f"{path} should be allowed"
 
     for variant in [
         "/candidates?foo=bar",
@@ -336,7 +330,7 @@ def test_enforcement_blocks_business_endpoints_after_expiry(db_engine):
         assert r.status_code != 200 or "Test" not in r.text, f"Bypass {variant}"
 
 
-def test_enforcement_upload_only_admin(db_engine):
+def test_enforcement_upload_only_admin(db_engine) -> None:
     from fastapi.testclient import TestClient
 
     from app.main import create_app
@@ -376,9 +370,7 @@ def test_enforcement_upload_only_admin(db_engine):
     app = create_app(settings, engine=db_engine)
     client = TestClient(app)
 
-    hr_login = client.post(
-        "/auth/login", json={"username": "hr", "password": "hrpass"}
-    )
+    hr_login = client.post("/auth/login", json={"username": "hr", "password": "hrpass"})
     assert hr_login.status_code == 200
     hr_csrf = hr_login.json()["csrf_token"]
 
@@ -391,9 +383,7 @@ def test_enforcement_upload_only_admin(db_engine):
     )
     assert r.status_code == 403, f"Non-admin should be forbidden, got {r.status_code}"
 
-    admin_login = client.post(
-        "/auth/login", json={"username": "admin", "password": "adminpass"}
-    )
+    admin_login = client.post("/auth/login", json={"username": "admin", "password": "adminpass"})
     assert admin_login.status_code == 200
     admin_csrf = admin_login.json()["csrf_token"]
     r2 = client.post(
@@ -404,7 +394,7 @@ def test_enforcement_upload_only_admin(db_engine):
     assert r2.status_code == 200
 
 
-def test_openapi_does_not_leak_secrets(db_engine):
+def test_openapi_does_not_leak_secrets(db_engine) -> None:
     from fastapi.testclient import TestClient
 
     from app.main import create_app
@@ -435,7 +425,7 @@ def test_openapi_does_not_leak_secrets(db_engine):
 # ------------------------------------------------------------------
 
 
-def test_first_run_clean_db_with_key(db_engine):
+def test_first_run_clean_db_with_key(db_engine) -> None:
     from fastapi.testclient import TestClient
 
     from app.main import create_app
@@ -484,9 +474,7 @@ def test_first_run_clean_db_with_key(db_engine):
         s.add(admin)
         s.commit()
 
-    login = client.post(
-        "/auth/login", json={"username": "maria", "password": "mariapass"}
-    )
+    login = client.post("/auth/login", json={"username": "maria", "password": "mariapass"})
     assert login.status_code == 200
 
     cand = client.get("/candidates")
@@ -506,7 +494,7 @@ def test_first_run_clean_db_with_key(db_engine):
     assert cand2.status_code == 200
 
 
-def test_pilot_requires_key_and_test_dev_disabled_explicitly():
+def test_pilot_requires_key_and_test_dev_disabled_explicitly() -> None:
     with pytest.raises(ValueError):
         Settings.model_validate(
             {
@@ -531,8 +519,7 @@ def test_pilot_requires_key_and_test_dev_disabled_explicitly():
             "APP_ENV": "development",
             "SECRET_KEY": "dev-only-secret-key-not-for-production",
             "DATABASE_URL": (
-                "postgresql+psycopg://hr_manager:"
-                "hr_manager_dev_password@localhost:5432/hr_manager"
+                "postgresql+psycopg://hr_manager:hr_manager_dev_password@localhost:5432/hr_manager"
             ),
             "LICENSE_PUBLIC_KEY": "",
         }
@@ -545,7 +532,7 @@ def test_pilot_requires_key_and_test_dev_disabled_explicitly():
 # ------------------------------------------------------------------
 
 
-def test_replacement_smaller_limit_blocked_until_deactivation(db_engine):
+def test_replacement_smaller_limit_blocked_until_deactivation(db_engine) -> None:
     from fastapi.testclient import TestClient
 
     from app.main import create_app
@@ -595,9 +582,7 @@ def test_replacement_smaller_limit_blocked_until_deactivation(db_engine):
 
     app = create_app(settings, engine=db_engine)
     client = TestClient(app)
-    login = client.post(
-        "/auth/login", json={"username": "admin", "password": "adminpass"}
-    )
+    login = client.post("/auth/login", json={"username": "admin", "password": "adminpass"})
     assert login.status_code == 200
     csrf = login.json()["csrf_token"]
 
@@ -611,6 +596,7 @@ def test_replacement_smaller_limit_blocked_until_deactivation(db_engine):
 
     with Session(db_engine) as s:
         hr2_db = s.scalar(select(User).where(User.username == "hr2"))
+        assert hr2_db is not None
         hr2_db.is_active = False
         s.commit()
 
@@ -622,9 +608,7 @@ def test_replacement_smaller_limit_blocked_until_deactivation(db_engine):
     assert r2.status_code == 200, f"After deactivation, got {r2.status_code}"
 
     with Session(db_engine) as s:
-        active = s.scalars(
-            select(License).where(License.is_active.is_(True))
-        ).all()
+        active = s.scalars(select(License).where(License.is_active.is_(True))).all()
         assert len(active) == 1
         assert active[0].max_active_users == 2
 
@@ -635,13 +619,11 @@ def test_replacement_smaller_limit_blocked_until_deactivation(db_engine):
     )
     assert r3.status_code in (200, 409)
     with Session(db_engine) as s:
-        active2 = s.scalars(
-            select(License).where(License.is_active.is_(True))
-        ).all()
+        active2 = s.scalars(select(License).where(License.is_active.is_(True))).all()
         assert len(active2) == 1
 
 
-def test_data_not_deleted_on_replacement(db_engine):
+def test_data_not_deleted_on_replacement(db_engine) -> None:
     from app.models import Candidate
     from app.security import hash_password
 
@@ -682,6 +664,7 @@ def test_data_not_deleted_on_replacement(db_engine):
         from app.services.license_service import get_active_license_for_update
 
         active = get_active_license_for_update(s)
+        assert active is not None
         active.is_active = False
         lic2 = issue_license_dict(max_users=10, priv_hex=priv_hex)
         row2 = build_license_row(lic2, uploaded_by_user_id=None)
