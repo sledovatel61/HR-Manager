@@ -63,6 +63,17 @@ jobs:
           name: pytest-log
           path: /tmp/pytest.log
           if-no-files-found: warn
+      - name: Post failure to PR comment (for debugging)
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tail -n 200 /tmp/pytest.log > /tmp/tail.log
+          echo "### Backend unit tests failed" > /tmp/comment.md
+          echo '```' >> /tmp/comment.md
+          cat /tmp/tail.log >> /tmp/comment.md
+          echo '```' >> /tmp/comment.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md || true
       - name: PowerShell structural lint (engine + installer scripts)
         working-directory: .
         run: |
