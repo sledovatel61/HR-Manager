@@ -451,30 +451,33 @@ jobs:
       - name: PowerShell engine tests (Windows PowerShell 5.1)
         shell: powershell
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 2>&1 | Tee-Object -FilePath $env:RUNNER_TEMP\engine.log -Encoding utf8
+          powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 2>&1 | Tee-Object -FilePath $env:RUNNER_TEMP/engine.log -Encoding utf8
           $code = $LASTEXITCODE
           if ($code -ne 0) {
-            Get-Content $env:RUNNER_TEMP\engine.log -Tail 200 | Write-Host
+            Get-Content $env:RUNNER_TEMP/engine.log -Tail 200 | Write-Host
             "### Windows engine tests failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            Get-Content $env:RUNNER_TEMP\engine.log -Tail 500 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Get-Content $env:RUNNER_TEMP/engine.log -Tail 500 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             exit $code
           }
       - name: Post Windows failure to PR comment
         if: failure() && github.event_name == 'pull_request'
-        shell: powershell
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $log = Join-Path $env:RUNNER_TEMP "engine.log"
-          if (Test-Path $log) {
-            $tail = Get-Content $log -Tail 200 | Out-String
-            $fence = '```'
-            $body = "### Windows engine tests failed`n$fence`n$tail`n$fence`n"
-            $body | Out-File -FilePath $env:RUNNER_TEMP\comment.md -Encoding utf8
-            gh pr comment ${{ github.event.pull_request.number }} --body-file $env:RUNNER_TEMP\comment.md 2>&1 | Write-Host
-          }
+          LOG="$RUNNER_TEMP/engine.log"
+          if [ -f "$LOG" ]; then
+            echo "### Windows engine tests failed" > /tmp/comment.md
+            echo '```' >> /tmp/comment.md
+            tail -n 300 "$LOG" >> /tmp/comment.md
+            echo '```' >> /tmp/comment.md
+            gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md || true
+          else
+            echo "### Windows engine tests failed (no log)" > /tmp/comment.md
+            gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md || true
+          fi
       - name: Upload Windows engine log
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
