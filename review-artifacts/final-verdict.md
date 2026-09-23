@@ -1,11 +1,11 @@
 # Final Verdict — Offline Licensing for Windows Pilot — PR #34 — Security-fix Pass
 
 ## Exact SHAs
-- **HEAD SHA**: `eb276c5709a3a00fd2bd139842c9f0c772db3afc` (security-fix: fail-closed empty key, middleware order, real chain evidence, BLOCKED Windows + docs final)
-- **Previous green SHA**: `e51fc046ae35a1231d0caba42606191b8a01b2f9` (security-fix pass)
+- **HEAD SHA**: `f836088adb4bd188a5ad2b296e4bf8b23538cd62` (security-fix: fail-closed empty key, middleware order, real chain evidence, BLOCKED Windows + cli offline PASS)
+- **Previous green SHAs**: `eb276c5709a3a00fd2bd139842c9f0c772db3afc` (35884924437), `e51fc046ae35a1231d0caba42606191b8a01b2f9` (35884085961)
 - **Base SHA**: `efb88d978440a0aae1940005fddffc7e465ad9ef` (origin/main)
 - **Base is ancestor**: YES, PR not outdated
-- **Last green CI**: `35884924437` success for eb276c5 (all 6 jobs: backend checks, integration, frontend, release policy, windows, compose) — previous 35884085961 success for e51fc04
+- **Last green CI**: `35888216522` success for f836088 (all 6 jobs: backend checks, integration, frontend, release policy, windows, compose) — previous 35884924437 success for eb276c5
 
 ## Security Fixes Implemented
 
