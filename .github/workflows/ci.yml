@@ -44,7 +44,21 @@ jobs:
       - name: Mypy typecheck
         run: mypy app tests
       - name: Unit tests
-        run: pytest -m "not integration" -v
+        run: |
+          pytest -m "not integration" -v 2>&1 | tee /tmp/pytest.log
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            echo "=== pytest failures ==="
+            tail -n 500 /tmp/pytest.log
+            exit $status
+          fi
+      - name: Upload pytest log on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pytest-log
+          path: /tmp/pytest.log
+          if-no-files-found: warn
       - name: PowerShell structural lint (engine + installer scripts)
         working-directory: .
         run: |
