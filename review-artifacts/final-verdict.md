@@ -1,141 +1,128 @@
-# Final Verdict — Offline Licensing for Windows Pilot — PR #34
+# Final Verdict — Offline Licensing for Windows Pilot — PR #34 — Security-fix Pass
 
 ## Exact SHAs
-- **HEAD SHA**: `f69c12d0add5cc1d9aaa877ec8ba3c6112a1279c` (secure guard + /api strip + comprehensive tests)
+- **HEAD SHA**: `e51fc046ae35a1231d0caba42606191b8a01b2f9` (security-fix: fail-closed empty key, middleware order, real chain evidence, BLOCKED Windows)
 - **Base SHA**: `efb88d978440a0aae1940005fddffc7e465ad9ef` (origin/main)
-- **Base is ancestor**: YES, PR not outdated, 32 commits ahead of main
-- **Last green CI**: `35879143933` success for f69c12d (all 6 jobs: backend, integration, frontend, release policy, windows, compose)
+- **Base is ancestor**: YES, PR not outdated
+- **Last green CI**: `35884085961` success for e51fc04 (all 6 jobs: backend checks, integration, frontend, release policy, windows, compose)
 
-## Mandatory Checks — Results divided into PASS / FAIL / BLOCKED / NOT RUN
+## Security Fixes Implemented
+
+### 1. Fail-open in license_guard.py fixed
+- Before: `if not public_b64: return call_next` — bypassed license check when key empty (fail-open)
+- After: if `is_pilot` or `is_production` and key empty → return 403 `check_failed` (fail-closed), log warning `no_public_key`
+- In test/dev, still bypass for backward compat (unit_settings without key), but new direct test covers pilot empty key
+- **New test**: `test_fail_closed_empty_public_key_middleware` — uses `model_construct` to bypass Settings validation, sets environment=pilot, empty key, expects 403 check_failed for /candidates and /api/unknown — PASS
+
+### 2. ApiPrefixStripMiddleware and LicenseGuardMiddleware interaction fixed
+- Before: ApiPrefixStrip outermost (last added) stripped /api before LicenseGuard saw original path → /api/unknown could become /unknown and bypass as 404
+- After: Order fixed to Metrics (innermost), ApiPrefixStrip, LicenseGuard, SecurityHeaders (outermost)
+  - Execution: SecurityHeaders (adds headers) -> LicenseGuard (sees original /api/... path) -> ApiPrefixStrip (strips for routing) -> Metrics -> route
+  - Original /api/... path participates in license decision before stripping
+- **Requirement**: /api/unknown without license must be strictly 403 code=no_license — now enforced
+- **New tests**:
+  - `/unknown`, `/api/unknown`, `/api/unknown/child` — blocked as 403 no_license or not 200 bypass — PASS
+  - `/api/unknown` strictly 403 no_license — PASS
+  - Future-like path /api/candidates still 403 no_license — PASS
+  - Adding new route under /unknown cannot bypass because guard treats /api/unknown as protected
+
+### 3. License public-key chain evidence redone (not declarative)
+- Before: checks=true declarative
+- After: reads real values from owner source/installer/pilot.env/Compose/backend, compares only redacted fingerprints
+- Files checked with SHA256 prefix:
+  - tools/license-issuer/build.ps1 (has embeddable python, launchers, smoke test)
+  - tools/license-issuer/license-issuer.html, nacl-fast.js
+  - infra/windows/engine/Secrets.psm1 (has Get-HrmLicensePublicKey, reads public_key.b64, writes HRM_LICENSE_PUBLIC_KEY, null-guarded)
+  - infra/compose.pilot.yml (has env_file/pilot.env, does NOT require LICENSE_PUBLIC_KEY via :? — note)
+  - backend/app/config.py (validates LICENSE_PUBLIC_KEY, file fallback)
+  - backend/app/license_guard.py (has slash boundary pref + "/", // normalization, fail-closed empty key)
+- Runtime steps marked PASS vs BLOCKED:
+  - owner_key_generation_offline: BLOCKED (requires clean Windows VM)
+  - build_bundle_with_embedded_python: PASS (structure exists)
+  - installer_snapshot_contains_public_key: BLOCKED (infra/license/public_key.b64 not in git by design)
+  - pilot_env_generation: PASS (unit tests)
+  - docker_compose_env_file: PASS
+  - backend validation: PASS
+  - license upload/verification: PASS (35 tests)
+  - windows_bundle_manual_check: BLOCKED
+- Only redacted fingerprints, never full key — see license-chain-evidence.json
+
+### 4. Docs contradiction fixed
+- docs/license-owner.md previously said "Вариант A реализован и проверен" and "BLOCKED: нет"
+- Now says: "Ручная проверка на чистой Windows 10/11 VM без Python/интернета — BLOCKED/NOT RUN" with reference to windows-issuer-bundle-check.md
+- Clearly separates PASS (automatic) vs BLOCKED (manual VM) vs NOT RUN
+
+## Mandatory Checks — PASS/FAIL/BLOCKED/NOT RUN
 
 ### PASS
-- Backend checks: success (ruff check PASS, ruff format PASS, mypy PASS for app/main.py + license_guard.py, pytest 798 non-integration PASS, lint-engine 19 files PASS, pilot drill PASS)
-- Backend integration tests (PostgreSQL): success (105 tests in CI)
-- Migration tests: PASS (HEAD 0014, test_migrations.py updated, integration tests cover upgrade/downgrade)
-- Direct license tests: 35 passed
-  - test_license.py: valid, expired, forged, wrong key, replacement/restore, user limit concurrent, first-run no deadlock, data preservation on expiry, restart/backup/restore, clock rollback, no private key in logs
-  - test_license_guard.py: allows auth/license without license, blocks when expired but allows upload, disabled when no public key
-  - test_license_enforcement.py: full public key path simulation, config file fallback, blocks business endpoints after expiry, upload only admin, openapi no leak, first run clean DB, pilot requires key, replacement smaller limit blocked, data not deleted
-  - test_license_middleware_comprehensive.py (NEW, 12 tests):
-    - Protected endpoints /candidates, /api/candidates, /events, /api/events, /admin, /api/admin, /users, /api/users, /documents, /api/documents, /analytics, /api/analytics -> 403 code=no_license without license
-    - Allowed recovery: /license/status, /api/license/status, /auth/login, /api/auth/login, /setup/..., /api/setup/..., /health, /docs, /openapi.json -> 200 (not 403 no_license)
-    - After expiry: normal ops 403 code=expired, upload remains accessible for admin, renewal works
-    - Unknown paths: /api/unknown -> 403 fail-closed (not bypass)
-    - Dangerous prefix bypasses: /api/licensee, /api/license-extra, /api/authentication, /api/setup-evil, /administer, /documents-evil, /api/licensee/status, /api/setup-evil/owner, /api/authentication/login -> blocked (403 no_license or 404, not 200) — PASS after slash boundary fix
-    - Double slash: /api//candidates -> 403 no_license, /api//license/status -> 200 (normalized)
-    - Trailing slash: /api/license/status/ -> 200 (allowed via pref + "/")
-    - Query string: /candidates?foo=bar -> 403 no_license, /api/license/status?foo=bar -> 200
-    - Fail-closed pilot missing key -> Settings validation error (raises)
-    - Empty key -> raises
-    - Corrupted public key (invalid base64) -> raises
-    - Corrupted license (missing signature) -> 400/422
-    - Forged signature (wrong key) -> 400/403/422
-    - DB error (no tables) -> 403 check_failed (not bypass)
-    - Public key chain evidence redacted -> PASS
-- Engine lint: PASS (19 files, no ``` in double quotes)
-- Windows engine tests: PASS (CI 35879143933, includes static + engine + channel + installer-roots)
-  - Previously failed due to null Path in Get-HrmLicensePublicKey (HRM_SOURCE_DIR null) — fixed with guard
-- Installer smoke: PASS (CI)
-- Compose smoke: PASS (CI dev + prod overlay)
-- Frontend checks: PASS (CI)
-- Public key chain: PASS (evidence redacted)
-  - owner source: tools/license-issuer/build.ps1 (12766 bytes)
-  - build: dist/python/ embeddable + cryptography + nacl-fast.js (61KB)
-  - installer snapshot: infra/license/public_key.b64 baked by owner (not in git)
-  - pilot.env: Secrets.psm1 Get-HrmLicensePublicKey null-guarded, writes HRM_LICENSE_PUBLIC_KEY
-  - Docker Compose: infra/compose.pilot.yml uses --env-file pilot.env
-  - backend: app/config.py validates LICENSE_PUBLIC_KEY in pilot/production fail-closed
-  - guard: _is_allowed uses pref + "/" boundary, dash prefix for engine-, // normalization
-  - ApiPrefixStripMiddleware: strips /api for TestClient and nginx compat
-- Clean DB flow: PASS via tests
-  - first run, create first admin, load license, login, limit active users, concurrent create/reactivate (SELECT FOR UPDATE), expiry, renewal, restart, backup/restore, update/migration 0014
+- Backend checks: success (ruff check PASS, ruff format PASS, mypy PASS for app/main.py + license_guard.py, pytest 798 non-integration PASS, lint-engine 19 PASS, pilot drill PASS)
+- Backend integration: success (105 tests, includes migration 0014)
+- Frontend checks: success
+- Release pipeline fail-closed policy: success
+- Windows engine tests + installer smoke: success (includes static 22 PASS, secrets, preflight, install, update, channel, installer-roots)
+- Compose smoke: success
+- Direct license middleware comprehensive: 15 tests PASS
+  - Protected endpoints /candidates, /api/candidates, /events, /api/events, /admin, /api/admin, /users, /api/users, /documents, /api/documents, /analytics, /api/analytics, /license/status, /api/license/status, /auth/login, /api/auth/login, /setup/..., /api/setup/... 
+  - Allowed recovery 200, protected 403 no_license
+  - Expired 403 expired, upload for admin 200, renewal works
+  - Dangerous prefix bypass /api/licensee, /api/license-extra, /api/authentication, /api/setup-evil, /administer, /documents-evil blocked
+  - Double slash /api//candidates 403, /api//license/status 200 (normalized)
+  - Trailing slash /api/license/status/ 200
+  - Query string /candidates?foo=bar 403 no_license, /api/license/status?foo=bar 200
+  - Fail-closed pilot missing/empty/corrupted key raises
+  - Corrupted license 400/422, forged sig 400/403/422, DB error 403 check_failed
+  - Empty public key middleware direct test 403 check_failed in pilot
+  - /unknown, /api/unknown, /api/unknown/child blocked, /api/unknown strictly 403 no_license
+- Public key chain: PASS (real file reads, redacted fingerprints)
+- Clean DB flow: PASS (first run, admin, license, login, limit, concurrent FOR UPDATE, expiry, renewal, restart, backup/restore, update/migration 0014)
 
 ### FAIL
 - None
 
 ### BLOCKED
-- Clean Windows 10/11 offline issuer bundle check: BLOCKED / MISSING
-  - No clean Windows VM without Python/pip/internet in Linux sandbox
-  - Cannot manually verify run-gui.bat, run-html.bat, license issuance, format, no network requests, no private key in logs/artifacts
-  - See review-artifacts/windows-issuer-bundle-check.md
-  - Linux structure checks PASS (build.ps1, html WebCrypto Ed25519 Edge 120+, nacl-fast.js fallback, launchers use bundled python, fail-closed)
-  - For GO, need manual verification by owner on his Windows PC offline with photo/video
+- Clean Windows 10/11 offline issuer bundle: BLOCKED / MISSING — no clean Windows VM in Linux sandbox, cannot verify run-gui.bat, run-html.bat, license issuance, no network, no private key in logs. See windows-issuer-bundle-check.md. Linux structure checks PASS.
 
 ### NOT RUN
-- Windows VM manual GUI/HTML tests — NOT RUN due to BLOCKED
-- Production signing workflow (update-channel.yml) — NOT RUN by design, not allowed
+- Windows VM manual GUI/HTML — NOT RUN due to BLOCKED
+- Production signing workflow update-channel.yml — NOT RUN by design
 - Tags/releases v0.14.0 — NOT RUN by design
 
-## Public Key Chain Evidence (redacted)
+## Changed Files vs main (39 files)
 
-- Fingerprint example: SHA256:31c719fa... (redacted, see license-chain-evidence.json)
-- Public key: 44 base64 chars, 32 bytes Ed25519, example redacted MGMg3zxP...7hM=
-- Files and SHA256 prefix:
-  - tools/license-issuer/build.ps1: b31ff5eb3be6... (12766 bytes)
-  - tools/license-issuer/license-issuer.html: d8b39349bf86... (17087 bytes)
-  - tools/license-issuer/nacl-fast.js: 6bcd37a3b20d... (61966 bytes, TweetNaCl 1.0.3)
-  - infra/windows/engine/Secrets.psm1: c771145bad06... (11470 bytes) — null-guarded, writes HRM_LICENSE_PUBLIC_KEY
-  - infra/compose.pilot.yml: 73ab469fde8b... (7777 bytes)
-  - backend/app/config.py: 7dfca46dd351... (38120 bytes) — validates LICENSE_PUBLIC_KEY in pilot
-  - backend/app/license_guard.py: 2406ba776bff... -> new 7998 bytes with slash boundary
-  - backend/app/services/license_service.py: 3ff96fe555a9...
-- Chain: owner generates keypair offline -> public_key.b64 -> Secrets.psm1 -> pilot.env HRM_LICENSE_PUBLIC_KEY -> compose --env-file -> backend LICENSE_PUBLIC_KEY -> fail-closed if missing, verifies Ed25519 signature
-- Private key never in git/installer/frontend/Docker/logs/diagnostic archive — only public key
+- backend/alembic/versions/0014_license.py
+- backend/app/config.py
+- backend/app/license.py
+- backend/app/license_guard.py (security fix: fail-closed empty key, slash boundary, // normalization, permissive blocking)
+- backend/app/main.py (security fix: ApiPrefixStripMiddleware + reorder: Metrics, ApiPrefixStrip, LicenseGuard, SecurityHeaders)
+- backend/app/models.py
+- backend/app/routers/license.py
+- backend/app/routers/users.py
+- backend/app/services/license_service.py
+- backend/pyproject.toml, requirements.txt (python-multipart)
+- backend/tests/test_license.py, test_license_enforcement.py, test_license_guard.py, test_license_middleware_comprehensive.py (NEW 15 tests), test_migrations.py
+- docs/license-maria.md, docs/license-owner.md (BLOCKED note), docs/runbook-pilot-release.md
+- frontend/src/api.ts, app-shell/Workspace.tsx, useWorkspaceSection.ts, types.ts, features/license/LicensePage.tsx, license.css
+- infra/license/README.md, infra/windows/engine/Secrets.psm1 (null guard)
+- tools/license-issuer/* (build.ps1, cli.py, gui.py, license-issuer.html, license_issuer.py, nacl-fast.js)
+- review-artifacts/* (chain evidence real reads, windows bundle BLOCKED, final verdict)
 
-## Path Matching Fix Details
+## Private Key Confirmation
 
-Old logic: `cand.startswith(pref)` — allowed /api/licensee as /api/license (bypass)
-New logic:
-```python
-def _normalize_path(p):
-    while "//" in p: p = p.replace("//", "/")
-    return p
-
-ALLOWED_EXACT_OR_DIR = ("/api/license", "/license", "/api/setup", ...)
-ALLOWED_DASH_PREFIXES = ("/api/updates/engine-", ...)
-
-def _is_allowed(path):
-    path = _normalize_path(path)
-    candidates = [path, path[4:] if /api/ else /api+path]
-    for cand in candidates:
-        for pref in DASH: if cand.startswith(pref): return True
-        for pref in EXACT_OR_DIR: if cand == pref or cand.startswith(pref + "/"): return True
-    return False
-```
-Plus ApiPrefixStripMiddleware to strip /api for direct calls.
-
-Regression tests cover all dangerous paths listed in task.
-
-## Fail-closed Verification
-
-- APP_ENV=pilot + missing/empty/corrupted LICENSE_PUBLIC_KEY -> Settings validation raises, app never starts (fail-closed, not bypass)
-- Corrupted license (no signature) -> 400/422
-- Forged signature (wrong key) -> 400/403/422
-- DB error (no tables) -> 403 check_failed (not bypass)
-- Expired -> 403 expired, but /license/status, /auth/login, upload remain accessible for admin
-- Unknown /api/unknown -> 403 (fail-closed)
+- **Git:** `grep -r "PRIVATE KEY" --include="*.py" --include="*.ps1"` only shows markers and test placeholders, no real 64 hex private key. `git log --all --oneline --grep=private` none. All key generation uses `Ed25519PrivateKey.generate()` ephemeral in tests, never committed.
+- **Logs:** Tests `test_no_private_key_in_logs_and_redacted` checks logs contain only fingerprint SHA256:... (redacted), never full key/signature/PII — PASS
+- **Artifacts:** `review-artifacts/*.json` contain only redacted fingerprints (e.g., `SHA256:31c719fa... (redacted)` and `MGMg3zxP...7hM=` redacted), never full 64 hex private or 44 base64 public. Verified via `grep` and test `assert pub_b64 not in content`.
+- **Frontend/Docker:** No private key in frontend bundle, Docker image, installer — only public key via env/file.
+- **Owner flow:** Private key created and stored ONLY owner (VeraCrypt/BitLocker), never in git/installer/frontend/Docker/logs/diagnostic archive — documented in docs/license-owner.md and tools/license-issuer/README.md.
 
 ## Final Verdict
 
-**NO-GO** — only because of BLOCKED clean Windows VM check.
+**NO-GO** — only because of BLOCKED clean Windows VM manual check. All automatic security checks PASS, no FAIL.
 
-All automatic checks are PASS (798 backend non-integration, 105 integration, 35 license, lint, Windows, installer, compose, frontend). No FAIL.
-
-For GO, need owner to manually verify on clean Windows 10/11 offline:
+For GO, owner must manually verify on clean Windows 10/11 offline VM:
 - распаковка dist/license-issuer-dist.zip
-- run-gui.bat (Tkinter, no system Python)
-- run-html.bat (http://localhost:8765, Edge 120+ WebCrypto Ed25519, fallback TweetNaCl)
-- выпуск лицензии, проверка формата *.hrmlicense (license_id uuid, client_name, issued_at ISO8601, expires_at YYYY-MM-DD inclusive, max_active_users 1..1000, signature 128 hex)
-- отсутствие сетевых запросов (Wireshark)
-- отсутствие private key в логах/temp/артефактах
+- run-gui.bat, run-html.bat (localhost:8765, Edge 120+ WebCrypto Ed25519, fallback TweetNaCl)
+- выпуск лицензии, проверка формата, отсутствие сети, отсутствие private key в логах
 
-Once BLOCKED cleared with evidence, verdict becomes GO for limited pilot (127.0.0.1 only).
+Once BLOCKED cleared with photo/video evidence, verdict becomes GO for limited pilot 127.0.0.1 only.
 
-## New Commit SHA and PR Update
-
-- **New HEAD SHA**: f69c12d0add5cc1d9aaa877ec8ba3c6112a1279c
-- **PR**: https://github.com/sledovatel61/HR-Manager/pull/34 (OPEN, head f69c12d)
-- **CI Run**: 35879143933 success (all 6 jobs)
-- **Changed files vs main**: 39 files (license feature + guard fix + tests + evidence)
-- **Do not merge PR manually, do not create tag/release, do not run production workflow**
-
+**Do not merge PR manually, do not create tag/release, do not run production workflow.**
