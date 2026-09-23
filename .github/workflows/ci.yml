@@ -458,7 +458,9 @@ jobs:
           Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP log=$log log2=$log2 workspace=$env:GITHUB_WORKSPACE"
           Get-ChildItem $env:RUNNER_TEMP | Select-Object -First 20 | Format-List | Out-String | Write-Host
           # Run tests directly in this session to capture output and exit code reliably
-          $output = & "$env:GITHUB_WORKSPACE/infra/windows/tests/run-tests.ps1" 2>&1 | Out-String
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE "infra\windows\tests\run-tests.ps1"
+          Write-Host "scriptPath=$scriptPath exists $(Test-Path $scriptPath)"
+          $output = & $scriptPath 2>&1 | Out-String
           $code = $LASTEXITCODE
           if ($null -eq $code) { $code = 0 }
           # Fallback: if LASTEXITCODE not set, check $global:HRM_TestFailed from harness
