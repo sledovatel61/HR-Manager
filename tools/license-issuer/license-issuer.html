@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>HR Manager — License Issuer (offline, owner only)</title>
+<style>
+body { font-family: sans-serif; max-width: 900px; margin: 20px auto; padding: 10px; }
+h1 { font-size: 20px; }
+label { display: block; margin-top: 12px; font-weight: bold; }
+input, textarea { width: 100%; padding: 6px; margin-top: 4px; box-sizing: border-box; }
+button { margin-top: 10px; padding: 8px 14px; }
+pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+.warning { color: #a00; background: #fff0f0; border: 1px solid #a00; padding: 8px; margin: 10px 0; }
+.ok { color: #060; background: #f0fff0; border: 1px solid #0a0; padding: 8px; margin: 10px 0; }
+</style>
+</head>
+<body>
+<h1>HR Manager — License Issuer (офлайн, только у владельца)</h1>
+<div id="status" class="ok">Проверка WebCrypto Ed25519...</div>
+<div class="warning">
+<strong>Приватный ключ — СЕКРЕТНО, только у владельца!</strong><br>
+Никогда не коммитьте private_key в git, не добавляйте в установщик, Docker, логи, диагностический архив.<br>
+Сделайте резервную копию в зашифрованном хранилище (VeraCrypt/BitLocker/зашифрованная флешка).<br>
+Публичный ключ (base64 44 символа) скопируйте в <code>infra/license/public_key.b64</code> перед сборкой пилотного образа или в <code>HRM_LICENSE_PUBLIC_KEY</code>.
+</div>
+
+<h2>1. Ключи (Ed25519)</h2>
+<label>Приватный ключ (64 hex, секретно, 32 байта seed):</label>
+<input id="privHex" type="text" placeholder="64 hex">
+<label>Приватный ключ (base64 32 байта, для справки):</label>
+<input id="privB64" type="text" readonly>
+<label>Публичный ключ (base64 44 символа, для сборки):</label>
+<input id="pubB64" type="text" placeholder="base64">
+<button onclick="genKeypair()">Сгенерировать новую пару (WebCrypto)</button>
+<button onclick="derivePubFromPriv()">Вычислить публичный из приватного (если есть priv)</button>
+
+<h2>2. Выпустить лицензию</h2>
+<label>Имя клиента/пилота (например, Пилот Марии):</label>
+<input id="clientName" value="Пилот Марии">
+<label>Действует до (YYYY-MM-DD, включительно до 23:59:59 UTC):</label>
+<input id="expiresAt" value="2026-12-31">
+<label>Лимит активных пользователей (1..1000, включает Марию):</label>
+<input id="maxUsers" value="5" type="number" min="1" max="1000">
+<label>License ID (UUID, пусто = сгенерировать):</label>
+<input id="licenseId" placeholder="auto">
+<button onclick="issueLicense()">Выпустить лицензию</button>
+<pre id="result"></pre>
+<button onclick="downloadResult()">Скачать .hrmlicense файл</button>
+<button onclick="verifyCurrent()">Проверить подпись текущей лицензии</button>
+
+<h2>3. Проверка чужой лицензии</h2>
+<label>Вставьте JSON лицензии для проверки:</label>
+<textarea id="verifyInput" rows="10"></textarea>
+<button onclick="verifyExternal()">Проверить подпись</button>
+
+<h2>Справка</h2>
+<p><strong>Формат канонических байт для подписи (фиксированный порядок, LF, UTF-8):</strong></p>
+<pre>license_id:&lt;uuid&gt;
+client_name:&lt;имя&gt;
+issued_at:&lt;YYYY-MM-DDTHH:MM:SSZ&gt;
+expires_at:&lt;YYYY-MM-DD&gt;
+max_active_users:&lt;число&gt;
+</pre>
+<p>Подпись — Ed25519 detached, 128 hex. Проверяется публичным ключом base64 32 байта.</p>
+<p>Дата <code>expires_at</code> действует включительно до конца дня 23:59:59 UTC. Например, 2026-12-31 значит валидна до 2026-12-31T23:59:59Z.</p>
+<p>Защита от перевода часов: сервер хранит <code>last_seen_at</code> и если текущее время &lt; last_seen_at - 1 час, лицензия блокируется (best-effort).</p>
+<p>Инструкция для Марии: Настройки → Лицензия → Загрузить файл .hrmlicense или вставить JSON → Сохранить. При истечении — админ может войти и загрузить новую лицензию, данные не удаляются.</p>
+<p>Офлайн: этот HTML работает без интернета, использует WebCrypto Ed25519 (Chrome 120+, Edge 120+, Firefox 120+). Для старых браузеров — используйте Python CLI: <code>python cli.py gen-keypair</code> и <code>python cli.py issue ...</code></p>
+
+<script>
+function base64ToBytes(b64) {
+  const bin = atob(b64.trim());
+  const arr = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+  return arr;
+}
+function bytesToBase64(bytes) {
+  let bin = "";
+  for (let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function hexToBytes(hex) {
+  hex=hex.trim();
+  if (hex.length%2!==0) throw new Error('hex length');
+  const bytes = new Uint8Array(hex.length/2);
+  for (let i=0;i<bytes.length;i++) bytes[i]=parseInt(hex.substr(i*2,2),16);
+  return bytes;
+}
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+function canonicalBytes(data) {
+  const fields = ["license_id","client_name","issued_at","expires_at","max_active_users"];
+  let s = "";
+  for (const f of fields) s += f + ":" + data[f] + "\n";
+  return new TextEncoder().encode(s);
+}
+function uuidv4() {
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+  );
+}
+
+let lastKeyPair = null; // {privateKey, publicKey, privRaw 32, pubRaw 32}
+
+function setStatus(msg, ok=true) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = ok ? 'ok' : 'warning';
+}
+
+async function checkSupport() {
+  try {
+    if (!crypto.subtle) throw new Error('crypto.subtle not available (need https or localhost)');
+    // Try generate
+    const kp = await crypto.subtle.generateKey({name: "Ed25519"}, true, ["sign","verify"]);
+    await crypto.subtle.exportKey("raw", kp.publicKey);
+    setStatus('WebCrypto Ed25519 поддерживается — офлайн подпись готова.', true);
+  } catch (e) {
+    setStatus('WebCrypto Ed25519 НЕ поддерживается: '+e+'. Используйте Python CLI (tools/license-issuer/cli.py) для выпуска лицензий.', false);
+  }
+}
+checkSupport();
+
+async function genKeypair() {
+  try {
+    const kp = await crypto.subtle.generateKey({name: "Ed25519"}, true, ["sign","verify"]);
+    const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+    const privPkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
+    // PKCS8 for Ed25519: last 32 bytes are seed
+    const privRaw = privPkcs8.slice(-32);
+    lastKeyPair = {privateKey: kp.privateKey, publicKey: kp.publicKey, privRaw, pubRaw};
+    document.getElementById('privHex').value = bytesToHex(privRaw);
+    document.getElementById('privB64').value = bytesToBase64(privRaw);
+    document.getElementById('pubB64').value = bytesToBase64(pubRaw);
+    setStatus('Ключи сгенерированы. СОХРАНИТЕ приватный ключ в зашифрованном хранилище!', true);
+  } catch (e) {
+    alert('Ошибка генерации: '+e);
+    setStatus('Ошибка: '+e, false);
+  }
+}
+
+async function derivePubFromPriv() {
+  try {
+    const privHex = document.getElementById('privHex').value.trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(privHex)) { alert('Приватный ключ должен быть 64 hex'); return; }
+    const privRaw = hexToBytes(privHex);
+    // Import private key via PKCS8? We need to construct PKCS8 from raw.
+    // Instead, we can import via jwk or via raw? WebCrypto doesn't support raw private import for Ed25519 in all browsers, but we can try jwk.
+    // Build jwk: d = base64url of privRaw, x = will be derived? For Ed25519, we need to derive public.
+    // Simplest: use private raw to generate keypair via subtle.importKey with pkcs8 constructed.
+    // Construct PKCS8 manually: sequence as per RFC 8410
+    // 30 2e 02 01 00 30 05 06 03 2b 65 70 04 22 04 20 <32 bytes>
+    const header = new Uint8Array([0x30,0x2e,0x02,0x01,0x00,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x04,0x22,0x04,0x20]);
+    const pkcs8 = new Uint8Array(header.length + privRaw.length);
+    pkcs8.set(header,0);
+    pkcs8.set(privRaw, header.length);
+    const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, {name:"Ed25519"}, true, ["sign"]);
+    // To get public, we need to sign something? Instead, we can generate public via keypair? We have privateKey, but we need publicKey.
+    // WebCrypto doesn't give public from private directly, so we sign and then? Actually we can export public from private? No.
+    // Workaround: we can use privateKey to sign and then we need public. We can derive public by using the fact that Ed25519 public can be derived, but WebCrypto doesn't expose.
+    // So we will import again with jwk that includes x? We don't have x.
+    // Alternative: we keep lastKeyPair if we generated, but if user pasted priv, we cannot derive pub via WebCrypto easily.
+    // We'll attempt to use a small JS Ed25519 derivation via tweetnacl fallback if available, else ask user to also paste pub or use Python CLI.
+    if (typeof nacl !== 'undefined' && nacl.sign && nacl.sign.keyPair && nacl.sign.keyPair.fromSeed) {
+      const kp = nacl.sign.keyPair.fromSeed(privRaw);
+      const pubRaw = kp.publicKey;
+      document.getElementById('pubB64').value = bytesToBase64(pubRaw);
+      setStatus('Публичный ключ выведен из приватного via TweetNaCl (fallback).', true);
+      return;
+    }
+    alert('WebCrypto не может вывести публичный ключ из приватного напрямую. Вставьте публичный ключ вручную или используйте Python CLI: python cli.py gen-keypair или python cli.py issue --private-key ... (он выведет публичный). Для этой сессии публичный ключ нужно вставить вручную, либо сгенерировать новую пару.');
+  } catch (e) {
+    alert('Ошибка вывода публичного: '+e);
+  }
+}
+
+async function importPrivateKeyFromHex(privHex) {
+  const privRaw = hexToBytes(privHex);
+  const header = new Uint8Array([0x30,0x2e,0x02,0x01,0x00,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x04,0x22,0x04,0x20]);
+  const pkcs8 = new Uint8Array(header.length + privRaw.length);
+  pkcs8.set(header,0);
+  pkcs8.set(privRaw, header.length);
+  const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, {name:"Ed25519"}, false, ["sign"]);
+  return {privateKey, privRaw};
+}
+
+async function issueLicense() {
+  try {
+    const client = document.getElementById('clientName').value.trim();
+    const expires = document.getElementById('expiresAt').value.trim();
+    const maxUsers = parseInt(document.getElementById('maxUsers').value,10);
+    const privHex = document.getElementById('privHex').value.trim();
+    let licenseId = document.getElementById('licenseId').value.trim();
+    if (!licenseId) licenseId = uuidv4();
+    const issuedAt = new Date().toISOString().replace(/\.\d+Z$/,'Z');
+
+    if (!client) { alert('Имя клиента пустое'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(expires)) { alert('expires_at должен быть YYYY-MM-DD'); return; }
+    if (!(maxUsers>=1 && maxUsers<=1000)) { alert('max_users 1..1000'); return; }
+    if (!/^[0-9a-fA-F]{64}$/.test(privHex)) { alert('Приватный ключ должен быть 64 hex'); return; }
+
+    const payload = {
+      license_id: licenseId,
+      client_name: client,
+      issued_at: issuedAt,
+      expires_at: expires,
+      max_active_users: maxUsers
+    };
+    const msg = canonicalBytes(payload);
+    const {privateKey} = await importPrivateKeyFromHex(privHex);
+    const sigBuf = await crypto.subtle.sign({name:"Ed25519"}, privateKey, msg);
+    const sigBytes = new Uint8Array(sigBuf);
+    const result = {...payload, signature: bytesToHex(sigBytes)};
+    document.getElementById('result').textContent = JSON.stringify(result, null, 2);
+    setStatus('Лицензия выпущена и подписана.', true);
+  } catch (e) {
+    alert('Ошибка выпуска: '+e);
+    setStatus('Ошибка: '+e, false);
+  }
+}
+
+async function verifyLicenseData(data, pubB64) {
+  const pubBytes = base64ToBytes(pubB64);
+  const msg = canonicalBytes(data);
+  const sigBytes = hexToBytes(data.signature);
+  const publicKey = await crypto.subtle.importKey("raw", pubBytes, {name:"Ed25519"}, false, ["verify"]);
+  const ok = await crypto.subtle.verify({name:"Ed25519"}, publicKey, sigBytes, msg);
+  return ok;
+}
+
+async function verifyCurrent() {
+  try {
+    const pubB64 = document.getElementById('pubB64').value.trim();
+    const licText = document.getElementById('result').textContent.trim();
+    if (!licText) { alert('Нет лицензии для проверки'); return; }
+    const data = JSON.parse(licText);
+    const ok = await verifyLicenseData(data, pubB64);
+    alert(ok ? 'Подпись корректна' : 'Подпись НЕВЕРНА');
+  } catch (e) {
+    alert('Ошибка проверки: '+e);
+  }
+}
+async function verifyExternal() {
+  try {
+    const pubB64 = document.getElementById('pubB64').value.trim();
+    const licText = document.getElementById('verifyInput').value.trim() || document.getElementById('result').textContent.trim();
+    if (!licText) { alert('Вставьте лицензию'); return; }
+    const data = JSON.parse(licText);
+    const ok = await verifyLicenseData(data, pubB64);
+    alert(ok ? 'Подпись корректна' : 'Подпись НЕВЕРНА');
+  } catch (e) {
+    alert('Ошибка: '+e);
+  }
+}
+
+function downloadResult() {
+  const text = document.getElementById('result').textContent;
+  if (!text) { alert('Нет лицензии для сохранения'); return; }
+  const blob = new Blob([text+"\n"], {type: "application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  try {
+    const data = JSON.parse(text);
+    a.download = (data.client_name.replace(/\s+/g,'_') + '_' + data.expires_at + '.hrmlicense');
+  } catch {
+    a.download = 'license.hrmlicense';
+  }
+  a.click();
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>

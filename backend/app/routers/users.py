@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_event
+from app.config import Settings, get_settings
 from app.db import get_db
 from app.deps import get_current_user, require_roles
 from app.models import AuditAction, User, UserRole
@@ -25,6 +26,10 @@ from app.schemas import (
     UserUpdate,
 )
 from app.security import WeakPasswordError, hash_password, validate_password_policy
+from app.services.license_service import (
+    count_active_users,
+    get_active_license_for_update,
+)
 from app.utils import client_ip, user_agent, utc_now
 
 router = APIRouter(prefix="/admin/users", tags=["admin-users"])
@@ -97,8 +102,9 @@ def create_user(
     request: Request,
     db: Session = Depends(get_db),
     actor: User = Depends(_admin_only),
+    settings: Settings = Depends(get_settings),
 ) -> UserOut:
-    """Create a user with a mandatory password."""
+    """Create a user with a mandatory password. Enforces license max_active_users with concurrency safety."""
     try:
         validate_password_policy(payload.password, username=payload.username)
     except WeakPasswordError as exc:
@@ -112,6 +118,27 @@ def create_user(
             status_code=status.HTTP_409_CONFLICT,
             detail="Пользователь с таким именем уже существует.",
         )
+
+    # License user limit check (concurrency-safe via FOR UPDATE on active license row)
+    public_b64 = (settings.license_public_key or "").strip()
+    if public_b64:
+        # Lock active license row to serialize concurrent creates
+        active_license = get_active_license_for_update(db)
+        if active_license is not None:
+            # Count active users with lock on user rows
+            # Use FOR UPDATE on active users to prevent race
+            active_count = db.scalar(
+                select(func.count()).select_from(User).where(User.is_active.is_(True))
+            ) or 0
+            # Actually need to lock users as well — select ids FOR UPDATE
+            # The count above is not locked, but we also lock license row which serializes.
+            # For extra safety, lock active user ids
+            db.scalars(select(User.id).where(User.is_active.is_(True)).with_for_update()).all()
+            if active_count >= active_license.max_active_users:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Достигнут лимит активных пользователей по лицензии ({active_license.max_active_users}). Отключите неиспользуемых пользователей или загрузите лицензию с большим лимитом.",
+                )
 
     user = User(
         username=payload.username,
@@ -176,11 +203,12 @@ def update_user(
     request: Request,
     db: Session = Depends(get_db),
     actor: User = Depends(_admin_only),
+    settings: Settings = Depends(get_settings),
 ) -> UserOut:
     """Update full name, role, active flag and/or password.
 
     An administrator cannot deactivate themselves, which would lock the last
-    usable administrator out mid-operation.
+    usable administrator out mid-operation. Reactivation enforces license limit.
     """
     user = _get_user_or_404(db, user_id)
 
@@ -189,6 +217,22 @@ def update_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Нельзя отключить собственную учётную запись.",
         )
+
+    # License limit check on reactivation
+    if payload.is_active is True and user.is_active is False:
+        public_b64 = (settings.license_public_key or "").strip()
+        if public_b64:
+            active_license = get_active_license_for_update(db)
+            if active_license is not None:
+                active_count = db.scalar(
+                    select(func.count()).select_from(User).where(User.is_active.is_(True))
+                ) or 0
+                db.scalars(select(User.id).where(User.is_active.is_(True)).with_for_update()).all()
+                if active_count >= active_license.max_active_users:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Достигнут лимит активных пользователей по лицензии ({active_license.max_active_users}). Отключите неиспользуемых пользователей или загрузите лицензию с большим лимитом.",
+                    )
 
     changes: list[str] = []
 
