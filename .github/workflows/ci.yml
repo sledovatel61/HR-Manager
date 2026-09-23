@@ -457,15 +457,20 @@ jobs:
           $log2 = Join-Path $env:GITHUB_WORKSPACE "engine.log"
           Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP log=$log log2=$log2 workspace=$env:GITHUB_WORKSPACE"
           Get-ChildItem $env:RUNNER_TEMP | Select-Object -First 20 | Format-List | Out-String | Write-Host
-          $output = powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 2>&1 | Out-String
-          $output | Tee-Object -FilePath $log -Encoding utf8 | Out-Null
-          $output | Out-File -FilePath $log2 -Encoding utf8
+          # Run tests directly in this session to capture output and exit code reliably
+          $output = & "$env:GITHUB_WORKSPACE/infra/windows/tests/run-tests.ps1" 2>&1 | Out-String
           $code = $LASTEXITCODE
+          if ($null -eq $code) { $code = 0 }
+          # Fallback: if LASTEXITCODE not set, check $global:HRM_TestFailed from harness
+          $output | Out-File -FilePath $log -Encoding utf8
+          $output | Out-File -FilePath $log2 -Encoding utf8
           Write-Host $output
           Write-Host "exit code $code, log exists $(Test-Path $log) log2 $(Test-Path $log2)"
           if (Test-Path $log) { Get-ChildItem $log | Format-List | Out-String | Write-Host }
           if (Test-Path $log2) { Get-ChildItem $log2 | Format-List | Out-String | Write-Host }
-          if ($code -ne 0) {
+          # Also write a marker file to prove workspace write works
+          "test marker" | Out-File -FilePath (Join-Path $env:GITHUB_WORKSPACE "marker.txt") -Encoding utf8
+          if ($code -ne 0 -or $output -match "\[FAIL\]" -or $output -match "ЕСТЬ ПРОВАЛЫ") {
             if (Test-Path $log) {
               Get-Content $log -Tail 200 | Write-Host
               "### Windows engine tests failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
@@ -481,6 +486,7 @@ jobs:
             } else {
               "### Windows engine tests failed (no log)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             }
+            if ($code -eq 0) { $code = 1 }
             exit $code
           }
       - name: Post Windows failure to PR comment
