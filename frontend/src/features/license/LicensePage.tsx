@@ -68,34 +68,38 @@ export function LicensePage({ fetcher }: LicensePageProps) {
     }
     setUploading(true);
     try {
-      let result: LicenseStatus;
       if (file) {
-        result = await uploadLicenseFile(file);
+        await uploadLicenseFile(file);
       } else {
-        // Try parse jsonText as JSON, then send as license object or text
         const trimmed = jsonText.trim();
         try {
-          const parsed = JSON.parse(trimmed);
-          // If parsed looks like license, send as {license: ...}
-          if (parsed && typeof parsed === "object" && "license_id" in parsed) {
-            result = await uploadLicenseJson({ license: parsed } as any);
+          const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+          if (
+            parsed &&
+            typeof parsed === "object" &&
+            "license_id" in parsed
+          ) {
+            await uploadLicenseJson({ license: parsed });
           } else {
-            result = await uploadLicenseJson({ license_text: trimmed } as any);
+            await uploadLicenseJson({ license_text: trimmed });
           }
         } catch {
-          // Not JSON? Send as text
-          result = await uploadLicenseJson({ license_text: trimmed } as any);
+          await uploadLicenseJson({ license_text: trimmed });
         }
       }
       setUploadSuccess("Лицензия успешно загружена и активирована.");
-      // Reload status
       const fn = fetcher ?? fetchLicenseStatus;
       const fresh = await fn();
       setStatus(fresh);
       setFile(null);
       setJsonText("");
     } catch (e) {
-      const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Ошибка загрузки лицензии";
+      const msg =
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : "Ошибка загрузки лицензии";
       setUploadError(msg);
     } finally {
       setUploading(false);
@@ -126,8 +130,8 @@ export function LicensePage({ fetcher }: LicensePageProps) {
   const isValid = status?.is_valid;
   const lic = status?.license;
   const activeUsers = lic?.active_users ?? status?.active_users;
-  const code = (status as any)?.code;
-  const message = (status as any)?.message;
+  const code = status?.code;
+  const message = status?.message;
 
   return (
     <div className="license-page" aria-label="Лицензия">

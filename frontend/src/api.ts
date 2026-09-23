@@ -883,8 +883,14 @@ export async function uploadLicenseFile(file: File): Promise<LicenseStatus> {
   let data: unknown = null;
   try { data = await response.json(); } catch { data = null; }
   if (!response.ok) {
-    const rawDetail = data && typeof data === "object" && "detail" in data ? (data as any).detail : null;
-    const detail = typeof rawDetail === "string" ? rawDetail : `Ошибка загрузки лицензии (${response.status}).`;
+    const rawDetail =
+      data && typeof data === "object" && "detail" in data
+        ? (data as { detail: unknown }).detail
+        : null;
+    const detail =
+      typeof rawDetail === "string"
+        ? rawDetail
+        : `Ошибка загрузки лицензии (${response.status}).`;
     throw new ApiError(response.status, detail, rawDetail);
   }
   // After upload, fetch fresh status
