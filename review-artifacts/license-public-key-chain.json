@@ -1,5 +1,5 @@
 {
-  "fingerprint": "SHA256:e0a08ca7c343abe1... (redacted)",
+  "fingerprint": "SHA256:e158b986c575409b... (redacted)",
   "files": [
     "infra/license/public_key.b64",
     "tools/license-issuer/public_key.b64 (owner)",
@@ -15,5 +15,5 @@
     "compose_passes_env_file": true,
     "backend_validates_key": true
   },
-  "note": "Private key never in git/installer/frontend/Docker/logs. Only public key fingerprint shown."
+  "note": "Private key never in git. Only fingerprint shown."
 }

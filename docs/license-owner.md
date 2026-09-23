@@ -108,7 +108,7 @@ python tools/license-issuer/cli.py gen-keypair
 python tools/license-issuer/cli.py issue --client-name "Пилот Марии" --expires-at 2026-12-31 --max-users 5 --private-key <64hex> --out license.hrmlicense
 ```
 
-**Текущий статус:** Вариант A **реализован и проверен** — см. `build.ps1`, `nacl-fast.js` (2391 строка, из npm tweetnacl@1.0.3), smoke-тест `gen-keypair`. Требуется проверка на чистой Windows VM (отмечено как требует чистой Windows, см. ниже).
+**Текущий статус:** Вариант A **реализован** — см. `build.ps1`, `nacl-fast.js` (2391 строка, из npm tweetnacl@1.0.3), smoke-тест `gen-keypair`. **Ручная проверка на чистой Windows 10/11 VM без Python/интернета — BLOCKED/NOT RUN** (нет чистой Windows VM в Linux sandbox, см. `review-artifacts/windows-issuer-bundle-check.md`). Linux структура проверена, но для GO требуется ручная VM.
 
 ### Вариант HTML офлайн (WebCrypto)
 
@@ -147,17 +147,18 @@ python tools/license-issuer/cli.py issue --client-name "Пилот Марии" -
 
 ## Проверка (что уже проверено)
 
-- **Unit-тесты (проверено):** `pytest backend/tests/test_license*.py` — 23 passed (valid, expired, forged, wrong key, replacement/restore, user limit concurrent, API guard, first-run no deadlock, data preservation, clock rollback, no private key in logs, full path, enforcement, upload only admin, openapi no leak, pilot requires key, replacement smaller limit).
-- **Backend subset (проверено):** `pytest backend/tests/test_license*.py backend/tests/test_users_admin.py backend/tests/test_auth.py backend/tests/test_candidates.py` — 84 passed.
-- **Frontend (проверено):** `npm test` — 160 passed.
+- **Unit-тесты (проверено):** `pytest backend/tests/test_license*.py` — 35 passed (valid, expired, forged, wrong key, replacement/restore, user limit concurrent, API guard, first-run no deadlock, data preservation, clock rollback, no private key in logs, full path, enforcement, upload only admin, openapi no leak, pilot requires key, replacement smaller limit, comprehensive middleware 15 tests: protected endpoints, dangerous prefix bypass, double slash, trailing slash, query string, fail-closed empty key, /api/unknown).
+- **Backend subset (проверено):** 798 non-integration passed, 105 integration passed в CI.
+- **Frontend (проверено):** CI success.
 - **Windows engine lint (проверено):** `python infra/windows/tests/lint-engine.py` — 19 files OK.
-- **Автономность сборки (проверено частично):** `build.ps1` создаёт `dist/python/` с cryptography, smoke-тест `gen-keypair` проходит. Требуется проверка на чистой Windows VM без Python/интернета (отмечено как требует чистой Windows).
-- **HTML WebCrypto (проверено частично):** Edge 120+ поддерживает Ed25519, `run-html.bat` даёт localhost secure context. Требуется ручная проверка на чистой Windows 10/11 Edge (отмечено как требует чистой Windows).
-- **BLOCKED:** нет, Вариант A реализован. Остаётся ручная проверка на чистой Windows (не BLOCKED, а требует чистой Windows).
+- **Windows engine tests + installer smoke + compose smoke:** CI success (35879963863).
+- **Автономность сборки (проверено частично в Linux):** `build.ps1` создаёт `dist/python/` с cryptography, smoke-тест `gen-keypair` проходит. **Ручная проверка на чистой Windows VM без Python/интернета — BLOCKED/NOT RUN** (нет VM в sandbox).
+- **HTML WebCrypto (проверено частично):** Edge 120+ поддерживает Ed25519, `run-html.bat` даёт localhost secure context. **Ручная проверка — BLOCKED/NOT RUN**.
+- **BLOCKED:** clean Windows 10/11 manual check — BLOCKED, см. `review-artifacts/windows-issuer-bundle-check.md`. Для GO требуется ручная VM.
 
-## Документация — разделение
+## Документация — разделение (PASS/FAIL/BLOCKED/NOT RUN)
 
-- **Проверено unit-тестами:** формат лицензии, подпись, expiry inclusive, лимит, guard, first-run no deadlock, data preservation, full public key path simulation, enforcement API, replacement, openapi no leak.
-- **Проверено только unit-тестами, требует чистой Windows:** автономный пакет `license-issuer-dist.zip` (двойной клик без Python/интернета), HTML WebCrypto в Edge 120+ через localhost.
-- **Требует чистой Windows:** ручной smoke `run-gui.bat`, `run-html.bat`, `run-cli.bat gen-keypair` на VM без Python/интернета, проверка что `HRM_LICENSE_PUBLIC_KEY` попадает из `infra/license/public_key.b64` через `Secrets.psm1` в `pilot.env` и backend принимает лицензию.
-- **BLOCKED:** нет (если бы embeddable Python + cryptography не удалось собрать — было бы BLOCKED, но сейчас собрано).
+- **PASS (автоматически):** формат лицензии, подпись, expiry inclusive, лимит, guard с slash boundary, first-run no deadlock, data preservation, full public key path simulation, enforcement API, replacement, openapi no leak, protected endpoints 403 no_license, allowed recovery 200, dangerous prefix bypass blocked, double slash normalization, query string, fail-closed empty key check_failed, /api/unknown 403 no_license, chain evidence redacted.
+- **BLOCKED:** автономный пакет `license-issuer-dist.zip` двойной клик без Python/интернета, HTML WebCrypto в Edge через localhost — требует чистой Windows VM.
+- **NOT RUN:** ручной smoke `run-gui.bat`, `run-html.bat`, `run-cli.bat gen-keypair` на VM без Python/интернета, проверка что `HRM_LICENSE_PUBLIC_KEY` попадает из `infra/license/public_key.b64` через `Secrets.psm1` в `pilot.env` и backend принимает лицензию — NOT RUN до VM.
+- **FAIL:** none.

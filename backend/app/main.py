@@ -145,18 +145,18 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
 
     app.state.host_evidence = PilotHostEvidenceStore()
 
+    # Middleware order (Starlette: last added is outermost, first to receive request):
+    # Desired execution: SecurityHeaders (outermost, adds headers) ->
+    # LicenseGuard (sees original /api/... path before stripping) ->
+    # ApiPrefixStrip (strips /api for routing) -> Metrics (innermost) -> route
+    # So add in reverse: Metrics first, ApiPrefixStrip second, LicenseGuard third,
+    # SecurityHeaders last.
     app.add_middleware(MetricsMiddleware)
-    app.add_middleware(SecurityHeadersMiddleware)
-    # License guard must run before security/metrics? Order: last added runs first.
-    # We want license check after security headers but before route handling.
-    # Adding it here means it will be outermost (first) after metrics/security?
-    # Actually BaseHTTPMiddleware stack: first added is outermost.
-    # We add license guard last so it runs first (closest to request) — okay.
+    app.add_middleware(ApiPrefixStripMiddleware)
     from app.license_guard import LicenseGuardMiddleware
 
     app.add_middleware(LicenseGuardMiddleware)
-    # Strip /api prefix for direct API calls (nginx also does rewrite)
-    app.add_middleware(ApiPrefixStripMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(health.router)
     app.include_router(ops.router)
