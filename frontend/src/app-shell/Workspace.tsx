@@ -16,6 +16,7 @@ import { IntegrationsPage } from "../features/notifications/IntegrationsPage";
 import { AdminQueuePage } from "../features/notifications/AdminQueuePage";
 import { UpdateChannelPage } from "../features/updates/UpdateChannelPage";
 import { PilotReadinessPage } from "../features/readiness/PilotReadinessPage";
+import { LicensePage } from "../features/license/LicensePage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
 import "./workspace.css";
@@ -40,6 +41,7 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   integrations: { label: "Интеграции", icon: "arrow-right-left" },
   updates: { label: "Обновления", icon: "loader" },
   readiness: { label: "Готовность пилота", icon: "check-circle" },
+  license: { label: "Лицензия", icon: "shield" },
   admin: { label: "Администрирование", icon: "shield" },
 };
 
@@ -56,7 +58,8 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   if (role === "admin") {
     // «Готовность пилота» — read-only отчёт admin + update_channel_manage;
     // backend всё равно перепроверяет права и отвечает 403 без scope.
-    return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "readiness", "admin"];
+    // Лицензия — только admin (загрузка/замена).
+    return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "readiness", "license", "admin"];
   }
   return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "admin"];
 }
@@ -168,6 +171,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           {section === "integrations" && <IntegrationsPage user={user} />}
           {section === "updates" && <UpdateChannelPage />}
           {section === "readiness" && <PilotReadinessPage />}
+          {section === "license" && <LicensePage />}
           {section === "admin" && <AdminQueuePage />}
           {section !== "calendar" &&
             section !== "kanban" &&
@@ -180,6 +184,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             section !== "integrations" &&
             section !== "updates" &&
             section !== "readiness" &&
+            section !== "license" &&
             section !== "admin" && (
             <CandidatesListPage
               key={section}

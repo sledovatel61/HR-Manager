@@ -192,6 +192,14 @@ class AuditAction(StrEnum):
     UPDATE_DOWNLOAD_FAILED = "update_download_failed"
     UPDATE_INSTALL_REQUESTED = "update_install_requested"
     UPDATE_ENGINE_REPORTED = "update_engine_reported"
+    # Phase 15: offline pilot license (installation/server).
+    LICENSE_UPLOADED = "license_uploaded"
+    LICENSE_REPLACED = "license_replaced"
+    LICENSE_REJECTED = "license_rejected"
+    LICENSE_EXPIRED = "license_expired"
+    LICENSE_CHECK_FAILED = "license_check_failed"
+    LICENSE_VALIDATION_ERROR = "license_validation_error"
+
 
 
 class CandidateStage(StrEnum):
@@ -2226,3 +2234,48 @@ class BootstrapTicket(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class License(Base):
+    """Phase 15: offline pilot license — installation/server license.
+
+    One row per license file uploaded. Only one row is active at a time
+    (is_active=True). History rows remain for audit. The license file
+    itself is NOT stored (only its metadata and signature) to avoid PII
+    leakage via logs/dumps; the signature is stored for verification
+    but never logged in plaintext beyond redacted fingerprint.
+    """
+
+    __tablename__ = "licenses"
+    __table_args__ = (
+        Index("ix_licenses_license_id", "license_id", unique=True),
+        Index("ix_licenses_is_active", "is_active"),
+        Index("ix_licenses_expires_at", "expires_at"),
+        CheckConstraint("max_active_users >= 1", name="ck_licenses_max_users_min"),
+        CheckConstraint("max_active_users <= 1000", name="ck_licenses_max_users_max"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    license_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    client_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    expires_at: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD inclusive
+    expires_at_end: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)  # end of day UTC
+    max_active_users: Mapped[int] = mapped_column(Integer, nullable=False)
+    signature: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    # Clock rollback protection: last time license was seen valid.
+    last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    uploaded_by: Mapped[User | None] = relationship(foreign_keys=[uploaded_by_user_id])
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<License id={self.license_id} client={self.client_name!r} expires={self.expires_at}>"
+
