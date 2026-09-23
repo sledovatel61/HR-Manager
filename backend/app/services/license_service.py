@@ -36,12 +36,7 @@ def get_active_license(db: Session) -> License | None:
 
 
 def get_active_license_for_update(db: Session) -> License | None:
-    return db.scalar(
-        select(License)
-        .where(License.is_active.is_(True))
-        .with_for_update()
-        .limit(1)
-    )
+    return db.scalar(select(License).where(License.is_active.is_(True)).with_for_update().limit(1))
 
 
 def count_active_users(db: Session, for_update: bool = False) -> int:
@@ -50,21 +45,17 @@ def count_active_users(db: Session, for_update: bool = False) -> int:
 
 
 def count_active_users_locked(db: Session) -> int:
-    ids = db.scalars(
-        select(User.id).where(User.is_active.is_(True)).with_for_update()
-    ).all()
+    ids = db.scalars(select(User.id).where(User.is_active.is_(True)).with_for_update()).all()
     return len(ids)
 
 
-def parse_and_verify_license_text(text: str | bytes, public_b64: str) -> dict:
+def parse_and_verify_license_text(text: str | bytes, public_b64: str) -> dict[str, Any]:
     """Parse JSON, validate fields, verify Ed25519 signature."""
     if isinstance(text, bytes):
         try:
             text = text.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise LicenseError(
-                "encoding", "файл лицензии должен быть UTF-8"
-            ) from exc
+            raise LicenseError("encoding", "файл лицензии должен быть UTF-8") from exc
 
     data = parse_license_json(text)
     validate_license_fields(data)
@@ -72,13 +63,11 @@ def parse_and_verify_license_text(text: str | bytes, public_b64: str) -> dict:
     return data
 
 
-def build_license_row(data: dict, uploaded_by_user_id) -> License:
+def build_license_row(data: dict, uploaded_by_user_id: object) -> License:
     from datetime import date, time
     from datetime import datetime as dt
 
-    issued_at = dt.strptime(
-        data["issued_at"], "%Y-%m-%dT%H:%M:%SZ"
-    ).replace(tzinfo=UTC)
+    issued_at = dt.strptime(data["issued_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     exp_date_str = data["expires_at"]
     exp_date = date.fromisoformat(exp_date_str)
     exp_end = datetime.combine(exp_date, time.max).replace(tzinfo=UTC)
@@ -111,9 +100,7 @@ def validate_current_license(db: Session, settings: Settings) -> dict[str, Any]:
             "enforcement": "disabled",
             "has_license": False,
             "is_valid": True,
-            "reason": (
-                "LICENSE_PUBLIC_KEY не задан — проверка отключена (dev/test)"
-            ),
+            "reason": ("LICENSE_PUBLIC_KEY не задан — проверка отключена (dev/test)"),
         }
 
     lic = get_active_license(db)
@@ -123,7 +110,7 @@ def validate_current_license(db: Session, settings: Settings) -> dict[str, Any]:
             "Лицензия не установлена. Загрузите файл лицензии в разделе Лицензия.",
         )
 
-    data = {
+    data: dict[str, Any] = {
         "license_id": lic.license_id,
         "client_name": lic.client_name,
         "issued_at": lic.issued_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -147,8 +134,8 @@ def validate_current_license(db: Session, settings: Settings) -> dict[str, Any]:
     now = _now()
     try:
         validate_time_consistency(
-            issued_at_str=data["issued_at"],
-            expires_at_str=data["expires_at"],
+            issued_at_str=str(data["issued_at"]),
+            expires_at_str=str(data["expires_at"]),
             last_seen_at=lic.last_seen_at,
             now=now,
         )
@@ -186,9 +173,7 @@ def validate_current_license(db: Session, settings: Settings) -> dict[str, Any]:
             "max_active_users": lic.max_active_users,
             "days_left": days_left(lic.expires_at, now),
             "active_users": active_count,
-            "last_seen_at": (
-                lic.last_seen_at.isoformat() if lic.last_seen_at else None
-            ),
+            "last_seen_at": (lic.last_seen_at.isoformat() if lic.last_seen_at else None),
         },
     }
 
@@ -206,9 +191,7 @@ def get_license_status(db: Session, settings: Settings) -> dict[str, Any]:
                 "license": {
                     "license_id": lic.license_id,
                     "client_name": lic.client_name,
-                    "issued_at": lic.issued_at.strftime(
-                        "%Y-%m-%dT%H:%M:%SZ"
-                    ),
+                    "issued_at": lic.issued_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "expires_at": lic.expires_at,
                     "max_active_users": lic.max_active_users,
                     "active_users": active,
@@ -236,7 +219,7 @@ def get_license_status(db: Session, settings: Settings) -> dict[str, Any]:
             "max_active_users": None,
         }
 
-    data = {
+    data2: dict[str, Any] = {
         "license_id": lic.license_id,
         "client_name": lic.client_name,
         "issued_at": lic.issued_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -245,11 +228,13 @@ def get_license_status(db: Session, settings: Settings) -> dict[str, Any]:
         "signature": lic.signature,
     }
     now = _now()
+    data = data2
+
     try:
         verify_signature(data, public_b64)
         validate_time_consistency(
-            issued_at_str=data["issued_at"],
-            expires_at_str=data["expires_at"],
+            issued_at_str=str(data["issued_at"]),
+            expires_at_str=str(data["expires_at"]),
             last_seen_at=lic.last_seen_at,
             now=now,
         )
@@ -265,11 +250,7 @@ def get_license_status(db: Session, settings: Settings) -> dict[str, Any]:
                 "max_active_users": lic.max_active_users,
                 "active_users": active_count,
                 "days_left": days_left(lic.expires_at, now),
-                "last_seen_at": (
-                    lic.last_seen_at.isoformat()
-                    if lic.last_seen_at
-                    else None
-                ),
+                "last_seen_at": (lic.last_seen_at.isoformat() if lic.last_seen_at else None),
             },
         }
     except LicenseError as exc:
@@ -290,10 +271,6 @@ def get_license_status(db: Session, settings: Settings) -> dict[str, Any]:
                 "max_active_users": lic.max_active_users,
                 "active_users": active_count,
                 "days_left": dl,
-                "last_seen_at": (
-                    lic.last_seen_at.isoformat()
-                    if lic.last_seen_at
-                    else None
-                ),
+                "last_seen_at": (lic.last_seen_at.isoformat() if lic.last_seen_at else None),
             },
         }

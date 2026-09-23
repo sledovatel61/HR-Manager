@@ -74,9 +74,7 @@ def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     data: dict[str, Any] = {}
     for k, v in pairs:
         if k in data:
-            raise LicenseError(
-                "duplicate_key", f"повторяющийся ключ JSON: {k!r}"
-            )
+            raise LicenseError("duplicate_key", f"повторяющийся ключ JSON: {k!r}")
         data[k] = v
     return data
 
@@ -87,13 +85,9 @@ def parse_license_json(text: str | bytes) -> dict:
     except LicenseError:
         raise
     except Exception as exc:
-        raise LicenseError(
-            "malformed_json", f"некорректный JSON лицензии: {exc}"
-        ) from exc
+        raise LicenseError("malformed_json", f"некорректный JSON лицензии: {exc}") from exc
     if not isinstance(raw, dict):
-        raise LicenseError(
-            "malformed_json", "лицензия должна быть JSON-объектом"
-        )
+        raise LicenseError("malformed_json", "лицензия должна быть JSON-объектом")
     return raw
 
 
@@ -104,9 +98,7 @@ def _validate_iso_utc(value: str, field: str) -> datetime:
             f"{field} должен быть ISO-8601 UTC YYYY-MM-DDTHH:MM:SSZ",
         )
     try:
-        dt = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=UTC
-        )
+        dt = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except ValueError as exc:
         raise LicenseError("bad_date", f"некорректная дата {field}") from exc
     return dt
@@ -123,9 +115,7 @@ def _validate_expires_date(value: str) -> date:
 
 
 def _validate_payload_fields(data: dict) -> None:
-    unknown = sorted(
-        set(data) - {name for name, _ in LICENSE_FIELDS} - {"signature"}
-    )
+    unknown = sorted(set(data) - {name for name, _ in LICENSE_FIELDS} - {"signature"})
     if unknown:
         raise LicenseError(
             "unknown_field",
@@ -137,21 +127,15 @@ def _validate_payload_fields(data: dict) -> None:
         v = data[name]
         if kind == "int":
             if isinstance(v, bool) or not isinstance(v, int):
-                raise LicenseError(
-                    "bad_type", f"поле {name} должно быть целым числом"
-                )
-            if name == "max_active_users" and not (
-                MAX_USERS_MIN <= v <= MAX_USERS_MAX
-            ):
+                raise LicenseError("bad_type", f"поле {name} должно быть целым числом")
+            if name == "max_active_users" and not (MAX_USERS_MIN <= v <= MAX_USERS_MAX):
                 raise LicenseError(
                     "bad_value",
                     f"max_active_users должен быть {MAX_USERS_MIN}..{MAX_USERS_MAX}",
                 )
         else:
             if not isinstance(v, str):
-                raise LicenseError(
-                    "bad_type", f"поле {name} должно быть строкой"
-                )
+                raise LicenseError("bad_type", f"поле {name} должно быть строкой")
             if "\n" in v or "\r" in v or any(ord(c) < 0x20 for c in v):
                 raise LicenseError(
                     "bad_value",
@@ -163,15 +147,11 @@ def _validate_payload_fields(data: dict) -> None:
     try:
         uuid.UUID(data["license_id"])
     except ValueError as exc:
-        raise LicenseError(
-            "bad_license_id", "license_id не является UUID"
-        ) from exc
+        raise LicenseError("bad_license_id", "license_id не является UUID") from exc
 
     client = data["client_name"].strip()
     if not client:
-        raise LicenseError(
-            "bad_client_name", "client_name не должен быть пустым"
-        )
+        raise LicenseError("bad_client_name", "client_name не должен быть пустым")
     if len(client) > CLIENT_NAME_MAX:
         raise LicenseError(
             "bad_client_name",
@@ -182,9 +162,7 @@ def _validate_payload_fields(data: dict) -> None:
     exp_date = _validate_expires_date(data["expires_at"])
     iss_dt = _validate_iso_utc(data["issued_at"], "issued_at")
     if iss_dt.date() > exp_date:
-        raise LicenseError(
-            "bad_date", "issued_at не может быть позже expires_at"
-        )
+        raise LicenseError("bad_date", "issued_at не может быть позже expires_at")
 
 
 def validate_license_fields(data: dict) -> None:
@@ -203,27 +181,19 @@ def canonical_bytes(data: dict) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def _load_public_key(public_b64: str):
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-        Ed25519PublicKey,
-    )
+def _load_public_key(public_b64: str) -> Any:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
     try:
         raw = base64.b64decode(public_b64, validate=True)
     except Exception as exc:
-        raise LicenseError(
-            "bad_public_key", "публичный ключ должен быть base64"
-        ) from exc
+        raise LicenseError("bad_public_key", "публичный ключ должен быть base64") from exc
     if len(raw) != 32:
-        raise LicenseError(
-            "bad_public_key", "публичный ключ должен быть 32 байта"
-        )
+        raise LicenseError("bad_public_key", "публичный ключ должен быть 32 байта")
     try:
         return Ed25519PublicKey.from_public_bytes(raw)
     except Exception as exc:
-        raise LicenseError(
-            "bad_public_key", "некорректный публичный ключ Ed25519"
-        ) from exc
+        raise LicenseError("bad_public_key", "некорректный публичный ключ Ed25519") from exc
 
 
 def verify_signature(data: dict, public_b64: str) -> bytes:
@@ -233,19 +203,13 @@ def verify_signature(data: dict, public_b64: str) -> bytes:
     if not isinstance(sig_hex, str):
         raise LicenseError("bad_signature", "отсутствует signature")
     public_key = _load_public_key(public_b64)
-    payload = canonical_bytes(
-        {k: v for k, v in data.items() if k != "signature"}
-    )
+    payload = canonical_bytes({k: v for k, v in data.items() if k != "signature"})
     try:
         public_key.verify(bytes.fromhex(sig_hex), payload)
     except InvalidSignature as exc:
-        raise LicenseError(
-            "bad_signature", "подпись лицензии недействительна"
-        ) from exc
+        raise LicenseError("bad_signature", "подпись лицензии недействительна") from exc
     except ValueError as exc:
-        raise LicenseError(
-            "bad_signature", f"ошибка проверки подписи: {exc}"
-        ) from exc
+        raise LicenseError("bad_signature", f"ошибка проверки подписи: {exc}") from exc
     return payload
 
 
@@ -257,17 +221,11 @@ def sign_license(data: dict, private_hex: str) -> str:
     try:
         priv_bytes = bytes.fromhex(private_hex)
     except Exception as exc:
-        raise LicenseError(
-            "bad_private_key", "приватный ключ должен быть 64 hex"
-        ) from exc
+        raise LicenseError("bad_private_key", "приватный ключ должен быть 64 hex") from exc
     if len(priv_bytes) != 32:
-        raise LicenseError(
-            "bad_private_key", "приватный ключ должен быть 32 байта"
-        )
+        raise LicenseError("bad_private_key", "приватный ключ должен быть 32 байта")
     key = Ed25519PrivateKey.from_private_bytes(priv_bytes)
-    payload = canonical_bytes(
-        {k: v for k, v in data.items() if k != "signature"}
-    )
+    payload = canonical_bytes({k: v for k, v in data.items() if k != "signature"})
     return key.sign(payload).hex()
 
 
@@ -279,18 +237,14 @@ def sign_license_dict(data: dict, private_hex: str) -> dict:
 def is_expired(expires_at_str: str, now: datetime | None = None) -> bool:
     now = now or datetime.now(UTC)
     exp_date = _validate_expires_date(expires_at_str)
-    exp_end = datetime.combine(exp_date, datetime.max.time()).replace(
-        tzinfo=UTC
-    )
+    exp_end = datetime.combine(exp_date, datetime.max.time()).replace(tzinfo=UTC)
     return now > exp_end
 
 
 def days_left(expires_at_str: str, now: datetime | None = None) -> int:
     now = now or datetime.now(UTC)
     exp_date = _validate_expires_date(expires_at_str)
-    exp_end = datetime.combine(exp_date, datetime.max.time()).replace(
-        tzinfo=UTC
-    )
+    exp_end = datetime.combine(exp_date, datetime.max.time()).replace(tzinfo=UTC)
     delta = exp_end - now
     return max(-1, delta.days)
 
@@ -319,8 +273,7 @@ def validate_time_consistency(
     if is_expired(expires_at_str, now):
         raise LicenseError(
             "expired",
-            f"срок лицензии истёк {expires_at_str} "
-            "(действовала до конца дня по UTC)",
+            f"срок лицензии истёк {expires_at_str} (действовала до конца дня по UTC)",
         )
 
 
