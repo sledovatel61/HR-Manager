@@ -78,10 +78,7 @@ def list_users(
 ) -> UserList:
     total = db.scalar(select(func.count()).select_from(User)) or 0
     users = db.scalars(
-        select(User)
-        .order_by(User.created_at.desc(), User.username)
-        .limit(limit)
-        .offset(offset)
+        select(User).order_by(User.created_at.desc(), User.username).limit(limit).offset(offset)
     ).all()
     return UserList(
         items=[UserOut.model_validate(u) for u in users],
@@ -112,9 +109,7 @@ def create_user(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
-    existing = db.scalar(
-        select(User).where(func.lower(User.username) == payload.username.lower())
-    )
+    existing = db.scalar(select(User).where(func.lower(User.username) == payload.username.lower()))
     if existing is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -126,18 +121,10 @@ def create_user(
         active_license = get_active_license_for_update(db)
         if active_license is not None:
             active_count = (
-                db.scalar(
-                    select(func.count())
-                    .select_from(User)
-                    .where(User.is_active.is_(True))
-                )
+                db.scalar(select(func.count()).select_from(User).where(User.is_active.is_(True)))
                 or 0
             )
-            db.scalars(
-                select(User.id)
-                .where(User.is_active.is_(True))
-                .with_for_update()
-            ).all()
+            db.scalars(select(User.id).where(User.is_active.is_(True)).with_for_update()).all()
             if active_count >= active_license.max_active_users:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -190,9 +177,7 @@ def list_hr_users(
     )
 
 
-@router.get(
-    "/{user_id}", response_model=UserOut, summary="Get a user (admin only)"
-)
+@router.get("/{user_id}", response_model=UserOut, summary="Get a user (admin only)")
 def get_user(
     user_id: str,
     db: Session = Depends(get_db),
@@ -202,9 +187,7 @@ def get_user(
     return UserOut.model_validate(user)
 
 
-@router.patch(
-    "/{user_id}", response_model=UserOut, summary="Update a user (admin only)"
-)
+@router.patch("/{user_id}", response_model=UserOut, summary="Update a user (admin only)")
 def update_user(
     user_id: str,
     payload: UserUpdate,
@@ -229,17 +212,11 @@ def update_user(
             if active_license is not None:
                 active_count = (
                     db.scalar(
-                        select(func.count())
-                        .select_from(User)
-                        .where(User.is_active.is_(True))
+                        select(func.count()).select_from(User).where(User.is_active.is_(True))
                     )
                     or 0
                 )
-                db.scalars(
-                    select(User.id)
-                    .where(User.is_active.is_(True))
-                    .with_for_update()
-                ).all()
+                db.scalars(select(User.id).where(User.is_active.is_(True)).with_for_update()).all()
                 if active_count >= active_license.max_active_users:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
@@ -273,9 +250,7 @@ def update_user(
 
     if payload.password is not None:
         try:
-            validate_password_policy(
-                payload.password, username=user.username
-            )
+            validate_password_policy(payload.password, username=user.username)
         except WeakPasswordError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

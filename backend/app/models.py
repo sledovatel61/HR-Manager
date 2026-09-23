@@ -201,7 +201,6 @@ class AuditAction(StrEnum):
     LICENSE_VALIDATION_ERROR = "license_validation_error"
 
 
-
 class CandidateStage(StrEnum):
     """Recruitment funnel stages — the single source of truth (PRODUCT_SPEC §5).
 
@@ -2278,7 +2277,5 @@ class License(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return (
-            f"<License id={self.license_id} "
-            f"client={self.client_name!r} expires={self.expires_at}>"
+            f"<License id={self.license_id} client={self.client_name!r} expires={self.expires_at}>"
         )
-

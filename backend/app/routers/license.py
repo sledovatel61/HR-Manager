@@ -40,9 +40,7 @@ def license_status(
 ) -> dict[str, Any]:
     status_info = get_license_status(db, settings)
     if settings.license_public_key:
-        status_info["public_key_fingerprint"] = fingerprint_public_key(
-            settings.license_public_key
-        )
+        status_info["public_key_fingerprint"] = fingerprint_public_key(settings.license_public_key)
     else:
         status_info["public_key_fingerprint"] = None
     return status_info
@@ -98,15 +96,11 @@ def upload_license(
         )
 
     try:
-        raw_text = _extract_license_text_from_request(
-            license_text, None, file
-        )
+        raw_text = _extract_license_text_from_request(license_text, None, file)
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(
-            status_code=400, detail=f"Ошибка чтения лицензии: {exc}"
-        ) from exc
+        raise HTTPException(status_code=400, detail=f"Ошибка чтения лицензии: {exc}") from exc
 
     return _process_upload(db, settings, actor, request, raw_text)
 
@@ -121,9 +115,7 @@ async def upload_license_json(
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(
-            status_code=400, detail="Тело запроса должно быть JSON."
-        ) from None
+        raise HTTPException(status_code=400, detail="Тело запроса должно быть JSON.") from None
 
     raw_text: str | None = None
     if isinstance(body, dict):
@@ -137,9 +129,7 @@ async def upload_license_json(
         elif "license" in body:
             lic_obj = body["license"]
             if not isinstance(lic_obj, dict):
-                raise HTTPException(
-                    status_code=400, detail="license должен быть объектом."
-                )
+                raise HTTPException(status_code=400, detail="license должен быть объектом.")
             raw_text = json.dumps(lic_obj, ensure_ascii=False)
         else:
             if "license_id" in body and "signature" in body:
@@ -154,9 +144,7 @@ async def upload_license_json(
                     ),
                 )
     else:
-        raise HTTPException(
-            status_code=400, detail="JSON должен быть объектом."
-        )
+        raise HTTPException(status_code=400, detail="JSON должен быть объектом.")
 
     return _process_upload(db, settings, actor, request, raw_text)
 
@@ -195,10 +183,7 @@ def _process_upload(
                 username=actor.username,
                 ip_address=client_ip(request),
                 user_agent=user_agent(request.headers),
-                details=(
-                    f"code={exc.code} "
-                    f"fp={fingerprint_public_key(public_b64)}"
-                ),
+                details=(f"code={exc.code} fp={fingerprint_public_key(public_b64)}"),
                 commit=True,
             )
         except Exception:
@@ -241,8 +226,7 @@ def _process_upload(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Срок лицензии истёк {data['expires_at']}. "
-                    "Загрузите действующую лицензию."
+                    f"Срок лицензии истёк {data['expires_at']}. Загрузите действующую лицензию."
                 ),
             ) from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -253,12 +237,7 @@ def _process_upload(
         from sqlalchemy import func
 
         active_count = (
-            db.scalar(
-                select(func.count())
-                .select_from(User)
-                .where(User.is_active.is_(True))
-            )
-            or 0
+            db.scalar(select(func.count()).select_from(User).where(User.is_active.is_(True))) or 0
         )
 
         if active_count > new_max:
@@ -276,24 +255,20 @@ def _process_upload(
             active_lic.updated_at = now
 
         existing = db.scalar(
-            select(License)
-            .where(License.license_id == data["license_id"])
-            .limit(1)
+            select(License).where(License.license_id == data["license_id"]).limit(1)
         )
         if existing:
             if existing.is_active:
                 existing.is_active = False
             existing.client_name = data["client_name"].strip()
-            existing.issued_at = datetime.strptime(
-                data["issued_at"], "%Y-%m-%dT%H:%M:%SZ"
-            ).replace(tzinfo=UTC)
+            existing.issued_at = datetime.strptime(data["issued_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=UTC
+            )
             from datetime import date, time
 
             exp_date = date.fromisoformat(data["expires_at"])
             existing.expires_at = data["expires_at"]
-            existing.expires_at_end = datetime.combine(
-                exp_date, time.max
-            ).replace(tzinfo=UTC)
+            existing.expires_at_end = datetime.combine(exp_date, time.max).replace(tzinfo=UTC)
             existing.max_active_users = new_max
             existing.signature = data["signature"].lower()
             existing.is_active = True
@@ -309,11 +284,7 @@ def _process_upload(
     db.refresh(new_row)
 
     try:
-        action = (
-            AuditAction.LICENSE_REPLACED
-            if active_lic
-            else AuditAction.LICENSE_UPLOADED
-        )
+        action = AuditAction.LICENSE_REPLACED if active_lic else AuditAction.LICENSE_UPLOADED
         record_event(
             db,
             action,

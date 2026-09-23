@@ -461,10 +461,7 @@ class Settings(BaseSettings):
         if not license_key and (self.is_pilot or self.is_production):
             try:
                 candidate = (
-                    Path(__file__).resolve().parents[2]
-                    / "infra"
-                    / "license"
-                    / "public_key.b64"
+                    Path(__file__).resolve().parents[2] / "infra" / "license" / "public_key.b64"
                 )
                 if candidate.is_file():
                     file_content = candidate.read_text(encoding="utf-8").strip()
