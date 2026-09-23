@@ -31,7 +31,6 @@ from app.routers import (
     events,
     health,
     integrations,
-    license as license_router,
     notifications,
     ops,
     preferences,
@@ -39,6 +38,9 @@ from app.routers import (
     setup,
     updates,
     users,
+)
+from app.routers import (
+    license as license_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,7 +130,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.add_middleware(SecurityHeadersMiddleware)
     # License guard must run before security/metrics? Order: last added runs first.
     # We want license check after security headers but before route handling.
-    # Adding it here means it will be outermost (first) after metrics/security? Actually BaseHTTPMiddleware stack: first added is outermost.
+    # Adding it here means it will be outermost (first) after metrics/security?
+    # Actually BaseHTTPMiddleware stack: first added is outermost.
     # We add license guard last so it runs first (closest to request) — okay.
     from app.license_guard import LicenseGuardMiddleware
 
