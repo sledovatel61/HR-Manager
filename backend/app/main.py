@@ -84,7 +84,7 @@ class ApiPrefixStripMiddleware(BaseHTTPMiddleware):
             request.scope["path"] = path[4:] or "/"
         elif path == "/api":
             request.scope["path"] = "/"
-        return await call_next(request)
+        return await call_next(request)  # type: ignore[operator]
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):
