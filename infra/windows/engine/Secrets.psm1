@@ -121,24 +121,32 @@ function Get-HrmLicensePublicKey {
     # в каталоге релиза или из состояния. Возвращает base64 32 байта или пустую строку.
     param([string]$StateDir)
     # 1. Если уже сохранён в состоянии (owner установил вручную), используем его
-    $stateFile = Join-Path $StateDir "license_public_key.b64"
-    if (Test-Path $stateFile) {
+    if ($StateDir) {
         try {
-            $content = (Get-Content -Path $stateFile -Raw -Encoding UTF8).Trim()
-            if ($content -match "^[A-Za-z0-9+/]{43}=$|^[A-Za-z0-9+/]{44}$|^[A-Za-z0-9_-]{43,44}$") {
-                return $content
+            $stateFile = Join-Path $StateDir "license_public_key.b64"
+            if (Test-Path $stateFile) {
+                $content = (Get-Content -Path $stateFile -Raw -Encoding UTF8).Trim()
+                if ($content -match "^[A-Za-z0-9+/]{43}=$|^[A-Za-z0-9+/]{44}$|^[A-Za-z0-9_-]{43,44}$") {
+                    return $content
+                }
             }
         } catch {}
     }
     # 2. Ищем в релизе: infra/license/public_key.b64 относительно скрипта движка
     $engineDir = $PSScriptRoot
-    $candidates = @(
-        (Join-Path $engineDir "..\..\license\public_key.b64"),
-        (Join-Path $engineDir "..\..\..\infra\license\public_key.b64"),
-        (Join-Path $StateDir "..\Program Files\HRManager\infra\license\public_key.b64"),
-        (Join-Path $env:HRM_SOURCE_DIR "infra\license\public_key.b64")
-    )
+    $candidates = @()
+    if ($engineDir) {
+        try { $candidates += Join-Path $engineDir "..\..\license\public_key.b64" } catch {}
+        try { $candidates += Join-Path $engineDir "..\..\..\infra\license\public_key.b64" } catch {}
+    }
+    if ($StateDir) {
+        try { $candidates += Join-Path $StateDir "..\Program Files\HRManager\infra\license\public_key.b64" } catch {}
+    }
+    if ($env:HRM_SOURCE_DIR) {
+        try { $candidates += Join-Path $env:HRM_SOURCE_DIR "infra\license\public_key.b64" } catch {}
+    }
     foreach ($p in $candidates) {
+        if (-not $p) { continue }
         try {
             $resolved = [System.IO.Path]::GetFullPath($p)
             if (Test-Path $resolved) {
