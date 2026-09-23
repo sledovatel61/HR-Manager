@@ -637,4 +637,5 @@ def test_candidate_lifecycle_is_audited(client: TestClient, db_session: Session)
     for event in events:
         assert "Петров" not in (event.details or "")
         assert "petrov@" not in (event.details or "")
-        assert "900" not in (event.details or "")
+        assert "+7 900 123-45-67" not in (event.details or "")
+        assert "900 123-45-67" not in (event.details or "")

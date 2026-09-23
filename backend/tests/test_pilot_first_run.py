@@ -59,6 +59,7 @@ def pilot_settings() -> Settings:
             "SECRET_KEY": "unit-test-secret-key",
             "DATABASE_URL": SQLITE_URL,
             "PILOT_BOOTSTRAP_EXCHANGE_TOKEN": FIXTURE_TOKEN,
+            "LICENSE_PUBLIC_KEY": "4VfWiKkLv7JG6i3jfeWRvBXczWH+Qt1cfyFjtBTCPow=",
             # High enough to never interfere; the dedicated rate-limit test
             # builds its own app with an explicit limit.
             "PILOT_SETUP_RATE_LIMIT": "10000",
@@ -198,6 +199,7 @@ def test_claim_disabled_without_exchange_token() -> None:
             "SECRET_KEY": "x" * 48,
             "DATABASE_URL": "postgresql+psycopg://p:strong-pass@db:5432/hr_manager",
             "BOOTSTRAP_ADMIN_PASSWORD": "Strong-Bootstrap-Pass-1",
+            "LICENSE_PUBLIC_KEY": "4VfWiKkLv7JG6i3jfeWRvBXczWH+Qt1cfyFjtBTCPow=",
         }
     )
     engine = create_engine(
@@ -426,6 +428,7 @@ def test_rate_limit_on_first_run_endpoints() -> None:
             "SECRET_KEY": "unit-test-secret-key",
             "DATABASE_URL": SQLITE_URL,
             "PILOT_BOOTSTRAP_EXCHANGE_TOKEN": FIXTURE_TOKEN,
+            "LICENSE_PUBLIC_KEY": "4VfWiKkLv7JG6i3jfeWRvBXczWH+Qt1cfyFjtBTCPow=",
             "PILOT_SETUP_RATE_LIMIT": "3",
             "PILOT_SETUP_RATE_WINDOW_SECONDS": "300",
         }
