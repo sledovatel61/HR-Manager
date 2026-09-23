@@ -1,0 +1,19 @@
+{
+  "fingerprint": "SHA256:e0a08ca7c343abe1... (redacted)",
+  "files": [
+    "infra/license/public_key.b64",
+    "tools/license-issuer/public_key.b64 (owner)",
+    "pilot.env HRM_LICENSE_PUBLIC_KEY",
+    "infra/compose.pilot.yml (env file)",
+    "backend/app/config.py LICENSE_PUBLIC_KEY"
+  ],
+  "checks": {
+    "owner_source_exists": true,
+    "build_includes_public_key": true,
+    "installer_snapshot_contains": true,
+    "pilot_env_writes_key": true,
+    "compose_passes_env_file": true,
+    "backend_validates_key": true
+  },
+  "note": "Private key never in git/installer/frontend/Docker/logs. Only public key fingerprint shown."
+}
