@@ -16,6 +16,7 @@ pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap;
 .keybox { display: block; width: 100%; min-height: 1.4em; padding: 6px; margin-top: 4px; box-sizing: border-box; border: 1px solid #767676; font-family: monospace; word-break: break-all; white-space: nowrap; overflow-x: auto; background: #fff; }
 .keybox-ro { background: #f5f5f5; }
 .keybox:empty::before { content: attr(data-placeholder); color: #888; }
+.hint { color: #555; font-size: 13px; margin: 4px 0; }
 </style>
 <script src="nacl-fast.js"></script>
 </head>
@@ -32,7 +33,10 @@ pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap;
 
 <h2>1. Ключи (Ed25519)</h2>
 <label>Приватный ключ (64 hex, секретно, 32 байта seed):</label>
-<div id="privHex" class="keybox" contenteditable="true" role="textbox" aria-multiline="false" aria-label="private key hex" data-placeholder="64 hex" spellcheck="false" autocorrect="off" autocapitalize="off"></div>
+<div id="privHex" class="keybox keybox-ro" role="textbox" aria-readonly="true" aria-label="private key hex" data-placeholder="сгенерируйте новую пару или загрузите private_key.hex"></div>
+<label>Загрузить приватный ключ из файла <code>private_key.hex</code> (из <code>run-cli.bat gen-keypair</code> / <code>run-gui.bat</code>):</label>
+<input id="privFile" type="file" accept=".hex,.txt,text/plain">
+<p class="hint">Ввод приватного ключа с клавиатуры и вставка отключены намеренно: Edge сохраняет набранный в странице текст в профиле браузера (автозаполнение), даже при <code>autocomplete="off"</code>.</p>
 <label>Приватный ключ (base64 32 байта, для справки):</label>
 <div id="privB64" class="keybox keybox-ro" role="textbox" aria-readonly="true" aria-label="private key base64"></div>
 <label>Публичный ключ (base64 44 символа, для сборки):</label>
@@ -74,13 +78,14 @@ max_active_users:&lt;число&gt;
 <p>Офлайн: этот HTML работает без интернета. WebCrypto Ed25519 поддерживается в Edge 120+, Chrome 120+, Firefox 120+ (Windows 10/11 Edge по умолчанию — OK). Для file:// контекста crypto.subtle может быть недоступен — используйте run-html.bat (http://localhost) или run-gui.bat (автономный Python, без интернета, без системного Python). Fallback TweetNaCl (nacl-fast.js) используется если WebCrypto недоступен.</p>
 
 <script>
-// Private key boxes (#privHex, #privB64) are deliberately NOT <input> elements.
-// Browsers persist form-control values in the profile: the Windows acceptance run
-// found the private key in Edge's "Web Data" (autofill history) even with
-// autocomplete="off", and in "Sessions" (tab restore form state). Autofill and
-// session restore only collect <input>/<textarea>/<select>, so the key lives in a
-// contenteditable box (hex) and a plain text box (base64) instead. A small
-// `value` property keeps the rest of the page code unchanged.
+// Private key boxes (#privHex, #privB64) are deliberately NOT form controls and
+// NOT editable. The Windows acceptance run found the private key in Edge's profile:
+// "Web Data" (autofill, even with autocomplete="off"), "Sessions" (tab restore form
+// state) and finally Edge's own table autofill_edge_field_values, which records text
+// the user TYPES into a page even in a contenteditable box. Keys shown by the page
+// (generated) were not recorded; typed ones were. So the private key is never typed:
+// it is generated here or loaded from private_key.hex via the file picker (FileReader),
+// and shown read-only. A small `value` property keeps the rest of the code unchanged.
 (function () {
   ['privHex', 'privB64'].forEach(function (id) {
     var el = document.getElementById(id);
@@ -90,13 +95,22 @@ max_active_users:&lt;число&gt;
       set: function (v) { el.textContent = (v == null) ? '' : String(v); }
     });
   });
-  var hex = document.getElementById('privHex');
-  hex.addEventListener('paste', function (e) {   // plain text only, no markup
-    var t = (e.clipboardData || window.clipboardData).getData('text');
-    e.preventDefault();
-    document.execCommand('insertText', false, (t || '').replace(/\s+/g, ''));
+  document.getElementById('privFile').addEventListener('change', function () {
+    var input = this, f = input.files && input.files[0];
+    if (!f) return;
+    if (f.size > 1024) { input.value = ''; alert('Файл слишком большой для private_key.hex (ожидается 64 hex)'); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      input.value = '';   // do not keep the file selection in the form
+      var hex = String(reader.result || '').replace(/\s+/g, '');
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) { alert('Файл не содержит приватный ключ (ожидается 64 hex)'); return; }
+      document.getElementById('privHex').value = hex.toLowerCase();
+      document.getElementById('privB64').value = bytesToBase64(hexToBytes(hex));
+      setStatus('Приватный ключ загружен из файла ' + f.name + '. Укажите публичный ключ (или «Вычислить публичный из приватного»).', true);
+    };
+    reader.onerror = function () { input.value = ''; alert('Не удалось прочитать файл'); };
+    reader.readAsText(f);
   });
-  hex.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
 })();
 
 function base64ToBytes(b64) {
