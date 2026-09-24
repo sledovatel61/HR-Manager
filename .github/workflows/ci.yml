@@ -708,12 +708,31 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: marker probe (isolate shim vs step content)
+      - name: marker probe (summary write probe)
         shell: powershell
         run: |
-          Write-Host "MARKER-STEP-A-RUNNING"
-          "step A ran at " + (Get-Date -Format o) | Out-File -FilePath (Join-Path $env:RUNNER_TEMP "marker.txt")
-          "MARKER-A" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          $ErrorActionPreference = "Continue"
+          $log = Join-Path $env:RUNNER_TEMP "marker.txt"
+          "start" | Out-File -FilePath $log
+          "env GITHUB_STEP_SUMMARY = [$env:GITHUB_STEP_SUMMARY]" | Out-File -FilePath $log -Append
+          try {
+            "MARKER-A" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "summary write OK" | Out-File -FilePath $log -Append
+          } catch {
+            "summary write FAILED: " + $_.Exception.Message | Out-File -FilePath $log -Append
+          }
+          try {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "MARKER-B" -Encoding utf8
+            "add-content OK" | Out-File -FilePath $log -Append
+          } catch {
+            "add-content FAILED: " + $_.Exception.Message | Out-File -FilePath $log -Append
+          }
+          if (Test-Path $env:GITHUB_STEP_SUMMARY) {
+            "summary file exists, size: " + (Get-Item $env:GITHUB_STEP_SUMMARY).Length | Out-File -FilePath $log -Append
+          } else {
+            "summary file missing after writes" | Out-File -FilePath $log -Append
+          }
+          "end" | Out-File -FilePath $log -Append
           exit 1
 
       - name: post diagnostics to PR comment
