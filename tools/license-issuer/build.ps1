@@ -283,7 +283,9 @@ REM Open the browser ~2s later (after the server below has bound the port).
 REM ping is used as the delay: "timeout" fails when stdin is not a console.
 REM HRM_NO_BROWSER=1 skips it for unattended runs (CI, checklists).
 if not defined HRM_NO_BROWSER start "" /b cmd /c "ping -n 3 127.0.0.1 >nul & start "" http://127.0.0.1:%PORT%/license-issuer.html"
-"%PY_EXE%" -m http.server %PORT% -b 127.0.0.1 --directory "%SCRIPT_DIR%"
+REM "%SCRIPT_DIR%." not "%SCRIPT_DIR%": %~dp0 ends with a backslash and \" is an
+REM escaped quote in Windows argv parsing (the directory would end in a quote -> 404).
+"%PY_EXE%" -m http.server %PORT% -b 127.0.0.1 --directory "%SCRIPT_DIR%."
 exit /b %ERRORLEVEL%
 :py_missing
 echo [ERROR] Bundled Python not found at %PY_EXE%
