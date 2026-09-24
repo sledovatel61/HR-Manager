@@ -508,7 +508,7 @@ try {
         $line = Wait-LogLine $log '^\[(ready|browser)\]' 40000
         $ms = $sw.ElapsedMilliseconds
         $first = $null
-        if ($line -and $line -like "[ready]*") { $first = Get-Http $PageUrl }
+        if ($line -and $line.StartsWith("[ready]")) { $first = Get-Http $PageUrl }   # not -like: [..] is a wildcard class
         $att = 0; $gateMs = 0; $before = ""
         if ($line -match "after (\d+) attempt\(s\), (\d+) ms \(last before ready: ([^)]*)\)") { $att = [int]$matches[1]; $gateMs = [int]$matches[2]; $before = $matches[3] }
         $st = "none"; if ($first) { if ($first.Status -eq 200 -and $first.Body -match "License Issuer") { $st = "200" } else { $st = "$($first.Status) $($first.Error)" } }
