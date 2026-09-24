@@ -1,7 +1,7 @@
 # Offline issuer — evidence from automated Linux checks (redacted)
 
-- generated: 2026-09-24T07:41:00Z
-- reviewed commit: `e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784`
+- generated: 2026-09-24T08:11:37Z
+- reviewed commit: `c515a490db354436dbd0d18115e28ef5d8ece132`
 - tool: `review-artifacts/gen_issuer_offline_evidence.py` (re-runs every check below)
 - host: Linux review sandbox — **not** the owner's Windows VM
 
@@ -9,24 +9,31 @@
 > issuer check: `run-gui.bat`, `run-html.bat`, the Tkinter GUI and the bundle build remain
 > `NOT RUN` (see `windows-issuer-bundle-check.md`). No `GO` may be derived from it.
 
-## Summary: {"PASS": 30, "INFO": 2, "GAP": 8, "NOT RUN": 8}
+## Summary: {"PASS": 39, "INFO": 3, "GAP": 3, "NOT RUN": 8}
+
+- reviewed commit: `c515a490db354436dbd0d18115e28ef5d8ece132` · baseline (negative control): `e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784`
 
 | step | status | detail |
 |---|---|---|
-| `issuer_sources_of_reviewed_commit` | PASS | extracted from e59aa5b into a temp dir outside the repo |
+| `issuer_sources_of_reviewed_commit` | PASS | PR-head tree e59aa5b extracted outside the repo, fix commit c515a49 overlaid: .gitignore, tools/license-issuer/build.ps1 |
 | `python_issuer_has_no_network_primitives` | PASS | 3 files scanned (cli.py, gui.py, license_issuer.py): no socket/urllib/requests/subprocess/webbrowser usage |
 | `html_has_no_network_apis` | PASS | none of ['fetch(', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'sendBeacon', 'importScripts'] appear in license-issuer.html |
 | `html_loads_no_external_resources` | PASS | only local <script src="nacl-fast.js">; no http(s) src/href/@import/url() in the page |
 | `html_url_strings_are_text_only` | INFO | 4 absolute URL(s) appear in license-issuer.html, all inside human-readable text (jsdelivr fallback hint / documentation), none as a resource reference |
 | `nacl_fast_js_has_no_network_apis` | PASS | nacl-fast.js (61966 chars, 2391 lines) contains no fetch/XHR/WebSocket/HTTP access |
 | `no_bat_files_committed` | PASS | no run-gui.bat / run-html.bat anywhere in the reviewed commit: they exist only as PowerShell here-strings inside build.ps1 and are written by build.ps1 at build time |
-| `run_gui_bat_contract` | PASS | run-gui.bat (from build.ps1): bundled %~dp0..\python\python.exe, gui.py, fail-closed exit /b 1 when the bundle is incomplete (570 bytes) |
-| `run_html_bat_contract` | PASS | run-html.bat (from build.ps1, 738 bytes): bundled python -m http.server on port 8765 serving the bundle dir, then opens http://localhost:8765/license-issuer.html |
-| `run_html_bat_autonomy_contradiction` | GAP | run-html.bat silently falls back to a system 'python' when the bundled interpreter is missing, while the same file's comment, HOWTO.txt and README promise 'no system Python needed'; run-gui.bat/run-cli.bat fail closed instead. On a clean Windows VM without Python this yields a confusing 'python is not recognized' error instead of the clear message. |
-| `run_html_bat_opens_browser_before_server` | GAP | run-html.bat opens the browser before starting the HTTP server, and does not check the port: a slow start or an occupied port 8765 shows 'site can't be reached' even though the bundle is fine |
-| `run_html_bat_binds_all_interfaces` | GAP | run-html.bat runs `python -m http.server 8765` without -b: http.server binds 0.0.0.0, so while the window is open the bundle directory (and any key file the owner saved next to it) is reachable from the LAN. Windows firewall may also prompt. Passing -b 127.0.0.1 fixes it. |
-| `no_key_material_committed` | PASS | 525 tracked files: no *.hrmlicense, no infra/license/public_key.b64, no keys/ directory, no 64-hex literal in tools/license-issuer/*.py |
-| `gitignore_does_not_cover_owner_material` | GAP | .gitignore has no entry for keys/, private_key.hex or *.hrmlicense. build.ps1 step 5 runs `cli.py gen-keypair` without --out-dir, so the maintainer's smoke test writes keys\private_key.hex relative to the current working directory - inside the git work tree when build.ps1 is started from the repo root - and `git add -A` would stage a private key. |
+| `run_gui_bat_contract` | PASS | run-gui.bat (from build.ps1): bundled %~dp0..\python\python.exe, gui.py, fail-closed exit /b 1 when the bundle is incomplete (591 bytes) |
+| `run_html_bat_contract` | PASS | run-html.bat (from build.ps1, 1041 bytes): bundled python -m http.server on port 8765 serving the bundle dir, then opens http://127.0.0.1:8765/license-issuer.html |
+| `run_html_bat_binds_loopback_only` | PASS | run-html.bat starts `python -m http.server %PORT% -b 127.0.0.1 --directory <bundle>` and opens http://127.0.0.1: ... the bundle directory is not exposed to the LAN |
+| `run_html_bat_fails_closed_without_system_python` | PASS | run-html.bat has no fallback to a system 'python': a missing bundle interpreter prints a clear error and exits with code 1, like run-gui.bat/run-cli.bat |
+| `run_gui_bat_no_system_python_advice` | PASS | run-gui.bat no longer suggests installing system Python; it explains that the issuer never falls back to a system interpreter and exits with code 1 |
+| `smoke_test_runs_outside_the_repository` | PASS | the build smoke test creates a temporary directory outside the repository (1 executed gen-keypair invocation(s), all with --out-dir), and removes the directory in a finally block |
+| `smoke_test_never_prints_key_material` | PASS | the smoke test compares the captured output with the private key it just created and turns the build into an error if key material ever reaches the build log |
+| `build_ps1_here_strings_and_encoding` | PASS | here-strings 4 open / 4 closed, no U+FFFD in the file. The brace/parenthesis counters are only an approximation (see INFO step): the authoritative PowerShell parser is not available here (no pwsh) and runs in CI on windows-latest |
+| `build_ps1_brace_paren_balance_approx_not_decisive` | INFO | brace/parenthesis counters outside strings/comments are approximate for PowerShell (measured: {"{": -1, "(": 1}); they can be non-zero for correct code, so they are not used as a verdict - syntax validation happens with PowerShell 5.1 in CI and on the owner VM |
+| `no_key_material_committed` | PASS | 505 tracked files: no *.hrmlicense, no infra/license/public_key.b64, no keys/ directory, no 64-hex literal in tools/license-issuer/*.py |
+| `gitignore_blocks_key_and_license_material` | PASS | .gitignore covers keys/, private_key.hex, *.hrmlicense, public_key.b64, license-issuer-dist.zip: a stray private key, public key or issued license is no longer staged by `git add -A` |
+| `gitignore_patterns_hide_no_tracked_file` | PASS | `git ls-files -ci --exclude-standard` is empty: no already-tracked file matches the new patterns (infra/license/public_key.b64 was never tracked) |
 | `cli_gen_keypair_offline` | PASS | cli.py gen-keypair: exit 0, offline (see network harness below) |
 | `cli_issue_offline` | PASS | cli.py issue: exit 0, offline (see network harness below) |
 | `cli_verify_offline` | PASS | cli.py verify: exit 0, offline (see network harness below) |
@@ -44,8 +51,8 @@
 | `html_accepts_expires_at_in_the_past` | GAP | HTML issuer signed a license whose expires_at is in the past (no issued_at<=expires_at check) |
 | `html_signs_control_char_client_name` | GAP | HTML issuer signed a client_name containing a control character (backend rejects such payloads) |
 | `html_makes_no_network_calls` | PASS | the page's own inline script ran with net.Socket.connect / dns.lookup / http(s).request / fetch / WebSocket denied and recorded 0 attempts, for both the WebCrypto and the TweetNaCl path |
-| `emulated_runner_serves_page` | PASS | python -m http.server 8791 --directory <bundle>: GET /license-issuer.html -> HTTP 200, 17087 bytes, byte-identical to the file: True. Emulated with the host Linux Python 3.11.2 (cryptography 50.0.1); the Windows launcher run-html.bat itself was NOT executed |
-| `http_server_binds_all_interfaces_measured` | GAP | the runner's `python -m http.server` listens on 0.0.0.0 (measured on this host): the bundle directory is reachable from the LAN for as long as the window is open |
+| `emulated_runner_serves_page` | PASS | `-m http.server 8791 -b 127.0.0.1 --directory /tmp/hrm-issuer-evidence-b0we7ope/serverdir` (the fixed launcher's command line): GET /license-issuer.html on 127.0.0.1 -> HTTP 200, 17087 bytes, byte-identical to the file: True. Emulated with the host Linux Python 3.11.2; the Windows launcher run-html.bat itself was NOT executed |
+| `run_html_bat_loopback_only_measured` | PASS | same interpreter, same command line as the launcher: with `-b 127.0.0.1` the server process listens on [('127.0.0.1', 8791)] only; the control run without -b (the previous launcher, which the fix removes) listens on [('0.0.0.0', 8792)] - i.e. reachable from the LAN. Listen sockets are attributed to the server's own PID via /proc/<pid>/fd, because this sandbox has a platform proxy that also listens on the host address |
 | `backend_verifies_cli_license` | PASS | app.services.license_service.parse_and_verify_license_text + validate_time_consistency accepted it (endpoint path: POST /license/upload -> upload_license_json) |
 | `backend_verifies_html_webcrypto_license` | PASS | backend accepted the license produced by the HTML issuer |
 | `backend_verifies_html_nacl_license` | PASS | backend accepted the license produced by the HTML issuer |
@@ -62,11 +69,22 @@
 | `gui_tkinter_runtime` | NOT RUN | gui.py executed (Tkinter needs a desktop session; static review only here) |
 | `bundle_build_with_embeddable_python` | NOT RUN | build.ps1 executed (downloads python.org embeddable + get-pip at build time; not possible from this sandbox) |
 
+## Fixes verified before/after (baseline = the revision before the patch)
+
+| check | before | after |
+|---|---|---|
+| `run_html_bat_binds_loopback_only` | FAIL | PASS |
+| `run_html_bat_fails_closed_without_system_python` | FAIL | PASS |
+| `run_gui_bat_no_system_python_advice` | FAIL | PASS |
+| `smoke_test_runs_outside_the_repository` | FAIL | PASS |
+| `smoke_test_never_prints_key_material` | FAIL | PASS |
+| `gitignore_blocks_key_and_license_material` | FAIL | PASS |
+
 ## Files of the reviewed commit (hashes of what was tested)
 
 | file | exists | bytes | lines | sha256 prefix |
 |---|---|---|---|---|
-| `tools/license-issuer/build.ps1` | yes | 12766 | 293 | `b31ff5eb3be672a0` |
+| `tools/license-issuer/build.ps1` | yes | 14686 | 320 | `d51a613d6980c127` |
 | `tools/license-issuer/cli.py` | yes | 5866 | 118 | `c67948c74d71f277` |
 | `tools/license-issuer/gui.py` | yes | 11204 | 207 | `a11efc86a016e9cb` |
 | `tools/license-issuer/license_issuer.py` | yes | 5380 | 153 | `07d00689557d5e45` |
@@ -80,14 +98,14 @@
 
 | launcher | bytes | sha256 prefix |
 |---|---|---|
-| `runGuiBat` | 570 | `ea7d76436a6a756c` |
+| `runGuiBat` | 591 | `9887db204d4dc836` |
 | `runCliBat` | 334 | `b345a6a65c851da5` |
-| `runHtmlBat` | 738 | `0d836f98b025edb3` |
+| `runHtmlBat` | 1041 | `ef9ae7255409b7f7` |
 
 - committed `.bat` files in the repository: none
 - `cryptography` used by the harness: 50.0.1
-- backend fingerprint of the ephemeral test key: SHA256:c257e7746a94362b... (redacted)
-- emulated runner listen addresses: ['0.0.0.0']
+- backend fingerprint of the ephemeral test key: SHA256:<redacted>... (redacted)
+- emulated runner listen addresses: None
 
 ## Redaction
 

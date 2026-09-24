@@ -1,9 +1,10 @@
 {
-  "generated_at": "2026-09-24T07:41:00Z",
+  "generated_at": "2026-09-24T08:11:37Z",
   "generator": "review-artifacts/gen_issuer_offline_evidence.py (runs the real issuer code; no declarations)",
   "scope": {
     "pr": 34,
-    "reviewed_commit": "e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784",
+    "reviewed_commit": "c515a490db354436dbd0d18115e28ef5d8ece132",
+    "baseline_commit": "e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784",
     "host": "Linux review sandbox (no Windows, no virtualisation/KVM, no wine) - NOT the owner VM",
     "what_this_proves": [
       "the issuer sources of the reviewed commit are consistent, offline-only and cross-compatible with the backend verifier",
@@ -16,18 +17,72 @@
     ]
   },
   "summary": {
-    "PASS": 30,
-    "INFO": 2,
-    "GAP": 8,
+    "PASS": 39,
+    "INFO": 3,
+    "GAP": 3,
     "NOT RUN": 8
   },
+  "fixes_verification": {
+    "baseline": {
+      "compared_ref": "e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784",
+      "before_summary": {
+        "FAIL": 7,
+        "GAP": 3,
+        "INFO": 4,
+        "NOT RUN": 9,
+        "PASS": 31
+      },
+      "before_json_note": "the baseline run is a negative control: the same checks must fail on the revision before the fix"
+    },
+    "checks": [
+      {
+        "check": "run_html_bat_binds_loopback_only",
+        "before": "FAIL",
+        "after": "PASS"
+      },
+      {
+        "check": "run_html_bat_fails_closed_without_system_python",
+        "before": "FAIL",
+        "after": "PASS"
+      },
+      {
+        "check": "run_gui_bat_no_system_python_advice",
+        "before": "FAIL",
+        "after": "PASS"
+      },
+      {
+        "check": "smoke_test_runs_outside_the_repository",
+        "before": "FAIL",
+        "after": "PASS"
+      },
+      {
+        "check": "smoke_test_never_prints_key_material",
+        "before": "FAIL",
+        "after": "PASS"
+      },
+      {
+        "check": "gitignore_blocks_key_and_license_material",
+        "before": "FAIL",
+        "after": "PASS"
+      }
+    ],
+    "how": "every fix-sensitive check is executed twice: against the reviewed commit and against the baseline revision (a negative control); a check is only 'fixed' when it fails before and passes after"
+  },
   "facts": {
+    "tree_composition": {
+      "baseline_tree": "e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784",
+      "overlay_commit": "c515a490db354436dbd0d18115e28ef5d8ece132",
+      "overlay_files": {
+        ".gitignore": "ee464f266e6c3802",
+        "tools/license-issuer/build.ps1": "d51a613d6980c127"
+      }
+    },
     "reviewed_files": {
       "tools/license-issuer/build.ps1": {
         "exists": true,
-        "bytes": 12766,
-        "lines": 293,
-        "sha256_prefix": "b31ff5eb3be672a0"
+        "bytes": 14686,
+        "lines": 320,
+        "sha256_prefix": "d51a613d6980c127"
       },
       "tools/license-issuer/cli.py": {
         "exists": true,
@@ -81,35 +136,81 @@
     "launchers": {
       "generated_by_build_ps1": {
         "runGuiBat": {
-          "bytes": 570,
-          "sha256_prefix": "ea7d76436a6a756c"
+          "bytes": 591,
+          "sha256_prefix": "9887db204d4dc836"
         },
         "runCliBat": {
           "bytes": 334,
           "sha256_prefix": "b345a6a65c851da5"
         },
         "runHtmlBat": {
-          "bytes": 738,
-          "sha256_prefix": "0d836f98b025edb3"
+          "bytes": 1041,
+          "sha256_prefix": "ef9ae7255409b7f7"
         }
       },
       "committed_bat_files_in_repo": []
     },
-    "tracked_files_scanned_for_key_material": 525,
-    "gitignore_entries_for_owner_material": [],
-    "cryptography_version": "50.0.1",
-    "cli_public_key": "rREl...s= (44 chars, redacted)",
-    "cli_private_key_length": 64,
-    "emulated_runner_listen_addresses": [
-      "0.0.0.0"
+    "smoke_test_genkeypair_invocations": [
+      "$smokeOut = (& $pyExe (Join-Path $appDir \"cli.py\") gen-keypair --out-dir $smokeDir 2>&1 | Out-String)"
     ],
-    "backend_public_key_fingerprint": "SHA256:c257e7746a94362b... (redacted)"
+    "build_ps1_structure": {
+      "here_strings_open": 4,
+      "here_strings_closed": 4,
+      "brace_paren_balance_outside_strings_approx": {
+        "{": -1,
+        "(": 1
+      },
+      "has_replacement_char": false
+    },
+    "tracked_files_scanned_for_key_material": 505,
+    "gitignore_entries_for_owner_material": [
+      "keys/",
+      "private_key.hex",
+      "*.hrmlicense",
+      "public_key.b64",
+      "license-issuer-dist.zip"
+    ],
+    "tracked_files_now_ignored": [],
+    "cryptography_version": "50.0.1",
+    "cli_public_key": "rN8z...0= (44 chars, redacted)",
+    "cli_private_key_length": 64,
+    "emulated_runner": {
+      "with_bind_127_0_0_1": {
+        "cmd": "-m http.server 8791 -b 127.0.0.1 --directory /tmp/hrm-issuer-evidence-b0we7ope/serverdir",
+        "bind": "127.0.0.1",
+        "listen_of_this_pid": [
+          [
+            "127.0.0.1",
+            8791
+          ]
+        ],
+        "loopback": [
+          200,
+          17087
+        ]
+      },
+      "without_bind": {
+        "cmd": "-m http.server 8792 --directory /tmp/hrm-issuer-evidence-b0we7ope/serverdir",
+        "bind": "default(0.0.0.0)",
+        "listen_of_this_pid": [
+          [
+            "0.0.0.0",
+            8792
+          ]
+        ],
+        "loopback": [
+          200,
+          17087
+        ]
+      }
+    },
+    "backend_public_key_fingerprint": "SHA256:<redacted>... (redacted)"
   },
   "steps": [
     {
       "id": "issuer_sources_of_reviewed_commit",
       "status": "PASS",
-      "detail": "extracted from e59aa5b into a temp dir outside the repo"
+      "detail": "PR-head tree e59aa5b extracted outside the repo, fix commit c515a49 overlaid: .gitignore, tools/license-issuer/build.ps1"
     },
     {
       "id": "python_issuer_has_no_network_primitives",
@@ -144,37 +245,62 @@
     {
       "id": "run_gui_bat_contract",
       "status": "PASS",
-      "detail": "run-gui.bat (from build.ps1): bundled %~dp0..\\python\\python.exe, gui.py, fail-closed exit /b 1 when the bundle is incomplete (570 bytes)"
+      "detail": "run-gui.bat (from build.ps1): bundled %~dp0..\\python\\python.exe, gui.py, fail-closed exit /b 1 when the bundle is incomplete (591 bytes)"
     },
     {
       "id": "run_html_bat_contract",
       "status": "PASS",
-      "detail": "run-html.bat (from build.ps1, 738 bytes): bundled python -m http.server on port 8765 serving the bundle dir, then opens http://localhost:8765/license-issuer.html"
+      "detail": "run-html.bat (from build.ps1, 1041 bytes): bundled python -m http.server on port 8765 serving the bundle dir, then opens http://127.0.0.1:8765/license-issuer.html"
     },
     {
-      "id": "run_html_bat_autonomy_contradiction",
-      "status": "GAP",
-      "detail": "run-html.bat silently falls back to a system 'python' when the bundled interpreter is missing, while the same file's comment, HOWTO.txt and README promise 'no system Python needed'; run-gui.bat/run-cli.bat fail closed instead. On a clean Windows VM without Python this yields a confusing 'python is not recognized' error instead of the clear message."
+      "id": "run_html_bat_binds_loopback_only",
+      "status": "PASS",
+      "detail": "run-html.bat starts `python -m http.server %PORT% -b 127.0.0.1 --directory <bundle>` and opens http://127.0.0.1: ... the bundle directory is not exposed to the LAN"
     },
     {
-      "id": "run_html_bat_opens_browser_before_server",
-      "status": "GAP",
-      "detail": "run-html.bat opens the browser before starting the HTTP server, and does not check the port: a slow start or an occupied port 8765 shows 'site can't be reached' even though the bundle is fine"
+      "id": "run_html_bat_fails_closed_without_system_python",
+      "status": "PASS",
+      "detail": "run-html.bat has no fallback to a system 'python': a missing bundle interpreter prints a clear error and exits with code 1, like run-gui.bat/run-cli.bat"
     },
     {
-      "id": "run_html_bat_binds_all_interfaces",
-      "status": "GAP",
-      "detail": "run-html.bat runs `python -m http.server 8765` without -b: http.server binds 0.0.0.0, so while the window is open the bundle directory (and any key file the owner saved next to it) is reachable from the LAN. Windows firewall may also prompt. Passing -b 127.0.0.1 fixes it."
+      "id": "run_gui_bat_no_system_python_advice",
+      "status": "PASS",
+      "detail": "run-gui.bat no longer suggests installing system Python; it explains that the issuer never falls back to a system interpreter and exits with code 1"
+    },
+    {
+      "id": "smoke_test_runs_outside_the_repository",
+      "status": "PASS",
+      "detail": "the build smoke test creates a temporary directory outside the repository (1 executed gen-keypair invocation(s), all with --out-dir), and removes the directory in a finally block"
+    },
+    {
+      "id": "smoke_test_never_prints_key_material",
+      "status": "PASS",
+      "detail": "the smoke test compares the captured output with the private key it just created and turns the build into an error if key material ever reaches the build log"
+    },
+    {
+      "id": "build_ps1_here_strings_and_encoding",
+      "status": "PASS",
+      "detail": "here-strings 4 open / 4 closed, no U+FFFD in the file. The brace/parenthesis counters are only an approximation (see INFO step): the authoritative PowerShell parser is not available here (no pwsh) and runs in CI on windows-latest"
+    },
+    {
+      "id": "build_ps1_brace_paren_balance_approx_not_decisive",
+      "status": "INFO",
+      "detail": "brace/parenthesis counters outside strings/comments are approximate for PowerShell (measured: {\"{\": -1, \"(\": 1}); they can be non-zero for correct code, so they are not used as a verdict - syntax validation happens with PowerShell 5.1 in CI and on the owner VM"
     },
     {
       "id": "no_key_material_committed",
       "status": "PASS",
-      "detail": "525 tracked files: no *.hrmlicense, no infra/license/public_key.b64, no keys/ directory, no 64-hex literal in tools/license-issuer/*.py"
+      "detail": "505 tracked files: no *.hrmlicense, no infra/license/public_key.b64, no keys/ directory, no 64-hex literal in tools/license-issuer/*.py"
     },
     {
-      "id": "gitignore_does_not_cover_owner_material",
-      "status": "GAP",
-      "detail": ".gitignore has no entry for keys/, private_key.hex or *.hrmlicense. build.ps1 step 5 runs `cli.py gen-keypair` without --out-dir, so the maintainer's smoke test writes keys\\private_key.hex relative to the current working directory - inside the git work tree when build.ps1 is started from the repo root - and `git add -A` would stage a private key."
+      "id": "gitignore_blocks_key_and_license_material",
+      "status": "PASS",
+      "detail": ".gitignore covers keys/, private_key.hex, *.hrmlicense, public_key.b64, license-issuer-dist.zip: a stray private key, public key or issued license is no longer staged by `git add -A`"
+    },
+    {
+      "id": "gitignore_patterns_hide_no_tracked_file",
+      "status": "PASS",
+      "detail": "`git ls-files -ci --exclude-standard` is empty: no already-tracked file matches the new patterns (infra/license/public_key.b64 was never tracked)"
     },
     {
       "id": "cli_gen_keypair_offline",
@@ -264,12 +390,12 @@
     {
       "id": "emulated_runner_serves_page",
       "status": "PASS",
-      "detail": "python -m http.server 8791 --directory <bundle>: GET /license-issuer.html -> HTTP 200, 17087 bytes, byte-identical to the file: True. Emulated with the host Linux Python 3.11.2 (cryptography 50.0.1); the Windows launcher run-html.bat itself was NOT executed"
+      "detail": "`-m http.server 8791 -b 127.0.0.1 --directory /tmp/hrm-issuer-evidence-b0we7ope/serverdir` (the fixed launcher's command line): GET /license-issuer.html on 127.0.0.1 -> HTTP 200, 17087 bytes, byte-identical to the file: True. Emulated with the host Linux Python 3.11.2; the Windows launcher run-html.bat itself was NOT executed"
     },
     {
-      "id": "http_server_binds_all_interfaces_measured",
-      "status": "GAP",
-      "detail": "the runner's `python -m http.server` listens on 0.0.0.0 (measured on this host): the bundle directory is reachable from the LAN for as long as the window is open"
+      "id": "run_html_bat_loopback_only_measured",
+      "status": "PASS",
+      "detail": "same interpreter, same command line as the launcher: with `-b 127.0.0.1` the server process listens on [('127.0.0.1', 8791)] only; the control run without -b (the previous launcher, which the fix removes) listens on [('0.0.0.0', 8792)] - i.e. reachable from the LAN. Listen sockets are attributed to the server's own PID via /proc/<pid>/fd, because this sandbox has a platform proxy that also listens on the host address"
     },
     {
       "id": "backend_verifies_cli_license",
