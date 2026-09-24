@@ -311,6 +311,7 @@ function Invoke-LeakScan([string]$Stage, [string[]]$Allowed) {
         Where-Object { $_ -and (Test-Path -LiteralPath $_) } | ForEach-Object { (Get-LongPath (Get-Item -LiteralPath $_).FullName).TrimEnd("\") } | Sort-Object -Unique
     $roots = @($roots | Where-Object { $r = $_; -not @($roots | Where-Object { $_ -ne $r -and $r.StartsWith($_ + "\", [StringComparison]::OrdinalIgnoreCase) }).Count })
     $hits = New-Object System.Collections.ArrayList
+    $sqliteHits = New-Object System.Collections.ArrayList
     $nameHits = New-Object System.Collections.ArrayList
     $otherNames = New-Object System.Collections.ArrayList
     $total = 0; $totalSkipped = 0; $totalUnreadable = 0; $bytes = [long]0
@@ -329,7 +330,7 @@ function Invoke-LeakScan([string]$Stage, [string[]]$Allowed) {
             $n++; $bytes += $buf.Length
             if ($isAllowed) { continue }
             $t = $latin1.GetString($buf)
-            foreach ($nd in $needles) { if ($t.IndexOf($nd.Text, [StringComparison]::Ordinal) -ge 0) { [void]$hits.Add("$($f.FullName) [$($nd.Key) $($nd.Form)]") } }
+            foreach ($nd in $needles) { if ($t.IndexOf($nd.Text, [StringComparison]::Ordinal) -ge 0) { [void]$hits.Add("$($f.FullName) [$($nd.Key) $($nd.Form)]"); if ($t.StartsWith("SQLite format 3") -and -not $sqliteHits.Contains($f.FullName)) { [void]$sqliteHits.Add($f.FullName) } } }
         }
         Say ("leak scan '{0}' root {1}: {2} files scanned, {3} >50MB skipped, {4} unreadable" -f $Stage, $r, $n, $skipped, $unreadable)
         $total += $n; $totalSkipped += $skipped; $totalUnreadable += $unreadable
@@ -339,7 +340,23 @@ function Invoke-LeakScan([string]$Stage, [string[]]$Allowed) {
     if ($hits.Count -eq 0 -and $nameHits.Count -eq 0) {
         Add-Result "leak-scan ($Stage)" "PASS" ("0 key-material hits, 0 private_key*/.hex files outside the designated ones; " + $detail)
     } else {
-        Add-Result "leak-scan ($Stage)" "FAIL" ("hits: " + ((@($hits) + @($nameHits) | Select-Object -First 20) -join "; ") + "; " + $detail)
+        # SQLite hit files (browser profile DBs): which table/column holds the key? (ci-sqlite-where.py,
+        # bundled python; secrets passed via an environment variable, never argv; output never has the key)
+        $where = @()
+        if ($sqliteHits.Count -gt 0) {
+            $nl = New-Object System.Collections.ArrayList
+            foreach ($name in $script:Secrets.Keys) {
+                $raw = [byte[]]$script:Secrets[$name]; $hex = -join ($raw | ForEach-Object { $_.ToString("x2") }); $b64 = [Convert]::ToBase64String($raw)
+                foreach ($pair in @(@("hex-lower", $hex), @("hex-upper", $hex.ToUpperInvariant()), @("base64", $b64), @("base64url", $b64.TrimEnd("=").Replace("+", "-").Replace("/", "_")))) { [void]$nl.Add($name + "|" + $pair[0] + "|" + $pair[1]) }
+            }
+            foreach ($sf in @($sqliteHits | Select-Object -First 5)) {
+                try {
+                    $dr = Invoke-Captured $BundlePy ((Q (Join-Path $Here "ci-sqlite-where.py")) + " " + (Q $sf)) 60 @{ HRM_DIAG_NEEDLES = ($nl -join "`n") } $Tools
+                    $where += (($dr.StdOut + " " + $dr.StdErr).Trim() -replace "\s+", " ")
+                } catch { $where += ("[sqlite-where] " + $sf + ": diagnostic failed: " + $_.Exception.Message) }
+            }
+        }
+        Add-Result "leak-scan ($Stage)" "FAIL" ("hits: " + ((@($hits) + @($nameHits) | Select-Object -First 20) -join "; ") + "; " + $detail + $(if ($where.Count -gt 0) { "; " + ($where -join " || ") } else { "" }))
     }
 }
 
