@@ -159,6 +159,8 @@ try {
             return [System.Diagnostics.Process]::Start($psi)
         }
 
+        $htmlProc = $null
+        $guiProc = $null
         try {
             # --- fresh unzip, separate directory (never from dist/) ---
             $unzip = Join-Path $root "unzipped bundle"
@@ -264,7 +266,9 @@ try {
             Write-Phase ("HTML page served: HTTP 200, {0} bytes" -f ([string]$resp.Content).Length)
             $listenerPid = [int](($listen | Select-Object -First 1) -split "\s+" | Select-Object -Last 1)
             $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$listenerPid"
-            if ($proc.ExecutablePath -notmatch [regex]::Escape($unzip)) {
+            # $env:TEMP may be an 8.3 short path (RUNNER~1) while WMI reports the
+            # long path, so compare the bundle-relative tail, not the full path.
+            if ($proc.ExecutablePath -notlike "*\HRM Issuer PR36 Test\unzipped bundle\python\python.exe") {
                 throw "HTML listener is not the bundled python: $($proc.ExecutablePath)"
             }
             Write-Phase "HTML listener PID $listenerPid runs the bundled python.exe (WMI verified)"
@@ -312,6 +316,19 @@ try {
             if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $ok -Encoding utf8 }
         }
         finally {
+            # Kill everything this phase started, even after a failed check:
+            # a surviving python.exe keeps the inherited stdout pipe of the CI
+            # step open and the step would hang until the job timeout.
+            Stop-Tree $htmlProc
+            Stop-Tree $guiProc
+            $leftovers = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -like "*\HRM Issuer PR36 Test\*" })
+            foreach ($l in $leftovers) {
+                Write-Phase "killing leftover bundled python PID $($l.ProcessId)"
+                $previousEap = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                try { & taskkill /F /T /PID $l.ProcessId 2>&1 | Out-Null } finally { $ErrorActionPreference = $previousEap }
+            }
+            Start-Sleep -Seconds 1
             if (Test-Path $root) {
                 Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
                 if (Test-Path $root) { Write-Phase "WARN: could not remove $root - remove it manually" }
