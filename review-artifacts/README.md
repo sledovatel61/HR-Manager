@@ -369,3 +369,39 @@ merge/tag/release/production workflow не запускались. Ветка с
 
 CI: PR head `e59aa5b` — run 35965657324 (6/6 success, три шага license-chain success); fix-commit `c515a49` —
 run 35973708182 (6/6 success; license-chain шагов в нём нет, т.к. ветка основана на `main`).
+
+## Этап 18 — перенос исправлений в ветку PR #34 (merge-коммит `f85a362`, PR #36)
+
+Сессия закреплена за веткой `arena/01a0d255-hr-manager` и не может пушить в `arena/01a0ccb9-hr-manager`,
+поэтому перенос сделан так: в ветку сессии влита ветка PR #34 (`git merge origin/arena/01a0ccb9-hr-manager`),
+конфликты add/add разрешены в пользу исправленных файлов, и открыт PR **#36** с базой `arena/01a0ccb9-hr-manager`.
+Merge PR #36 и есть перенос исправлений в PR #34 — это решение владельца, и не раньше, чем появится Windows-доказательство.
+
+Диф PR #36 относительно ветки PR #34 — ровно:
+
+```
+ .gitignore                     |   8 +
+ tools/license-issuer/build.ps1 |  57 +--
+ review-artifacts/*             | (доказательства, генераторы, вердикт)
+```
+
+`backend/`, `infra/`, Compose и `frontend/` не изменены; тесты не переписывались; ничего не смержено.
+
+| Артефакт | Содержимое |
+|---|---|
+| `issuer-offline-evidence.json` / `.md` | **39 PASS · 0 FAIL · 3 INFO · 3 GAP · 8 NOT RUN** для ревизии `f85a362`; таблица «до/после» (baseline — `e59aa5b`), где каждая исправляемая проверка падает до и проходит после; измеренный loopback; хэши лаунчеров |
+| `ci-run-status.json` | схема 2: PR-голова `e59aa5b`, фикс-коммит `c515a49`, **PR #36 и его CI-прогон `35977017563`** (id job'ов, conclusions, шаги license-chain, digest'ы артефактов), провенанс импортированного отчёта цепочки |
+| `license-chain-evidence.{json,md}` | перегенерированы для `HEAD`; все `checks_read_from_real_files` совпадают со значениями ветки PR |
+| `license-issuer-fixes.patch` | тот же двухфайловый фикс патчем (`git apply --check` по `e59aa5b` — ок) |
+| `final-verdict.md`, `windows-issuer-bundle-check.md` | вердикт (**NO-GO**) и чек-лист владельца; Windows-проверка остаётся **NOT RUN** |
+
+CI нового HEAD: прогон `35977017563` — 6/6 jobs success, и, поскольку ветка теперь содержит workflow из PR #34,
+в нём **выполнены три шага license-chain** (artifact `compose-pilot-license-chain` id 10798503119,
+`sha256:0f4772f9b81c9ddd…`). Отдельно отмечено: артефакты и логи этого прогона из sandbox недоступны (EOF), поэтому
+step conclusions и digest взяты из REST API, а дословное тело отчёта цепочки осталось импортированным из прогона
+35964596589.
+
+**Windows runtime validation — NOT RUN**, пока владелец не предоставит реальные доказательства с чистой Windows
+10/11 (страница HTTP 200, «Подпись корректна» для обоих issuer'ов, отсутствие приватного ключа в
+`%TEMP%`/`%APPDATA%`/бандле/загрузках, ноль исходящих соединений). До этого `GO` не выпускается, merge PR #36 и
+PR #34 не рекомендуется.
