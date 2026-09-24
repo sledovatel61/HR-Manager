@@ -69,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 Expand-Archive license-issuer-dist.zip -DestinationPath C:\Temp\lic
 C:\Temp\lic\license-issuer\run-gui.bat   # должен открыть GUI
 C:\Temp\lic\license-issuer\run-cli.bat gen-keypair  # должен выдать ключи
-C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://localhost:8765/license-issuer.html и WebCrypto Ed25519 работает
+C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://127.0.0.1:8765/license-issuer.html и WebCrypto Ed25519 работает
 ```
 
 ### Использование владельцем (офлайн, без Python, без интернета)
@@ -77,7 +77,7 @@ C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://lo
 1. Распакуйте `license-issuer-dist.zip` (например, `C:\HR-License\`).
 2. Двойной клик:
    - `run-gui.bat` — GUI Tkinter: Generate keypair, Issue license (рекомендуется)
-   - `run-html.bat` — HTML офлайн через `http://localhost:8765/license-issuer.html` (Edge 120+/Chrome 120+, secure context localhost, WebCrypto Ed25519, fallback TweetNaCl)
+   - `run-html.bat` — HTML офлайн через `http://127.0.0.1:8765/license-issuer.html` (Edge 120+/Chrome 120+, secure context localhost, WebCrypto Ed25519, fallback TweetNaCl)
    - `run-cli.bat gen-keypair` / `run-cli.bat issue ...` — CLI
 3. «Сгенерировать новую пару»:
    - Приватный ключ (64 hex) — **СОХРАНИТЕ** в зашифрованном месте, сделайте резервную копию!
@@ -95,7 +95,7 @@ C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://lo
 
 - `dist/python/` содержит `python.exe` + `Lib/site-packages/cryptography` — проверено `python -c "import cryptography"` в smoke-тесте.
 - Launchers используют `..\python\python.exe`, не системный Python. Если папка отсутствует — ошибка, а не тихий fallback.
-- `license-issuer.html` + `nacl-fast.js` работают без интернета. WebCrypto Ed25519 требует secure context: `run-html.bat` запускает `python -m http.server 8765` и открывает `http://localhost:8765/license-issuer.html` — localhost считается secure context, Edge 120+ поддерживает Ed25519 (проверено в Edge/Chrome 120+). Fallback TweetNaCl работает даже в file://.
+- `license-issuer.html` + `nacl-fast.js` работают без интернета. WebCrypto Ed25519 требует secure context: `run-html.bat` запускает bundled `serve_loopback.py` (только 127.0.0.1, без DNS) и открывает `http://127.0.0.1:8765/license-issuer.html` после готовности сервера — 127.0.0.1 считается secure context, Edge 120+ поддерживает Ed25519 (проверено в Edge/Chrome 120+). Fallback TweetNaCl работает даже в file://. Используйте для выпуска лицензий отдельный профиль браузера или InPrivate: страница не даёт браузеру сохранять приватный ключ (autocomplete off, очистка полей), но расширения браузера видят содержимое страницы.
 - Владелец после получения zip не скачивает ничего из интернета, не устанавливает Python.
 
 ### Вариант B (допустим только если Вариант A BLOCKED)
