@@ -320,6 +320,28 @@ jobs:
           python3 infra/scripts/compose_pilot_license_chain.py \
             --out-dir compose-license-chain --require-runtime
 
+      - name: Print pilot license-chain report (verbatim, redacted by construction)
+        # The report holds only SHA-256 fingerprints (the script's leak guard
+        # turns the verdict into FAIL if key-like material ever appears), so
+        # it is safe in the job log and in the step summary. Printing it makes
+        # the evidence readable without downloading the artifact and lets the
+        # review pack import it verbatim between the markers below.
+        if: always()
+        run: |
+          if [ -f compose-license-chain/compose-license-chain.json ]; then
+            echo "-----BEGIN COMPOSE-LICENSE-CHAIN JSON-----"
+            cat compose-license-chain/compose-license-chain.json
+            echo
+            echo "-----END COMPOSE-LICENSE-CHAIN JSON-----"
+            {
+              echo "## Pilot overlay — license public-key chain"
+              echo
+              cat compose-license-chain/compose-license-chain.md
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no compose-license-chain.json produced" >&2
+          fi
+
       - name: Upload pilot license-chain evidence (redacted fingerprints only)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
