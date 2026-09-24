@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-09-24T06:10:33Z",
+  "generated_at": "2026-09-24T06:39:03Z",
   "generator": "review-artifacts/gen_license_chain_evidence.py (reads real files; CI statuses only from imported artifacts)",
-  "fingerprint_redacted_example": "SHA256:1a5e9e3dbb546bb8... (redacted, ephemeral demo value)",
+  "fingerprint_redacted_example": "SHA256:d39e275fb90a07f7... (redacted, ephemeral demo value)",
   "public_key_b64_length": 44,
-  "public_key_b64_redacted_example": "91GOh9IW...280= (44 chars, redacted, ephemeral demo value)",
+  "public_key_b64_redacted_example": "C/PwgwEX...SA8= (44 chars, redacted, ephemeral demo value)",
   "chain": [
     "owner PC: tools/license-issuer → private key (owner only) + public_key.b64",
     "release: infra/license/public_key.b64 (baked by owner, not in git)",
@@ -121,23 +121,23 @@
     {
       "file": "backend/tests/test_production_overlay.py",
       "exists": true,
-      "size": 22868,
-      "lines": 531,
-      "sha256_prefix": "6460fe20fce7..."
+      "size": 22867,
+      "lines": 530,
+      "sha256_prefix": "310d26a5daa4..."
     },
     {
       "file": "backend/tests/test_compose_license_chain.py",
       "exists": true,
-      "size": 13645,
-      "lines": 336,
-      "sha256_prefix": "e44a77d28445..."
+      "size": 13663,
+      "lines": 335,
+      "sha256_prefix": "4c31ba5fec0e..."
     },
     {
       "file": "backend/tests/test_license_middleware_comprehensive.py",
       "exists": true,
-      "size": 19485,
-      "lines": 554,
-      "sha256_prefix": "e4dc2f5421a8..."
+      "size": 20075,
+      "lines": 556,
+      "sha256_prefix": "c4130cf481dc..."
     },
     {
       "file": "infra/windows/tests/engine.tests.ps1",
@@ -156,9 +156,9 @@
     {
       "file": ".github/workflows/ci.yml",
       "exists": true,
-      "size": 48645,
-      "lines": 818,
-      "sha256_prefix": "6ada396906e5..."
+      "size": 49720,
+      "lines": 840,
+      "sha256_prefix": "33223e31e366..."
     }
   ],
   "checks_read_from_real_files": {
@@ -205,16 +205,28 @@
     "issuer_cli_offline_linux": "MANUAL PASS, not CI-verified (Linux sandbox, this session: cli.py gen-keypair → issue → verify, offline; see final-verdict.md)",
     "build_bundle_with_embedded_python": "PASS (static: build.ps1 structure) / BLOCKED (runtime on clean Windows VM)",
     "installer_snapshot_contains_public_key": "BLOCKED (infra/license/public_key.b64 is not in git by design; owner bakes it)",
-    "pilot_env_generation_real_engine_writer": "NOT RUN (no CI artifact imported yet — see ci-run-status.json)",
-    "docker_compose_config_with_key_resolved_env": "NOT RUN (no CI artifact imported yet — see ci-run-status.json)",
-    "docker_compose_config_without_key_refused": "NOT RUN (no CI artifact imported yet — see ci-run-status.json)",
-    "backend_settings_inside_pilot_images": "NOT RUN (no CI artifact imported yet — see ci-run-status.json)",
+    "pilot_env_generation_real_engine_writer": "PASS (Secrets.psm1 Write-HrmPilotEnv, engine.tests.ps1 case with SHA-256 equality, run 35964596589 @ 7c7f645)",
+    "docker_compose_config_with_key_resolved_env": "PASS (real docker compose config, backend/worker/backup resolved LICENSE_PUBLIC_KEY, run 35964596589 @ 7c7f645; ephemeral key fingerprint sha256:e2f74e6c761c0684…)",
+    "docker_compose_config_without_key_refused": "PASS (config refused with the overlay message for missing AND empty key, run 35964596589 @ 7c7f645)",
+    "backend_settings_inside_pilot_images": "PASS (app.config.Settings in the built pilot images, APP_ENV=pilot, run 35964596589 @ 7c7f645; ephemeral key fingerprint sha256:e2f74e6c761c0684…)",
     "backend_LICENSE_PUBLIC_KEY_validation": "PASS (config.py fail-closed in pilot/production; pytest)",
     "license_upload_and_verification": "PASS (Ed25519 verify; pytest license suites)",
     "windows_bundle_manual_check": "BLOCKED (requires clean Windows 10/11 VM)"
   },
   "ci_import": {
-    "imported": false
+    "imported": true,
+    "run_id": 35964596589,
+    "head_sha": "7c7f64529fec28e17abdf9601bb5055762ece8df",
+    "jobs": {
+      "Backend checks": "success",
+      "Backend integration tests (PostgreSQL)": "success",
+      "Frontend checks": "success",
+      "Windows engine tests + installer smoke": "success",
+      "Release pipeline fail-closed policy (ephemeral test signature)": "success",
+      "Compose stack smoke test (dev + prod overlay)": "success"
+    },
+    "chain_verdict": "PASS",
+    "chain_compose_version": "2.38.2"
   },
   "note": "Private key never in git/installer/frontend/Docker/logs. Only redacted fingerprints. Compose/runtime steps are PASS only when an imported CI artifact says so."
 }
