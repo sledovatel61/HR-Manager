@@ -88,6 +88,7 @@ def _settings(**overrides: str) -> Settings:
         "APP_ENV": "test",
         "SECRET_KEY": DEVELOPMENT_SECRET_KEY,
         "DATABASE_URL": "sqlite+pysqlite://",
+        "LICENSE_PUBLIC_KEY": "4VfWiKkLv7JG6i3jfeWRvBXczWH+Qt1cfyFjtBTCPow=",
     }
     base.update(overrides)
     return Settings.model_validate(base)

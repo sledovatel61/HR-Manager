@@ -368,3 +368,95 @@ powershell -File hr-manager.ps1 -Action diagnostics -Json > diagnostics.json
 Итог: **go** — все строки без fail; **no-go** — любой fail; при
 предупреждениях решение принимает владелец письменно (дата, подпись,
 перечень принятых рисков).
+
+## 11. Офлайн-лицензия пилота (Phase 15)
+
+Закрытый пилот работает по **офлайн-лицензии на установку/сервер**, а не по
+лицензии на каждого HR. Первая учётная запись (Мария) — администратор и входит
+в лимит активных пользователей.
+
+### Формат лицензии
+
+JSON-файл `.hrmlicense`:
+
+```json
+{
+  "license_id": "550e8400-e29b-41d4-a716-446655440000",
+  "client_name": "ООО Пилот — Мария",
+  "issued_at": "2026-09-23T10:00:00Z",
+  "expires_at": "2027-03-31",
+  "max_active_users": 5,
+  "signature": "…64 bytes hex Ed25519…"
+}
+```
+
+* `license_id` — UUID строки.
+* `client_name` / `pilot_name` — отображаемое имя клиента.
+* `issued_at` — UTC ISO datetime выдачи.
+* `expires_at` — дата `YYYY-MM-DD` включительно до `23:59:59 UTC` последнего дня.
+* `max_active_users` — 1..1000, включает Марию.
+* `signature` — Ed25519 подпись по каноническим байтам (поля в алфавитном порядке).
+
+Проверка — серверная, не только скрытием кнопок. Подпись Ed25519 ключом
+владельца; в приложении только открытый ключ.
+
+### Выдача (владелец, Windows PC, офлайн, автономно)
+
+Инструмент: `tools/license-issuer/` — автономный пакет `license-issuer-dist.zip`:
+- `python/` — embeddable Python 3.12.3 + cryptography (bundled, без интернета/системного Python на runtime)
+- `license-issuer/` — `gui.py` (Tkinter), `cli.py`, `license-issuer.html` (WebCrypto Ed25519 + fallback TweetNaCl 1.0.3), `nacl-fast.js`, launchers `run-gui.bat`, `run-html.bat`, `run-cli.bat`
+
+Сборка (maintainer, один раз, нужен интернет):
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
+# Результат: dist/license-issuer-dist.zip — автономный, без интернета, без системного Python
+# Smoke-тест: python\python.exe license-issuer\cli.py gen-keypair
+```
+
+Использование владельцем (офлайн, без Python, без интернета, двойной клик):
+1. Распаковать `license-issuer-dist.zip`
+2. `run-gui.bat` — GUI (рекомендуется) или `run-html.bat` — HTML через http://localhost:8765 (Edge 120+, secure context localhost, WebCrypto Ed25519, fallback TweetNaCl) или `run-cli.bat gen-keypair`
+3. **Приватный ключ хранится ТОЛЬКО у владельца**: VeraCrypt/BitLocker-папка, зашифрованная флешка, аппаратный токен. Никогда не попадает в git, установщик, frontend, Docker image, логи, диагностический архив.
+4. Публичный ключ (`public_key.b64` — 44 символа base64 32 байта) копируется в `infra/license/public_key.b64` перед сборкой пилотного образа. При установке `Secrets.psm1:Get-HrmLicensePublicKey` читает его и пишет в `pilot.env` как `HRM_LICENSE_PUBLIC_KEY`.
+5. Полный путь (проверено тестом `test_full_public_key_path_simulation`):
+   `infra/license/public_key.b64` → `Secrets.psm1` → `pilot.env` → Docker Compose → backend `LICENSE_PUBLIC_KEY` → `APP_ENV=pilot` требует ключ (fail-closed) → backend принимает валидную и отклоняет подделанную.
+6. Владелец задаёт client/pilot name, `expires_at`, `max_active_users` → Issue → файл `.hrmlicense` отправляет Марии по защищённому каналу.
+7. Никаких тестовых production-ключей в приложении.
+
+Доказательство автономности: `dist/python/python.exe -c "import cryptography"` проходит, launchers используют `..\python\python.exe` fail-closed, `run-html.bat` даёт localhost secure context для WebCrypto, fallback `nacl-fast.js` (TweetNaCl 1.0.3, 2391 строка, из npm) работает в file://.
+
+См. `docs/license-owner.md` — инструкция владельца (разделение проверено / требует чистой Windows / BLOCKED).
+
+### Активация (Мария, без терминала)
+
+1. Вход в HR Manager → Рабочее пространство → Лицензия.
+2. Загрузить файл или Вставить текст → видит срок, лимит, дней осталось, активных пользователей.
+3. Только admin может заменить лицензию (проверено `test_enforcement_upload_only_admin` — 403 для не-admin).
+4. Без лицензии доступны только `/setup/*`, `/license/status`, `/health`, `/ops/status`, `/ops/backup-health`, `/admin/ops/pilot-readiness`, `/auth/*`, `/updates/engine-*`, `/docs`, `/openapi.json`. Остальные — `403 no_license`. При истечении — `403 expired`, баннер в UI, но admin может войти и загрузить новую. Данные не удаляются. Проверено `test_enforcement_blocks_business_endpoints_after_expiry` — POST/PUT/PATCH/DELETE бизнес-эндпоинтов 403, bypass через `/api` prefix, unknown routes, query string, trailing slash не работает, `/updates/status|check|download|install` блокируются, `engine-*` остаются доступны для диагностики.
+5. `/openapi.json` не открывает секреты (проверено `test_openapi_does_not_leak_secrets`).
+
+См. `docs/license-maria.md` — инструкция для Марии.
+
+### Истечение и продление
+
+* Нормальная работа останавливается, но данные сохраняются.
+* Админ может войти и загрузить новую лицензию — работает без переустановки/потери БД.
+* Лицензия переживает restart, backup/restore, update (таблица `licenses`,
+  миграция `0014_license`).
+* Clock rollback: `last_seen_at` — monotonic best-effort защита от отката часов
+  обычным пользователем. Абсолютной защиты от админа чужого ПК нет.
+
+### Диагностика
+
+* `GET /api/license/status` — анонимно, без PII, redacted fingerprint.
+* В логах — только redacted fp, не private key, не тексты лицензий, не PII.
+* `HRM_LICENSE_PUBLIC_KEY` — только открытый ключ, 44 символа base64.
+
+### Go/no-go дополнение
+
+| # | Критерий | Как проверено | Итог |
+| --- | --- | --- | --- |
+| 16 | Публичный ключ лицензии встроен в образ (`pilot.env` `HRM_LICENSE_PUBLIC_KEY`) | `cat pilot.env` | — |
+| 17 | Лицензия загружена и статус `valid` | UI Лицензия / `GET /api/license/status` | — |
+| 18 | Лимит пользователей соблюдается (включая Марию) | попытка создать сверх лимита → 409 | — |
+| 19 | При истечении данные сохранены, админ может продлить | тест `test_data_preservation_on_expiry` | — |

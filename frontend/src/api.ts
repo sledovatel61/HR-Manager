@@ -1,4 +1,5 @@
 import type {
+  LicenseStatus,
   AccessGrant,
   AdminChannels,
   CandidateChannels,
@@ -852,4 +853,51 @@ export async function redeemOwnerSetup(input: RedeemOwnerInput): Promise<Current
     method: "POST",
     body: input,
   });
+}
+
+// --- License (offline pilot) -------------------------------------------------
+
+export async function fetchLicenseStatus(): Promise<LicenseStatus> {
+  return request<LicenseStatus>("/license/status");
+}
+
+export async function uploadLicenseFile(file: File): Promise<LicenseStatus> {
+  const form = new FormData();
+  form.append("file", file);
+  // For FormData, we need custom fetch because request() sets JSON header
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const token = readCsrfCookie();
+  if (token) headers["X-CSRF-Token"] = token;
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/license/upload`, {
+      method: "POST",
+      headers,
+      body: form,
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError(0, "Сеть недоступна: не удалось связаться с сервером.");
+  }
+  if (response.status === 401) emitUnauthorized();
+  let data: unknown = null;
+  try { data = await response.json(); } catch { data = null; }
+  if (!response.ok) {
+    const rawDetail =
+      data && typeof data === "object" && "detail" in data
+        ? (data as { detail: unknown }).detail
+        : null;
+    const detail =
+      typeof rawDetail === "string"
+        ? rawDetail
+        : `Ошибка загрузки лицензии (${response.status}).`;
+    throw new ApiError(response.status, detail, rawDetail);
+  }
+  // After upload, fetch fresh status
+  return fetchLicenseStatus();
+}
+
+export async function uploadLicenseJson(body: { license_text?: string; license?: unknown }): Promise<LicenseStatus> {
+  await request<{ license_id: string }>("/license/upload-json", { method: "POST", body });
+  return fetchLicenseStatus();
 }
