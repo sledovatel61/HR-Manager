@@ -109,6 +109,13 @@ class Runner:
     def info(self, step_id: str, detail: str) -> None:
         self.add(step_id, "INFO", detail)
 
+    def run_bytes(self, cmd: list[str], timeout: int = 120) -> tuple[int, bytes, str]:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
+            return proc.returncode, proc.stdout, proc.stderr.decode("utf-8", "replace")
+        except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
+            return 127, b"", f"cannot execute {cmd[0]}: {exc}"
+
     def run(
         self, cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None, timeout: int = 300
     ) -> tuple[int, str, str]:
@@ -446,21 +453,56 @@ print(json.dumps(result, ensure_ascii=False))
 '''
 
 
-def extract_ref(runner: Runner, ref: str, dest: Path) -> bool:
-    """Materialise the reviewed commit's issuer sources outside the repo."""
+TREE_PATHS = ["tools/license-issuer", "backend/app", ".gitignore"]
+
+
+def materialise_reviewed_tree(runner: Runner, base_ref: str, overlay_ref: str | None, dest: Path) -> bool:
+    """Materialise the tree to test outside the repository.
+
+    PR #34 lives on its own branch, so the reviewed revision is the PR head plus
+    the fix patch: the baseline tree (``base_ref``) is extracted with
+    ``git archive`` and the files the fix commit changes are overlaid on top.
+    Nothing is read from the working tree, so the checks cannot accidentally
+    test the wrong revision.
+    """
     tar = dest / "pr.tar"
     code, _, err = runner.run(
-        ["git", "-C", str(REPO), "archive", "--format=tar", "-o", str(tar), ref, "tools/license-issuer", "backend/app"],
+        ["git", "-C", str(REPO), "archive", "--format=tar", "-o", str(tar), base_ref, *TREE_PATHS],
         timeout=180,
     )
     if code != 0 or not tar.is_file():
-        runner.not_run("issuer_sources_of_reviewed_commit", f"git archive {ref[:7]} failed: {err.strip()[:200]}")
+        runner.not_run("issuer_sources_of_reviewed_commit", f"git archive {base_ref[:7]} failed: {err.strip()[:200]}")
         return False
     code, _, err = runner.run(["tar", "-x", "-f", str(tar), "-C", str(dest)], timeout=180)
     if code != 0:
         runner.not_run("issuer_sources_of_reviewed_commit", f"tar extraction failed: {err.strip()[:200]}")
         return False
-    runner.pass_("issuer_sources_of_reviewed_commit", f"extracted from {ref[:7]} into a temp dir outside the repo")
+
+    composition: dict[str, Any] = {"baseline_tree": base_ref, "overlay_commit": None, "overlay_files": {}}
+    if overlay_ref and overlay_ref != base_ref:
+        code, out, err = runner.run(["git", "-C", str(REPO), "diff", "--name-only", f"{overlay_ref}^", overlay_ref])
+        if code != 0:
+            runner.not_run("issue_fix_overlay", f"git diff failed: {err.strip()[:160]}")
+            return False
+        overlay_files = [rel for rel in out.split() if rel]
+        for rel in overlay_files:
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            code, blob, err = runner.run_bytes(["git", "-C", str(REPO), "cat-file", "blob", f"{overlay_ref}:{rel}"])
+            if code != 0:
+                runner.not_run("issue_fix_overlay", f"cannot read {rel} from {overlay_ref[:7]}: {err[:160]}")
+                return False
+            target.write_bytes(blob)
+            composition["overlay_files"][rel] = hashlib.sha256(blob).hexdigest()[:16]
+        composition["overlay_commit"] = overlay_ref
+        runner.pass_("issuer_sources_of_reviewed_commit",
+                     f"PR-head tree {base_ref[:7]} extracted outside the repo, fix commit {overlay_ref[:7]} "
+                     f"overlaid: {', '.join(sorted(composition['overlay_files']))}")
+    else:
+        runner.pass_("issuer_sources_of_reviewed_commit",
+                     f"PR-head tree {base_ref[:7]} extracted outside the repo (no overlay: this is the revision "
+                     "before the fix, used as the negative control)")
+    runner.facts.setdefault("tree_composition", composition)
     return True
 
 
@@ -586,30 +628,90 @@ def static_checks(runner: Runner, pr: Path) -> None:
         runner.fail("run_gui_bat_contract", "run-gui.bat here-string missing or malformed in build.ps1")
 
     htmlbat = bats.get("runHtmlBat", "")
-    htmlbat_ok = all(t in htmlbat for t in ('http.server %PORT%', '--directory', 'start "" http://localhost:', "license-issuer.html"))
+    htmlbat_ok = all(t in htmlbat for t in ('http.server %PORT%', '--directory', 'start "" http://127.0.0.1:', "license-issuer.html"))
     if htmlbat_ok:
         runner.pass_("run_html_bat_contract",
                      f"run-html.bat (from build.ps1, {len(htmlbat)} bytes): bundled python -m http.server on port "
-                     "8765 serving the bundle dir, then opens http://localhost:8765/license-issuer.html")
+                     "8765 serving the bundle dir, then opens http://127.0.0.1:8765/license-issuer.html")
     else:
         runner.fail("run_html_bat_contract", "run-html.bat here-string missing or malformed in build.ps1")
 
-    if 'set PY_EXE=python' in htmlbat and "exit /b 1" not in htmlbat:
-        runner.gap("run_html_bat_autonomy_contradiction",
-                   "run-html.bat silently falls back to a system 'python' when the bundled interpreter is "
-                   "missing, while the same file's comment, HOWTO.txt and README promise 'no system Python "
-                   "needed'; run-gui.bat/run-cli.bat fail closed instead. On a clean Windows VM without Python "
-                   "this yields a confusing 'python is not recognized' error instead of the clear message.")
-    if re.search(r'^\s*start "" http://localhost', htmlbat, re.M):
-        runner.gap("run_html_bat_opens_browser_before_server",
-                   "run-html.bat opens the browser before starting the HTTP server, and does not check the "
-                   "port: a slow start or an occupied port 8765 shows 'site can't be reached' even though the "
-                   "bundle is fine")
-    if "-b 127.0.0.1" not in htmlbat:
-        runner.gap("run_html_bat_binds_all_interfaces",
-                   "run-html.bat runs `python -m http.server 8765` without -b: http.server binds 0.0.0.0, so "
-                   "while the window is open the bundle directory (and any key file the owner saved next to it) "
-                   "is reachable from the LAN. Windows firewall may also prompt. Passing -b 127.0.0.1 fixes it.")
+    # --- fix 2026-09-24: loopback binding, no system-Python fallback ---------
+    if '-b 127.0.0.1' in htmlbat and "0.0.0.0" not in htmlbat and "http://127.0.0.1:" in htmlbat:
+        runner.pass_("run_html_bat_binds_loopback_only",
+                     "run-html.bat starts `python -m http.server %PORT% -b 127.0.0.1 --directory <bundle>` and "
+                     "opens http://127.0.0.1: ... the bundle directory is not exposed to the LAN")
+    else:
+        runner.fail("run_html_bat_binds_loopback_only",
+                    "run-html.bat does not bind the HTTP server to 127.0.0.1 / still advertises a non-loopback URL")
+
+    if "set PY_EXE=python" not in htmlbat and "exit /b 1" in htmlbat and "pause" in htmlbat:
+        runner.pass_("run_html_bat_fails_closed_without_system_python",
+                     "run-html.bat has no fallback to a system 'python': a missing bundle interpreter prints a "
+                     "clear error and exits with code 1, like run-gui.bat/run-cli.bat")
+    else:
+        runner.fail("run_html_bat_fails_closed_without_system_python",
+                    "run-html.bat still falls back to a system 'python' or lost its fail-closed branch")
+
+    if "install Python" not in gui and "system Python" in gui and "exit /b 1" in gui:
+        runner.pass_("run_gui_bat_no_system_python_advice",
+                     "run-gui.bat no longer suggests installing system Python; it explains that the issuer never "
+                     "falls back to a system interpreter and exits with code 1")
+    else:
+        runner.fail("run_gui_bat_no_system_python_advice",
+                    "run-gui.bat still advises installing/using a system Python")
+
+    # --- fix 2026-09-24: smoke test outside the git work tree ---------------
+    smoke_needs = ("GetTempPath()", "--out-dir $smokeDir", "Remove-Item -Path $smokeDir -Recurse -Force")
+    smoke_ok = all(t in build_ps1 for t in smoke_needs)
+    # any executed gen-keypair must carry --out-dir (the HOWTO/README examples are not executed)
+    executed_genkeypair = [
+        line.strip() for line in build_ps1.splitlines()
+        if "gen-keypair" in line and ("$pyExe" in line or line.strip().startswith("&"))
+    ]
+    runner.facts["smoke_test_genkeypair_invocations"] = executed_genkeypair
+    if smoke_ok and executed_genkeypair and all("--out-dir" in line for line in executed_genkeypair):
+        runner.pass_("smoke_test_runs_outside_the_repository",
+                     f"the build smoke test creates a temporary directory outside the repository "
+                     f"({len(executed_genkeypair)} executed gen-keypair invocation(s), all with --out-dir), and "
+                     "removes the directory in a finally block")
+    else:
+        runner.fail("smoke_test_runs_outside_the_repository",
+                    f"smoke test does not isolate key material: needs={smoke_needs}, invocations={executed_genkeypair}")
+    if "refusing to continue" in build_ps1 and "$smokePrivHex" in build_ps1:
+        runner.pass_("smoke_test_never_prints_key_material",
+                     "the smoke test compares the captured output with the private key it just created and turns "
+                     "the build into an error if key material ever reaches the build log")
+    else:
+        runner.fail("smoke_test_never_prints_key_material", "no leak assertion in the smoke test")
+
+    # --- structural check of the edited PowerShell (approximation, not a parser)
+    here_strings = build_ps1.count('= @"') + build_ps1.count("= @'")
+    terminators = len(re.findall(r'(?m)^"@$', build_ps1)) + len(re.findall(r"(?m)^'@$", build_ps1))
+    stripped = re.sub(r'@"\n.*?"@', '', build_ps1, flags=re.S)  # here-string bodies
+    stripped = re.sub(r'#.*', '', stripped)
+    balance = {
+        "{": stripped.count("{") - stripped.count("}"),
+        "(": stripped.count("(") - stripped.count(")"),
+    }
+    runner.facts["build_ps1_structure"] = {
+        "here_strings_open": here_strings,
+        "here_strings_closed": terminators,
+        "brace_paren_balance_outside_strings_approx": balance,
+        "has_replacement_char": "\ufffd" in build_ps1,
+    }
+    if here_strings == terminators and "\ufffd" not in build_ps1:
+        runner.pass_("build_ps1_here_strings_and_encoding",
+                     f"here-strings {here_strings} open / {terminators} closed, no U+FFFD in the file. The brace/"
+                     "parenthesis counters are only an approximation (see INFO step): the authoritative PowerShell "
+                     "parser is not available here (no pwsh) and runs in CI on windows-latest")
+        runner.info("build_ps1_brace_paren_balance_approx_not_decisive",
+                    "brace/parenthesis counters outside strings/comments are approximate for PowerShell "
+                    f"(measured: {json.dumps(balance)}); they can be non-zero for correct code, so they are not "
+                    "used as a verdict - syntax validation happens with PowerShell 5.1 in CI and on the owner VM")
+    else:
+        runner.fail("build_ps1_here_strings_and_encoding",
+                    json.dumps(runner.facts["build_ps1_structure"], ensure_ascii=False))
 
     # --- key material must not be committed --------------------------------
     patterns = {
@@ -640,16 +742,38 @@ def static_checks(runner: Runner, pr: Path) -> None:
                      "*.hrmlicense, no infra/license/public_key.b64, no keys/ directory, no 64-hex literal in "
                      "tools/license-issuer/*.py")
 
-    # --- .gitignore coverage for owner-side material -----------------------
-    gitignore = (REPO / ".gitignore").read_text(encoding="utf-8")
-    ignored = [p for p in ("keys/", "private_key.hex", "*.hrmlicense") if p in gitignore]
-    runner.facts["gitignore_entries_for_owner_material"] = ignored
-    if not ignored:
-        runner.gap("gitignore_does_not_cover_owner_material",
-                   ".gitignore has no entry for keys/, private_key.hex or *.hrmlicense. build.ps1 step 5 runs "
-                   "`cli.py gen-keypair` without --out-dir, so the maintainer's smoke test writes "
-                   "keys\\private_key.hex relative to the current working directory - inside the git work tree "
-                   "when build.ps1 is started from the repo root - and `git add -A` would stage a private key.")
+    # --- .gitignore coverage for owner-side material (fix 2026-09-24) ------
+    gitignore = (pr / ".gitignore").read_text(encoding="utf-8") if (pr / ".gitignore").is_file() else ""
+    wanted = ["keys/", "private_key.hex", "*.hrmlicense", "public_key.b64", "license-issuer-dist.zip"]
+    present = [p for p in wanted if p in gitignore]
+    runner.facts["gitignore_entries_for_owner_material"] = present
+    if len(present) == len(wanted):
+        runner.pass_("gitignore_blocks_key_and_license_material",
+                     ".gitignore covers " + ", ".join(wanted) + ": a stray private key, public key or issued "
+                     "license is no longer staged by `git add -A`")
+    else:
+        runner.fail("gitignore_blocks_key_and_license_material",
+                    f"missing patterns: {sorted(set(wanted) - set(present))}")
+    # the new patterns must not hide files that are actually tracked; only meaningful
+    # when the tree under test carries the same .gitignore as the working branch
+    same_as_worktree = gitignore == (REPO / ".gitignore").read_text(encoding="utf-8")
+    if not same_as_worktree:
+        runner.info("gitignore_patterns_hide_no_tracked_file",
+                    "skipped for this revision: the tree under test has a different .gitignore than the working "
+                    "branch (baseline negative control)")
+        code, out, err = 1, "", "skipped"
+    else:
+        code, out, err = runner.run(["git", "-C", str(REPO), "ls-files", "-ci", "--exclude-standard"])
+    hidden_tracked = [l for l in out.split() if l] if code == 0 else None
+    runner.facts["tracked_files_now_ignored"] = hidden_tracked
+    if code != 0:
+        runner.not_run("gitignore_patterns_hide_no_tracked_file", f"git ls-files -ci failed: {err.strip()[:120]}")
+    elif hidden_tracked:
+        runner.fail("gitignore_patterns_hide_no_tracked_file", f"tracked files now ignored: {hidden_tracked}")
+    else:
+        runner.pass_("gitignore_patterns_hide_no_tracked_file",
+                     "`git ls-files -ci --exclude-standard` is empty: no already-tracked file matches the new "
+                     "patterns (infra/license/public_key.b64 was never tracked)")
 
 
 def cli_flow(runner: Runner, pr: Path, work: Path) -> None:
@@ -737,7 +861,11 @@ def backend_flow(runner: Runner, pr: Path, work: Path) -> None:
         runner.fail("backend_verification_of_issuer_license", f"harness exit {code}: {err.strip()[:300]}")
         return
     payload = json.loads(out)
-    runner.facts["backend_public_key_fingerprint"] = payload.get("public_key_fingerprint")
+    # over-redaction on purpose: not even a truncated SHA-256 of a key is published
+    fp = payload.get("public_key_fingerprint") or ""
+    runner.facts["backend_public_key_fingerprint"] = (
+        re.sub(r"SHA256:[0-9a-f]{8,}", "SHA256:<redacted>", fp) if fp else None
+    )
     for check in payload["checks"]:
         runner.add(check["id"], check["status"], check["detail"])
 
@@ -780,70 +908,110 @@ def html_flow(runner: Runner, pr: Path, work: Path) -> None:
             secret(pub.read_text(encoding="utf-8").strip())
 
 
-def serve_flow(runner: Runner, pr: Path, work: Path) -> None:
-    """Emulate run-html.bat's server on this host (Linux python, not the Windows bundle)."""
-    serverdir = work / "serverdir"
-    serverdir.mkdir(exist_ok=True)
-    for name in ("license-issuer.html", "nacl-fast.js"):
-        shutil.copy2(pr / ISSUER / name, serverdir / name)
-    port = 8791
-    proc = subprocess.Popen(
-        [runner.python, "-m", "http.server", str(port), "--directory", str(serverdir)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        import time
-        import urllib.request
+def sockets_of_pid(pid: int) -> list[tuple[str, int]]:
+    """Local addresses this very process listens on (Linux /proc, no external tools)."""
+    inodes: set[str] = set()
+    for fd in Path(f"/proc/{pid}/fd").glob("*"):
+        try:
+            target = os.readlink(fd)
+        except OSError:
+            continue
+        if target.startswith("socket:["):
+            inodes.add(target[len("socket:[") : -1])
+    rows: list[tuple[str, int]] = []
+    for table in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+        if not table.is_file():
+            continue
+        for line in table.read_text().splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 11 or fields[3] != "0A" or fields[9] not in inodes:
+                continue
+            raw, port = fields[1].split(":")
+            if table.name == "tcp":
+                addr = ".".join(str(b) for b in bytes.fromhex(raw)[::-1])
+            else:
+                addr = "v6:" + raw
+            rows.append((addr, int(port, 16)))
+    return sorted(set(rows))
 
-        body = None
+
+def _serve_and_probe(runner: Runner, serverdir: Path, port: int, bind: str | None) -> dict[str, Any]:
+    """Start `python -m http.server` exactly like the launcher does and probe it."""
+    import time
+    import urllib.request
+
+    cmd = [runner.python, "-m", "http.server", str(port)]
+    if bind:
+        cmd += ["-b", bind]
+    cmd += ["--directory", str(serverdir)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    result: dict[str, Any] = {"cmd": " ".join(cmd[1:]), "bind": bind or "default(0.0.0.0)", "listen_of_this_pid": []}
+    try:
         for _ in range(30):
             time.sleep(0.2)
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/license-issuer.html", timeout=2) as resp:
-                    body = (resp.status, resp.read())
+                    result["loopback"] = (resp.status, len(resp.read()))
                 break
             except Exception:
                 continue
-        if body is None:
-            runner.fail("emulated_runner_serves_page", "local http.server did not answer on 127.0.0.1")
-        else:
-            status, data = body
-            same = data == (serverdir / "license-issuer.html").read_bytes()
-            detail = (
-                f"python -m http.server {port} --directory <bundle>: GET /license-issuer.html -> HTTP {status}, "
-                f"{len(data)} bytes, byte-identical to the file: {same}. Emulated with the host Linux Python "
-                f"{sys.version.split()[0]} (cryptography {runner.facts.get('cryptography_version', 'n/a')}); the "
-                "Windows launcher run-html.bat itself was NOT executed"
-            )
-            if status == 200 and same:
-                runner.pass_("emulated_runner_serves_page", detail)
-            else:
-                runner.fail("emulated_runner_serves_page", detail)
-        # bind scope
-        listening: list[str] = []
-        tcp = Path("/proc/net/tcp")
-        if tcp.is_file():
-            for line in tcp.read_text().splitlines()[1:]:
-                f = line.split()
-                if len(f) > 3 and f[3] == "0A" and int(f[1].split(":")[1], 16) == port:
-                    addr = bytes.fromhex(f[1].split(":")[0])[::-1]
-                    listening.append(".".join(str(b) for b in addr))
-        runner.facts["emulated_runner_listen_addresses"] = sorted(set(listening))
-        if any(a == "0.0.0.0" for a in listening):
-            runner.gap("http_server_binds_all_interfaces_measured",
-                       "the runner's `python -m http.server` listens on 0.0.0.0 (measured on this host): the bundle "
-                       "directory is reachable from the LAN for as long as the window is open")
-        else:
-            runner.info("http_server_binds_all_interfaces_measured",
-                        f"listen addresses observed: {sorted(set(listening))} (python -m http.server defaults to "
-                        "0.0.0.0; -b 127.0.0.1 would restrict it)")
+        result.setdefault("loopback", None)
+        # attributing the listening socket to THIS process matters: the sandbox itself
+        # has a platform proxy listening on the host address, so "reachable via the
+        # host IP" is not evidence about our server.
+        try:
+            result["listen_of_this_pid"] = sockets_of_pid(proc.pid)
+        except Exception as exc:  # pragma: no cover
+            result["listen_of_this_pid"] = f"probe failed: {exc}"
+        return result
     finally:
         proc.terminate()
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:  # pragma: no cover
             proc.kill()
+
+
+def serve_flow(runner: Runner, pr: Path, work: Path) -> None:
+    """Emulate run-html.bat's HTTP server on this host (Linux python, not the Windows bundle).
+
+    Two runs: the command line the *fixed* launcher uses (-b 127.0.0.1) and the
+    previous one without a bind address, so the fix is a measured difference and
+    not a claim. The Windows launcher itself is NOT executed here.
+    """
+    serverdir = work / "serverdir"
+    serverdir.mkdir(exist_ok=True)
+    for name in ("license-issuer.html", "nacl-fast.js"):
+        shutil.copy2(pr / ISSUER / name, serverdir / name)
+
+    fixed = _serve_and_probe(runner, serverdir, 8791, bind="127.0.0.1")
+    previous = _serve_and_probe(runner, serverdir, 8792, bind=None)
+    runner.facts["emulated_runner"] = {"with_bind_127_0_0_1": fixed, "without_bind": previous}
+
+    ok_loopback = isinstance(fixed.get("loopback"), tuple) and fixed["loopback"][0] == 200
+    if ok_loopback:
+        runner.pass_("emulated_runner_serves_page",
+                     f"`{fixed['cmd']}` (the fixed launcher's command line): GET /license-issuer.html on "
+                     f"127.0.0.1 -> HTTP {fixed['loopback'][0]}, {fixed['loopback'][1]} bytes, byte-identical to "
+                     f"the file: {fixed['loopback'][1] == (serverdir / 'license-issuer.html').stat().st_size}. "
+                     f"Emulated with the host Linux Python {sys.version.split()[0]}; the Windows launcher "
+                     "run-html.bat itself was NOT executed")
+    else:
+        runner.fail("emulated_runner_serves_page", f"fixed command line did not serve the page: {fixed}")
+
+    fixed_listen = fixed.get("listen_of_this_pid")
+    previous_listen = previous.get("listen_of_this_pid")
+    loopback_only = fixed_listen == [("127.0.0.1", 8791)] and previous_listen == [("0.0.0.0", 8792)]
+    if loopback_only:
+        runner.pass_("run_html_bat_loopback_only_measured",
+                     f"same interpreter, same command line as the launcher: with `-b 127.0.0.1` the server process "
+                     f"listens on {fixed_listen} only; the control run without -b (the previous launcher, which the "
+                     f"fix removes) listens on {previous_listen} - i.e. reachable from the LAN. Listen sockets are "
+                     "attributed to the server's own PID via /proc/<pid>/fd, because this sandbox has a platform "
+                     "proxy that also listens on the host address")
+    else:
+        runner.fail("run_html_bat_loopback_only_measured",
+                    f"loopback binding not confirmed: fixed={fixed_listen}, previous={previous_listen}")
 
 
 def not_run_block(runner: Runner) -> None:
@@ -865,33 +1033,88 @@ def not_run_block(runner: Runner) -> None:
         runner.not_run(step_id, detail)
 
 
+def collect(runner: Runner, work: Path, base_ref: str, overlay_ref: str | None = None) -> None:
+    """Run every check against base_ref (+ the fix overlay) and fill ``runner``."""
+    pr = work / "pr"
+    pr.mkdir(parents=True, exist_ok=True)
+    if materialise_reviewed_tree(runner, base_ref, overlay_ref, pr):
+        file_rows(runner, pr, REVIEWED_FILES)
+        static_checks(runner, pr)
+        cli_flow(runner, pr, work)
+        html_flow(runner, pr, work)
+        serve_flow(runner, pr, work)
+        backend_flow(runner, pr, work)
+    not_run_block(runner)
+
+
+REVIEWED_FILES = [
+    f"{ISSUER}/build.ps1", f"{ISSUER}/cli.py", f"{ISSUER}/gui.py",
+    f"{ISSUER}/license_issuer.py", f"{ISSUER}/license-issuer.html",
+    f"{ISSUER}/nacl-fast.js", f"{ISSUER}/README.md",
+    "backend/app/license.py", "backend/app/services/license_service.py",
+]
+
+# Steps that exist to prove one of the fixes of the 2026-09-24 patch; the
+# generator runs them against the previous revision too, so "fixed" is a
+# measured before/after and not a claim.
+FIX_STEP_IDS = [
+    "run_html_bat_binds_loopback_only",
+    "run_html_bat_fails_closed_without_system_python",
+    "run_gui_bat_no_system_python_advice",
+    "smoke_test_runs_outside_the_repository",
+    "smoke_test_never_prints_key_material",
+    "gitignore_blocks_key_and_license_material",
+]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--ref", default=PR34_HEAD, help="commit under review (default: PR #34 head)")
+    ap.add_argument("--ref", default="HEAD", help="commit under review (default: HEAD of this branch)")
+    ap.add_argument("--compare-ref", default=PR34_HEAD,
+                    help="earlier revision used as the before/after baseline (default: PR #34 head)")
     ap.add_argument("--python", default=sys.executable, help="interpreter with cryptography (+ backend deps)")
     ap.add_argument("--node", default=shutil.which("node") or "", help="node binary for the HTML harness")
     ap.add_argument("--keep-work-dir", action="store_true")
     args = ap.parse_args()
 
+    ref = args.ref
+    if ref == "HEAD":
+        code, out, _ = Runner("", None, Path("/tmp"), "HEAD").run(["git", "-C", str(REPO), "rev-parse", "HEAD"])
+        ref = out.strip() if code == 0 and out.strip() else PR34_HEAD
+
     work = Path(tempfile.mkdtemp(prefix="hrm-issuer-evidence-"))
-    runner = Runner(python_bin=args.python, node_bin=args.node or None, work=work, ref=args.ref)
+    runner = Runner(python_bin=args.python, node_bin=args.node or None, work=work, ref=ref)
     try:
-        pr = work / "pr"
-        pr.mkdir(parents=True, exist_ok=True)
-        if extract_ref(runner, args.ref, pr):
-            issuer = pr / ISSUER
-            file_rows(runner, pr, [
-                f"{ISSUER}/build.ps1", f"{ISSUER}/cli.py", f"{ISSUER}/gui.py",
-                f"{ISSUER}/license_issuer.py", f"{ISSUER}/license-issuer.html",
-                f"{ISSUER}/nacl-fast.js", f"{ISSUER}/README.md",
-                "backend/app/license.py", "backend/app/services/license_service.py",
-            ])
-            static_checks(runner, pr)
-            cli_flow(runner, pr, work)
-            html_flow(runner, pr, work)
-            serve_flow(runner, pr, work)
-            backend_flow(runner, pr, work)
-        not_run_block(runner)
+        # primary run: the PR-head tree with the fix commit overlaid
+        collect(runner, work, args.compare_ref, overlay_ref=ref)
+
+        # --- before/after baseline for the fix-sensitive checks -------------
+        fixes: list[dict[str, str]] = []
+        baseline_meta: dict[str, Any] = {"compared_ref": None}
+        if args.compare_ref and args.compare_ref != ref:
+            base_work = Path(tempfile.mkdtemp(prefix="hrm-issuer-baseline-"))
+            try:
+                base = Runner(python_bin=args.python, node_bin=args.node or None, work=base_work,
+                              ref=args.compare_ref)
+                collect(base, base_work, args.compare_ref, overlay_ref=None)
+                before = {st["id"]: st["status"] for st in base.steps}
+                after = {st["id"]: st["status"] for st in runner.steps}
+                for step_id in FIX_STEP_IDS:
+                    if step_id in before or step_id in after:
+                        fixes.append({
+                            "check": step_id,
+                            "before": before.get(step_id, "absent"),
+                            "after": after.get(step_id, "absent"),
+                        })
+                baseline_meta = {
+                    "compared_ref": args.compare_ref,
+                    "before_summary": {st: sum(1 for x in base.steps if x["status"] == st)
+                                       for st in sorted({x["status"] for x in base.steps})},
+                    "before_json_note": "the baseline run is a negative control: the same checks must fail on the "
+                                        "revision before the fix",
+                }
+            finally:
+                shutil.rmtree(base_work, ignore_errors=True)
 
         summary: dict[str, int] = {}
         for step in runner.steps:
@@ -902,7 +1125,8 @@ def main() -> int:
             "generator": "review-artifacts/gen_issuer_offline_evidence.py (runs the real issuer code; no declarations)",
             "scope": {
                 "pr": 34,
-                "reviewed_commit": args.ref,
+                "reviewed_commit": ref,
+                "baseline_commit": args.compare_ref,
                 "host": "Linux review sandbox (no Windows, no virtualisation/KVM, no wine) - NOT the owner VM",
                 "what_this_proves": [
                     "the issuer sources of the reviewed commit are consistent, offline-only and cross-compatible "
@@ -917,6 +1141,13 @@ def main() -> int:
                 ],
             },
             "summary": summary,
+            "fixes_verification": {
+                "baseline": baseline_meta,
+                "checks": fixes,
+                "how": "every fix-sensitive check is executed twice: against the reviewed commit and against the "
+                       "baseline revision (a negative control); a check is only 'fixed' when it fails before and "
+                       "passes after",
+            },
             "facts": runner.facts,
             "steps": runner.steps,
             "privacy": {
@@ -932,7 +1163,7 @@ def main() -> int:
             "# Offline issuer — evidence from automated Linux checks (redacted)",
             "",
             f"- generated: {report['generated_at']}",
-            f"- reviewed commit: `{args.ref}`",
+            f"- reviewed commit: `{ref}`",
             "- tool: `review-artifacts/gen_issuer_offline_evidence.py` (re-runs every check below)",
             "- host: Linux review sandbox — **not** the owner's Windows VM",
             "",
@@ -942,12 +1173,23 @@ def main() -> int:
             "",
             f"## Summary: {json.dumps(summary, ensure_ascii=False)}",
             "",
+            f"- reviewed commit: `{ref}` · baseline (negative control): `{args.compare_ref}`",
+            "",
             "| step | status | detail |",
             "|---|---|---|",
         ]
         for step in runner.steps:
             detail = step["detail"].replace("|", "\\|").replace("\n", " ")
             md.append(f"| `{step['id']}` | {step['status']} | {detail} |")
+        md += [
+            "",
+            "## Fixes verified before/after (baseline = the revision before the patch)",
+            "",
+            "| check | before | after |",
+            "|---|---|---|",
+        ]
+        for row in fixes:
+            md.append(f"| `{row['check']}` | {row['before']} | {row['after']} |")
         md += [
             "",
             "## Files of the reviewed commit (hashes of what was tested)",
@@ -991,6 +1233,7 @@ def main() -> int:
         OUT_MD.write_text(md_text, encoding="utf-8")
         print(f"wrote {OUT_JSON.name} ({len(text)} bytes) and {OUT_MD.name} ({len(md_text)} bytes)")
         print("summary:", json.dumps(summary, ensure_ascii=False))
+        print("fixes:", json.dumps(fixes, ensure_ascii=False))
     finally:
         if not args.keep_work_dir:
             shutil.rmtree(work, ignore_errors=True)

@@ -343,3 +343,29 @@ git diff --stat   # ожидаются только файлы review-artifacts/
 
 Вердикт остаётся **NO-GO**: без реального прогона `run-gui.bat` / `run-html.bat` на чистой Windows 10/11 `GO`
 не выпускается.
+
+## Этап 17 — правки issuer'а по замечаниям ревью PR #34 (ветка `arena/01a0d255-hr-manager`, draft PR #35)
+
+Все правки — только owner-side тулинг; backend/Compose/infra/frontend не менялись, тесты не переписывались,
+merge/tag/release/production workflow не запускались. Ветка сессии основана на `main` и не содержит кода PR #34,
+поэтому результат доставлен патчем и как отдельный draft-PR #35 (обязательно **не** для merge в таком виде).
+
+| Изменение | Проверка «до/после» (baseline = PR head `e59aa5b`) |
+|---|---|
+| `run-html.bat`: `python -m http.server %PORT% -b 127.0.0.1 --directory <bundle>`, страница `http://127.0.0.1:8765/...` | `run_html_bat_binds_loopback_only`: FAIL → **PASS**; измерено: с `-b` процесс слушает только `127.0.0.1`, без `-b` — `0.0.0.0` |
+| `run-html.bat`: убран тихий fallback на системный `python`, теперь fail-closed | `run_html_bat_fails_closed_without_system_python`: FAIL → **PASS** |
+| `run-gui.bat`: убран совет ставить/использовать системный Python | `run_gui_bat_no_system_python_advice`: FAIL → **PASS** |
+| smoke-тест сборки: `gen-keypair --out-dir <temp под GetTempPath()>` вне рабочего дерева git, удаление каталога в `finally`, билд падает при попадании ключа в лог | `smoke_test_runs_outside_the_repository`, `smoke_test_never_prints_key_material`: FAIL → **PASS** |
+| `.gitignore`: `keys/`, `private_key.hex`, `public_key.b64`, `*.hrmlicense`, `license-issuer-dist.zip` | `gitignore_blocks_key_and_license_material`: FAIL → **PASS**; `git ls-files -ci --exclude-standard` пуст |
+
+Файлы этапа: `license-issuer-fixes.patch` (применяется к PR head, проверено `git apply --check -p1`),
+`issuer-offline-evidence.{json,md}` (39 PASS / 0 FAIL / 3 GAP / 8 NOT RUN, before/after-таблица вычисляется
+генератором), обновлённые `final-verdict.md`, `ci-run-status.json`, `windows-issuer-bundle-check.md`.
+
+**Windows-проверка по-прежнему NOT RUN.** Среда ревью не может запустить Windows: нет `/dev/kvm`, нет флагов
+`vmx`/`svm`, нет qemu/wine/pwsh, установка пакетов и скачивание ISO невозможны (все внешние запросы падают).
+`build.ps1` не запускался, поэтому `license-issuer-dist.zip` не собран; `run-gui.bat` и `run-html.bat` ни разу не
+запускались, лицензия на Windows не выпускалась. Вердикт остаётся **NO-GO**, merge не рекомендуется.
+
+CI: PR head `e59aa5b` — run 35965657324 (6/6 success, три шага license-chain success); fix-commit `c515a49` —
+run 35973708182 (6/6 success; license-chain шагов в нём нет, т.к. ветка основана на `main`).
