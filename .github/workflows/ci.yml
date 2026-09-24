@@ -125,11 +125,33 @@ jobs:
               bash infra/scripts/check_env.sh; then
             echo "expected failure for the development-only backup key" >&2; exit 1
           fi
+          # Phase 15: the license PUBLIC key is mandatory in production —
+          # missing or malformed values must be rejected (ephemeral CI value,
+          # 32 random bytes; never a real key).
+          LICENSE_PUBLIC_KEY_CI="$(python3 -c 'import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')"
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+              POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BACKUP_ENABLED=true BACKUP_KEY_ID=prod-1 \
+              BACKUP_ENC_KEY="$(python3 -c 'import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')" \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure without LICENSE_PUBLIC_KEY" >&2; exit 1
+          fi
+          if env -i PATH=/usr/bin:/bin APP_ENV=production \
+              SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+              POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+              LICENSE_PUBLIC_KEY=not-a-key \
+              bash infra/scripts/check_env.sh; then
+            echo "expected failure for a malformed LICENSE_PUBLIC_KEY" >&2; exit 1
+          fi
           # ...and ACCEPTED with a real 32-byte key.
           env -i PATH=/usr/bin:/bin APP_ENV=production \
             SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
             POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
             BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+            LICENSE_PUBLIC_KEY="$LICENSE_PUBLIC_KEY_CI" \
             BACKUP_ENABLED=true BACKUP_KEY_ID=prod-1 \
             BACKUP_ENC_KEY="$(python3 -c 'import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')" \
             bash infra/scripts/check_env.sh
@@ -139,6 +161,7 @@ jobs:
             SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
             POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
             BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" \
+            LICENSE_PUBLIC_KEY="$LICENSE_PUBLIC_KEY_CI" \
             bash infra/scripts/check_env.sh
 
   frontend:
@@ -258,6 +281,13 @@ jobs:
           export SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
           export POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
           export BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+          # Phase 15: without the license PUBLIC key the overlay must refuse
+          # to render (fail-closed), with it the configuration is valid.
+          if docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config -q 2>/tmp/prod-nokey.err; then
+            echo "production overlay rendered WITHOUT LICENSE_PUBLIC_KEY" >&2; exit 1
+          fi
+          grep -q 'LICENSE_PUBLIC_KEY' /tmp/prod-nokey.err || { echo "missing-key error does not name LICENSE_PUBLIC_KEY" >&2; cat /tmp/prod-nokey.err >&2; exit 1; }
+          export LICENSE_PUBLIC_KEY="$(python3 -c 'import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')"
           docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config -q
           rendered="$(docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config)"
           if echo "$rendered" | grep -q 'hr_manager_dev_password'; then
@@ -279,6 +309,27 @@ jobs:
           [ "$code" = "200" ] || { echo "expected 200, got $code" >&2; exit 1; }
           curl -fsS http://localhost:8000/health | grep -q '"status":"ok"'
 
+      - name: Pilot overlay — license public-key chain (real docker compose)
+        run: |
+          # Phase 15. public_key.b64 -> pilot.env (engine format, UTF-8 and
+          # UTF-8-BOM/CRLF) -> `docker compose --env-file ... config` ->
+          # resolved environment of backend/worker/backup -> app.config.Settings
+          # inside the built pilot images; SHA-256 fingerprint equality at every
+          # hop. Negative: env file without / with an empty HRM_LICENSE_PUBLIC_KEY
+          # must make `config` refuse. Ephemeral key, redacted report only.
+          python3 infra/scripts/compose_pilot_license_chain.py \
+            --out-dir compose-license-chain --require-runtime
+
+      - name: Upload pilot license-chain evidence (redacted fingerprints only)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: compose-pilot-license-chain
+          path: |
+            compose-license-chain/compose-license-chain.json
+            compose-license-chain/compose-license-chain.md
+          if-no-files-found: warn
+
       - name: Validate HTTPS proxy overlay configuration
         run: |
           # Each Actions step starts a fresh shell, so the production values
@@ -289,6 +340,7 @@ jobs:
           export BOOTSTRAP_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
           export SERVER_NAME=hr-manager.example.com
           export TLS_CERT_DIR=/tmp/hr-manager-tls
+          export LICENSE_PUBLIC_KEY="$(python3 -c 'import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')"
           docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml \
               -f infra/docker-compose.proxy.yml config -q
           rendered="$(docker compose -f infra/docker-compose.yml \

@@ -8,11 +8,19 @@
 # production the stack sits behind a reverse proxy with HTTPS (roadmap
 # phase 7), nothing is exposed directly.
 #
+# Phase 15 (offline license): app.config.Settings refuses to start in
+# APP_ENV=production without LICENSE_PUBLIC_KEY (Ed25519 public
+# verification key, base64 of 32 bytes). It is mapped with `:?` into every
+# service that loads Settings — backend, worker, backup — so a missing key
+# stops `docker compose` with a clear message. Only the PUBLIC key is ever
+# configured here; the private key never leaves the owner's PC.
+#
 # Usage from the repository root:
 #   export APP_ENV=production
 #   export SECRET_KEY=$(openssl rand -hex 32)
 #   export POSTGRES_PASSWORD=$(openssl rand -hex 16)
 #   export BOOTSTRAP_ADMIN_PASSWORD=$(openssl rand -hex 16)
+#   export LICENSE_PUBLIC_KEY=$(cat infra/license/public_key.b64)   # public key ONLY
 #   infra/scripts/check_env.sh
 #   docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml config
 #   docker compose -f infra/docker-compose.yml -f infra/compose.prod.yml up -d
@@ -40,6 +48,8 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?set a strong BOOTSTRAP_ADMIN_PASSWORD for production (>=12 chars)}
       BOOTSTRAP_ADMIN_FULL_NAME: ${BOOTSTRAP_ADMIN_FULL_NAME:-Администратор системы}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hr_manager}
+      # Phase 15: offline license — public verification key only (header).
+      LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY:?set the Ed25519 license public key (base64, 44 chars) for production}
       # Reported by /ops/status; the deploy pipeline injects the full SHA of
       # the release commit so operators can map a running container to code.
       RELEASE_SHA: ${RELEASE_SHA:-}
@@ -90,6 +100,8 @@ services:
       APP_DEBUG: "false"
       SECRET_KEY: ${SECRET_KEY:?set a strong SECRET_KEY (>=32 chars) for production}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hr_manager}
+      # Same Settings guard as the backend: public key only.
+      LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY:?set the Ed25519 license public key (base64, 44 chars) for production}
       NOTIFICATION_DEFAULT_TIMEZONE: ${NOTIFICATION_DEFAULT_TIMEZONE:-Europe/Moscow}
       NOTIFICATION_QUIET_HOURS_START: ${NOTIFICATION_QUIET_HOURS_START:-21:00}
       NOTIFICATION_QUIET_HOURS_END: ${NOTIFICATION_QUIET_HOURS_END:-08:00}
@@ -125,6 +137,8 @@ services:
       APP_DEBUG: "false"
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hr_manager}
       BACKUP_DRILL_ADMIN_URL: postgresql+psycopg://${POSTGRES_USER:-hr_manager}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/postgres
+      # `python -m app.cli backup-*` loads the same Settings guard.
+      LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY:?set the Ed25519 license public key (base64, 44 chars) for production}
       BACKUP_DIR: /var/backups/hr-manager
       BACKUP_STATE_FILE: /var/backups/hr-manager/state.json
       # Encryption secrets come from the environment only. When unset the
