@@ -111,7 +111,7 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 
 ## Локальная проверка в Linux sandbox (выполнено, воспроизводимо)
 
-Скрипт: `scratch-issuer-checks/local_checks.py` (вне репозитория), 23/23 PASS:
+Скрипт: `scratch-issuer-checks/local_checks.py` (вне репозитория), 25/25 PASS:
 
 - BOM + ASCII-only нового `build.ps1`; у старой ревизии `c8fec38` — без BOM, 60 не-ASCII байтов;
 - **симуляция ANSI-чтения 5.1**: старая ревизия под CP1251 даёт 19 токенов-кавычек U+201C/U+201D

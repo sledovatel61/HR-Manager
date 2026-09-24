@@ -704,8 +704,38 @@ jobs:
       PYTHONIOENCODING: utf-8
     permissions:
       contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: marker probe (isolate shim vs step content)
+        shell: powershell
+        run: |
+          Write-Host "MARKER-STEP-A-RUNNING"
+          "step A ran at " + (Get-Date -Format o) | Out-File -FilePath (Join-Path $env:RUNNER_TEMP "marker.txt")
+          "MARKER-A" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          exit 1
+
+      - name: post diagnostics to PR comment
+        if: always()
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          $parts = @()
+          $mk = Join-Path $env:RUNNER_TEMP "marker.txt"
+          $parts += "marker step A file exists: " + (Test-Path $mk)
+          if (Test-Path $env:GITHUB_STEP_SUMMARY) {
+            $parts += "GITHUB_STEP_SUMMARY content: [" + (Get-Content $env:GITHUB_STEP_SUMMARY -Raw -ErrorAction SilentlyContinue) + "]"
+          } else {
+            $parts += "GITHUB_STEP_SUMMARY path missing"
+          }
+          $body = "license-issuer-windows diagnostics (run " + $env:GITHUB_RUN_ID + "):" + "`n" + ($parts -join "`n")
+          $res = gh api repos/sledovatel61/HR-Manager/issues/37/comments -f body=$body --jq ".html_url" 2>&1 | Out-String
+          $parts2 = "comment posted: " + $res
+          Write-Host $parts2
+          if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $parts2 -Encoding utf8 }
 
       - name: build.ps1 encoding + Windows PowerShell 5.1 parser check
         shell: powershell
