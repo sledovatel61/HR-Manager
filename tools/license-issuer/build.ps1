@@ -189,6 +189,73 @@ if (-not (Test-Path $pythonDir)) {
 # current working directory is.
 Set-BundledPth
 
+# Tkinter for the GUI. The Windows EMBEDDABLE distribution ships without
+# tkinter/Tcl/Tk (run-gui.bat died with "No module named 'tkinter'"). The
+# official per-component tcltk.msi of the same Python version is taken from
+# python.org and unpacked with an ADMINISTRATIVE extraction (msiexec /a: no
+# registry entries, nothing installed on the build machine). Layout inside the
+# embeddable tree: _tkinter.pyd + Tcl/Tk DLLs in python\ (on sys.path via "."),
+# the tkinter package in python\tkinter, the Tcl/Tk script libraries in
+# python\tcl (_tkinter looks for <base_prefix>\tcl\tcl8.x itself).
+$tkReady = (Test-Path (Join-Path $pythonDir "_tkinter.pyd")) -and (Test-Path (Join-Path $pythonDir "tkinter\__init__.py")) -and (Test-Path (Join-Path $pythonDir "tcl"))
+if (-not $tkReady) {
+    $tcltkUrl = "https://www.python.org/ftp/python/$PythonVersion/amd64/tcltk.msi"
+    $tcltkMsi = Join-Path $OutDir "tcltk-$PythonVersion-amd64.msi"
+    if (-not (Test-Path $tcltkMsi)) {
+        if ($OfflineOnly) {
+            Write-Err "OfflineOnly set and $tcltkMsi not found - the GUI needs tkinter. Download $tcltkUrl to $tcltkMsi and rerun."
+            exit 1
+        }
+        Write-Warn "Downloading $tcltkUrl (tkinter for the GUI) ..."
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $tcltkUrl -OutFile $tcltkMsi -UseBasicParsing
+        } catch {
+            Write-Err "tcltk.msi download failed: $_"
+            exit 1
+        }
+    }
+    $tkExtract = Join-Path $OutDir "tcltk-extract"
+    if (Test-Path $tkExtract) { Remove-Item $tkExtract -Recurse -Force }
+    New-Item -ItemType Directory -Path $tkExtract -Force | Out-Null
+    # msiexec is a GUI-subsystem program: "& msiexec" would not wait.
+    $msiArgs = '/a "' + $tcltkMsi + '" /qn TARGETDIR="' + $tkExtract + '"'
+    $msi = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
+    if ($msi.ExitCode -ne 0) {
+        Write-Err "msiexec /a tcltk.msi failed (exit=$($msi.ExitCode))"
+        exit 1
+    }
+    $srcPyd = Get-ChildItem -Path $tkExtract -Recurse -Filter "_tkinter.pyd" | Select-Object -First 1
+    $srcPkg = Get-ChildItem -Path $tkExtract -Recurse -Directory -Filter "tkinter" | Where-Object { Test-Path (Join-Path $_.FullName "__init__.py") } | Select-Object -First 1
+    $srcTcl = Get-ChildItem -Path $tkExtract -Recurse -Directory -Filter "tcl" | Where-Object { @(Get-ChildItem -Path $_.FullName -Directory -Filter "tcl8*").Count -gt 0 } | Select-Object -First 1
+    if (-not $srcPyd -or -not $srcPkg -or -not $srcTcl) {
+        Write-Err "tcltk.msi layout not recognised (pyd=$([bool]$srcPyd) package=$([bool]$srcPkg) tcl=$([bool]$srcTcl))"
+        exit 1
+    }
+    Copy-Item -Path $srcPyd.FullName -Destination $pythonDir -Force
+    # every DLL shipped next to _tkinter.pyd in tcltk.msi (tcl86t.dll, tk86t.dll, ...)
+    Get-ChildItem -Path $srcPyd.DirectoryName -Filter "*.dll" | ForEach-Object { Copy-Item -Path $_.FullName -Destination $pythonDir -Force }
+    $dstPkg = Join-Path $pythonDir "tkinter"
+    if (Test-Path $dstPkg) { Remove-Item $dstPkg -Recurse -Force }
+    Copy-Item -Path $srcPkg.FullName -Destination $dstPkg -Recurse -Force
+    $dstTcl = Join-Path $pythonDir "tcl"
+    if (Test-Path $dstTcl) { Remove-Item $dstTcl -Recurse -Force }
+    Copy-Item -Path $srcTcl.FullName -Destination $dstTcl -Recurse -Force
+    Remove-Item $tkExtract -Recurse -Force
+    Write-Info "tkinter + Tcl/Tk added to the bundled Python from tcltk.msi ($PythonVersion)"
+}
+$tkCheck = Invoke-NativeCaptured @("-c", "import tkinter; print(tkinter.TkVersion, tkinter.Tcl().eval('info patchlevel'))")
+if ($tkCheck.ExitCode -ne 0) {
+    Write-Err "tkinter/Tcl check failed in the bundled Python (exit=$($tkCheck.ExitCode)) - the GUI would not start:"
+    Write-Err $tkCheck.Output
+    exit 1
+}
+if (@(Get-ChildItem -Path (Join-Path $pythonDir "tcl") -Directory -Filter "tk8*").Count -eq 0) {
+    Write-Err "Tk script library (tcl\tk8.x) missing in the bundled Python - the GUI would not start"
+    exit 1
+}
+Write-Info "Verified tkinter (Tk/Tcl $($tkCheck.Output.Trim())) in the bundled Python"
+
 # Verify cryptography imports in the bundled interpreter (never in a system one)
 $verify = Invoke-NativeCaptured @("-c", "import cryptography; print(cryptography.__version__)")
 if ($verify.ExitCode -ne 0) {
@@ -302,7 +369,7 @@ HR Manager - Offline License Issuer (autonomous, owner only)
 ============================================================
 
 This folder is AUTONOMOUS: no system Python, no pip, no internet required at runtime.
-- python\           - embeddable Python 3.12.3 + cryptography (bundled)
+- python\           - embeddable Python 3.12.3 + cryptography + tkinter (bundled)
 - license-issuer\   - GUI, CLI, HTML
 
 Double-click launchers:
@@ -341,7 +408,7 @@ Verification after build (maintainer):
   license-issuer\run-cli.bat gen-keypair
 
 This bundle was built with:
-  Python $PythonVersion embeddable + cryptography wheel
+  Python $PythonVersion embeddable + cryptography wheel + tkinter/Tcl/Tk from tcltk.msi
   No internet required at runtime.
 "@
 Set-Content -Path (Join-Path $appDir "HOWTO.txt") -Value $howto -Encoding ASCII
