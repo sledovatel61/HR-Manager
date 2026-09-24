@@ -716,6 +716,14 @@ jobs:
           $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase parser *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
           Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
+          if ($code -ne 0) {
+            # Failure tail as a workflow annotation (readable via the check-run
+            # annotations API without log access). Key-like runs are redacted.
+            $tail = (@($lines | Select-Object -Last 40) + ("exit code: " + $code)) -join "`n"
+            $tail = [regex]::Replace($tail, "[A-Za-z0-9+/=]{40,}", "<redacted>")
+            $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host ("::error title=license-issuer-windows::" + $tail)
+          }
           exit $code
 
       - name: Build autonomous bundle with Windows PowerShell 5.1
@@ -730,6 +738,14 @@ jobs:
           $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase build *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
           Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
+          if ($code -ne 0) {
+            # Failure tail as a workflow annotation (readable via the check-run
+            # annotations API without log access). Key-like runs are redacted.
+            $tail = (@($lines | Select-Object -Last 40) + ("exit code: " + $code)) -join "`n"
+            $tail = [regex]::Replace($tail, "[A-Za-z0-9+/=]{40,}", "<redacted>")
+            $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host ("::error title=license-issuer-windows::" + $tail)
+          }
           exit $code
 
       - name: Runtime checks from a fresh unzip (spaces in path, no system Python, loopback, fail-closed)
@@ -744,6 +760,14 @@ jobs:
           $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase runtime *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
           Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
+          if ($code -ne 0) {
+            # Failure tail as a workflow annotation (readable via the check-run
+            # annotations API without log access). Key-like runs are redacted.
+            $tail = (@($lines | Select-Object -Last 40) + ("exit code: " + $code)) -join "`n"
+            $tail = [regex]::Replace($tail, "[A-Za-z0-9+/=]{40,}", "<redacted>")
+            $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host ("::error title=license-issuer-windows::" + $tail)
+          }
           exit $code
 
       - name: Post failure diagnostics to the pull request
