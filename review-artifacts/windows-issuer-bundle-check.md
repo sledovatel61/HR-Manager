@@ -1,6 +1,6 @@
 # Windows Issuer Bundle Check — статус: **строгая автоматическая приёмка на Windows PASS (28/28 + backend 7/7); ручные пункты на чистой VM / машине владельца — NOT RUN → NO-GO**
 
-> Обновление 2026-09-24, вечер (ветка `arena/01a0d2c2-hr-manager`, PR #37, sha `29091fce67da024103700a2ba3333cd0b7884593`).
+> Обновление 2026-09-24, вечер (ветка `arena/01a0d2c2-hr-manager`, PR #37, sha `ff8d4e9fd2c333b3813cab5f7e567b7957aa5383`).
 > Независимая перепроверка отчёта: добавлен CI-шаг строгой приёмки `tools/license-issuer/ci-windows-acceptance.ps1`
 > (скрытый системный Python, очищенное окружение, firewall-правило на bundled `python.exe` с доказательством
 > эффективности, захват сети по PID (WFP 5156/5157 + DNS-Client), CLI через `.bat`, GUI с реальным Tk mainloop,
@@ -135,32 +135,32 @@ Run `36014099272`, sha `1a7b15b`, windows-latest, notice-аннотации chec
 Ручной прогон на Windows-машине: `tools/license-issuer/windows-vm-checklist.ps1` (сборка в
 `C:\Users\User\Documents\HR\issuer-pr36-test`, распаковка в `...-output`, точные команды и exit codes в выводе).
 
-## Строгая приёмка в CI (run `36056102935`, job `107823315753`, sha `29091fc`) — 28/28 PASS
+## Строгая приёмка в CI (run `36059556942`, job `107834905949`, sha `ff8d4e9`) — 28/28 PASS
 
 Хост: GitHub `windows-latest` (Windows Server 2025, build 26100), **Windows PowerShell 5.1.26100**, admin.
-Job: https://github.com/sledovatel61/HR-Manager/actions/runs/36056102935/job/107823315753
-(2026-09-24T20:37:23Z–20:44:38Z). Доказательства — notice-аннотации check-run (строки `[accept] ...`, `[backend] ...`).
+Job: https://github.com/sledovatel61/HR-Manager/actions/runs/36059556942/job/107834905949
+(2026-09-24T21:08:48Z–21:17:07Z). Первый полностью зелёный прогон — run `36056102935` (sha `29091fc`); цифры ниже — из `ff8d4e9`. Доказательства — notice-аннотации check-run (строки `[accept] ...`, `[backend] ...`).
 
 | Проверка | Результат |
 |---|---|
 | Свежий unzip в `C:\HRM Acceptance Test\unzipped bundle` (пробелы), 2494 файла, без ключей/лицензий внутри | PASS |
 | Системный Python скрыт: 25 `python*/py*` переименованы (toolcache, `C:\Windows\py.exe`, WindowsApps); с полным PATH раннера ничего не резолвится | PASS |
 | Очищенное окружение: USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/Downloads → отдельный профиль, PATH=System32, без PYTHON*/proxy, `cmd /d` | PASS (ограничение: та же учётная запись Windows) |
-| Firewall: outbound Block на bundled `python.exe`; bundled python → 140.82.113.3:443 = WSAEACCES 10013, то же соединение из PowerShell проходит | PASS |
+| Firewall: outbound Block на bundled `python.exe`; bundled python → 140.82.114.4:443 = WSAEACCES 10013, то же соединение из PowerShell проходит | PASS |
 | Позитивный контроль захвата: WFP 5157 и 4 события DNS-Client атрибутированы PID пробника | PASS |
 | Прокси: WinINet/WinHTTP direct, переменных нет, python видит `{}` | PASS |
 | CLI через `run-cli.bat`: gen-keypair=0, повтор без `--force`=1, issue=0, verify=0, tampered=2, без аргументов=2 | PASS |
 | GUI (`run-gui.bat`): окно за 313 мс; Tk 8.6.13 win32, mainloop; generate / save keys / issue / verify / tampered отклонена (кнопки через `ttk.Button.invoke()`) | PASS |
 | HTML: HTTP 200; LISTEN только 127.0.0.1:8765; нет 0.0.0.0/::; UDP 0; подключение к внешнему IP хоста отклонено; процесс — bundled python | PASS |
-| Гонка `run-html.bat` ×20: первый запрос после `[ready]` = HTTP 200 во всех 20; launch→ready 573/624/698 мс | PASS |
+| Гонка `run-html.bat` ×20: первый запрос после `[ready]` = HTTP 200 во всех 20; launch→ready ≈0,6 с (min/median 616/635 мс) | PASS |
 | Браузер по умолчанию открыт шлюзом готовности; страница + `nacl-fast.js` = 200 | PASS |
 | Edge 152 (headed, WebDriver): secure context, WebCrypto Ed25519 generate/sign/verify | PASS |
 | Edge UI: ключи WebCrypto → выпуск (TweetNaCl отключён) → проверка в странице → скачивание → `run-cli.bat verify` = 0 | PASS |
 | Edge UI: загрузка CLI `private_key.hex` через выбор файла → выпуск → скачивание → verify = 0, tampered = 2 | PASS |
 | Страница грузит только `http://127.0.0.1:8765/*` | PASS |
-| Сеть (окно всех сценариев): 56 процессов bundled python; WFP 73 события, **все loopback**; 0 outbound/inbound не-loopback; **0 DNS-событий**; журнал Security покрывает окно | PASS |
+| Сеть (окно всех сценариев): 56 процессов bundled python; WFP 70 событий (фильтр по пути образа), **все loopback**; 0 outbound/inbound не-loopback; **0 DNS-событий** bundled python (владелец PID на момент события по 4688); журнал Security покрывает окно | PASS |
 | stdout/stderr (37 логов: CLI, GUI, сервер ×22, msedgedriver, транскрипт) — ни одного из 3 ключей | PASS |
-| Скан утечек (2 прохода: с назначенными key-файлами и после их удаления): 9779 файлов / 1412 МБ в 6 корнях (стенд, `%LOCALAPPDATA%`, `%APPDATA%`, Downloads, репозиторий, RUNNER_TEMP), 3 ключа × 9 кодировок (hex/HEX/base64/base64url × ASCII/UTF-16LE + raw) — **0 совпадений** | PASS (пропущено: 2 файла >50 МБ и 35 заблокированных в `%LOCALAPPDATA%`) |
+| Скан утечек (2 прохода: с назначенными key-файлами и после их удаления): 9791 файл / 1412 МБ в 6 корнях (стенд, `%LOCALAPPDATA%`, `%APPDATA%`, Downloads, репозиторий, RUNNER_TEMP), 3 ключа × 9 кодировок (hex/HEX/base64/base64url × ASCII/UTF-16LE + raw) — **0 совпадений** | PASS (пропущено: 2 файла >50 МБ и 35 заблокированных в `%LOCALAPPDATA%`) |
 | Backend (`parse_and_verify_license_text` + `validate_time_consistency`): 7/7 — лицензии CLI/GUI/HTML приняты, tampered и чужой ключ → `bad_signature` | PASS |
 
 ### Дефекты продукта, найденные приёмкой и исправленные
@@ -177,6 +177,16 @@ Job: https://github.com/sledovatel61/HR-Manager/actions/runs/36056102935/job/107
    `Sessions` (восстановление вкладок) и в таблице Edge `autofill_edge_field_values` (набранный текст, даже в
    `contenteditable`). Теперь ключ в HTML **не вводится с клавиатуры**: генерируется на странице или загружается
    из `private_key.hex` через выбор файла; поля ключа только для чтения и не являются элементами формы.
+
+### Ложное срабатывание проверки сети (исправлено в проверке, не в продукте)
+
+На `c9c533f` и `e23eeb4` проверка `network-zero-outbound` показала 4 события DNS-Client `wpad` «от bundled python».
+Атрибуция по 4688 с командными строками показала: это `msedge.exe --utility-sub-type=network.mojom.NetworkService`
+(автообнаружение прокси Edge), получивший **повторно выданный Windows PID** завершившегося bundled python.
+Проверка теперь относит DNS-событие к процессу, владевшему PID **в момент события** (последнее 4688 с этим PID до
+события); WFP-события фильтруются по пути образа и от повторного использования PID не зависят. Промежуточная
+гипотеза (ShellExecute внутри python) не подтвердилась — соответствующее изменение откатено. В прогоне `ff8d4e9`
+случаев повторного использования PID не было (ветка исключения на реальных данных не сработала).
 
 ## Локальная проверка в Linux sandbox (выполнено, воспроизводимо)
 
@@ -214,10 +224,10 @@ Job: https://github.com/sledovatel61/HR-Manager/actions/runs/36056102935/job/107
 ## Итог
 
 - Автоматическая приёмка на настоящем Windows (PS 5.1, скрытый системный Python, firewall + захват сети по PID,
-  CLI/GUI/HTML/Edge WebCrypto, скан утечек, проверка backend-кодом) — **28/28 PASS, backend 7/7** на `29091fc`.
+  CLI/GUI/HTML/Edge WebCrypto, скан утечек, проверка backend-кодом) — **28/28 PASS, backend 7/7** на `29091fc` и `ff8d4e9`.
 - Найдены и исправлены 3 дефекта продукта (гонка `run-html.bat`, DNS из `http.server`, приватный ключ в профиле Edge).
 - **NOT RUN:** чистая отдельная VM (CI — та же учётная запись, образ раннера с предустановленным ПО); физические
   клики человека (GUI — `invoke()`, Edge — WebDriver); машина владельца и его реальный профиль Edge; загрузка
   лицензии в backend по HTTP с БД (проверен только сервисный слой); блокировка DNS firewall-правилом (DNS идёт
-  через службу DNS Client — вместо блокировки мониторинг, 0 событий).
+  через службу DNS Client — вместо блокировки мониторинг, 0 событий); прогон на другом образе/в другой сети (WPAD, прокси, антивирус владельца).
 - Release-вердикт: **NO-GO до выполнения ручных пунктов**. PR #34 в main не мержить.
