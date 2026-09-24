@@ -65,6 +65,8 @@ $script:Secrets = [ordered]@{}      # name -> raw 32-byte private key (never pri
 $script:Hidden = New-Object System.Collections.ArrayList
 $script:Started = New-Object System.Collections.ArrayList
 $script:FwBefore = $null
+$script:CmdLineAudit = $null   # previous ProcessCreationIncludeCmdLine_Enabled (restored in finally)
+$AuditKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit"
 $script:CleanEnv = [ordered]@{}
 $script:Sid = $null
 $script:Wd = "http://127.0.0.1:9515"
@@ -286,6 +288,21 @@ function Get-BundledPids([datetime]$Since) {
     }
     return ,$pids
 }
+function Get-ProcInfo([datetime]$Since, $Pids) {
+    # 4688 details for the given PIDs: time, image, parent image, command line (no key material:
+    # launchers get file paths, never keys)
+    $out = New-Object System.Collections.ArrayList
+    foreach ($e in @(Get-WinEvent -FilterHashtable @{ LogName = "Security"; Id = 4688; StartTime = $Since } -ErrorAction SilentlyContinue)) {
+        $x = [xml]$e.ToXml(); $d = @{}
+        foreach ($n in $x.Event.EventData.Data) { $d[[string]$n.GetAttribute("Name")] = [string]$n.InnerText }
+        $procId = [Convert]::ToInt32(([string]$d["NewProcessId"]).Substring(2), 16)
+        if ($Pids -contains $procId) {
+            $cl = [string]$d["CommandLine"]; if ($cl.Length -gt 220) { $cl = $cl.Substring(0, 220) + "..." }
+            [void]$out.Add(("PID {0} started {1:HH:mm:ss.fff} parent={2} cmd={3}" -f $procId, $e.TimeCreated, (Split-Path ([string]$d["ParentProcessName"]) -Leaf), $(if ($cl) { $cl } else { "(not logged)" })))
+        }
+    }
+    return ,$out
+}
 function Get-DnsEvents([datetime]$Since, $Pids) {
     return @(Get-WinEvent -FilterHashtable @{ LogName = "Microsoft-Windows-DNS-Client/Operational"; StartTime = $Since } -ErrorAction SilentlyContinue | Where-Object { $Pids -contains $_.ProcessId })
 }
@@ -418,6 +435,11 @@ try {
     # ---------------------------------------------------------- 3. network isolation + monitors
     Quiet { & wevtutil sl Security /ms:1073741824 2>&1 | Out-Null }
     Quiet { & wevtutil sl "Microsoft-Windows-DNS-Client/Operational" /e:true 2>&1 | Out-Null }
+    # 4688 with command lines: attributes any network/DNS event to the exact launcher step
+    $prev = Get-ItemProperty -Path $AuditKey -Name ProcessCreationIncludeCmdLine_Enabled -ErrorAction SilentlyContinue
+    $script:CmdLineAudit = @{ Existed = [bool]$prev; Value = $(if ($prev) { $prev.ProcessCreationIncludeCmdLine_Enabled } else { $null }) }
+    if (-not (Test-Path $AuditKey)) { New-Item -Path $AuditKey -Force | Out-Null }
+    Set-ItemProperty -Path $AuditKey -Name ProcessCreationIncludeCmdLine_Enabled -Value 1 -Type DWord
     foreach ($g in @("{0CCE9226-69AE-11D9-BED3-505054503030}", "{0CCE922B-69AE-11D9-BED3-505054503030}")) {
         $o = Quiet { & auditpol /set "/subcategory:$g" /success:enable /failure:enable 2>&1 | Out-String }
         if ($LASTEXITCODE -ne 0) { throw "auditpol $g failed: $o" }
@@ -683,7 +705,12 @@ try {
     if ($outNonLoop.Count -eq 0 -and $inNonLoop.Count -eq 0 -and $dns.Count -eq 0 -and $loop.Count -gt 0 -and $pids.Count -gt 0 -and $oldest -le $tProbe) {
         Add-Result "network-zero-outbound" "PASS" $netDetail
     } else {
-        if ($dns.Count -gt 0) { $netDetail = $netDetail + "; DNS queries by bundled python (event id, name): " + (($dnsNames | Select-Object -First 15) -join ", ") }
+        if ($dns.Count -gt 0) {
+            $netDetail = $netDetail + "; DNS queries by bundled python (event id, name): " + (($dnsNames | Select-Object -First 15) -join ", ")
+            $dnsPids = @($dns | ForEach-Object { $_.ProcessId } | Sort-Object -Unique)
+            $firstDns = ($dns | Sort-Object TimeCreated | Select-Object -First 1).TimeCreated
+            $netDetail = $netDetail + ("; first DNS event {0:HH:mm:ss.fff}; processes: " -f $firstDns) + ((Get-ProcInfo $tFlows $dnsPids) -join " | ")
+        }
         $sample = (@($outNonLoop | Select-Object -First 5 | ForEach-Object { "PID $($_.ProcessId) -> $($_.Dest):$($_.DestPort)/$($_.Protocol) ev$($_.Id)" }) -join "; ")
         Add-Result "network-zero-outbound" "FAIL" ($netDetail + "; sample: " + $sample)
     }
@@ -730,6 +757,12 @@ finally {
     foreach ($p in $script:Started) { Stop-Tree $p }
     Stop-BundledPython
     try { Remove-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue } catch { }
+    if ($script:CmdLineAudit) {
+        try {
+            if ($script:CmdLineAudit.Existed) { Set-ItemProperty -Path $AuditKey -Name ProcessCreationIncludeCmdLine_Enabled -Value $script:CmdLineAudit.Value -Type DWord }
+            else { Remove-ItemProperty -Path $AuditKey -Name ProcessCreationIncludeCmdLine_Enabled -ErrorAction SilentlyContinue }
+        } catch { Say "WARN: could not restore ProcessCreationIncludeCmdLine_Enabled" }
+    }
     if ($script:FwBefore) { foreach ($f in $script:FwBefore) { try { Set-NetFirewallProfile -Name $f.Name -Enabled $f.Enabled -DefaultOutboundAction $f.DefaultOutboundAction } catch { } } }
     $restored = 0
     foreach ($c in $script:Hidden) { try { Rename-Item -LiteralPath ($c + ".hrm-hidden") -NewName (Split-Path $c -Leaf) -Force; $restored++ } catch { Say "WARN: could not restore $c" } }

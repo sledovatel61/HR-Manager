@@ -14,6 +14,8 @@ that happens to occupy the port is never mistaken for the issuer).
 - raw IPv4 socket to 127.0.0.1: no proxy code path at all and no name resolution
   (urllib/socket.create_connection would call getaddrinfo, which on Windows goes
   through the DNS Client service even for a numeric address)
+- the browser is opened by `cmd /d /c start` (not ShellExecute in this process: no WPAD lookup
+  under the bundled python.exe)
 - HRM_NO_BROWSER=1: report readiness but do not open a browser (CI/checklists)
 - prints one "[ready] ..." or "[browser] ..." line; never prints key material
 - exit 0 = page ready (browser opened unless HRM_NO_BROWSER), 1 = not ready
@@ -22,7 +24,9 @@ that happens to occupy the port is never mistaken for the issuer).
 from __future__ import annotations
 
 import os
+import re
 import socket
+import subprocess
 import sys
 import time
 from urllib.parse import urlsplit
@@ -59,6 +63,25 @@ def fetch(port: int, path: str) -> tuple[int, bytes]:
     return int(status_line[1]), body
 
 
+URL_RE = re.compile(r"^http://127\.0\.0\.1:[0-9]{1,5}/[A-Za-z0-9._/-]*$")
+
+
+def open_browser(url: str) -> None:
+    """Open the default browser from a separate cmd.exe, not via ShellExecute in this process.
+
+    os.startfile(url) runs ShellExecute inside the bundled python.exe; for an http URL that
+    loads shell/urlmon, which may perform WPAD proxy auto-discovery - the Windows acceptance
+    run saw DNS queries for "wpad" attributed to the bundled python.exe. Handing the URL to
+    `cmd /c start` keeps the issuer process itself free of any network activity (opening a
+    browser is then the same OS action as double-clicking a link). URL_RE guarantees the
+    URL has no characters cmd.exe would interpret.
+    """
+    system_root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    cmd = os.path.join(system_root, "System32", "cmd.exe")
+    subprocess.Popen([cmd, "/d", "/c", "start", "", url], close_fds=True,
+                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print("[browser] usage: open_when_ready.py http://127.0.0.1:<port>/license-issuer.html")
@@ -69,8 +92,8 @@ def main(argv: list[str]) -> int:
         port = parts.port
     except ValueError:
         port = None
-    if parts.scheme != "http" or parts.hostname != "127.0.0.1" or not port:
-        print(f"[browser] refusing non-loopback URL: {url}")
+    if parts.scheme != "http" or parts.hostname != "127.0.0.1" or not port or not URL_RE.match(url):
+        print(f"[browser] refusing URL (only http://127.0.0.1:<port>/<path of A-Z a-z 0-9 . _ / ->): {url}")
         return 1
     path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
 
@@ -86,7 +109,7 @@ def main(argv: list[str]) -> int:
                 print(f"[ready] HTTP 200 {url} after {attempts} attempt(s), {elapsed_ms} ms (last before ready: {last})", flush=True)
                 if os.environ.get("HRM_NO_BROWSER"):
                     return 0
-                os.startfile(url)  # default browser via the shell (Windows)
+                open_browser(url)
                 return 0
             last = f"HTTP {status}" if status != 200 else "HTTP 200 without issuer marker"
         except Exception as exc:  # connection refused / reset while the server starts
