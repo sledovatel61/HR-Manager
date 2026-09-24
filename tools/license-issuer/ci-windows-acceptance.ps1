@@ -281,7 +281,7 @@ function Get-BundledPids([datetime]$Since) {
     $pids = New-Object System.Collections.ArrayList
     foreach ($e in @(Get-WinEvent -FilterHashtable @{ LogName = "Security"; Id = 4688; StartTime = $Since } -ErrorAction SilentlyContinue)) {
         $x = [xml]$e.ToXml(); $d = @{}
-        foreach ($n in $x.Event.EventData.Data) { $d[[string]$n.Name] = [string]$n.'#text' }
+        foreach ($n in $x.Event.EventData.Data) { $d[[string]$n.GetAttribute("Name")] = [string]$n.InnerText }   # InnerText: StrictMode-safe for empty <Data/>
         if ($d["NewProcessName"] -like $BundlePyLike) { [void]$pids.Add([Convert]::ToInt32($d["NewProcessId"].Substring(2), 16)) }
     }
     return ,$pids
