@@ -714,14 +714,30 @@ jobs:
           $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase parser *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
           Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
-          $ev = (@($lines | Where-Object { $_ -match "^\[(parser|build|runtime|accept|backend)\] " }) -join "`n")
-          if ($code -ne 0) {
-            $ev = $ev + "`n--- tail ---`n" + ((@($lines | Select-Object -Last 40) + ("exit code: " + $code)) -join "`n")
+          # Annotations are capped at 4096 chars each and 10 per level per step:
+          # evidence is emitted in chunks. Key-like tokens are redacted (64+ hex,
+          # 40+ base64/base64url chars containing digits and letters).
+          $emit = {
+            param([string]$kind, [string]$title, [string[]]$src)
+            $rx = "(?<![A-Za-z0-9+/_-])(?:[0-9a-fA-F]{64,}|(?=[A-Za-z0-9+/_-]*[0-9])(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}={0,2})(?![A-Za-z0-9+/_=-])"
+            $chunks = New-Object System.Collections.ArrayList
+            $cur = ""
+            foreach ($l in $src) {
+              $l = [regex]::Replace([string]$l, $rx, "<redacted>")
+              if ($l.Length -gt 3500) { $l = $l.Substring(0, 3500) + " ..." }
+              if ($cur.Length -gt 0 -and ($cur.Length + $l.Length + 1) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
+              if ($cur.Length -gt 0) { $cur += "`n" }
+              $cur += $l
+            }
+            if ($cur.Length -gt 0) { [void]$chunks.Add($cur) }
+            $n = [Math]::Min($chunks.Count, 9)
+            for ($i = 0; $i -lt $n; $i++) {
+              $m = ([string]$chunks[$i]).Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+              Write-Host ("::" + $kind + " title=" + $title + " " + ($i + 1) + "/" + $chunks.Count + "::" + $m)
+            }
           }
-          $ev = [regex]::Replace($ev, "[A-Za-z0-9+/=]{40,}", "<redacted>")
-          $ev = $ev.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
-          if ($code -ne 0) { Write-Host ("::error title=license-issuer-windows::" + $ev) }
-          else { Write-Host ("::notice title=license-issuer-windows evidence::" + $ev) }
+          & $emit "notice" "license-issuer-windows evidence" @($lines | Where-Object { $_ -match "^\[(parser|build|runtime|accept|backend)\] " })
+          if ($code -ne 0) { & $emit "error" "license-issuer-windows failure tail" (@($lines | Select-Object -Last 30) + ("exit code: " + $code)) }
           exit $code
 
       - name: Build autonomous bundle with Windows PowerShell 5.1 (powershell.exe)
@@ -738,14 +754,30 @@ jobs:
           $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase build *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
           Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
-          $ev = (@($lines | Where-Object { $_ -match "^\[(parser|build|runtime|accept|backend)\] " }) -join "`n")
-          if ($code -ne 0) {
-            $ev = $ev + "`n--- tail ---`n" + ((@($lines | Select-Object -Last 40) + ("exit code: " + $code)) -join "`n")
+          # Annotations are capped at 4096 chars each and 10 per level per step:
+          # evidence is emitted in chunks. Key-like tokens are redacted (64+ hex,
+          # 40+ base64/base64url chars containing digits and letters).
+          $emit = {
+            param([string]$kind, [string]$title, [string[]]$src)
+            $rx = "(?<![A-Za-z0-9+/_-])(?:[0-9a-fA-F]{64,}|(?=[A-Za-z0-9+/_-]*[0-9])(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}={0,2})(?![A-Za-z0-9+/_=-])"
+            $chunks = New-Object System.Collections.ArrayList
+            $cur = ""
+            foreach ($l in $src) {
+              $l = [regex]::Replace([string]$l, $rx, "<redacted>")
+              if ($l.Length -gt 3500) { $l = $l.Substring(0, 3500) + " ..." }
+              if ($cur.Length -gt 0 -and ($cur.Length + $l.Length + 1) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
+              if ($cur.Length -gt 0) { $cur += "`n" }
+              $cur += $l
+            }
+            if ($cur.Length -gt 0) { [void]$chunks.Add($cur) }
+            $n = [Math]::Min($chunks.Count, 9)
+            for ($i = 0; $i -lt $n; $i++) {
+              $m = ([string]$chunks[$i]).Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+              Write-Host ("::" + $kind + " title=" + $title + " " + ($i + 1) + "/" + $chunks.Count + "::" + $m)
+            }
           }
-          $ev = [regex]::Replace($ev, "[A-Za-z0-9+/=]{40,}", "<redacted>")
-          $ev = $ev.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
-          if ($code -ne 0) { Write-Host ("::error title=license-issuer-windows::" + $ev) }
-          else { Write-Host ("::notice title=license-issuer-windows evidence::" + $ev) }
+          & $emit "notice" "license-issuer-windows evidence" @($lines | Where-Object { $_ -match "^\[(parser|build|runtime|accept|backend)\] " })
+          if ($code -ne 0) { & $emit "error" "license-issuer-windows failure tail" (@($lines | Select-Object -Last 30) + ("exit code: " + $code)) }
           exit $code
 
       - name: Runtime checks from a fresh unzip (spaces in path, no system Python, loopback, fail-closed)
@@ -762,14 +794,30 @@ jobs:
           $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase runtime *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
           Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
-          $ev = (@($lines | Where-Object { $_ -match "^\[(parser|build|runtime|accept|backend)\] " }) -join "`n")
-          if ($code -ne 0) {
-            $ev = $ev + "`n--- tail ---`n" + ((@($lines | Select-Object -Last 40) + ("exit code: " + $code)) -join "`n")
+          # Annotations are capped at 4096 chars each and 10 per level per step:
+          # evidence is emitted in chunks. Key-like tokens are redacted (64+ hex,
+          # 40+ base64/base64url chars containing digits and letters).
+          $emit = {
+            param([string]$kind, [string]$title, [string[]]$src)
+            $rx = "(?<![A-Za-z0-9+/_-])(?:[0-9a-fA-F]{64,}|(?=[A-Za-z0-9+/_-]*[0-9])(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}={0,2})(?![A-Za-z0-9+/_=-])"
+            $chunks = New-Object System.Collections.ArrayList
+            $cur = ""
+            foreach ($l in $src) {
+              $l = [regex]::Replace([string]$l, $rx, "<redacted>")
+              if ($l.Length -gt 3500) { $l = $l.Substring(0, 3500) + " ..." }
+              if ($cur.Length -gt 0 -and ($cur.Length + $l.Length + 1) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
+              if ($cur.Length -gt 0) { $cur += "`n" }
+              $cur += $l
+            }
+            if ($cur.Length -gt 0) { [void]$chunks.Add($cur) }
+            $n = [Math]::Min($chunks.Count, 9)
+            for ($i = 0; $i -lt $n; $i++) {
+              $m = ([string]$chunks[$i]).Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+              Write-Host ("::" + $kind + " title=" + $title + " " + ($i + 1) + "/" + $chunks.Count + "::" + $m)
+            }
           }
-          $ev = [regex]::Replace($ev, "[A-Za-z0-9+/=]{40,}", "<redacted>")
-          $ev = $ev.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
-          if ($code -ne 0) { Write-Host ("::error title=license-issuer-windows::" + $ev) }
-          else { Write-Host ("::notice title=license-issuer-windows evidence::" + $ev) }
+          & $emit "notice" "license-issuer-windows evidence" @($lines | Where-Object { $_ -match "^\[(parser|build|runtime|accept|backend)\] " })
+          if ($code -ne 0) { & $emit "error" "license-issuer-windows failure tail" (@($lines | Select-Object -Last 30) + ("exit code: " + $code)) }
           exit $code
 
       - name: Acceptance - hidden system Python, clean env, firewall + per-PID network capture, CLI/GUI/HTML(Edge), 20x launcher race, key-leak scan
@@ -787,14 +835,30 @@ jobs:
           $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-acceptance.ps1 *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
           Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
-          $ev = (@($lines | Where-Object { $_ -match "^\[(parser|build|runtime|accept|backend)\] " }) -join "`n")
-          if ($code -ne 0) {
-            $ev = $ev + "`n--- tail ---`n" + ((@($lines | Select-Object -Last 40) + ("exit code: " + $code)) -join "`n")
+          # Annotations are capped at 4096 chars each and 10 per level per step:
+          # evidence is emitted in chunks. Key-like tokens are redacted (64+ hex,
+          # 40+ base64/base64url chars containing digits and letters).
+          $emit = {
+            param([string]$kind, [string]$title, [string[]]$src)
+            $rx = "(?<![A-Za-z0-9+/_-])(?:[0-9a-fA-F]{64,}|(?=[A-Za-z0-9+/_-]*[0-9])(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}={0,2})(?![A-Za-z0-9+/_=-])"
+            $chunks = New-Object System.Collections.ArrayList
+            $cur = ""
+            foreach ($l in $src) {
+              $l = [regex]::Replace([string]$l, $rx, "<redacted>")
+              if ($l.Length -gt 3500) { $l = $l.Substring(0, 3500) + " ..." }
+              if ($cur.Length -gt 0 -and ($cur.Length + $l.Length + 1) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
+              if ($cur.Length -gt 0) { $cur += "`n" }
+              $cur += $l
+            }
+            if ($cur.Length -gt 0) { [void]$chunks.Add($cur) }
+            $n = [Math]::Min($chunks.Count, 9)
+            for ($i = 0; $i -lt $n; $i++) {
+              $m = ([string]$chunks[$i]).Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+              Write-Host ("::" + $kind + " title=" + $title + " " + ($i + 1) + "/" + $chunks.Count + "::" + $m)
+            }
           }
-          $ev = [regex]::Replace($ev, "[A-Za-z0-9+/=]{40,}", "<redacted>")
-          $ev = $ev.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
-          if ($code -ne 0) { Write-Host ("::error title=license-issuer-windows::" + $ev) }
-          else { Write-Host ("::notice title=license-issuer-windows evidence::" + $ev) }
+          & $emit "notice" "license-issuer-windows evidence" @($lines | Where-Object { $_ -match "^\[(parser|build|runtime|accept|backend)\] " })
+          if ($code -ne 0) { & $emit "error" "license-issuer-windows failure tail" (@($lines | Select-Object -Last 30) + ("exit code: " + $code)) }
           exit $code
 
       - name: Python for the backend verification step (system Python, AFTER the acceptance run)
@@ -817,14 +881,30 @@ jobs:
           $lines = @(& { python -m pip install --disable-pip-version-check --quiet -r backend/requirements.txt tzdata; if ($LASTEXITCODE -ne 0) { Write-Host "[backend] FAIL: pip install -r backend/requirements.txt"; return }; python tools/license-issuer/ci-backend-verify.py backend "$env:RUNNER_TEMP/hrm-accept-handoff" } *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
           Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
-          $ev = (@($lines | Where-Object { $_ -match "^\[(parser|build|runtime|accept|backend)\] " }) -join "`n")
-          if ($code -ne 0) {
-            $ev = $ev + "`n--- tail ---`n" + ((@($lines | Select-Object -Last 40) + ("exit code: " + $code)) -join "`n")
+          # Annotations are capped at 4096 chars each and 10 per level per step:
+          # evidence is emitted in chunks. Key-like tokens are redacted (64+ hex,
+          # 40+ base64/base64url chars containing digits and letters).
+          $emit = {
+            param([string]$kind, [string]$title, [string[]]$src)
+            $rx = "(?<![A-Za-z0-9+/_-])(?:[0-9a-fA-F]{64,}|(?=[A-Za-z0-9+/_-]*[0-9])(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}={0,2})(?![A-Za-z0-9+/_=-])"
+            $chunks = New-Object System.Collections.ArrayList
+            $cur = ""
+            foreach ($l in $src) {
+              $l = [regex]::Replace([string]$l, $rx, "<redacted>")
+              if ($l.Length -gt 3500) { $l = $l.Substring(0, 3500) + " ..." }
+              if ($cur.Length -gt 0 -and ($cur.Length + $l.Length + 1) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
+              if ($cur.Length -gt 0) { $cur += "`n" }
+              $cur += $l
+            }
+            if ($cur.Length -gt 0) { [void]$chunks.Add($cur) }
+            $n = [Math]::Min($chunks.Count, 9)
+            for ($i = 0; $i -lt $n; $i++) {
+              $m = ([string]$chunks[$i]).Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+              Write-Host ("::" + $kind + " title=" + $title + " " + ($i + 1) + "/" + $chunks.Count + "::" + $m)
+            }
           }
-          $ev = [regex]::Replace($ev, "[A-Za-z0-9+/=]{40,}", "<redacted>")
-          $ev = $ev.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
-          if ($code -ne 0) { Write-Host ("::error title=license-issuer-windows::" + $ev) }
-          else { Write-Host ("::notice title=license-issuer-windows evidence::" + $ev) }
+          & $emit "notice" "license-issuer-windows evidence" @($lines | Where-Object { $_ -match "^\[(parser|build|runtime|accept|backend)\] " })
+          if ($code -ne 0) { & $emit "error" "license-issuer-windows failure tail" (@($lines | Select-Object -Last 30) + ("exit code: " + $code)) }
           exit $code
 
       - name: Remove the license/public-key handoff directory
