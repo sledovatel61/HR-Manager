@@ -260,7 +260,18 @@ try {
             $loopBind = @($listen | Where-Object { $_ -match "127\.0\.0\.1:8765" })
             if ($loopBind.Count -eq 0) { throw "HTML server is not bound to 127.0.0.1" }
             Write-Phase "loopback check PASS: LISTENING only on 127.0.0.1:8765"
-            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8765/license-issuer.html" -UseBasicParsing
+            $listenerPid0 = [int](($listen | Select-Object -First 1) -split "\s+" | Select-Object -Last 1)
+            $proc0 = Get-CimInstance Win32_Process -Filter "ProcessId=$listenerPid0"
+            Write-Phase ("listener command line: " + $proc0.CommandLine)
+            try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8765/license-issuer.html" -UseBasicParsing
+            } catch {
+                $rootListing = ""
+                try { $rootListing = (Invoke-WebRequest -Uri "http://127.0.0.1:8765/" -UseBasicParsing).Content } catch { $rootListing = "GET / failed: " + $_.Exception.Message }
+                if ($rootListing.Length -gt 1500) { $rootListing = $rootListing.Substring(0, 1500) }
+                $srvLog = Get-Content $htmlLog -Raw -ErrorAction SilentlyContinue
+                throw ("GET /license-issuer.html failed: " + $_.Exception.Message + "`nlistener cmdline: " + $proc0.CommandLine + "`nGET / :`n" + $rootListing + "`nserver log:`n" + $srvLog)
+            }
             if ([int]$resp.StatusCode -ne 200) { throw "HTML page returned HTTP $($resp.StatusCode)" }
             if ([string]$resp.Content -notmatch "License") { throw "served page does not look like the issuer page" }
             Write-Phase ("HTML page served: HTTP 200, {0} bytes" -f ([string]$resp.Content).Length)
