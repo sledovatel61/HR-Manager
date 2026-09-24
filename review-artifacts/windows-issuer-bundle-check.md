@@ -1,11 +1,11 @@
-# Windows Issuer Bundle Check — статус: **исправления внесены, автоматические Windows-проверки добавлены в CI; чек-лист на чистой VM — NOT RUN**
+# Windows Issuer Bundle Check — статус: **автоматические Windows-проверки PASS (CI, Windows PowerShell 5.1); ручной чек-лист на чистой VM — NOT RUN**
 
-> Обновление 2026-09-24 (ветка PR #36, поверх head `c8fec38`): блокеры Windows runtime
-> исправлены в `tools/license-issuer/` (см. «Что исправлено» ниже), добавлен CI job
-> `license-issuer-windows`, который выполняет на windows-latest **настоящий** Windows
-> PowerShell 5.1 и полную runtime-проверку бандла из свежего unzip. Ручной чек-лист
-> владельца (пункты 1–6 ниже) на чистой VM без Python/интернета **всё ещё не выполнен**.
-> Вердикт GO не выпускается, пока не собрано и то, и другое.
+> Обновление 2026-09-24 (ветка `arena/01a0d2c2-hr-manager` = head PR #36 `c8fec38` + исправления, PR #37).
+> CI job `license-issuer-windows` на windows-latest под **Windows PowerShell 5.1.26100** зелёный
+> (run `36014099272`, sha `1a7b15b`): parser-check, полная сборка, runtime-проверки бандла из свежего
+> unzip — все PASS (доказательство ниже, из notice-аннотаций check-run). Ручной чек-лист владельца
+> (пункты 1–6: чистая VM без Python/интернета, реальный Edge, интерактивный GUI) **не выполнен**.
+> Вердикт GO не выпускается, пока он не выполнен.
 
 Ревьюируемые ревизии: PR #34 head `e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784` +
 fix-коммит `c515a490db354436dbd0d18115e28ef5d8ece132` (патч `review-artifacts/license-issuer-fixes.patch`).
@@ -79,35 +79,55 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 - `.gitignore` блокирует ключи и лицензии, при этом `git ls-files -ci --exclude-standard` пуст —
   ни один уже отслеживаемый файл не скрыт.
 
-## Что исправлено (ветка PR #36)
+## Что исправлено (ветка PR #36 → PR #37)
 
 | # | Блокер | Корень | Исправление |
 |---|---|---|---|
-| 1 | `build.ps1` не парсился Windows PowerShell 5.1 | файл UTF-8 **без BOM** + не-ASCII: 5.1 читает как ANSI; под CP1251 UTF-8-тире (`E2 80 94`) → U+201D, который токенизатор считает закрывающей кавычкой строки → parse error | файл сохранён **UTF-8 с BOM** и переписан в **ASCII-only** (двойная защита: парсится под любой кодовой страницей, даже если BOM сбросят); в вызовах `& $pyExe -c "..."` — только двойные кавычки PowerShell без вложенных двойных кавычек; в шагах CI устранены неоднозначные вложенные кавычки (строки собираются из одинарных) |
-| 2 | `ModuleNotFoundError: No module named 'license_issuer'` при smoke-тесте/`run-cli.bat` | embeddable Python: `sys.path` задан **только** `python*._pth`, каталог скрипта в него **не добавляется**, `PYTHONPATH` игнорируется | build.ps1 детерминированно переписывает `python312._pth`: `python312.zip`, `.`, `..\license-issuer` (каталог приложения — сосед `python/`), `Lib\site-packages`, `import site`; в `cli.py` добавлен self-heal `sys.path.insert(0, parent)` по конвенции `gui.py` (защита в глубину) |
-| 3 | Launchers | — | `run-gui/run-cli/run-html.bat`: `cd /d "%~dp0"`, все пути в кавычках (работают с пробелами), `set "PYTHONUTF8=1"` + `set "PYTHONPATH=%SCRIPT_DIR%"`, **fail-closed** (`goto :py_missing` → `exit /b 1`, `pause` только без `HRM_NO_PAUSE` для автоматизации), никакого fallback на системный Python; `run-html.bat` — `python -m http.server 8765 -b 127.0.0.1 --directory "<app>"` (только loopback, не `0.0.0.0`) |
-| 4 | Сборка | — | smoke-тест расширен до `gen-keypair -> issue -> verify` во временном каталоге **вне репозитория** (удаляется в `finally`); если приватный ключ появляется в выводе любого шага — `exit 1`; нетипичные состояния (нет `python*._pth`, нет `python.exe`, импорт cryptography упал) — ненулевой код |
-| 5 | Документация | — | HOWTO/README/license-owner: корректные аргументы CLI (`--client`, `--expires`, `--private-key-file`, были `--client-name`/`--expires-at`/`--private-key`) |
+| 1 | `build.ps1` не парсился Windows PowerShell 5.1 | UTF-8 **без BOM** + не-ASCII: 5.1 читает `.ps1` как ANSI; под CP1251 UTF-8-тире → U+201D, токенизатор видит закрывающую кавычку | **UTF-8 BOM + ASCII-only**; `& $pyExe -c "..."` без вложенных двойных кавычек |
+| 2 | `ModuleNotFoundError: No module named 'license_issuer'` | embeddable Python строит `sys.path` только из `python*._pth`, каталог скрипта не добавляется, `PYTHONPATH` игнорируется | детерминированный `python312._pth` (`python312.zip`, `.`, `..\license-issuer`, `Lib\site-packages`, `import site`) — функция `Set-BundledPth`, вызывается сразу после распаковки и для кешированного дерева; self-heal в `cli.py` по конвенции `gui.py` |
+| 3 | `python -m pip` в embeddable не мог работать | стоковый `._pth` — `#import site`, нет `Lib\site-packages`; патч применялся после pip | патч до pip (см. 2) |
+| 4 | pip мог прерываться на предупреждениях | 5.1 + `EAP=Stop` + перенаправленный host: stderr нативной команды → terminating error | build-time вызовы по exit code (`Invoke-NativeLogged`), fail-closed |
+| 5 | `run-gui.bat`: `No module named 'tkinter'` | embeddable Python **без tkinter/Tcl/Tk** | официальный `tcltk.msi` той же версии, `msiexec /a` (без реестра), `_tkinter.pyd`+DLL → `python\`, `tkinter\`, `tcl\`; проверка `tkinter.Tcl()` |
+| 6 | `run-html.bat` отдавал 404 | `--directory "%SCRIPT_DIR%"`: `%~dp0` оканчивается на `\`, `\"` в argv Windows — экранированная кавычка → каталог с кавычкой в конце | `--directory "%SCRIPT_DIR%."` |
+| 7 | Launchers | — | `cd /d "%~dp0"`, кавычки вокруг путей (пробелы), fail-closed без bundled `python.exe` (`exit /b 1`, без fallback на системный Python), `-b 127.0.0.1`, браузер после старта сервера, `HRM_NO_PAUSE`/`HRM_NO_BROWSER` для автоматизации |
+| 8 | Сборка | — | smoke `gen-keypair -> issue -> verify` во временном каталоге вне репозитория (удаляется), утечка приватного ключа в вывод → exit 1, любой сбой → ненулевой код |
+| 9 | Документация | — | корректные аргументы CLI (`--client`, `--expires`, `--private-key-file`) |
 
-## Автоматические Windows-проверки (CI job `license-issuer-windows`, windows-latest)
+## Автоматические Windows-проверки — PASS (CI job `license-issuer-windows`)
 
-1. **Encoding + parser check (Windows PowerShell 5.1, `shell: powershell`):**
-   первые 3 байта = `EF BB BF`; 0 не-ASCII байтов; `Parser::ParseFile` — 0 ошибок.
-2. **Полная сборка под 5.1:** `powershell -NoProfile -ExecutionPolicy Bypass -File tools\license-issuer\build.ps1`
-   (скачивание embeddable Python + cryptography, smoke-цепочка, zip) → exit 0,
-   `license-issuer-dist.zip` существует, в логе сборки **нет** непрерывных hex-обрезков 64+ символов.
-3. **Runtime из свежего unzip** (каталог `$TEMP\HRM Issuer PR36 Test\unzipped bundle` — с пробелами в пути):
-   - `PATH` обрезан до `C:\Windows\System32;C:\Windows` — системный Python недостижим (`Get-Command python` = пусто);
-   - `run-cli.bat gen-keypair -> issue -> verify` → exit 0, поля лицензии и 128-hex подпись корректны;
-   - подделанная лицензия (`max_active_users` 5→6) → `verify` **отклоняет** (exit ≠ 0);
-   - приватный ключ (64 hex) отсутствует в stdout/stderr всех CLI-шагов и во всех файлах temp/логов;
-   - fail-closed: bundled `python/` удалён → exit 1 и «Bundled Python not found» — и при обрезанном PATH,
-     и при **наличии** системного Python на PATH (доказательство отсутствия fallback);
-   - `run-html.bat`: `netstat` — LISTENING только `127.0.0.1:8765`, `0.0.0.0:8765` отсутствует;
-     `GET http://127.0.0.1:8765/license-issuer.html` → HTTP 200; WMI: PID слушателя = bundled `python.exe` из unzip;
-   - `run-gui.bat`: best effort (headless) — traceback/ModuleNotFoundError в логе = FAIL, процесс жив без ошибок = PASS;
-   - `git status --porcelain` и `git ls-files -ci --exclude-standard` — пусты (ключей в дереве нет);
-   - temp-каталог удаляется в `finally`.
+Код: `tools/license-issuer/ci-windows-checks.ps1` (фазы `parser`, `build`, `runtime`; ASCII + UTF-8 BOM).
+Run `36014099272`, sha `1a7b15b`, windows-latest, notice-аннотации check-run (дословно, пути сокращены):
+
+```text
+[parser] PASS: build.ps1 - UTF-8 BOM present, ASCII-only, 0 parser errors under Windows PowerShell 5.1.26100.33296
+[parser] PASS: ci-windows-checks.ps1 - UTF-8 BOM present, ASCII-only, 0 parser errors under Windows PowerShell 5.1.26100.33296
+[parser] PASS: windows-vm-checklist.ps1 - UTF-8 BOM present, ASCII-only, 0 parser errors under Windows PowerShell 5.1.26100.33296
+[build] build.ps1 exit code: 0
+[build] PASS: zip present, no 64+ hex material in the build log
+[runtime] bundle unzipped to: %TEMP%\HRM Issuer PR36 Test\unzipped bundle
+[runtime] CLI chain PASS: gen-keypair -> issue -> verify (bundled python only, no system python on PATH)
+[runtime] tampered license correctly rejected (exit=2)
+[runtime] no private key material in CLI stdout/stderr
+[runtime] fail-closed (isolated PATH) PASS: exit=1
+[runtime] fail-closed (system python present) PASS: exit=1, no fallback
+[runtime] loopback check PASS: LISTENING only on 127.0.0.1:8765
+[runtime] listener command line: "...\license-issuer\..\python\python.exe" -m http.server 8765 -b 127.0.0.1 --directory "...\license-issuer\."
+[runtime] HTML page served: HTTP 200, 17416 bytes
+[runtime] HTML listener PID 5796 runs the bundled python.exe (WMI verified)
+[runtime] GUI check PASS: process stayed alive without import errors (killed after check)
+[runtime] key-material sweep done: 2514 files scanned, private key not found
+[runtime] git tree clean; no tracked file hidden by key-material ignore patterns
+[runtime] ALL RUNTIME CHECKS PASS
+[runtime] temporary test directory removed: %TEMP%\HRM Issuer PR36 Test
+```
+
+Ограничения CI (поэтому ручной чек-лист остаётся обязательным): у раннера есть интернет и
+предустановленный Python (runtime-проверки изолируют PATH, но машина не «чистая»); GUI проверяется
+только как «процесс стартует без ошибок импорта» — выпуск лицензии кликами не проверен; HTML-страница
+отдаётся, но WebCrypto Ed25519 в реальном Edge не проверялся; исходящий трафик не мониторился.
+
+Ручной прогон на Windows-машине: `tools/license-issuer/windows-vm-checklist.ps1` (сборка в
+`C:\Users\User\Documents\HR\issuer-pr36-test`, распаковка в `...-output`, точные команды и exit codes в выводе).
 
 ## Локальная проверка в Linux sandbox (выполнено, воспроизводимо)
 
@@ -140,11 +160,9 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 
 ## Итог
 
-- Windows runtime-блокер 1 (parser 5.1) и блокер 2 (импорт модулей) **исправлены в ветке PR #36** и покрыты
-  автоматическими проверками: CI job `license-issuer-windows` выполняет их на настоящем Windows PowerShell 5.1.
-- Локальная (Linux) проверка: 23/23 PASS, включая репродукцию обоих блокеров «до» и проверку «после».
-- Пункты 1–6 чек-листа владельца (чистая VM без Python/интернета, Edge WebCrypto, ручное GUI) **не выполнены** —
-  остаются обязательным условием GO.
-- Release-вердикт: **NO-GO до** (а) зелёного CI job `license-issuer-windows` и (б) выполнения чек-листа на
-  чистой VM. Merge PR #34 в main до этого не производится. После выполнения обоих условий вердикт можно
-  переводить в `GO` для закрытого пилота `127.0.0.1`.
+- Блокеры Windows runtime (parser 5.1, импорт `license_issuer`, pip в embeddable, tkinter, 404 HTML)
+  **исправлены** и покрыты автоматическими проверками; CI job `license-issuer-windows` под настоящим
+  Windows PowerShell 5.1 — **зелёный**.
+- Пункты 1–6 чек-листа владельца (чистая VM без Python/интернета, интерактивный GUI, Edge WebCrypto,
+  загрузка лицензий в backend, контроль исходящего трафика) **не выполнены**.
+- Release-вердикт: **NO-GO до выполнения ручного чек-листа**. PR #34 в main не мержить.
