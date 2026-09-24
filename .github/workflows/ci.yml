@@ -733,7 +733,7 @@ jobs:
             "summary file missing after writes" | Out-File -FilePath $log -Append
           }
           "end" | Out-File -FilePath $log -Append
-          exit 1
+          exit 0
 
       - name: post diagnostics to PR comment
         if: always()
@@ -744,7 +744,12 @@ jobs:
           $ErrorActionPreference = "Continue"
           $parts = @()
           $mk = Join-Path $env:RUNNER_TEMP "marker.txt"
-          $parts += "marker step A file exists: " + (Test-Path $mk)
+          if (Test-Path $mk) {
+            $parts += "marker.txt content:"
+            $parts += ((Get-Content $mk -Raw -ErrorAction SilentlyContinue) + "<<<END_MARKER")
+          } else {
+            $parts += "marker.txt missing"
+          }
           if (Test-Path $env:GITHUB_STEP_SUMMARY) {
             $parts += "GITHUB_STEP_SUMMARY content: [" + (Get-Content $env:GITHUB_STEP_SUMMARY -Raw -ErrorAction SilentlyContinue) + "]"
           } else {
@@ -807,6 +812,27 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $diag -Encoding utf8
             exit 1
           }
+
+      - name: final post diagnostics to PR comment
+        if: always()
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          $parts = @("FINAL diagnostics (run " + $env:GITHUB_RUN_ID + ")")
+          if (Test-Path $env:GITHUB_STEP_SUMMARY) {
+            $sum = Get-Content $env:GITHUB_STEP_SUMMARY -Raw -ErrorAction SilentlyContinue
+            $parts += "GITHUB_STEP_SUMMARY (full):"
+            $parts += ($sum + "<<<END_SUMMARY")
+          } else {
+            $parts += "GITHUB_STEP_SUMMARY path missing"
+          }
+          $parts += "zip present: " + (Test-Path "tools/license-issuer/dist/license-issuer-dist.zip")
+          $body = ($parts -join "`n")
+          $res = gh api repos/sledovatel61/HR-Manager/issues/37/comments -f body=$body --jq ".html_url" 2>&1 | Out-String
+          Write-Host "final comment posted: $res"
+
   channel-release-policy:
     name: Release pipeline fail-closed policy (ephemeral test signature)
     runs-on: ubuntu-latest
