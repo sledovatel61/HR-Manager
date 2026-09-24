@@ -636,12 +636,15 @@ try {
         $r = Invoke-Bat $cliBat ("verify --public-key-file " + (Q (Join-Path $keysHtml "public_key.b64")) + " --license-file " + (Q $licHtml)) (Join-Path $Logs "cli-8-verify-html-ui.txt") $null
         if ($alertTxt -eq $SigOk -and $r.ExitCode -eq 0 -and $naclType -eq "undefined") { Add-Result "html-ui-flow (UI keys)" "PASS" ("Edge UI: generate keys (WebCrypto) -> issue (TweetNaCl disabled, so WebCrypto signed) -> in-page verify alert 'signature correct' -> download '$([IO.Path]::GetFileName($dl1))' into the browser download dir -> run-cli.bat verify exit 0") }
         else { Add-Result "html-ui-flow (UI keys)" "FAIL" ("alert ok=$($alertTxt -eq $SigOk) nacl=$naclType cli verify exit=$($r.ExitCode): $($r.Output)") }
-        # (b) owner pastes the CLI private key -> issue -> download -> CLI verify with the CLI public key
-        Type-El "#privHex" $cliPrivHex
+        # (b) owner loads the CLI private_key.hex via the file picker (typing the key is disabled in the
+        #     page: Edge records typed text in autofill_edge_field_values) -> issue -> download -> CLI verify
+        $privFileEl = Find-El "css selector" "#privFile"
+        [void](Wd "POST" "/session/$($script:Sid)/element/$privFileEl/value" @{ text = (Join-Path $keysCli "private_key.hex") })
+        Wait-Js 'var h=document.getElementById("privHex"); return h.value.length===64 && !h.isContentEditable && document.getElementById("status").textContent.indexOf("private_key.hex")>=0;' 15000 "CLI private_key.hex loaded via the file picker (read-only key box)"
         Type-El "#pubB64" $cliPub
         Type-El "#clientName" "Pilot Maria HTML CLIKEY"
         Click-El "xpath" '//button[contains(@onclick,"issueLicense")]'
-        Wait-Js 'var t=document.getElementById("result").textContent; return t.indexOf("Pilot Maria HTML CLIKEY")>=0;' 15000 "license issued with the pasted CLI key"
+        Wait-Js 'var t=document.getElementById("result").textContent; return t.indexOf("Pilot Maria HTML CLIKEY")>=0;' 15000 "license issued with the CLI key file"
         Click-El "xpath" '//button[contains(@onclick,"downloadResult")]'
         $dl2 = Wait-Download "Pilot_Maria_HTML_CLIKEY_2026-12-31.hrmlicense" 20000
         $licHtml2 = Join-Path $licDir "html-clikey.hrmlicense"; Copy-Item -LiteralPath $dl2 $licHtml2
@@ -650,8 +653,8 @@ try {
         $tamp2 = Join-Path $licDir "html-tampered.hrmlicense"
         [System.IO.File]::WriteAllText($tamp2, ($j2 | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
         $r3 = Invoke-Bat $cliBat ("verify --public-key-file " + (Q (Join-Path $keysCli "public_key.b64")) + " --license-file " + (Q $tamp2)) (Join-Path $Logs "cli-10-verify-html-tampered.txt") $null
-        if ($r.ExitCode -eq 0 -and $r3.ExitCode -eq 2) { Add-Result "html-ui-flow (pasted CLI key)" "PASS" "Edge UI signed with the pasted CLI private key -> downloaded -> run-cli.bat verify with the CLI public key exit 0; tampered copy exit 2" }
-        else { Add-Result "html-ui-flow (pasted CLI key)" "FAIL" ("verify exit=$($r.ExitCode), tampered exit=$($r3.ExitCode): $($r.Output)") }
+        if ($r.ExitCode -eq 0 -and $r3.ExitCode -eq 2) { Add-Result "html-ui-flow (CLI key file)" "PASS" "Edge UI: CLI private_key.hex loaded via the file picker (key box read-only, no typing) -> signed -> downloaded -> run-cli.bat verify with the CLI public key exit 0; tampered copy exit 2" }
+        else { Add-Result "html-ui-flow (CLI key file)" "FAIL" ("verify exit=$($r.ExitCode), tampered exit=$($r3.ExitCode): $($r.Output)") }
         $res = @(Js 'return performance.getEntriesByType("resource").map(function(e){return e.name;}).concat([location.href]);')
         $foreign = @($res | Where-Object { -not ([string]$_).StartsWith("http://127.0.0.1:$Port/") })
         if ($foreign.Count -eq 0) { Add-Result "html-page-resources" "PASS" ("all {0} URLs loaded by the page are on http://127.0.0.1:{1}/ ({2})" -f $res.Count, $Port, ($res -join ", ")) }
@@ -704,7 +707,7 @@ try {
         @{ origin = "cli tampered"; lic = $tampered; pub = (Join-Path $keysCli "public_key.b64"); expect = "bad_signature" },
         @{ origin = "gui (Tk)"; lic = $licGui; pub = (Join-Path $keysGui "public_key.b64"); expect = "accept" },
         @{ origin = "html (Edge, UI keys)"; lic = (Join-Path $licDir "html-ui.hrmlicense"); pub = (Join-Path $Out "keys-html\public_key.b64"); expect = "accept" },
-        @{ origin = "html (Edge, pasted CLI key)"; lic = (Join-Path $licDir "html-clikey.hrmlicense"); pub = (Join-Path $keysCli "public_key.b64"); expect = "accept" },
+        @{ origin = "html (Edge, CLI key file)"; lic = (Join-Path $licDir "html-clikey.hrmlicense"); pub = (Join-Path $keysCli "public_key.b64"); expect = "accept" },
         @{ origin = "html tampered"; lic = (Join-Path $licDir "html-tampered.hrmlicense"); pub = (Join-Path $keysCli "public_key.b64"); expect = "bad_signature" },
         @{ origin = "gui license with the CLI key (wrong key)"; lic = $licGui; pub = (Join-Path $keysCli "public_key.b64"); expect = "bad_signature" })
     $n = 0
