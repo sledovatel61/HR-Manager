@@ -279,8 +279,10 @@ set "PYTHONUTF8=1"
 set "PYTHONPATH=%SCRIPT_DIR%"
 echo Starting local server at http://127.0.0.1:%PORT%/license-issuer.html (loopback only)
 echo Keep this window open. Press Ctrl+C to stop the server after use.
-timeout /t 1 /nobreak >nul
-start "" http://127.0.0.1:%PORT%/license-issuer.html
+REM Open the browser ~2s later (after the server below has bound the port).
+REM ping is used as the delay: "timeout" fails when stdin is not a console.
+REM HRM_NO_BROWSER=1 skips it for unattended runs (CI, checklists).
+if not defined HRM_NO_BROWSER start "" /b cmd /c "ping -n 3 127.0.0.1 >nul & start "" http://127.0.0.1:%PORT%/license-issuer.html"
 "%PY_EXE%" -m http.server %PORT% -b 127.0.0.1 --directory "%SCRIPT_DIR%"
 exit /b %ERRORLEVEL%
 :py_missing

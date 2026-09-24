@@ -121,6 +121,7 @@ try {
 
     # ------------------------------------------------ 5. CLI chain via run-cli.bat
     $env:HRM_NO_PAUSE = "1"
+    $env:HRM_NO_BROWSER = "1"
     $runCli = Join-Path $app "run-cli.bat"
     $keys = Join-Path $out "keys"
     $previousEap = $ErrorActionPreference
@@ -164,7 +165,7 @@ try {
     $htmlLog = Join-Path $out "html.log"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "cmd.exe"
-    $psi.Arguments = '/c "' + (Join-Path $app "run-html.bat") + '" > "' + $htmlLog + '" 2>&1'
+    $psi.Arguments = '/c ""' + (Join-Path $app "run-html.bat") + '" > "' + $htmlLog + '" 2>&1"'   # extra outer quotes: cmd /c strips first+last
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $htmlProc = [System.Diagnostics.Process]::Start($psi)
@@ -198,7 +199,7 @@ try {
     $guiLog = Join-Path $out "gui.log"
     $psi2 = New-Object System.Diagnostics.ProcessStartInfo
     $psi2.FileName = "cmd.exe"
-    $psi2.Arguments = '/c "' + (Join-Path $app "run-gui.bat") + '" > "' + $guiLog + '" 2>&1'
+    $psi2.Arguments = '/c ""' + (Join-Path $app "run-gui.bat") + '" > "' + $guiLog + '" 2>&1"'
     $psi2.UseShellExecute = $false
     $guiProc = [System.Diagnostics.Process]::Start($psi2)
     Start-Sleep -Seconds 10
