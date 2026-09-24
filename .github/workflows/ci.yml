@@ -768,6 +768,7 @@ jobs:
           "MARKER-STEP-EXECUTED" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           exit 1
       - name: Build autonomous bundle with Windows PowerShell 5.1
+        if: always()
         shell: powershell
         run: |
           # Diagnostics wrapper (pure ASCII, forward-slash path): any helper
@@ -792,6 +793,7 @@ jobs:
           }
 
       - name: Runtime checks from a fresh unzip (spaces in path, no system Python, loopback, fail-closed)
+        if: always()
         shell: powershell
         run: |
           # Diagnostics wrapper (pure ASCII, forward-slash path).
