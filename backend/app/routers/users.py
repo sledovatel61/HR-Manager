@@ -1,10 +1,4 @@
-"""Administrative user management endpoints (admin role only).
-
-Every endpoint is protected server-side by :func:`app.deps.require_roles`;
-hiding UI elements is never the security boundary. All changes are recorded
-in the audit trail. A password is mandatory when creating a user and must
-satisfy the password policy.
-"""
+"""Administrative user management endpoints (admin role only)."""
 
 from uuid import UUID
 
@@ -13,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_event
+from app.config import Settings, get_settings
 from app.db import get_db
 from app.deps import get_current_user, require_roles
 from app.models import AuditAction, User, UserRole
@@ -25,6 +20,7 @@ from app.schemas import (
     UserUpdate,
 )
 from app.security import WeakPasswordError, hash_password, validate_password_policy
+from app.services.license_service import get_active_license_for_update
 from app.utils import client_ip, user_agent, utc_now
 
 router = APIRouter(prefix="/admin/users", tags=["admin-users"])
@@ -61,11 +57,15 @@ def _get_user_or_404(db: Session, user_id: str) -> User:
         parsed = UUID(user_id)
     except ValueError:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден."
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден.",
         ) from None
     user = db.get(User, parsed)
     if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден.",
+        )
     return user
 
 
@@ -76,13 +76,15 @@ def list_users(
     db: Session = Depends(get_db),
     _: User = Depends(_admin_only),
 ) -> UserList:
-    """Paginated list of users, newest first."""
     total = db.scalar(select(func.count()).select_from(User)) or 0
     users = db.scalars(
         select(User).order_by(User.created_at.desc(), User.username).limit(limit).offset(offset)
     ).all()
     return UserList(
-        items=[UserOut.model_validate(u) for u in users], total=total, limit=limit, offset=offset
+        items=[UserOut.model_validate(u) for u in users],
+        total=total,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -97,8 +99,9 @@ def create_user(
     request: Request,
     db: Session = Depends(get_db),
     actor: User = Depends(_admin_only),
+    settings: Settings = Depends(get_settings),
 ) -> UserOut:
-    """Create a user with a mandatory password."""
+    """Create user with mandatory password, enforce license limit."""
     try:
         validate_password_policy(payload.password, username=payload.username)
     except WeakPasswordError as exc:
@@ -112,6 +115,26 @@ def create_user(
             status_code=status.HTTP_409_CONFLICT,
             detail="Пользователь с таким именем уже существует.",
         )
+
+    public_b64 = (settings.license_public_key or "").strip()
+    if public_b64:
+        active_license = get_active_license_for_update(db)
+        if active_license is not None:
+            active_count = (
+                db.scalar(select(func.count()).select_from(User).where(User.is_active.is_(True)))
+                or 0
+            )
+            db.scalars(select(User.id).where(User.is_active.is_(True)).with_for_update()).all()
+            if active_count >= active_license.max_active_users:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Достигнут лимит активных пользователей "
+                        f"по лицензии ({active_license.max_active_users}). "
+                        "Отключите неиспользуемых или загрузите лицензию "
+                        "с большим лимитом."
+                    ),
+                )
 
     user = User(
         username=payload.username,
@@ -143,11 +166,6 @@ def list_hr_users(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ) -> UserListItems:
-    """Minimal, safe directory of active HR users for owner/transfer pickers.
-
-    Any authenticated user may read it; it intentionally exposes no
-    administrative fields (no lock state, no login timestamps).
-    """
     users = db.scalars(
         select(User)
         .where(User.role == UserRole.HR, User.is_active.is_(True))
@@ -176,12 +194,9 @@ def update_user(
     request: Request,
     db: Session = Depends(get_db),
     actor: User = Depends(_admin_only),
+    settings: Settings = Depends(get_settings),
 ) -> UserOut:
-    """Update full name, role, active flag and/or password.
-
-    An administrator cannot deactivate themselves, which would lock the last
-    usable administrator out mid-operation.
-    """
+    """Update full name, role, active flag and/or password."""
     user = _get_user_or_404(db, user_id)
 
     if payload.is_active is False and user.id == actor.id:
@@ -189,6 +204,29 @@ def update_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Нельзя отключить собственную учётную запись.",
         )
+
+    if payload.is_active is True and user.is_active is False:
+        public_b64 = (settings.license_public_key or "").strip()
+        if public_b64:
+            active_license = get_active_license_for_update(db)
+            if active_license is not None:
+                active_count = (
+                    db.scalar(
+                        select(func.count()).select_from(User).where(User.is_active.is_(True))
+                    )
+                    or 0
+                )
+                db.scalars(select(User.id).where(User.is_active.is_(True)).with_for_update()).all()
+                if active_count >= active_license.max_active_users:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            f"Достигнут лимит активных пользователей "
+                            f"по лицензии ({active_license.max_active_users}). "
+                            "Отключите неиспользуемых или загрузите "
+                            "лицензию с большим лимитом."
+                        ),
+                    )
 
     changes: list[str] = []
 
@@ -215,7 +253,8 @@ def update_user(
             validate_password_policy(payload.password, username=user.username)
         except WeakPasswordError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
             ) from exc
         user.password_hash = hash_password(payload.password)
         changes.append("password")
@@ -224,7 +263,6 @@ def update_user(
         user.is_active = payload.is_active
         changes.append(f"is_active: {payload.is_active}")
         if payload.is_active:
-            # Reactivation also clears lockout state.
             user.failed_login_count = 0
             user.locked_until = None
 
@@ -256,7 +294,6 @@ def unlock_user(
     db: Session = Depends(get_db),
     actor: User = Depends(_admin_only),
 ) -> UserOut:
-    """Reset failed-login counter and lockout for a user."""
     user = _get_user_or_404(db, user_id)
     user.failed_login_count = 0
     user.locked_until = None

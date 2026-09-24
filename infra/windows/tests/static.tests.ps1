@@ -134,6 +134,22 @@ Test-Case 'пилотный оверлей требует все обязате�
     Assert-HrmEqual 3 $signingKeyUses "SECRET_KEY обязателен для backend, worker и backup"
 }
 
+Test-Case 'пилотный оверлей: открытый ключ лицензии обязателен (${HRM_LICENSE_PUBLIC_KEY:?}) для backend, worker и backup' {
+    $overlay = Get-Content -Path (Join-Path $RepoRoot "infra\compose.pilot.yml") -Raw -Encoding UTF8
+    $mapping = 'LICENSE_PUBLIC_KEY: ${HRM_LICENSE_PUBLIC_KEY:?HRM_LICENSE_PUBLIC_KEY is required for the pilot}'
+    Assert-HrmContains $overlay $mapping "открытый ключ лицензии не передаётся в backend как обязательная переменная"
+    $uses = ([regex]::Matches($overlay, [regex]::Escape($mapping))).Count
+    Assert-HrmEqual 3 $uses "LICENSE_PUBLIC_KEY обязателен для backend, worker и backup (все загружают Settings)"
+    # Значение по умолчанию отключило бы fail-closed проверку.
+    Assert-HrmNotContains $overlay '${HRM_LICENSE_PUBLIC_KEY:-' "у открытого ключа лицензии не должно быть значения по умолчанию"
+    # pilot.env подключается ТОЛЬКО через --env-file (интерполяция); env_file: в сервисе
+    # скопировал бы в контейнер backend весь файл, включая ключ шифрования бэкапов.
+    Assert-HrmFalse ([regex]::IsMatch($overlay, '(?m)^\s+env_file:')) "env_file: в пилотном оверлее (утечка секретов в контейнер)"
+    # В приложении только ОТКРЫТЫЙ ключ; закрытый не упоминается даже по имени.
+    Assert-HrmNotContains $overlay "PRIVATE_KEY" "закрытый ключ упомянут в оверлее"
+    Assert-HrmNotContains $overlay "private_key" "закрытый ключ упомянут в оверлее"
+}
+
 Test-Case "backend видит состояние бэкапов только для чтения" {
     $overlay = Get-Content -Path (Join-Path $RepoRoot "infra\compose.pilot.yml") -Raw -Encoding UTF8
     Assert-HrmContains $overlay "BACKUP_STATE_FILE: /var/backups/hr-manager/state.json" "backend не настроен на состояние бэкапов"

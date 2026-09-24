@@ -15,6 +15,7 @@ export type WorkspaceSection =
   | "integrations"
   | "updates"
   | "readiness"
+  | "license"
   | "admin";
 
 const SECTION_HASHES: Record<WorkspaceSection, string> = {
@@ -32,6 +33,7 @@ const SECTION_HASHES: Record<WorkspaceSection, string> = {
   integrations: "#/integrations",
   updates: "#/updates",
   readiness: "#/readiness",
+  license: "#/license",
   admin: "#/admin",
 };
 

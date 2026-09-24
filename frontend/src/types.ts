@@ -952,3 +952,28 @@ export interface PilotReadiness {
   server_version: string;
   checks: PilotReadinessCheck[];
 }
+
+/** License — offline pilot license status */
+export interface LicenseInfo {
+  license_id: string;
+  client_name: string;
+  issued_at: string;
+  expires_at: string;
+  max_active_users: number;
+  active_users?: number;
+  days_left?: number | null;
+  last_seen_at?: string | null;
+}
+
+export interface LicenseStatus {
+  enforcement: "enabled" | "disabled" | string;
+  has_license: boolean;
+  is_valid: boolean;
+  license?: LicenseInfo;
+  active_users?: number;
+  max_active_users?: number | null;
+  public_key_fingerprint?: string | null;
+  code?: string;
+  message?: string;
+  note?: string;
+}
