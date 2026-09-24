@@ -710,38 +710,51 @@ jobs:
       - name: build.ps1 encoding + Windows PowerShell 5.1 parser check
         shell: powershell
         run: |
-          # Diagnostics wrapper (pure ASCII): if the helper fails for any
-          # reason - parse error, missing file, check failure - its captured
-          # output goes to the step summary, readable via the check-run API.
+          # Inline (no helper indirection) so every branch reports to the step
+          # summary. Path uses forward slashes: PowerShell accepts them on
+          # Windows, and this removes YAML/PS backslash-escaping risk.
           $ErrorActionPreference = "Continue"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "step started: parser" -Encoding utf8
-          $helper = "tools\license-issuer\ci-windows-checks.ps1"
-          if (-not (Test-Path $helper)) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "helper file missing: $helper" -Encoding utf8
+          $path = "tools/license-issuer/build.ps1"
+          if (-not (Test-Path $path)) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "FAIL: build.ps1 missing at $path" -Encoding utf8
             exit 1
           }
-          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $helper -Phase parser *>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $out
-          Write-Host "helper exit code: $code"
-          if ($code -ne 0) {
-            $fence = '```'
-            $diag = "helper (parser phase) failed with exit code $code" + "`n" + $fence + "text`n" + $out + "`n" + $fence
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $diag -Encoding utf8
+          $bytes = [System.IO.File]::ReadAllBytes($path)
+          $first = @($bytes[0..2]) -join ","
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("file loaded: " + (Get-Item $path).Length + " bytes, first3: " + $first) -Encoding utf8
+          if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("FAIL: build.ps1 has no UTF-8 BOM (first3: " + $first + ")") -Encoding utf8
             exit 1
           }
+          $nonAscii = @($bytes | Where-Object { $_ -ge 0x80 })
+          if ($nonAscii.Count -ne 0) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("FAIL: " + $nonAscii.Count + " non-ASCII bytes, first: 0x" + ("{0:X2}" -f $nonAscii[0])) -Encoding utf8
+            exit 1
+          }
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($null -ne $errors -and $errors.Count -ne 0) {
+            $lines = @($errors | ForEach-Object { "line {0}:{1} {2}" -f $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message })
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("FAIL: Windows PowerShell 5.1 parse errors: " + ($lines -join "`n")) -Encoding utf8
+            exit 1
+          }
+          $psv = (Get-Host).Version.ToString()
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("PASS: BOM + ASCII-only + 0 parse errors under Windows PowerShell " + $psv) -Encoding utf8
+          Write-Host "PASS: build.ps1 BOM+ASCII+parse OK under Windows PowerShell $psv"
 
       - name: Build autonomous bundle with Windows PowerShell 5.1
         shell: powershell
         run: |
-          # Diagnostics wrapper (pure ASCII): if the helper fails for any
-          # reason - parse error, missing file, check failure - its captured
-          # output goes to the step summary, readable via the check-run API.
+          # Diagnostics wrapper (pure ASCII, forward-slash path): any helper
+          # failure - parse error, missing file, check failure - has its
+          # captured output written to the step summary (check-run API).
           $ErrorActionPreference = "Continue"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "step started: build" -Encoding utf8
-          $helper = "tools\license-issuer\ci-windows-checks.ps1"
+          $helper = "tools/license-issuer/ci-windows-checks.ps1"
           if (-not (Test-Path $helper)) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "helper file missing: $helper" -Encoding utf8
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "FAIL: helper file missing: $helper" -Encoding utf8
             exit 1
           }
           $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $helper -Phase build *>&1 | Out-String
@@ -750,7 +763,7 @@ jobs:
           Write-Host "helper exit code: $code"
           if ($code -ne 0) {
             $fence = '```'
-            $diag = "helper (build phase) failed with exit code $code" + "`n" + $fence + "text`n" + $out + "`n" + $fence
+            $diag = "helper (build phase) failed with exit code " + $code + "`n" + $fence + "text`n" + $out + "`n" + $fence
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $diag -Encoding utf8
             exit 1
           }
@@ -758,14 +771,12 @@ jobs:
       - name: Runtime checks from a fresh unzip (spaces in path, no system Python, loopback, fail-closed)
         shell: powershell
         run: |
-          # Diagnostics wrapper (pure ASCII): if the helper fails for any
-          # reason - parse error, missing file, check failure - its captured
-          # output goes to the step summary, readable via the check-run API.
+          # Diagnostics wrapper (pure ASCII, forward-slash path).
           $ErrorActionPreference = "Continue"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "step started: runtime" -Encoding utf8
-          $helper = "tools\license-issuer\ci-windows-checks.ps1"
+          $helper = "tools/license-issuer/ci-windows-checks.ps1"
           if (-not (Test-Path $helper)) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "helper file missing: $helper" -Encoding utf8
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "FAIL: helper file missing: $helper" -Encoding utf8
             exit 1
           }
           $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $helper -Phase runtime *>&1 | Out-String
@@ -774,7 +785,7 @@ jobs:
           Write-Host "helper exit code: $code"
           if ($code -ne 0) {
             $fence = '```'
-            $diag = "helper (runtime phase) failed with exit code $code" + "`n" + $fence + "text`n" + $out + "`n" + $fence
+            $diag = "helper (runtime phase) failed with exit code " + $code + "`n" + $fence + "text`n" + $out + "`n" + $fence
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $diag -Encoding utf8
             exit 1
           }
