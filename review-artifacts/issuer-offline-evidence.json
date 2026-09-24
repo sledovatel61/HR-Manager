@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-09-24T08:11:37Z",
+  "generated_at": "2026-09-24T08:53:55Z",
   "generator": "review-artifacts/gen_issuer_offline_evidence.py (runs the real issuer code; no declarations)",
   "scope": {
     "pr": 34,
-    "reviewed_commit": "c515a490db354436dbd0d18115e28ef5d8ece132",
+    "reviewed_commit": "f85a362d34a7d30dea292ba67324781852180d33",
     "baseline_commit": "e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784",
     "host": "Linux review sandbox (no Windows, no virtualisation/KVM, no wine) - NOT the owner VM",
     "what_this_proves": [
@@ -69,13 +69,11 @@
     "how": "every fix-sensitive check is executed twice: against the reviewed commit and against the baseline revision (a negative control); a check is only 'fixed' when it fails before and passes after"
   },
   "facts": {
+    "reviewed_tree_contains_issuer_sources": true,
     "tree_composition": {
-      "baseline_tree": "e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784",
-      "overlay_commit": "c515a490db354436dbd0d18115e28ef5d8ece132",
-      "overlay_files": {
-        ".gitignore": "ee464f266e6c3802",
-        "tools/license-issuer/build.ps1": "d51a613d6980c127"
-      }
+      "baseline_tree": "f85a362d34a7d30dea292ba67324781852180d33",
+      "overlay_commit": null,
+      "overlay_files": {}
     },
     "reviewed_files": {
       "tools/license-issuer/build.ps1": {
@@ -162,7 +160,7 @@
       },
       "has_replacement_char": false
     },
-    "tracked_files_scanned_for_key_material": 505,
+    "tracked_files_scanned_for_key_material": 529,
     "gitignore_entries_for_owner_material": [
       "keys/",
       "private_key.hex",
@@ -172,11 +170,11 @@
     ],
     "tracked_files_now_ignored": [],
     "cryptography_version": "50.0.1",
-    "cli_public_key": "rN8z...0= (44 chars, redacted)",
+    "cli_public_key": "Bp9z...I= (44 chars, redacted)",
     "cli_private_key_length": 64,
     "emulated_runner": {
       "with_bind_127_0_0_1": {
-        "cmd": "-m http.server 8791 -b 127.0.0.1 --directory /tmp/hrm-issuer-evidence-b0we7ope/serverdir",
+        "cmd": "-m http.server 8791 -b 127.0.0.1 --directory /tmp/hrm-issuer-evidence-3vivd4bj/serverdir",
         "bind": "127.0.0.1",
         "listen_of_this_pid": [
           [
@@ -190,7 +188,7 @@
         ]
       },
       "without_bind": {
-        "cmd": "-m http.server 8792 --directory /tmp/hrm-issuer-evidence-b0we7ope/serverdir",
+        "cmd": "-m http.server 8792 --directory /tmp/hrm-issuer-evidence-3vivd4bj/serverdir",
         "bind": "default(0.0.0.0)",
         "listen_of_this_pid": [
           [
@@ -210,7 +208,7 @@
     {
       "id": "issuer_sources_of_reviewed_commit",
       "status": "PASS",
-      "detail": "PR-head tree e59aa5b extracted outside the repo, fix commit c515a49 overlaid: .gitignore, tools/license-issuer/build.ps1"
+      "detail": "PR-head tree f85a362 extracted outside the repo (no overlay: this is the revision before the fix, used as the negative control)"
     },
     {
       "id": "python_issuer_has_no_network_primitives",
@@ -290,7 +288,7 @@
     {
       "id": "no_key_material_committed",
       "status": "PASS",
-      "detail": "505 tracked files: no *.hrmlicense, no infra/license/public_key.b64, no keys/ directory, no 64-hex literal in tools/license-issuer/*.py"
+      "detail": "529 tracked files: no *.hrmlicense, no infra/license/public_key.b64, no keys/ directory, no 64-hex literal in tools/license-issuer/*.py"
     },
     {
       "id": "gitignore_blocks_key_and_license_material",
@@ -390,7 +388,7 @@
     {
       "id": "emulated_runner_serves_page",
       "status": "PASS",
-      "detail": "`-m http.server 8791 -b 127.0.0.1 --directory /tmp/hrm-issuer-evidence-b0we7ope/serverdir` (the fixed launcher's command line): GET /license-issuer.html on 127.0.0.1 -> HTTP 200, 17087 bytes, byte-identical to the file: True. Emulated with the host Linux Python 3.11.2; the Windows launcher run-html.bat itself was NOT executed"
+      "detail": "`-m http.server 8791 -b 127.0.0.1 --directory /tmp/hrm-issuer-evidence-3vivd4bj/serverdir` (the fixed launcher's command line): GET /license-issuer.html on 127.0.0.1 -> HTTP 200, 17087 bytes, byte-identical to the file: True. Emulated with the host Linux Python 3.11.2; the Windows launcher run-html.bat itself was NOT executed"
     },
     {
       "id": "run_html_bat_loopback_only_measured",

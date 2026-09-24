@@ -228,21 +228,27 @@ def ci_runtime_steps() -> tuple[dict[str, str], dict[str, Any]]:
 
     status = json.loads(CI_STATUS.read_text(encoding="utf-8"))
     chain = json.loads(CI_CHAIN.read_text(encoding="utf-8"))
-    # The chain report file is imported from one concrete run; the PR head run may
-    # be a later one (its logs are not always readable from the review sandbox).
+    # The chain report file is imported from one concrete run (its logs are not
+    # always readable from the review sandbox), while the PR head run may be a
+    # later one. Schema 1 kept these at the top level, schema 2 nests them.
+    head = status.get("reviewed_head") or {}
     report = status.get("chain_report") or {}
-    report_run_id = report.get("run_id", status.get("run_id"))
-    report_sha = report.get("head_sha", status.get("head_sha"))
+    report_run_id = report.get("run_id", head.get("run_id", status.get("run_id")))
+    report_sha = report.get("head_sha", head.get("sha", status.get("head_sha")))
+    head_artifact = head.get("artifact") or status.get("artifact") or {}
     meta = {
         "imported": True,
         "run_id": report_run_id,
         "head_sha": report_sha,
         "report_run_id": report_run_id,
         "report_head_sha": report_sha,
-        "head_run_id": status.get("run_id"),
-        "head_sha_of_pr": status.get("head_sha"),
-        "head_jobs": status.get("jobs"),
-        "head_artifact_digest": (status.get("artifact") or {}).get("digest"),
+        "head_run_id": head.get("run_id", status.get("run_id")),
+        "head_sha_of_pr": head.get("sha", status.get("head_sha")),
+        "head_jobs": head.get("jobs", status.get("jobs")),
+        "head_all_jobs_conclusion": head.get("all_jobs_conclusion", status.get("all_jobs_conclusion")),
+        "head_artifact_digest": head_artifact.get("digest") or (status.get("artifact") or {}).get("digest"),
+        "port_pr": (status.get("port") or {}).get("pr"),
+        "port_head_ci": (status.get("port") or {}).get("ci_run", {}),
         "chain_verdict": chain.get("verdict"),
         "chain_compose_version": chain.get("compose_version"),
     }

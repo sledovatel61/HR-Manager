@@ -479,7 +479,14 @@ def materialise_reviewed_tree(runner: Runner, base_ref: str, overlay_ref: str | 
         return False
 
     composition: dict[str, Any] = {"baseline_tree": base_ref, "overlay_commit": None, "overlay_files": {}}
-    if overlay_ref and overlay_ref != base_ref:
+    # An overlay is only needed when the extracted tree is incomplete (a branch
+    # that does not carry PR #34's files). Once the PR-34 tree is merged into the
+    # reviewed revision, the archive alone is the complete tree under test.
+    tree_complete = (dest / "tools" / "license-issuer" / "cli.py").is_file()
+    if tree_complete and overlay_ref and overlay_ref != base_ref:
+        runner.info("issue_fix_overlay",
+                    f"tree of {base_ref[:7]} is complete (carries the whole issuer), no overlay needed")
+    if overlay_ref and overlay_ref != base_ref and not tree_complete:
         code, out, err = runner.run(["git", "-C", str(REPO), "diff", "--name-only", f"{overlay_ref}^", overlay_ref])
         if code != 0:
             runner.not_run("issue_fix_overlay", f"git diff failed: {err.strip()[:160]}")
@@ -1085,8 +1092,16 @@ def main() -> int:
     work = Path(tempfile.mkdtemp(prefix="hrm-issuer-evidence-"))
     runner = Runner(python_bin=args.python, node_bin=args.node or None, work=work, ref=ref)
     try:
-        # primary run: the PR-head tree with the fix commit overlaid
-        collect(runner, work, args.compare_ref, overlay_ref=ref)
+        # Primary run. Prefer the reviewed revision's own tree; if that tree does
+        # not carry the issuer sources (a branch without PR #34's files), fall back
+        # to the baseline tree with the reviewed revision's files overlaid.
+        code, _, _ = Runner("", None, work, ref).run(
+            ["git", "-C", str(REPO), "cat-file", "-e", f"{ref}:{ISSUER}/cli.py"]
+        )
+        tree_has_issuer = code == 0
+        runner.facts["reviewed_tree_contains_issuer_sources"] = tree_has_issuer
+        primary_base = ref if tree_has_issuer else args.compare_ref
+        collect(runner, work, primary_base, overlay_ref=ref)
 
         # --- before/after baseline for the fix-sensitive checks -------------
         fixes: list[dict[str, str]] = []

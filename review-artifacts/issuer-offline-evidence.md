@@ -1,7 +1,7 @@
 # Offline issuer — evidence from automated Linux checks (redacted)
 
-- generated: 2026-09-24T08:11:37Z
-- reviewed commit: `c515a490db354436dbd0d18115e28ef5d8ece132`
+- generated: 2026-09-24T08:53:55Z
+- reviewed commit: `f85a362d34a7d30dea292ba67324781852180d33`
 - tool: `review-artifacts/gen_issuer_offline_evidence.py` (re-runs every check below)
 - host: Linux review sandbox — **not** the owner's Windows VM
 
@@ -11,11 +11,11 @@
 
 ## Summary: {"PASS": 39, "INFO": 3, "GAP": 3, "NOT RUN": 8}
 
-- reviewed commit: `c515a490db354436dbd0d18115e28ef5d8ece132` · baseline (negative control): `e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784`
+- reviewed commit: `f85a362d34a7d30dea292ba67324781852180d33` · baseline (negative control): `e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784`
 
 | step | status | detail |
 |---|---|---|
-| `issuer_sources_of_reviewed_commit` | PASS | PR-head tree e59aa5b extracted outside the repo, fix commit c515a49 overlaid: .gitignore, tools/license-issuer/build.ps1 |
+| `issuer_sources_of_reviewed_commit` | PASS | PR-head tree f85a362 extracted outside the repo (no overlay: this is the revision before the fix, used as the negative control) |
 | `python_issuer_has_no_network_primitives` | PASS | 3 files scanned (cli.py, gui.py, license_issuer.py): no socket/urllib/requests/subprocess/webbrowser usage |
 | `html_has_no_network_apis` | PASS | none of ['fetch(', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'sendBeacon', 'importScripts'] appear in license-issuer.html |
 | `html_loads_no_external_resources` | PASS | only local <script src="nacl-fast.js">; no http(s) src/href/@import/url() in the page |
@@ -31,7 +31,7 @@
 | `smoke_test_never_prints_key_material` | PASS | the smoke test compares the captured output with the private key it just created and turns the build into an error if key material ever reaches the build log |
 | `build_ps1_here_strings_and_encoding` | PASS | here-strings 4 open / 4 closed, no U+FFFD in the file. The brace/parenthesis counters are only an approximation (see INFO step): the authoritative PowerShell parser is not available here (no pwsh) and runs in CI on windows-latest |
 | `build_ps1_brace_paren_balance_approx_not_decisive` | INFO | brace/parenthesis counters outside strings/comments are approximate for PowerShell (measured: {"{": -1, "(": 1}); they can be non-zero for correct code, so they are not used as a verdict - syntax validation happens with PowerShell 5.1 in CI and on the owner VM |
-| `no_key_material_committed` | PASS | 505 tracked files: no *.hrmlicense, no infra/license/public_key.b64, no keys/ directory, no 64-hex literal in tools/license-issuer/*.py |
+| `no_key_material_committed` | PASS | 529 tracked files: no *.hrmlicense, no infra/license/public_key.b64, no keys/ directory, no 64-hex literal in tools/license-issuer/*.py |
 | `gitignore_blocks_key_and_license_material` | PASS | .gitignore covers keys/, private_key.hex, *.hrmlicense, public_key.b64, license-issuer-dist.zip: a stray private key, public key or issued license is no longer staged by `git add -A` |
 | `gitignore_patterns_hide_no_tracked_file` | PASS | `git ls-files -ci --exclude-standard` is empty: no already-tracked file matches the new patterns (infra/license/public_key.b64 was never tracked) |
 | `cli_gen_keypair_offline` | PASS | cli.py gen-keypair: exit 0, offline (see network harness below) |
@@ -51,7 +51,7 @@
 | `html_accepts_expires_at_in_the_past` | GAP | HTML issuer signed a license whose expires_at is in the past (no issued_at<=expires_at check) |
 | `html_signs_control_char_client_name` | GAP | HTML issuer signed a client_name containing a control character (backend rejects such payloads) |
 | `html_makes_no_network_calls` | PASS | the page's own inline script ran with net.Socket.connect / dns.lookup / http(s).request / fetch / WebSocket denied and recorded 0 attempts, for both the WebCrypto and the TweetNaCl path |
-| `emulated_runner_serves_page` | PASS | `-m http.server 8791 -b 127.0.0.1 --directory /tmp/hrm-issuer-evidence-b0we7ope/serverdir` (the fixed launcher's command line): GET /license-issuer.html on 127.0.0.1 -> HTTP 200, 17087 bytes, byte-identical to the file: True. Emulated with the host Linux Python 3.11.2; the Windows launcher run-html.bat itself was NOT executed |
+| `emulated_runner_serves_page` | PASS | `-m http.server 8791 -b 127.0.0.1 --directory /tmp/hrm-issuer-evidence-3vivd4bj/serverdir` (the fixed launcher's command line): GET /license-issuer.html on 127.0.0.1 -> HTTP 200, 17087 bytes, byte-identical to the file: True. Emulated with the host Linux Python 3.11.2; the Windows launcher run-html.bat itself was NOT executed |
 | `run_html_bat_loopback_only_measured` | PASS | same interpreter, same command line as the launcher: with `-b 127.0.0.1` the server process listens on [('127.0.0.1', 8791)] only; the control run without -b (the previous launcher, which the fix removes) listens on [('0.0.0.0', 8792)] - i.e. reachable from the LAN. Listen sockets are attributed to the server's own PID via /proc/<pid>/fd, because this sandbox has a platform proxy that also listens on the host address |
 | `backend_verifies_cli_license` | PASS | app.services.license_service.parse_and_verify_license_text + validate_time_consistency accepted it (endpoint path: POST /license/upload -> upload_license_json) |
 | `backend_verifies_html_webcrypto_license` | PASS | backend accepted the license produced by the HTML issuer |

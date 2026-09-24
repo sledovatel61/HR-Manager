@@ -200,5 +200,104 @@
     "conclusion": "success",
     "jobs_conclusion": "success (6/6: Frontend checks, Release pipeline fail-closed policy, Backend integration tests (PostgreSQL), Backend checks, Windows engine tests + installer smoke, Compose stack smoke test)",
     "scope_note": "docs/artifacts only - the issuer sources are identical to the fix commit c515a49 (tool blobs verified by sha256 in this file), so this run adds no new runtime information about the issuer."
+  },
+  "port": {
+    "pr": 36,
+    "url": "https://github.com/sledovatel61/HR-Manager/pull/36",
+    "base_branch": "arena/01a0ccb9-hr-manager",
+    "base_sha": "e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784",
+    "head_branch": "arena/01a0d255-hr-manager",
+    "head_sha": "f85a362d34a7d30dea292ba67324781852180d33",
+    "how": "The session branch merged the PR #34 branch into itself (commit f85a362, conflicts resolved in favour of the fixed files), so PR #36 shows exactly the fix diff against the PR #34 branch and merging it is what lands the fixes there. This session is pinned to arena/01a0d255-hr-manager, so it cannot push to the PR #34 branch directly.",
+    "diff_against_base": [
+      " .gitignore (+8)",
+      " tools/license-issuer/build.ps1 (57 lines changed)",
+      " review-artifacts/* (evidence only)"
+    ],
+    "not_merged": true,
+    "state": "OPEN; merge intentionally NOT performed - the owner decides, and not before the Windows runtime evidence exists",
+    "ci_run": {
+      "run_id": 35977017563,
+      "url": "https://github.com/sledovatel61/HR-Manager/actions/runs/35977017563",
+      "event": "pull_request",
+      "head_sha": "f85a362d34a7d30dea292ba67324781852180d33",
+      "conclusion": "success",
+      "jobs": {
+        "Backend checks": {
+          "id": 107559790351,
+          "conclusion": "success"
+        },
+        "Frontend checks": {
+          "id": 107559790445,
+          "conclusion": "success"
+        },
+        "Release pipeline fail-closed policy (ephemeral test signature)": {
+          "id": 107559790493,
+          "conclusion": "success"
+        },
+        "Backend integration tests (PostgreSQL)": {
+          "id": 107559790502,
+          "conclusion": "success"
+        },
+        "Windows engine tests + installer smoke": {
+          "id": 107559790507,
+          "conclusion": "success"
+        },
+        "Compose stack smoke test (dev + prod overlay)": {
+          "id": 107560788159,
+          "conclusion": "success"
+        }
+      },
+      "chain_steps": {
+        "Pilot overlay — license public-key chain (real docker compose)": "success",
+        "Print pilot license-chain report (verbatim, redacted by construction)": "success",
+        "Upload pilot license-chain evidence (redacted fingerprints only)": "success"
+      },
+      "chain_artifact": {
+        "name": "compose-pilot-license-chain",
+        "id": 10798503119,
+        "bytes": 2254,
+        "digest": "sha256:0f4772f9b81c9ddd8b629ead78c6f00337f0897b6470dda0ddcabd6a4ce629dc"
+      },
+      "other_artifacts": [
+        {
+          "name": "pilot-drill-backend",
+          "id": 10798722030,
+          "digest": "sha256:3c7c14d3ca9bc00267be8bccdc2b2b5caeaec2e47457a645635d4a7a1edefe20"
+        },
+        {
+          "name": "authenticode-logs",
+          "id": 10799031449,
+          "digest": "sha256:24a048efdcb0f9a2c1451aa63666a7e5d7efcd3444a148b33fca51c4a827333d"
+        },
+        {
+          "name": "pilot-drill-windows",
+          "id": 10799056616,
+          "digest": "sha256:e081f17ce3e0682c4adc547d0e1d37fe434f1d2704d26b8f1ec3147adb952f25"
+        },
+        {
+          "name": "signed-installer-diagnostic",
+          "id": 10799081485,
+          "digest": "sha256:fe7e912c95ce629ac24b2134edc1e2ab742190ad9d47535b6ac90fe8ea8dbe01"
+        },
+        {
+          "name": "pilot-drill-integration",
+          "id": 10799220072,
+          "digest": "sha256:fcb71478929f5d1bda7b7b0e420e9da8ca10f5599a3a3d8cc09c5a551d834d42"
+        },
+        {
+          "name": "hr-manager-windows-setup",
+          "id": 10799355576,
+          "digest": "sha256:526c1e71b107cf08c9e910641328e057af06823b9277c58a9d9f22a5b89413f8"
+        }
+      ],
+      "duplicate_run_for_the_same_head": {
+        "run_id": 35977008271,
+        "conclusion": "success",
+        "note": "GitHub created two runs for f85a362 (one was triggered while the earlier bridge PR #35 still existed, which was then closed); both are green."
+      },
+      "scope_note": "This run uses the branch tree, which contains PR #34's ci.yml, so it DOES execute the three license-chain steps and uploads the chain artifact - unlike the runs of the pre-merge commits. It still does not execute build.ps1 / run-gui.bat / run-html.bat.",
+      "why_chain_body_not_reimported": "The artifact zip and the job log of run 35977017563 are not readable from the review sandbox (storage answers EOF, exactly as for run 35965657324). Step conclusions and the artifact id/digest come from the REST API."
+    }
   }
 }
