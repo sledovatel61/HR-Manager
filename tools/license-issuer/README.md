@@ -63,10 +63,11 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 Что делает build.ps1 (воспроизводимый, fail-closed):
 - Скачивает embeddable Python с python.org (только на этапе сборки)
 - Устанавливает cryptography в `Lib/site-packages` (только на этапе сборки, нужен интернет один раз)
+- Добавляет **tkinter/Tcl/Tk** для GUI: embeddable Python поставляется без tkinter (`run-gui.bat` падал с `No module named 'tkinter'`). Берётся официальный `tcltk.msi` той же версии с python.org и распаковывается административно (`msiexec /a`: без записей в реестр, ничего не устанавливается): `_tkinter.pyd` + DLL Tcl/Tk → `python\`, пакет → `python\tkinter`, библиотеки → `python\tcl`. Проверка: `import tkinter; tkinter.Tcl()` bundled-интерпретатором, иначе exit 1
 - Переписывает `python312._pth` детерминированно: `python312.zip`, `.`, `..\license-issuer`, `Lib\site-packages`, `import site`. Без `..\license-issuer` embeddable Python (он игнорирует `PYTHONPATH` и не добавляет каталог скрипта в `sys.path`) не импортирует соседний `license_issuer.py` — `run-cli.bat` падал с `ModuleNotFoundError: No module named 'license_issuer'`
 - Копирует `nacl-fast.js` (TweetNaCl 1.0.3, 2391 строка, из npm, public domain) для fallback
 - Создаёт launchers `run-gui.bat`, `run-cli.bat`, `run-html.bat` — используют `..\python\python.exe`, **fail-closed** если bundled Python отсутствует (никакого fallback на системный Python), `cd /d "%~dp0"` + кавычки вокруг всех путей (работает с путями, содержащими пробелы), `PYTHONUTF8=1`
-- `run-html.bat` слушает **только `127.0.0.1`** (`python -m http.server 8765 -b 127.0.0.1 --directory "<app>"`), а не `0.0.0.0`
+- `run-html.bat` слушает **только `127.0.0.1`** (`python -m http.server 8765 -b 127.0.0.1 --directory "%SCRIPT_DIR%."`), а не `0.0.0.0`. Точка в конце обязательна: `%~dp0` заканчивается на `\`, а `\"` в разборе argv Windows — экранированная кавычка (без точки сервер отдавал 404 на все запросы). Браузер открывается через ~2 с после старта сервера; `HRM_NO_BROWSER=1` / `HRM_NO_PAUSE=1` — для автоматических запусков
 - Smoke-тест полной цепочки `gen-keypair -> issue -> verify` в временной директории **вне репозитория**; если приватный ключ появляется в выводе — билд падает; каталог удаляется после завершения
 - Создаёт zip
 - Любой сбой (скачивание, pip, импорт cryptography, smoke-тест) завершает билд ненулевым кодом
