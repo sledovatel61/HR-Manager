@@ -1,0 +1,354 @@
+{
+  "generated_at": "2026-09-24T07:41:00Z",
+  "generator": "review-artifacts/gen_issuer_offline_evidence.py (runs the real issuer code; no declarations)",
+  "scope": {
+    "pr": 34,
+    "reviewed_commit": "e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784",
+    "host": "Linux review sandbox (no Windows, no virtualisation/KVM, no wine) - NOT the owner VM",
+    "what_this_proves": [
+      "the issuer sources of the reviewed commit are consistent, offline-only and cross-compatible with the backend verifier",
+      "a license produced by the Python core and by the HTML page verifies with the backend's own license_service.parse_and_verify_license_text"
+    ],
+    "what_this_does_not_prove": [
+      "that run-gui.bat / run-html.bat start on a clean Windows 10/11 VM",
+      "that the bundles work without system Python (build.ps1 was never executed)",
+      "that Windows makes no network request while issuing (see verdict: still NO-GO)"
+    ]
+  },
+  "summary": {
+    "PASS": 30,
+    "INFO": 2,
+    "GAP": 8,
+    "NOT RUN": 8
+  },
+  "facts": {
+    "reviewed_files": {
+      "tools/license-issuer/build.ps1": {
+        "exists": true,
+        "bytes": 12766,
+        "lines": 293,
+        "sha256_prefix": "b31ff5eb3be672a0"
+      },
+      "tools/license-issuer/cli.py": {
+        "exists": true,
+        "bytes": 5866,
+        "lines": 118,
+        "sha256_prefix": "c67948c74d71f277"
+      },
+      "tools/license-issuer/gui.py": {
+        "exists": true,
+        "bytes": 11204,
+        "lines": 207,
+        "sha256_prefix": "a11efc86a016e9cb"
+      },
+      "tools/license-issuer/license_issuer.py": {
+        "exists": true,
+        "bytes": 5380,
+        "lines": 153,
+        "sha256_prefix": "07d00689557d5e45"
+      },
+      "tools/license-issuer/license-issuer.html": {
+        "exists": true,
+        "bytes": 17087,
+        "lines": 329,
+        "sha256_prefix": "d8b39349bf86a2f3"
+      },
+      "tools/license-issuer/nacl-fast.js": {
+        "exists": true,
+        "bytes": 61966,
+        "lines": 2391,
+        "sha256_prefix": "6bcd37a3b20dce91"
+      },
+      "tools/license-issuer/README.md": {
+        "exists": true,
+        "bytes": 10980,
+        "lines": 163,
+        "sha256_prefix": "0f02de19eb87fb13"
+      },
+      "backend/app/license.py": {
+        "exists": true,
+        "bytes": 10647,
+        "lines": 296,
+        "sha256_prefix": "451c1f2a9d1509b6"
+      },
+      "backend/app/services/license_service.py": {
+        "exists": true,
+        "bytes": 9806,
+        "lines": 276,
+        "sha256_prefix": "3ff96fe555a924d0"
+      }
+    },
+    "launchers": {
+      "generated_by_build_ps1": {
+        "runGuiBat": {
+          "bytes": 570,
+          "sha256_prefix": "ea7d76436a6a756c"
+        },
+        "runCliBat": {
+          "bytes": 334,
+          "sha256_prefix": "b345a6a65c851da5"
+        },
+        "runHtmlBat": {
+          "bytes": 738,
+          "sha256_prefix": "0d836f98b025edb3"
+        }
+      },
+      "committed_bat_files_in_repo": []
+    },
+    "tracked_files_scanned_for_key_material": 525,
+    "gitignore_entries_for_owner_material": [],
+    "cryptography_version": "50.0.1",
+    "cli_public_key": "rREl...s= (44 chars, redacted)",
+    "cli_private_key_length": 64,
+    "emulated_runner_listen_addresses": [
+      "0.0.0.0"
+    ],
+    "backend_public_key_fingerprint": "SHA256:c257e7746a94362b... (redacted)"
+  },
+  "steps": [
+    {
+      "id": "issuer_sources_of_reviewed_commit",
+      "status": "PASS",
+      "detail": "extracted from e59aa5b into a temp dir outside the repo"
+    },
+    {
+      "id": "python_issuer_has_no_network_primitives",
+      "status": "PASS",
+      "detail": "3 files scanned (cli.py, gui.py, license_issuer.py): no socket/urllib/requests/subprocess/webbrowser usage"
+    },
+    {
+      "id": "html_has_no_network_apis",
+      "status": "PASS",
+      "detail": "none of ['fetch(', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'sendBeacon', 'importScripts'] appear in license-issuer.html"
+    },
+    {
+      "id": "html_loads_no_external_resources",
+      "status": "PASS",
+      "detail": "only local <script src=\"nacl-fast.js\">; no http(s) src/href/@import/url() in the page"
+    },
+    {
+      "id": "html_url_strings_are_text_only",
+      "status": "INFO",
+      "detail": "4 absolute URL(s) appear in license-issuer.html, all inside human-readable text (jsdelivr fallback hint / documentation), none as a resource reference"
+    },
+    {
+      "id": "nacl_fast_js_has_no_network_apis",
+      "status": "PASS",
+      "detail": "nacl-fast.js (61966 chars, 2391 lines) contains no fetch/XHR/WebSocket/HTTP access"
+    },
+    {
+      "id": "no_bat_files_committed",
+      "status": "PASS",
+      "detail": "no run-gui.bat / run-html.bat anywhere in the reviewed commit: they exist only as PowerShell here-strings inside build.ps1 and are written by build.ps1 at build time"
+    },
+    {
+      "id": "run_gui_bat_contract",
+      "status": "PASS",
+      "detail": "run-gui.bat (from build.ps1): bundled %~dp0..\\python\\python.exe, gui.py, fail-closed exit /b 1 when the bundle is incomplete (570 bytes)"
+    },
+    {
+      "id": "run_html_bat_contract",
+      "status": "PASS",
+      "detail": "run-html.bat (from build.ps1, 738 bytes): bundled python -m http.server on port 8765 serving the bundle dir, then opens http://localhost:8765/license-issuer.html"
+    },
+    {
+      "id": "run_html_bat_autonomy_contradiction",
+      "status": "GAP",
+      "detail": "run-html.bat silently falls back to a system 'python' when the bundled interpreter is missing, while the same file's comment, HOWTO.txt and README promise 'no system Python needed'; run-gui.bat/run-cli.bat fail closed instead. On a clean Windows VM without Python this yields a confusing 'python is not recognized' error instead of the clear message."
+    },
+    {
+      "id": "run_html_bat_opens_browser_before_server",
+      "status": "GAP",
+      "detail": "run-html.bat opens the browser before starting the HTTP server, and does not check the port: a slow start or an occupied port 8765 shows 'site can't be reached' even though the bundle is fine"
+    },
+    {
+      "id": "run_html_bat_binds_all_interfaces",
+      "status": "GAP",
+      "detail": "run-html.bat runs `python -m http.server 8765` without -b: http.server binds 0.0.0.0, so while the window is open the bundle directory (and any key file the owner saved next to it) is reachable from the LAN. Windows firewall may also prompt. Passing -b 127.0.0.1 fixes it."
+    },
+    {
+      "id": "no_key_material_committed",
+      "status": "PASS",
+      "detail": "525 tracked files: no *.hrmlicense, no infra/license/public_key.b64, no keys/ directory, no 64-hex literal in tools/license-issuer/*.py"
+    },
+    {
+      "id": "gitignore_does_not_cover_owner_material",
+      "status": "GAP",
+      "detail": ".gitignore has no entry for keys/, private_key.hex or *.hrmlicense. build.ps1 step 5 runs `cli.py gen-keypair` without --out-dir, so the maintainer's smoke test writes keys\\private_key.hex relative to the current working directory - inside the git work tree when build.ps1 is started from the repo root - and `git add -A` would stage a private key."
+    },
+    {
+      "id": "cli_gen_keypair_offline",
+      "status": "PASS",
+      "detail": "cli.py gen-keypair: exit 0, offline (see network harness below)"
+    },
+    {
+      "id": "cli_issue_offline",
+      "status": "PASS",
+      "detail": "cli.py issue: exit 0, offline (see network harness below)"
+    },
+    {
+      "id": "cli_verify_offline",
+      "status": "PASS",
+      "detail": "cli.py verify: exit 0, offline (see network harness below)"
+    },
+    {
+      "id": "cli_makes_no_network_calls",
+      "status": "PASS",
+      "detail": "gen-keypair + issue + verify ran under a socket-denying harness (socket.connect/connect_ex/sendto/getaddrinfo/create_connection raise) and recorded 0 network API attempts"
+    },
+    {
+      "id": "no_private_key_in_cli_output",
+      "status": "PASS",
+      "detail": "stdout+stderr of gen-keypair/issue/verify contain the file paths and license metadata only; the 64-hex private key never appears"
+    },
+    {
+      "id": "html_webcrypto_keypair",
+      "status": "PASS",
+      "detail": "priv=64 hex chars, pub=44 base64 chars"
+    },
+    {
+      "id": "html_webcrypto_issue",
+      "status": "PASS",
+      "detail": "fields=client_name,expires_at,issued_at,license_id,max_active_users,signature"
+    },
+    {
+      "id": "html_webcrypto_used_webcrypto_not_fallback",
+      "status": "PASS",
+      "detail": "crypto.subtle.sign calls=1, nacl.sign.detached calls=0, nacl keypair calls=0 (Edge 120+/Chrome 120+ path)"
+    },
+    {
+      "id": "html_webcrypto_self_verify",
+      "status": "PASS",
+      "detail": "issuer verifies its own signature"
+    },
+    {
+      "id": "html_webcrypto_verifies_cli_license",
+      "status": "PASS",
+      "detail": "HTML issuer accepts a license signed by the Python issuer core"
+    },
+    {
+      "id": "html_nacl_status_line",
+      "status": "INFO",
+      "detail": "0 alert(s); page status line: Лицензия выпущена и подписана."
+    },
+    {
+      "id": "html_nacl_issue",
+      "status": "PASS",
+      "detail": "fallback signing path without crypto.subtle"
+    },
+    {
+      "id": "html_nacl_verifies_cli_license",
+      "status": "PASS",
+      "detail": "fallback verify path"
+    },
+    {
+      "id": "html_nacl_used_tweetnacl_fallback",
+      "status": "PASS",
+      "detail": "crypto.subtle removed: nacl.sign.detached calls=1, nacl verify calls=1, nacl keypair calls=2 (Windows file:// path, Edge without secure context)"
+    },
+    {
+      "id": "html_accepts_expires_at_in_the_past",
+      "status": "GAP",
+      "detail": "HTML issuer signed a license whose expires_at is in the past (no issued_at<=expires_at check)"
+    },
+    {
+      "id": "html_signs_control_char_client_name",
+      "status": "GAP",
+      "detail": "HTML issuer signed a client_name containing a control character (backend rejects such payloads)"
+    },
+    {
+      "id": "html_makes_no_network_calls",
+      "status": "PASS",
+      "detail": "the page's own inline script ran with net.Socket.connect / dns.lookup / http(s).request / fetch / WebSocket denied and recorded 0 attempts, for both the WebCrypto and the TweetNaCl path"
+    },
+    {
+      "id": "emulated_runner_serves_page",
+      "status": "PASS",
+      "detail": "python -m http.server 8791 --directory <bundle>: GET /license-issuer.html -> HTTP 200, 17087 bytes, byte-identical to the file: True. Emulated with the host Linux Python 3.11.2 (cryptography 50.0.1); the Windows launcher run-html.bat itself was NOT executed"
+    },
+    {
+      "id": "http_server_binds_all_interfaces_measured",
+      "status": "GAP",
+      "detail": "the runner's `python -m http.server` listens on 0.0.0.0 (measured on this host): the bundle directory is reachable from the LAN for as long as the window is open"
+    },
+    {
+      "id": "backend_verifies_cli_license",
+      "status": "PASS",
+      "detail": "app.services.license_service.parse_and_verify_license_text + validate_time_consistency accepted it (endpoint path: POST /license/upload -> upload_license_json)"
+    },
+    {
+      "id": "backend_verifies_html_webcrypto_license",
+      "status": "PASS",
+      "detail": "backend accepted the license produced by the HTML issuer"
+    },
+    {
+      "id": "backend_verifies_html_nacl_license",
+      "status": "PASS",
+      "detail": "backend accepted the license produced by the HTML issuer"
+    },
+    {
+      "id": "backend_rejects_tampered_field",
+      "status": "PASS",
+      "detail": "tampered max_active_users -> LicenseError code=bad_signature"
+    },
+    {
+      "id": "backend_rejects_wrong_public_key",
+      "status": "PASS",
+      "detail": "wrong public key -> LicenseError code=bad_signature"
+    },
+    {
+      "id": "python_cli_refuses_past_expiry",
+      "status": "PASS",
+      "detail": "refused with ValueError: issued_at date cannot be after expires_at"
+    },
+    {
+      "id": "python_cli_signs_control_char_client_name",
+      "status": "GAP",
+      "detail": "python issuer core signs a client_name with a control character (backend rejects such payloads); reachable from the CLI via a shell argument"
+    },
+    {
+      "id": "windows_vm_run_gui_bat",
+      "status": "NOT RUN",
+      "detail": "double-click run-gui.bat on a clean Windows 10/11 VM without Python/pip/internet - needs the owner's VM; NOT executed here (this sandbox has no Windows, no virtualisation and no KVM)"
+    },
+    {
+      "id": "windows_vm_run_html_bat",
+      "status": "NOT RUN",
+      "detail": "double-click run-html.bat, browser opens http://localhost:8765/license-issuer.html"
+    },
+    {
+      "id": "windows_vm_issue_license_via_gui",
+      "status": "NOT RUN",
+      "detail": "issue a real .hrmlicense through the Tkinter GUI on the VM"
+    },
+    {
+      "id": "windows_vm_issue_license_via_html",
+      "status": "NOT RUN",
+      "detail": "issue a real .hrmlicense through the HTML page on the VM's Edge"
+    },
+    {
+      "id": "windows_vm_no_network_capture",
+      "status": "NOT RUN",
+      "detail": "confirm with Wireshark / Resource Monitor that the issuer performs no outbound connection (loopback HTTP server from run-html.bat excluded)"
+    },
+    {
+      "id": "windows_vm_no_private_key_in_logs_or_artifacts",
+      "status": "NOT RUN",
+      "detail": "after issuing, grep the VM's Temp/AppData/logs and the bundle dir for the private key hex"
+    },
+    {
+      "id": "gui_tkinter_runtime",
+      "status": "NOT RUN",
+      "detail": "gui.py executed (Tkinter needs a desktop session; static review only here)"
+    },
+    {
+      "id": "bundle_build_with_embeddable_python",
+      "status": "NOT RUN",
+      "detail": "build.ps1 executed (downloads python.org embeddable + get-pip at build time; not possible from this sandbox)"
+    }
+  ],
+  "privacy": {
+    "redaction": "private keys, public keys, signatures and license bodies never appear; only fingerprints, lengths and booleans",
+    "pii": "the test license uses the synthetic client name 'Синтетический Пилот (синтетическое тестовое значение)'; no real client name is used or stored"
+  }
+}
