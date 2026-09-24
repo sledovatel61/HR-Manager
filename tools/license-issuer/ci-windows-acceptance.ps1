@@ -303,6 +303,28 @@ function Get-ProcInfo([datetime]$Since, $Pids) {
     }
     return ,$out
 }
+function Get-DnsByOwner([datetime]$Since, [datetime]$CreationsSince) {
+    # PIDs are reused by Windows: a DNS event is attributed to the process that owned the PID AT THE
+    # TIME OF THE EVENT = the latest 4688 creation with that PID before the event (run e23eeb4: a
+    # 'wpad' lookup by Edge's NetworkService, PID reused from an exited bundled python, was
+    # previously miscounted as bundled python).
+    $creations = New-Object System.Collections.ArrayList
+    foreach ($e in @(Get-WinEvent -FilterHashtable @{ LogName = "Security"; Id = 4688; StartTime = $CreationsSince } -ErrorAction SilentlyContinue)) {
+        $x = [xml]$e.ToXml(); $d = @{}
+        foreach ($n in $x.Event.EventData.Data) { $d[[string]$n.GetAttribute("Name")] = [string]$n.InnerText }
+        [void]$creations.Add([pscustomobject]@{ ProcId = [Convert]::ToInt32(([string]$d["NewProcessId"]).Substring(2), 16); Time = $e.TimeCreated; Image = [string]$d["NewProcessName"] })
+    }
+    $bundledPids = @($creations | Where-Object { $_.Image -like $BundlePyLike } | ForEach-Object { $_.ProcId } | Sort-Object -Unique)
+    $bundled = New-Object System.Collections.ArrayList
+    $reused = New-Object System.Collections.ArrayList
+    foreach ($ev in @(Get-WinEvent -FilterHashtable @{ LogName = "Microsoft-Windows-DNS-Client/Operational"; StartTime = $Since } -ErrorAction SilentlyContinue)) {
+        if ($bundledPids -notcontains $ev.ProcessId) { continue }
+        $owner = @($creations | Where-Object { $_.ProcId -eq $ev.ProcessId -and $_.Time -le $ev.TimeCreated } | Sort-Object Time | Select-Object -Last 1)
+        if ($owner.Count -gt 0 -and $owner[0].Image -notlike $BundlePyLike) { [void]$reused.Add([pscustomobject]@{ Event = $ev; Owner = (Split-Path $owner[0].Image -Leaf) }) }
+        else { [void]$bundled.Add($ev) }
+    }
+    return [pscustomobject]@{ Bundled = $bundled; Reused = $reused }
+}
 function Get-DnsEvents([datetime]$Since, $Pids) {
     return @(Get-WinEvent -FilterHashtable @{ LogName = "Microsoft-Windows-DNS-Client/Operational"; StartTime = $Since } -ErrorAction SilentlyContinue | Where-Object { $Pids -contains $_.ProcessId })
 }
@@ -697,12 +719,15 @@ try {
     $inNonLoop = @($wfp | Where-Object { $_.Direction -eq "%%14592" -and -not (Test-Loopback $_.Source) -and -not (Test-Loopback $_.Dest) })
     $loop = @($wfp | Where-Object { (Test-Loopback $_.Dest) -or (Test-Loopback $_.Source) })
     $pids = Get-BundledPids $tFlows
-    $dns = @(Get-DnsEvents $tFlows $pids)
+    $dnsOwn = Get-DnsByOwner $tFlows $tProbe
+    $dns = @($dnsOwn.Bundled)
+    $dnsReused = @($dnsOwn.Reused)
     $secLog = Get-WinEvent -ListLog Security
     $oldest = (Get-WinEvent -LogName Security -MaxEvents 1 -Oldest).TimeCreated
     $dnsNames = @($dns | Group-Object { $qn = ""; try { if ($_.Properties.Count -gt 0) { $qn = [string]$_.Properties[0].Value } } catch { }; "ev" + $_.Id + " '" + $qn + "'" } | ForEach-Object { $_.Name + " x" + $_.Count })
-    $netDetail = ("window {0:HH:mm:ss}-{1:HH:mm:ss} UTC{2}: {3} bundled python.exe processes (4688); WFP events of bundled python: {4} total, {5} loopback, {6} outbound to non-loopback (TCP/UDP incl. HTTP 80/HTTPS 443/any proxy), {7} inbound from non-loopback; DNS-Client events with a bundled PID: {8}; Security log {9:N0} MB of {10:N0} MB, oldest event {11:HH:mm:ss} (retention covers the window)" -f $tFlows, (Get-Date), ([TimeZoneInfo]::Local.BaseUtcOffset.TotalHours.ToString("+0;-0")), $pids.Count, $wfp.Count, $loop.Count, $outNonLoop.Count, $inNonLoop.Count, $dns.Count, ($secLog.FileSize / 1MB), ($secLog.MaximumSizeInBytes / 1MB), $oldest)
+    $netDetail = ("window {0:HH:mm:ss}-{1:HH:mm:ss} UTC{2}: {3} bundled python.exe processes (4688); WFP events of bundled python: {4} total, {5} loopback, {6} outbound to non-loopback (TCP/UDP incl. HTTP 80/HTTPS 443/any proxy), {7} inbound from non-loopback; DNS-Client events of bundled python (PID owner at event time, 4688): {8}; Security log {9:N0} MB of {10:N0} MB, oldest event {11:HH:mm:ss} (retention covers the window)" -f $tFlows, (Get-Date), ([TimeZoneInfo]::Local.BaseUtcOffset.TotalHours.ToString("+0;-0")), $pids.Count, $wfp.Count, $loop.Count, $outNonLoop.Count, $inNonLoop.Count, $dns.Count, ($secLog.FileSize / 1MB), ($secLog.MaximumSizeInBytes / 1MB), $oldest)
     if ($outNonLoop.Count -eq 0 -and $inNonLoop.Count -eq 0 -and $dns.Count -eq 0 -and $loop.Count -gt 0 -and $pids.Count -gt 0 -and $oldest -le $tProbe) {
+        if ($dnsReused.Count -gt 0) { $netDetail = $netDetail + ("; excluded as PID reuse (PID of an exited bundled python re-assigned by Windows): {0} DNS event(s) of {1}" -f $dnsReused.Count, ((@($dnsReused | ForEach-Object { $_.Owner + " '" + [string]$_.Event.Properties[0].Value + "'" }) | Sort-Object -Unique) -join ", ")) }
         Add-Result "network-zero-outbound" "PASS" $netDetail
     } else {
         if ($dns.Count -gt 0) {
