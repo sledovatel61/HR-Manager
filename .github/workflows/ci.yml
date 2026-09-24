@@ -695,145 +695,80 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      # Python (bundled embeddable) writes UTF-8; all steps run under the real
-      # Windows PowerShell 5.1 (shell: powershell), and the 5.1-critical code
-      # lives in tools/license-issuer/ci-windows-checks.ps1 (ASCII + UTF-8 BOM,
-      # same encoding contract as build.ps1). Failures are reported to the step
-      # summary (visible in the check-run output) with the offending line.
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
     permissions:
       contents: read
+      # only for the failure-diagnostics comment below (blob logs are not
+      # always reachable for reviewers; the comment carries the tail).
       pull-requests: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: marker probe (summary write probe)
+      - name: Encoding + Windows PowerShell 5.1 parser check (build.ps1 and helpers)
         shell: powershell
         run: |
+          # All Windows PowerShell 5.1 logic lives in the checked-in helper
+          # (ASCII + UTF-8 BOM). Output is mirrored to RUNNER_TEMP so the
+          # failure-diagnostics step below can report it.
           $ErrorActionPreference = "Continue"
-          $log = Join-Path $env:RUNNER_TEMP "marker.txt"
-          "start" | Out-File -FilePath $log
-          "env GITHUB_STEP_SUMMARY = [$env:GITHUB_STEP_SUMMARY]" | Out-File -FilePath $log -Append
-          try {
-            "MARKER-A" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            "summary write OK" | Out-File -FilePath $log -Append
-          } catch {
-            "summary write FAILED: " + $_.Exception.Message | Out-File -FilePath $log -Append
-          }
-          try {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "MARKER-B" -Encoding utf8
-            "add-content OK" | Out-File -FilePath $log -Append
-          } catch {
-            "add-content FAILED: " + $_.Exception.Message | Out-File -FilePath $log -Append
-          }
-          if (Test-Path $env:GITHUB_STEP_SUMMARY) {
-            "summary file exists, size: " + (Get-Item $env:GITHUB_STEP_SUMMARY).Length | Out-File -FilePath $log -Append
-          } else {
-            "summary file missing after writes" | Out-File -FilePath $log -Append
-          }
-          "end" | Out-File -FilePath $log -Append
-          exit 0
-
-      - name: post diagnostics to PR comment
-        if: always()
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = "Continue"
-          $parts = @()
-          $mk = Join-Path $env:RUNNER_TEMP "marker.txt"
-          if (Test-Path $mk) {
-            $parts += "marker.txt content:"
-            $parts += ((Get-Content $mk -Raw -ErrorAction SilentlyContinue) + "<<<END_MARKER")
-          } else {
-            $parts += "marker.txt missing"
-          }
-          if (Test-Path $env:GITHUB_STEP_SUMMARY) {
-            $parts += "GITHUB_STEP_SUMMARY content: [" + (Get-Content $env:GITHUB_STEP_SUMMARY -Raw -ErrorAction SilentlyContinue) + "]"
-          } else {
-            $parts += "GITHUB_STEP_SUMMARY path missing"
-          }
-          $body = "license-issuer-windows diagnostics (run " + $env:GITHUB_RUN_ID + "):" + "`n" + ($parts -join "`n")
-          $res = gh api repos/sledovatel61/HR-Manager/issues/37/comments -f body=$body --jq ".html_url" 2>&1 | Out-String
-          $parts2 = "comment posted: " + $res
-          Write-Host $parts2
-          if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $parts2 -Encoding utf8 }
-
-      - name: build.ps1 encoding + Windows PowerShell 5.1 parser check
-        shell: powershell
-        run: |
-          Write-Host "MARKER-STEP-EXECUTED"
-          "MARKER-STEP-EXECUTED" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          exit 1
-      - name: Build autonomous bundle with Windows PowerShell 5.1
-        if: always()
-        shell: powershell
-        run: |
-          # Diagnostics wrapper (pure ASCII, forward-slash path): any helper
-          # failure - parse error, missing file, check failure - has its
-          # captured output written to the step summary (check-run API).
-          $ErrorActionPreference = "Continue"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "step started: build" -Encoding utf8
-          $helper = "tools/license-issuer/ci-windows-checks.ps1"
-          if (-not (Test-Path $helper)) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "FAIL: helper file missing: $helper" -Encoding utf8
-            exit 1
-          }
-          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $helper -Phase build *>&1 | Out-String
+          $diag = Join-Path $env:RUNNER_TEMP "diag-parser.txt"
+          $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase parser *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
-          Write-Host $out
-          Write-Host "helper exit code: $code"
-          if ($code -ne 0) {
-            $fence = '```'
-            $diag = "helper (build phase) failed with exit code " + $code + "`n" + $fence + "text`n" + $out + "`n" + $fence
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $diag -Encoding utf8
-            exit 1
-          }
+          Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
+          exit $code
+
+      - name: Build autonomous bundle with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          # All Windows PowerShell 5.1 logic lives in the checked-in helper
+          # (ASCII + UTF-8 BOM). Output is mirrored to RUNNER_TEMP so the
+          # failure-diagnostics step below can report it.
+          $ErrorActionPreference = "Continue"
+          $diag = Join-Path $env:RUNNER_TEMP "diag-build.txt"
+          $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase build *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
+          $code = $LASTEXITCODE
+          Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
+          exit $code
 
       - name: Runtime checks from a fresh unzip (spaces in path, no system Python, loopback, fail-closed)
-        if: always()
         shell: powershell
         run: |
-          # Diagnostics wrapper (pure ASCII, forward-slash path).
+          # All Windows PowerShell 5.1 logic lives in the checked-in helper
+          # (ASCII + UTF-8 BOM). Output is mirrored to RUNNER_TEMP so the
+          # failure-diagnostics step below can report it.
           $ErrorActionPreference = "Continue"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "step started: runtime" -Encoding utf8
-          $helper = "tools/license-issuer/ci-windows-checks.ps1"
-          if (-not (Test-Path $helper)) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "FAIL: helper file missing: $helper" -Encoding utf8
-            exit 1
-          }
-          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $helper -Phase runtime *>&1 | Out-String
+          $diag = Join-Path $env:RUNNER_TEMP "diag-runtime.txt"
+          $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase runtime *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
-          Write-Host $out
-          Write-Host "helper exit code: $code"
-          if ($code -ne 0) {
-            $fence = '```'
-            $diag = "helper (runtime phase) failed with exit code " + $code + "`n" + $fence + "text`n" + $out + "`n" + $fence
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $diag -Encoding utf8
-            exit 1
-          }
+          Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
+          exit $code
 
-      - name: final post diagnostics to PR comment
-        if: always()
+      - name: Post failure diagnostics to the pull request
+        if: failure() && github.event_name == 'pull_request'
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           $ErrorActionPreference = "Continue"
-          $parts = @("FINAL diagnostics (run " + $env:GITHUB_RUN_ID + ")")
-          if (Test-Path $env:GITHUB_STEP_SUMMARY) {
-            $sum = Get-Content $env:GITHUB_STEP_SUMMARY -Raw -ErrorAction SilentlyContinue
-            $parts += "GITHUB_STEP_SUMMARY (full):"
-            $parts += ($sum + "<<<END_SUMMARY")
-          } else {
-            $parts += "GITHUB_STEP_SUMMARY path missing"
+          $parts = @("license-issuer-windows FAILED (run " + $env:GITHUB_RUN_ID + ", sha " + $env:GITHUB_SHA.Substring(0, 7) + ")")
+          foreach ($phase in @("parser", "build", "runtime")) {
+            $f = Join-Path $env:RUNNER_TEMP ("diag-" + $phase + ".txt")
+            if (Test-Path $f) {
+              $parts += ("--- " + $phase + " (last 60 lines) ---")
+              $parts += @(Get-Content $f -Tail 60)
+            } else {
+              $parts += ("--- " + $phase + ": not run ---")
+            }
           }
-          $parts += "zip present: " + (Test-Path "tools/license-issuer/dist/license-issuer-dist.zip")
-          $body = ($parts -join "`n")
-          $res = gh api repos/sledovatel61/HR-Manager/issues/37/comments -f body=$body --jq ".html_url" 2>&1 | Out-String
-          Write-Host "final comment posted: $res"
+          $body = $parts -join "`n"
+          # Never publish key-like material: long base64/hex runs are redacted.
+          $body = [regex]::Replace($body, "[A-Za-z0-9+/=]{40,}", "<redacted>")
+          $fence = '```'
+          $body = $fence + "text`n" + $body + "`n" + $fence
+          gh api ("repos/" + $env:GITHUB_REPOSITORY + "/issues/" + $env:PR_NUMBER + "/comments") -f body=$body --jq ".html_url"
+          exit 0
 
   channel-release-policy:
     name: Release pipeline fail-closed policy (ephemeral test signature)

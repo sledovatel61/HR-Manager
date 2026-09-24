@@ -73,6 +73,40 @@ function Invoke-NativeCaptured([string[]]$ArgumentList) {
     return [pscustomobject]@{ Output = $output; ExitCode = $code }
 }
 
+# Run a native command, stream its output to the host, return ONLY the exit
+# code. Build-time native calls (pip, get-pip) must be judged by exit code:
+# under Windows PowerShell 5.1 with a redirected host (CI, logs) native stderr
+# becomes NativeCommandError records, and with ErrorActionPreference=Stop a
+# harmless pip warning would abort the command mid-install.
+function Invoke-NativeLogged([string]$Exe, [string[]]$ArgumentList) {
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Exe @ArgumentList 2>&1 | ForEach-Object { Write-Host $_.ToString() }
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousEap }
+    return $code
+}
+
+# Configure python*._pth deterministically (see the comment at the call site).
+function Set-BundledPth {
+    $pthFiles = @(Get-ChildItem -Path $pythonDir -Filter "python*._pth" -ErrorAction SilentlyContinue)
+    if ($pthFiles.Count -ne 1) {
+        Write-Err "Expected exactly one python*._pth in $pythonDir, found $($pthFiles.Count)"
+        exit 1
+    }
+    $majorMinor = (($PythonVersion -split "\.")[0..1] -join "")
+    $pthContent = @(
+        "python$majorMinor.zip",
+        ".",
+        "..\license-issuer",
+        "Lib\site-packages",
+        "import site"
+    )
+    Set-Content -Path $pthFiles[0].FullName -Value $pthContent -Encoding ASCII
+    Write-Info "Patched $($pthFiles[0].Name): stdlib zip, python dir, ..\license-issuer (app modules), Lib\site-packages, import site"
+}
+
 # 1. Obtain embeddable Python (maintainer step, requires internet once)
 if (-not (Test-Path $pythonDir)) {
     if ($OfflineOnly) {
@@ -98,6 +132,10 @@ if (-not (Test-Path $pythonDir)) {
     # Ensure Lib\site-packages exists
     $sitePkg = Join-Path $pythonDir "Lib\site-packages"
     if (-not (Test-Path $sitePkg)) { New-Item -ItemType Directory -Path $sitePkg -Force | Out-Null }
+    # The stock _pth has "#import site" and no Lib\site-packages, so pip
+    # installed by get-pip would be invisible to "python -m pip". Patch now;
+    # the same idempotent patch runs again below for cached python/ trees.
+    Set-BundledPth
 
     # 2. Install pip + cryptography into embeddable (requires internet once)
     Write-Warn "Installing pip and cryptography into embeddable Python (requires internet once)..."
@@ -113,32 +151,28 @@ if (-not (Test-Path $pythonDir)) {
     if (-not (Test-Path $pyExe)) { Write-Err "python.exe not found in $pythonDir"; exit 1 }
 
     if (Test-Path $getPip) {
-        try {
-            & $pyExe $getPip --no-warn-script-location
-            Write-Info "pip installed"
-        } catch {
-            Write-Warn "pip install failed: $_"
-        }
+        $code = Invoke-NativeLogged $pyExe @($getPip, "--no-warn-script-location")
+        if ($code -eq 0) { Write-Info "pip installed" } else { Write-Warn "get-pip exited with code $code" }
     }
-    # Install cryptography via pip into site-packages (bundled interpreter only)
-    try {
-        & $pyExe -m pip install --no-warn-script-location --upgrade pip
-        & $pyExe -m pip install --no-warn-script-location cryptography --target $sitePkg
-        Write-Info "cryptography installed to $sitePkg"
-    } catch {
-        Write-Warn "pip install cryptography failed: $_"
+    # Install cryptography into site-packages with the bundled interpreter.
+    $code = Invoke-NativeLogged $pyExe @("-m", "pip", "install", "--no-warn-script-location", "--disable-pip-version-check", "cryptography", "--target", $sitePkg)
+    if ($code -ne 0) {
+        Write-Warn "bundled pip install cryptography failed (exit=$code)"
         Write-Warn "Trying system pip at BUILD time only (the artifact still uses the bundled interpreter)..."
-        try {
-            $sysPy = Get-Command python -ErrorAction SilentlyContinue
-            if ($sysPy) {
-                & python -m pip install cryptography --target $sitePkg --no-warn-script-location
-                Write-Info "cryptography installed via system python (build time only)"
-            }
-        } catch {
-            Write-Err "Failed to install cryptography: $_"
+        $sysPy = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $sysPy) {
+            Write-Err "No bundled pip and no system python for the build-time install - cannot continue"
+            exit 1
+        }
+        $code = Invoke-NativeLogged $sysPy.Source @("-m", "pip", "install", "--disable-pip-version-check", "cryptography", "--target", $sitePkg, "--no-warn-script-location", "--only-binary", ":all:", "--platform", "win_amd64", "--python-version", $PythonVersion)
+        if ($code -ne 0) {
+            Write-Err "Failed to install cryptography (exit=$code)"
             Write-Err "Build cannot continue without cryptography - embeddable Python must have cryptography in Lib/site-packages"
             exit 1
         }
+        Write-Info "cryptography installed via system pip (build time only, win_amd64 wheels for Python $PythonVersion)"
+    } else {
+        Write-Info "cryptography installed to $sitePkg"
     }
 } else {
     Write-Info "Embeddable Python already exists at $pythonDir - skipping download"
@@ -153,21 +187,7 @@ if (-not (Test-Path $pythonDir)) {
 # a sibling of python/ in the bundle, so "..\license-issuer" (resolved relative
 # to the python/ directory) makes the modules importable no matter what the
 # current working directory is.
-$pthFiles = @(Get-ChildItem -Path $pythonDir -Filter "python*._pth" -ErrorAction SilentlyContinue)
-if ($pthFiles.Count -ne 1) {
-    Write-Err "Expected exactly one python*._pth in $pythonDir, found $($pthFiles.Count)"
-    exit 1
-}
-$majorMinor = (($PythonVersion -split "\.")[0..1] -join "")
-$pthContent = @(
-    "python$majorMinor.zip",
-    ".",
-    "..\license-issuer",
-    "Lib\site-packages",
-    "import site"
-)
-Set-Content -Path $pthFiles[0].FullName -Value $pthContent -Encoding ASCII
-Write-Info "Patched $($pthFiles[0].Name): stdlib zip, python dir, ..\license-issuer (app modules), Lib\site-packages, import site"
+Set-BundledPth
 
 # Verify cryptography imports in the bundled interpreter (never in a system one)
 $verify = Invoke-NativeCaptured @("-c", "import cryptography; print(cryptography.__version__)")

@@ -21,7 +21,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 
-$Root = Split-Path -Parent $PSScriptRoot   # tools/license-issuer
+$Root = $PSScriptRoot   # this helper lives in tools/license-issuer itself
 $BuildScript = Join-Path $Root "build.ps1"
 $DistZip = Join-Path $Root "dist\license-issuer-dist.zip"
 
@@ -44,23 +44,25 @@ function Report-Fail([string]$title, [string]$detail) {
 try {
     # ------------------------------------------------------------ parser
     if ($Phase -eq "parser") {
+      foreach ($scriptName in @("build.ps1", "ci-windows-checks.ps1", "windows-vm-checklist.ps1")) {
+        $BuildScript = Join-Path $Root $scriptName
         if (-not (Test-Path $BuildScript)) {
-            Report-Fail "parser: build.ps1 not found" "expected: $BuildScript"
+            Report-Fail "parser: $scriptName not found" "expected: $BuildScript"
         }
         $bytes = [System.IO.File]::ReadAllBytes($BuildScript)
         $first = -join ((0..[Math]::Min(7, $bytes.Length - 1)) | ForEach-Object { "{0:X2} " -f $bytes[$_] })
         if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
-            Report-Fail "parser: build.ps1 must start with a UTF-8 BOM (EF BB BF)" ("first bytes: " + $first)
+            Report-Fail "parser: $scriptName must start with a UTF-8 BOM (EF BB BF)" ("first bytes: " + $first)
         }
-        $nonAscii = @($bytes | Where-Object { $_ -ge 0x80 })
+        # The BOM itself (EF BB BF) is the only permitted non-ASCII content:
+        # scan from offset 3.
+        $nonAscii = @()
+        for ($idx = 3; $idx -lt $bytes.Length; $idx++) {
+            if ($bytes[$idx] -ge 0x80) { $nonAscii += ("byte 0x{0:X2} at offset {1}" -f $bytes[$idx], $idx) }
+        }
         if ($nonAscii.Count -ne 0) {
-            $where = @()
-            $idx = 0
-            foreach ($b in $bytes) {
-                if ($b -ge 0x80 -and $where.Count -lt 10) { $where += ("byte 0x{0:X2} at offset {1}" -f $b, $idx) }
-                $idx++
-            }
-            Report-Fail "parser: build.ps1 must be ASCII-only (found $($nonAscii.Count) non-ASCII bytes)" ($where -join "`n")
+            $where = @($nonAscii | Select-Object -First 10)
+            Report-Fail "parser: $scriptName must be ASCII-only (found $($nonAscii.Count) non-ASCII bytes)" ($where -join "`n")
         }
         $tokens = $null
         $errors = $null
@@ -68,11 +70,13 @@ try {
         if ($null -eq $ast) { throw "ParseFile returned no AST" }
         if ($null -ne $errors -and $errors.Count -ne 0) {
             $lines = @($errors | ForEach-Object { "line {0}:{1} {2}" -f $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message })
-            Report-Fail "parser: Windows PowerShell 5.1 found $($errors.Count) parse error(s) in build.ps1" ($lines -join "`n")
+            Report-Fail "parser: Windows PowerShell 5.1 found $($errors.Count) parse error(s) in $scriptName" ($lines -join "`n")
         }
-        $ok = "PASS: UTF-8 BOM present, ASCII-only, 0 parser errors under Windows PowerShell $((Get-Host).Version.ToString())"
+        $ok = "PASS: $scriptName - UTF-8 BOM present, ASCII-only, 0 parser errors under Windows PowerShell $((Get-Host).Version.ToString())"
         Write-Phase $ok
         if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $ok -Encoding utf8 }
+      }
+      $BuildScript = Join-Path $Root "build.ps1"
     }
 
     # ------------------------------------------------------------ build
@@ -83,8 +87,11 @@ try {
         $previousEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & powershell -NoProfile -ExecutionPolicy Bypass -File $BuildScript *>&1 | Tee-Object -FilePath $logFile -Encoding utf8
+            # Tee-Object has no -Encoding in Windows PowerShell 5.1: stream to
+            # the host and collect, then write the log explicitly.
+            $buildLines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $BuildScript *>&1 | ForEach-Object { $line = $_.ToString(); Write-Host $line; $line })
             $code = $LASTEXITCODE
+            Set-Content -Path $logFile -Value $buildLines -Encoding UTF8
         } finally { $ErrorActionPreference = $previousEap }
         Write-Phase "build.ps1 exit code: $code"
         if ($code -ne 0) {
@@ -129,6 +136,15 @@ try {
             } finally { $ErrorActionPreference = $previousEap }
             return [pscustomobject]@{ Output = $out; ExitCode = $exit }
         }
+        function Stop-Tree([System.Diagnostics.Process]$Proc) {
+            # .NET Framework (PS 5.1) has no Process.Kill(entireProcessTree):
+            # taskkill /T also ends the python.exe child of cmd.exe.
+            if ($null -eq $Proc -or $Proc.HasExited) { return }
+            $previousEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try { & taskkill /F /T /PID $Proc.Id 2>&1 | Out-Null } finally { $ErrorActionPreference = $previousEap }
+            [void]$Proc.WaitForExit(5000)
+        }
         function Start-BatCaptured([string]$BatPath, [string]$OutFile) {
             # .NET ProcessStartInfo: the argument string reaches cmd.exe
             # exactly as written (no PowerShell re-quoting).
@@ -162,7 +178,7 @@ try {
             $env:HRM_NO_PAUSE = "1"
 
             # --- CLI chain: gen-keypair -> issue -> verify ---
-            $keysDir = Join-Path $app "ci-keys"
+            $keysDir = Join-Path $root "keys"   # outside the bundle (the bundle is copied later)
             $gen = Run-AndCapture $cli @("gen-keypair", "--out-dir", $keysDir)
             Write-Host $gen.Output
             if ($gen.ExitCode -ne 0) { throw "run-cli.bat gen-keypair failed (exit=$($gen.ExitCode)): $($gen.Output)" }
@@ -171,7 +187,7 @@ try {
             if (-not (Test-Path $privFile) -or -not (Test-Path $pubFile)) { throw "gen-keypair did not create key files" }
             $privHex = (Get-Content $privFile -Raw).Trim()
             if ($privHex -notmatch "^[0-9a-f]{64}$") { throw "private key file does not look like 64 hex chars" }
-            $licDir = Join-Path $app "ci-licenses"
+            $licDir = Join-Path $root "licenses"
             $licFile = Join-Path $licDir "pilot.hrmlicense"
             $issue = Run-AndCapture $cli @("issue", "--private-key-file", $privFile, "--client", "Pilot Maria", "--expires", "2026-12-31", "--max-users", "5", "--out", $licFile)
             Write-Host $issue.Output
@@ -188,10 +204,12 @@ try {
             Write-Phase "CLI chain PASS: gen-keypair -> issue -> verify (bundled python only, no system python on PATH)"
 
             # --- verify must REJECT a tampered license (not vacuous) ---
-            $badFile = Join-Path $app "tampered.hrmlicense"
+            $badFile = Join-Path $root "tampered.hrmlicense"
             $licBad = $lic
             $licBad.max_active_users = 6
-            ($licBad | ConvertTo-Json -Compress) | Set-Content -Path $badFile -Encoding utf8
+            # Write WITHOUT a BOM (Set-Content -Encoding utf8 adds one in 5.1),
+            # so a rejection can only come from the signature check.
+            [System.IO.File]::WriteAllText($badFile, ($licBad | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
             $bad = Run-AndCapture $cli @("verify", "--public-key-file", $pubFile, "--license-file", $badFile)
             if ($bad.ExitCode -eq 0) { throw "verify ACCEPTED a tampered license - verify is not fail-closed" }
             Write-Phase "tampered license correctly rejected (exit=$($bad.ExitCode))"
@@ -249,9 +267,7 @@ try {
             $previousEap = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try { & taskkill /F /PID $listenerPid /T | Out-Null } finally { $ErrorActionPreference = $previousEap }
-            if (-not $htmlProc.WaitForExit(5000)) {
-                try { $htmlProc.Kill($true) } catch { }
-            }
+            Stop-Tree $htmlProc
 
             # --- run-gui.bat: best effort in headless CI; import crash = FAIL ---
             $guiLog = Join-Path $root "gui.log"
@@ -263,7 +279,7 @@ try {
                 throw "GUI crashed at startup (import/runtime error): $guiText"
             }
             if (-not $guiProc.HasExited) {
-                try { $guiProc.Kill($true) } catch { }
+                Stop-Tree $guiProc
                 Write-Phase "GUI check PASS: process stayed alive without import errors (killed after check)"
             } else {
                 Write-Phase ("GUI check WARN: process exited early (code={0}) without traceback - headless CI cannot confirm UI" -f $guiProc.ExitCode)

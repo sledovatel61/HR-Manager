@@ -79,8 +79,10 @@ try {
     $previousEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $buildScript -OutDir $buildDist -PythonVersion $PythonVersion *>&1 | Tee-Object -FilePath (Join-Path $work "build.log") -Encoding utf8 | Out-Host
+        # Tee-Object has no -Encoding in Windows PowerShell 5.1
+        $buildLines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $buildScript -OutDir $buildDist -PythonVersion $PythonVersion *>&1 | ForEach-Object { $line = $_.ToString(); Write-Host $line; $line })
         $buildCode = $LASTEXITCODE
+        Set-Content -Path (Join-Path $work "build.log") -Value $buildLines -Encoding UTF8
     } finally { $ErrorActionPreference = $previousEap }
     Step-Log "build exit code: $buildCode"
     $distZip = Join-Path $buildDist "license-issuer-dist.zip"
@@ -186,7 +188,11 @@ try {
         $ErrorActionPreference = "Continue"
         try { & taskkill /F /PID $listenerPid /T | Out-Null } finally { $ErrorActionPreference = $previousEap }
     }
-    if (-not $htmlProc.WaitForExit(5000)) { try { $htmlProc.Kill($true) } catch { } }
+    if (-not $htmlProc.HasExited) {
+        $previousEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { & taskkill /F /T /PID $htmlProc.Id 2>&1 | Out-Null } finally { $ErrorActionPreference = $previousEap }
+    }
 
     # ------------------------------------------------ 7. GUI best effort (needs a display)
     $guiLog = Join-Path $out "gui.log"
@@ -203,7 +209,9 @@ try {
         Step-Log "GUI process exited early (code=$($guiProc.ExitCode)) without traceback - no display? manual GUI check required"
     } else {
         Step-Pass "GUI process stayed alive without import errors (killed; manual interaction still required)"
-        try { $guiProc.Kill($true) } catch { }
+        $previousEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { & taskkill /F /T /PID $guiProc.Id 2>&1 | Out-Null } finally { $ErrorActionPreference = $previousEap }
     }
 
     # ------------------------------------------------ 8. key-material sweep
