@@ -699,9 +699,6 @@ jobs:
       PYTHONIOENCODING: utf-8
     permissions:
       contents: read
-      # only for the failure-diagnostics comment below (blob logs are not
-      # always reachable for reviewers; the comment carries the tail).
-      pull-requests: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -723,6 +720,13 @@ jobs:
             $tail = [regex]::Replace($tail, "[A-Za-z0-9+/=]{40,}", "<redacted>")
             $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
             Write-Host ("::error title=license-issuer-windows::" + $tail)
+          } else {
+            # Evidence: the helper's own "[phase] ..." result lines (never key
+            # material) as a notice annotation, readable via the API.
+            $ev = (@($lines | Where-Object { $_ -match "^\[(parser|build|runtime)\] " }) -join "`n")
+            $ev = [regex]::Replace($ev, "[A-Za-z0-9+/=]{40,}", "<redacted>")
+            $ev = $ev.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host ("::notice title=license-issuer-windows evidence::" + $ev)
           }
           exit $code
 
@@ -745,6 +749,13 @@ jobs:
             $tail = [regex]::Replace($tail, "[A-Za-z0-9+/=]{40,}", "<redacted>")
             $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
             Write-Host ("::error title=license-issuer-windows::" + $tail)
+          } else {
+            # Evidence: the helper's own "[phase] ..." result lines (never key
+            # material) as a notice annotation, readable via the API.
+            $ev = (@($lines | Where-Object { $_ -match "^\[(parser|build|runtime)\] " }) -join "`n")
+            $ev = [regex]::Replace($ev, "[A-Za-z0-9+/=]{40,}", "<redacted>")
+            $ev = $ev.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host ("::notice title=license-issuer-windows evidence::" + $ev)
           }
           exit $code
 
@@ -767,34 +778,15 @@ jobs:
             $tail = [regex]::Replace($tail, "[A-Za-z0-9+/=]{40,}", "<redacted>")
             $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
             Write-Host ("::error title=license-issuer-windows::" + $tail)
+          } else {
+            # Evidence: the helper's own "[phase] ..." result lines (never key
+            # material) as a notice annotation, readable via the API.
+            $ev = (@($lines | Where-Object { $_ -match "^\[(parser|build|runtime)\] " }) -join "`n")
+            $ev = [regex]::Replace($ev, "[A-Za-z0-9+/=]{40,}", "<redacted>")
+            $ev = $ev.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host ("::notice title=license-issuer-windows evidence::" + $ev)
           }
           exit $code
-
-      - name: Post failure diagnostics to the pull request
-        if: failure() && github.event_name == 'pull_request'
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          $ErrorActionPreference = "Continue"
-          $parts = @("license-issuer-windows FAILED (run " + $env:GITHUB_RUN_ID + ", sha " + $env:GITHUB_SHA.Substring(0, 7) + ")")
-          foreach ($phase in @("parser", "build", "runtime")) {
-            $f = Join-Path $env:RUNNER_TEMP ("diag-" + $phase + ".txt")
-            if (Test-Path $f) {
-              $parts += ("--- " + $phase + " (last 60 lines) ---")
-              $parts += @(Get-Content $f -Tail 60)
-            } else {
-              $parts += ("--- " + $phase + ": not run ---")
-            }
-          }
-          $body = $parts -join "`n"
-          # Never publish key-like material: long base64/hex runs are redacted.
-          $body = [regex]::Replace($body, "[A-Za-z0-9+/=]{40,}", "<redacted>")
-          $fence = '```'
-          $body = $fence + "text`n" + $body + "`n" + $fence
-          gh api ("repos/" + $env:GITHUB_REPOSITORY + "/issues/" + $env:PR_NUMBER + "/comments") -f body=$body --jq ".html_url"
-          exit 0
 
   channel-release-policy:
     name: Release pipeline fail-closed policy (ephemeral test signature)
