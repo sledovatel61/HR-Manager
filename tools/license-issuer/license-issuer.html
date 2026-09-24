@@ -23,14 +23,14 @@ pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap;
 Никогда не коммитьте private_key в git, не добавляйте в установщик, Docker, логи, диагностический архив.<br>
 Сделайте резервную копию в зашифрованном хранилище (VeraCrypt/BitLocker/зашифрованная флешка).<br>
 Публичный ключ (base64 44 символа) скопируйте в <code>infra/license/public_key.b64</code> перед сборкой пилотного образа или в <code>HRM_LICENSE_PUBLIC_KEY</code>.<br>
-<strong>Автономность:</strong> этот HTML работает без интернета. Для secure context (WebCrypto) откройте через <code>run-html.bat</code> (http://localhost:8765) или https. В file:// контексте Edge может блокировать crypto.subtle — тогда используйте <code>run-gui.bat</code> или <code>run-cli.bat</code> из автономного пакета (bundled Python, без интернета, без системного Python).
+<strong>Автономность:</strong> этот HTML работает без интернета. Для secure context (WebCrypto) откройте через <code>run-html.bat</code> (http://127.0.0.1:8765) или https. В file:// контексте Edge может блокировать crypto.subtle — тогда используйте <code>run-gui.bat</code> или <code>run-cli.bat</code> из автономного пакета (bundled Python, без интернета, без системного Python).
 </div>
 
 <h2>1. Ключи (Ed25519)</h2>
 <label>Приватный ключ (64 hex, секретно, 32 байта seed):</label>
-<input id="privHex" type="text" placeholder="64 hex">
+<input id="privHex" type="text" placeholder="64 hex" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true">
 <label>Приватный ключ (base64 32 байта, для справки):</label>
-<input id="privB64" type="text" readonly>
+<input id="privB64" type="text" readonly autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true">
 <label>Публичный ключ (base64 44 символа, для сборки):</label>
 <input id="pubB64" type="text" placeholder="base64">
 <button onclick="genKeypair()">Сгенерировать новую пару (WebCrypto или TweetNaCl fallback)</button>
@@ -129,7 +129,7 @@ async function checkSupport() {
   if (webCryptoOk) {
     setStatus('WebCrypto Ed25519 поддерживается — офлайн подпись готова (Edge 120+/Chrome 120+). Fallback TweetNaCl '+(hasNacl?'доступен':'не загружен (скачайте nacl-fast.js для file://)'), true);
   } else if (hasNacl) {
-    setStatus('WebCrypto Ed25519 НЕ доступен (file:// без secure context или старый браузер) — используется TweetNaCl fallback (офлайн, без интернета). Для WebCrypto откройте через run-html.bat http://localhost:8765', true);
+    setStatus('WebCrypto Ed25519 НЕ доступен (file:// без secure context или старый браузер) — используется TweetNaCl fallback (офлайн, без интернета). Для WebCrypto откройте через run-html.bat http://127.0.0.1:8765', true);
   } else {
     setStatus('WebCrypto Ed25519 НЕ поддерживается и TweetNaCl не загружен: скачайте nacl-fast.js (https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.js) или используйте Python CLI (run-gui.bat / run-cli.bat) из автономного пакета.', false);
   }
@@ -324,6 +324,13 @@ function downloadResult() {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// The private key must not persist in the browser profile: autocomplete="off" on the
+// key fields keeps it out of autofill history ("Web Data") and session-restore form
+// state; on leaving the page the fields are cleared as well.
+window.addEventListener('pagehide', function () {
+  ['privHex', 'privB64'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
+});
 </script>
 </body>
 </html>

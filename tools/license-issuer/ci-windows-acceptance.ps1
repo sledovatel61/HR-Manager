@@ -658,10 +658,12 @@ try {
     $dns = @(Get-DnsEvents $tFlows $pids)
     $secLog = Get-WinEvent -ListLog Security
     $oldest = (Get-WinEvent -LogName Security -MaxEvents 1 -Oldest).TimeCreated
+    $dnsNames = @($dns | Group-Object { $qn = ""; try { if ($_.Properties.Count -gt 0) { $qn = [string]$_.Properties[0].Value } } catch { }; "ev" + $_.Id + " '" + $qn + "'" } | ForEach-Object { $_.Name + " x" + $_.Count })
     $netDetail = ("window {0:HH:mm:ss}-{1:HH:mm:ss} UTC{2}: {3} bundled python.exe processes (4688); WFP events of bundled python: {4} total, {5} loopback, {6} outbound to non-loopback (TCP/UDP incl. HTTP 80/HTTPS 443/any proxy), {7} inbound from non-loopback; DNS-Client events with a bundled PID: {8}; Security log {9:N0} MB of {10:N0} MB, oldest event {11:HH:mm:ss} (retention covers the window)" -f $tFlows, (Get-Date), ([TimeZoneInfo]::Local.BaseUtcOffset.TotalHours.ToString("+0;-0")), $pids.Count, $wfp.Count, $loop.Count, $outNonLoop.Count, $inNonLoop.Count, $dns.Count, ($secLog.FileSize / 1MB), ($secLog.MaximumSizeInBytes / 1MB), $oldest)
     if ($outNonLoop.Count -eq 0 -and $inNonLoop.Count -eq 0 -and $dns.Count -eq 0 -and $loop.Count -gt 0 -and $pids.Count -gt 0 -and $oldest -le $tProbe) {
         Add-Result "network-zero-outbound" "PASS" $netDetail
     } else {
+        if ($dns.Count -gt 0) { $netDetail = $netDetail + "; DNS queries by bundled python (event id, name): " + (($dnsNames | Select-Object -First 15) -join ", ") }
         $sample = (@($outNonLoop | Select-Object -First 5 | ForEach-Object { "PID $($_.ProcessId) -> $($_.Dest):$($_.DestPort)/$($_.Protocol) ev$($_.Id)" }) -join "; ")
         Add-Result "network-zero-outbound" "FAIL" ($netDetail + "; sample: " + $sample)
     }

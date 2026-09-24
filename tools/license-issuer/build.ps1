@@ -1,7 +1,7 @@
 ﻿# Build offline license issuer for Windows owner PC - autonomous bundle
 # Goal: after build, owner gets a folder that runs WITHOUT system Python, pip, internet.
 # - Embeddable Python 3.12.3 + cryptography pre-installed (built once by maintainer with internet)
-# - GUI (Tkinter), CLI, and HTML (WebCrypto) all work offline via bundled python http.server
+# - GUI (Tkinter), CLI, and HTML (WebCrypto) all work offline (HTML via bundled python, loopback server)
 #   (run-html.bat serves on 127.0.0.1 only - the bundle is never exposed to the LAN)
 # - Private key NEVER leaves owner PC, never in git/installer/Docker/logs; the smoke
 #   test runs in a temporary directory outside the repository and is deleted afterwards
@@ -281,6 +281,7 @@ if (Test-Path "$PSScriptRoot\nacl-fast.js") {
     Copy-Item -Path "$PSScriptRoot\nacl-fast.js" -Destination $appDir -Force
 }
 Copy-Item -Path "$PSScriptRoot\open_when_ready.py" -Destination $appDir -Force
+Copy-Item -Path "$PSScriptRoot\serve_loopback.py" -Destination $appDir -Force
 Copy-Item -Path "$PSScriptRoot\README.md" -Destination $appDir -Force
 
 # 4. Create launchers: bundled python only, fail-closed if it is missing (no
@@ -337,7 +338,7 @@ Set-Content -Path (Join-Path $appDir "run-cli.bat") -Value $runCliBat -Encoding 
 $runHtmlBat = @"
 @echo off
 setlocal
-REM HR Manager License Issuer - HTML offline via local http.server (secure context for WebCrypto)
+REM HR Manager License Issuer - HTML offline via a local loopback server (secure context for WebCrypto)
 REM Opens http://127.0.0.1:8765/license-issuer.html in the default browser.
 REM The server binds to 127.0.0.1 ONLY (loopback): never exposed to the LAN.
 REM Uses the bundled ..\python\python.exe only. NO system Python, NO internet.
@@ -357,7 +358,9 @@ REM HRM_NO_BROWSER=1: it only prints the [ready] line (CI, checklists).
 start "" /b "%PY_EXE%" "%SCRIPT_DIR%open_when_ready.py" "http://127.0.0.1:%PORT%/license-issuer.html"
 REM "%SCRIPT_DIR%." not "%SCRIPT_DIR%": %~dp0 ends with a backslash and \" is an
 REM escaped quote in Windows argv parsing (the directory would end in a quote -> 404).
-"%PY_EXE%" -m http.server %PORT% -b 127.0.0.1 --directory "%SCRIPT_DIR%."
+REM serve_loopback.py: hard-coded 127.0.0.1, no name resolution (python -m http.server
+REM calls socket.getfqdn() on start = a DNS lookup), no directory listings.
+"%PY_EXE%" "%SCRIPT_DIR%serve_loopback.py" %PORT% "%SCRIPT_DIR%."
 exit /b %ERRORLEVEL%
 :py_missing
 echo [ERROR] Bundled Python not found at %PY_EXE%

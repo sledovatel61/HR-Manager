@@ -67,7 +67,8 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 - Переписывает `python312._pth` детерминированно: `python312.zip`, `.`, `..\license-issuer`, `Lib\site-packages`, `import site`. Без `..\license-issuer` embeddable Python (он игнорирует `PYTHONPATH` и не добавляет каталог скрипта в `sys.path`) не импортирует соседний `license_issuer.py` — `run-cli.bat` падал с `ModuleNotFoundError: No module named 'license_issuer'`
 - Копирует `nacl-fast.js` (TweetNaCl 1.0.3, 2391 строка, из npm, public domain) для fallback
 - Создаёт launchers `run-gui.bat`, `run-cli.bat`, `run-html.bat` — используют `..\python\python.exe`, **fail-closed** если bundled Python отсутствует (никакого fallback на системный Python), `cd /d "%~dp0"` + кавычки вокруг всех путей (работает с путями, содержащими пробелы), `PYTHONUTF8=1`
-- `run-html.bat` слушает **только `127.0.0.1`** (`python -m http.server 8765 -b 127.0.0.1 --directory "%SCRIPT_DIR%."`), а не `0.0.0.0`. Точка в конце обязательна: `%~dp0` заканчивается на `\`, а `\"` в разборе argv Windows — экранированная кавычка (без точки сервер отдавал 404 на все запросы). Браузер открывается через ~2 с после старта сервера; `HRM_NO_BROWSER=1` / `HRM_NO_PAUSE=1` — для автоматических запусков
+- `run-html.bat` слушает **только `127.0.0.1`** (`python serve_loopback.py 8765 "%SCRIPT_DIR%."`), а не `0.0.0.0`. `serve_loopback.py` вместо `python -m http.server`: адрес 127.0.0.1 зашит в код (параметра bind нет), без разрешения имён (стандартный `http.server` при старте вызывает `getaddrinfo`/`socket.getfqdn()` — в приёмочном прогоне на Windows это давало события DNS-Client у bundled python.exe), без листинга каталогов, `Cache-Control: no-store`, занятый порт → понятная ошибка и exit 1. Точка в конце обязательна: `%~dp0` заканчивается на `\`, а `\"` в разборе argv Windows — экранированная кавычка (без точки сервер отдавал 404 на все запросы). Браузер открывает `open_when_ready.py` (bundled python) **только после** HTTP 200 со страницей issuer на 127.0.0.1 (опрос каждые 0,25 с до 30 с, сырой IPv4-сокет: без прокси и без DNS) — раньше была фиксированная задержка ~2 с, и на медленной машине браузер мог открыться до старта сервера (connection refused). `HRM_NO_BROWSER=1` / `HRM_NO_PAUSE=1` — для автоматических запусков
+- `license-issuer.html`: поля приватного ключа с `autocomplete="off"` (+ без spellcheck/autocorrect) и очищаются при уходе со страницы — иначе Edge сохранял приватный ключ в профиле (`Web Data` — история автозаполнения, `Sessions` — восстановление вкладок); найдено сканированием утечек в приёмочном прогоне на Windows
 - Smoke-тест полной цепочки `gen-keypair -> issue -> verify` в временной директории **вне репозитория**; если приватный ключ появляется в выводе — билд падает; каталог удаляется после завершения
 - Создаёт zip
 - Любой сбой (скачивание, pip, импорт cryptography, smoke-тест) завершает билд ненулевым кодом
@@ -79,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 1. Распакуйте `license-issuer-dist.zip`
 2. Двойной клик:
    - `run-gui.bat` — GUI Tkinter (рекомендуется, автономно)
-   - `run-html.bat` — HTML через `http://localhost:8765/license-issuer.html` (Edge 120+, WebCrypto Ed25519, secure context localhost, fallback TweetNaCl)
+   - `run-html.bat` — HTML через `http://127.0.0.1:8765/license-issuer.html` (Edge 120+, WebCrypto Ed25519, secure context localhost, fallback TweetNaCl)
    - `run-cli.bat gen-keypair` — CLI
 3. Generate keypair — сохраните приватный (64 hex) в зашифрованном хранилище!
 4. Публичный (base64 44 символа) → `infra/license/public_key.b64` перед сборкой пилотного образа
@@ -107,7 +108,7 @@ python cli.py verify --public-key-file keys/public_key.b64 --license-file licens
 
 ### Вариант HTML офлайн (WebCrypto)
 
-Откройте через `run-html.bat` (рекомендуется, даёт http://localhost:8765, secure context) или напрямую в Edge 120+:
+Откройте через `run-html.bat` (рекомендуется, даёт http://127.0.0.1:8765, secure context) или напрямую в Edge 120+:
 
 - Сгенерировать пару → сохранить приватный, скопировать публичный
 - Выпустить лицензию → скачать файл
