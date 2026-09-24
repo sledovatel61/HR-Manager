@@ -1,0 +1,146 @@
+{
+  "schema": 1,
+  "purpose": "Job-level CI results imported for review-artifacts/gen_license_chain_evidence.py and review-artifacts/gen_issuer_offline_evidence.py; written from the GitHub API, every value verifiable at the URLs below. No secrets: fingerprints only.",
+  "repo": "sledovatel61/HR-Manager",
+  "branch": "arena/01a0ccb9-hr-manager",
+  "pr": 34,
+
+  "head_sha": "e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784",
+  "head_commit_note": "evidence-import commit Y of PR #34 (the reviewed HEAD): imports the Compose chain report plus job results and writes review-artifacts/final-verdict.md. Docs/artifacts only, no backend/infra delta.",
+  "run_id": 35965657324,
+  "url": "https://github.com/sledovatel61/HR-Manager/actions/runs/35965657324",
+  "event": "pull_request",
+  "created_at": "2026-09-24T06:40:45Z",
+  "conclusion": "success",
+  "jobs": {
+    "Backend checks": "success",
+    "Backend integration tests (PostgreSQL)": "success",
+    "Frontend checks": "success",
+    "Windows engine tests + installer smoke": "success",
+    "Release pipeline fail-closed policy (ephemeral test signature)": "success",
+    "Compose stack smoke test (dev + prod overlay)": "success"
+  },
+  "job_ids": {
+    "Frontend checks": 107523536545,
+    "Release pipeline fail-closed policy (ephemeral test signature)": 107523536790,
+    "Backend integration tests (PostgreSQL)": 107523536837,
+    "Backend checks": 107523536847,
+    "Windows engine tests + installer smoke": 107523536888,
+    "Compose stack smoke test (dev + prod overlay)": 107524244972
+  },
+  "chain_steps_of_this_run": {
+    "Pilot overlay — license public-key chain (real docker compose)": "success (step 7 of job 107524244972)",
+    "Print pilot license-chain report (verbatim, redacted by construction)": "success (step 8)",
+    "Upload pilot license-chain evidence (redacted fingerprints only)": "success (step 9)"
+  },
+  "artifact": {
+    "name": "compose-pilot-license-chain",
+    "id": 10793868415,
+    "url": "https://github.com/sledovatel61/HR-Manager/actions/runs/35965657324/artifacts/10793868415",
+    "bytes": 2252,
+    "digest": "sha256:34a42a7960c5fd7d667224314fb269d3cb3f26298f8db5846a7b0b8031bf5b21",
+    "created_at": "2026-09-24T06:44:54Z",
+    "other_artifacts_of_run": {
+      "pilot-drill-windows": {"id": 10794705069, "bytes": 1780, "digest": "sha256:56dd749d7496599a21e0ed8086c966ec06245725cbed7f71c2053659ee09da63"},
+      "pilot-drill-backend": {"id": 10794177206, "bytes": 2036, "digest": "sha256:3d1cd5723158876c8b3ca20e01793c4f2103734c831f8651dbd177c2d97dc039"},
+      "pilot-drill-integration": {"id": 10793868205, "bytes": 1782, "digest": "sha256:85b8d59e6ecd8957709fed1c9d617b33e11d5b8c7b8b690ed2b4df8e9f26317d"},
+      "hr-manager-windows-setup": {"id": 10793654458, "bytes": 2018398, "digest": "sha256:319ec21ab9a7a3aba480817e9a70937e7b32057644568c9bcfebd37f88fc0b06"},
+      "signed-installer-diagnostic": {"id": 10793644541, "bytes": 2002009, "digest": "sha256:59e67ea033d6ea78800a96d5bca0fb4928e070e94f784a318c6e80cdb5ea796d"},
+      "authenticode-logs": {"id": 10793529729, "bytes": 2537, "digest": "sha256:6ac087b447158d9b1f94c3b47a3e4babca4d0c98b0733cf4018cea6f70fd3270"}
+    }
+  },
+
+  "chain_report": {
+    "file": "compose-pilot-license-chain.ci.json",
+    "run_id": 35964596589,
+    "head_sha": "7c7f64529fec28e17abdf9601bb5055762ece8df",
+    "artifact_id": 10794046262,
+    "artifact_digest": "sha256:dd7747c173f00324ed775beef0f0cba09c8ccc3df642c9ddaecc5a13d94d2588",
+    "bytes": 2252,
+    "method": "verbatim copy of the JSON printed by the step 'Print pilot license-chain report' between '-----BEGIN COMPOSE-LICENSE-CHAIN JSON-----' and '-----END COMPOSE-LICENSE-CHAIN JSON-----' in job 107521357971 (log timestamps 2026-09-24T06:33:23.697-.703Z); identical content in that job's step summary and in artifact 10794046262.",
+    "why_not_reimported_from_the_head_run": "On 2026-09-24 the review sandbox can no longer read GitHub log blobs or artifact zips (both redirect to storage that answers EOF: `gh run view --job … --log` and `gh run download …` both fail). The head run 35965657324 does re-run the same three chain steps with conclusion=success (verified through the jobs API) and produces an artifact of the same size, so the *behaviour* is re-confirmed; only the verbatim report body stays the one imported from run 35964596589.",
+    "key_fingerprint_note": "sha256:e2f74e6c761c0684… is the fingerprint of the EPHEMERAL 32-byte key generated inside that CI job; it is not any real key."
+  },
+
+  "fix_commit": "96f12bc8926a6fc8dbce447bbd8b81889e595c09",
+  "fix_commit_ci": {
+    "run_id": 35963793099,
+    "url": "https://github.com/sledovatel61/HR-Manager/actions/runs/35963793099",
+    "jobs": {
+      "Backend checks": "success",
+      "Backend integration tests (PostgreSQL)": "success",
+      "Frontend checks": "success",
+      "Windows engine tests + installer smoke": "success",
+      "Release pipeline fail-closed policy (ephemeral test signature)": "success",
+      "Compose stack smoke test (dev + prod overlay)": "success"
+    },
+    "stack_job_id": 107518765419,
+    "windows_job_id": 107517814916,
+    "chain_step": "Pilot overlay — license public-key chain (real docker compose): success, 12/12 [pass], verdict PASS",
+    "artifact": {
+      "name": "compose-pilot-license-chain",
+      "id": 10793765774,
+      "digest": "sha256:93cb7628ef8ed69adb31ef328d45cf5044d8858e865651f149ce5ba2c328a4e2",
+      "bytes": 2255
+    }
+  },
+
+  "history": [
+    {
+      "run_id": 35964596589,
+      "head_sha": "7c7f64529fec28e17abdf9601bb5055762ece8df",
+      "note": "ci-only follow-up to the fix commit: prints the redacted chain report between BEGIN/END markers in the job log and to the step summary (no code delta in backend/infra).",
+      "jobs": {
+        "Backend checks": "success",
+        "Backend integration tests (PostgreSQL)": "success",
+        "Frontend checks": "success",
+        "Windows engine tests + installer smoke": "success",
+        "Release pipeline fail-closed policy (ephemeral test signature)": "success",
+        "Compose stack smoke test (dev + prod overlay)": "success"
+      },
+      "stack_job_id": 107521357971,
+      "artifact": {
+        "name": "compose-pilot-license-chain",
+        "id": 10794046262,
+        "digest": "sha256:dd7747c173f00324ed775beef0f0cba09c8ccc3df642c9ddaecc5a13d94d2588",
+        "bytes": 2252
+      }
+    },
+    {
+      "run_id": 35963793099,
+      "head_sha": "96f12bc8926a6fc8dbce447bbd8b81889e595c09",
+      "note": "the fix commit itself",
+      "jobs": {
+        "Backend checks": "success",
+        "Backend integration tests (PostgreSQL)": "success",
+        "Frontend checks": "success",
+        "Windows engine tests + installer smoke": "success",
+        "Release pipeline fail-closed policy (ephemeral test signature)": "success",
+        "Compose stack smoke test (dev + prod overlay)": "success"
+      },
+      "artifact": {
+        "name": "compose-pilot-license-chain",
+        "id": 10793765774,
+        "digest": "sha256:93cb7628ef8ed69adb31ef328d45cf5044d8858e865651f149ce5ba2c328a4e2",
+        "bytes": 2255
+      }
+    }
+  ],
+
+  "windows_job_evidence": {
+    "static": "[PASS] пилотный оверлей: открытый ключ лицензии обязателен (${HRM_LICENSE_PUBLIC_KEY:?}) для backend, worker и backup (static.tests.ps1, 23 static cases passed)",
+    "engine": "[PASS] pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_key.b64 (совпадение SHA-256), без файла — пустое значение (engine.tests.ps1, real Write-HrmPilotEnv on Windows PowerShell 5.1; ephemeral key fingerprint printed redacted)",
+    "seen_in_run": 35963793099,
+    "windows_job_id_in_that_run": 107517814916,
+    "also_success_in": [35964596589, 35965657324],
+    "scope_note": "The job runs on a GitHub-hosted windows-latest runner and covers the PowerShell engine plus installer smoke; it does NOT run tools/license-issuer/run-gui.bat or run-html.bat (see review-artifacts/issuer-offline-evidence.json)."
+  },
+
+  "collection": {
+    "collected_at": "2026-09-24",
+    "method": "gh CLI against the GitHub REST API: `gh run view --json …`, `gh api …/actions/runs/<id>/jobs`, `gh api …/actions/runs/<id>/artifacts` (artifact `digest` = SHA-256 of the artifact zip; it matches the zip hashes recorded by hand for runs 35963793099 and 35964596589, which validates both records).",
+    "unavailable_from_the_sandbox": [
+      "job logs and artifacts of run 35965657324 (log/zip storage answers EOF; `gh run view --job … --log` and `gh run download …` fail) — job conclusions and step conclusions were read from the jobs API instead"
+    ]
+  }
+}
