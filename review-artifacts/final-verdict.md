@@ -25,7 +25,7 @@
 | **Reviewed PR** | [#34](https://github.com/sledovatel61/HR-Manager/pull/34) — open, not merged, base `main` | — |
 | **PR head (baseline / negative control)** | `e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784` | run [35965657324](https://github.com/sledovatel61/HR-Manager/actions/runs/35965657324) — 6/6 jobs `success`, license-chain steps `success` |
 | **Fix commit (this pass)** | `c515a490db354436dbd0d18115e28ef5d8ece132` | run [35973708182](https://github.com/sledovatel61/HR-Manager/actions/runs/35973708182) — see the CI table below |
-| **Review bridge PR** | [#35](https://github.com/sledovatel61/HR-Manager/pull/35) — **draft**, from `arena/01a0d255-hr-manager`, must not be merged as-is | the run above is its `pull_request` run |
+| **Review bridge PR** | [#35](https://github.com/sledovatel61/HR-Manager/pull/35) — **draft**, from `arena/01a0d255-hr-manager`, must not be merged as-is | run of the fix commit 35973708182; run [35974427408](https://github.com/sledovatel61/HR-Manager/actions/runs/35974427408) — 6/6 `success` — for the evidence commit `2f67f52` |
 
 The fix commit lives on the session branch (based on `main`), which is why it is not a commit inside PR #34.
 `review-artifacts/license-issuer-fixes.patch` (`sha256 daba388b1b99c038…`, 118 lines) contains exactly the two
@@ -129,6 +129,9 @@ Checklist and evidence rules for the owner: `review-artifacts/windows-issuer-bun
 | `ci-run-status.json` | PR-head run `35965657324`, chain-report provenance, fix-commit run of `c515a49` |
 | `windows-issuer-bundle-check.md` | remaining owner checklist (now only runtime items + two known product deltas) |
 | `license-chain-evidence.{json,md}`, `compose-pilot-license-chain.ci.json` | unchanged chain evidence of PR #34 (regenerated for `e59aa5b` in the previous pass) |
+
+Both runs of this pass (fix commit and evidence commit) ended with **6/6 jobs `success`**; the evidence commit
+changed `review-artifacts/` only, so its run adds no new runtime information.
 
 Redaction: the evidence contains fingerprints, lengths, HTTP codes and booleans only — no private key, no public
 key in full, no complete license, no signature, no real client name. The synthetic client name used in the tests is

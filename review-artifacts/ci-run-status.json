@@ -5,7 +5,6 @@
   "pr": 34,
   "pr_branch": "arena/01a0ccb9-hr-manager",
   "session_branch": "arena/01a0d255-hr-manager",
-
   "reviewed_head": {
     "sha": "e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784",
     "role": "PR #34 head (baseline / negative control of the fix comparison)",
@@ -36,13 +35,18 @@
       "created_at": "2026-09-24T06:44:54Z"
     }
   },
-
   "fix_commit": {
     "sha": "c515a490db354436dbd0d18115e28ef5d8ece132",
     "role": "owner-side issuer fixes requested in the review (build.ps1 + .gitignore). Lives on the session branch, not inside PR #34; delivered as review-artifacts/license-issuer-fixes.patch.",
     "files": {
-      ".gitignore": {"blob_sha256_prefix": "ee464f266e6c3802", "change": "keys/, private_key.hex, public_key.b64, *.hrmlicense, license-issuer-dist.zip"},
-      "tools/license-issuer/build.ps1": {"blob_sha256_prefix": "d51a613d6980c127", "change": "loopback bind, fail-closed launcher, temp-dir smoke test"}
+      ".gitignore": {
+        "blob_sha256_prefix": "ee464f266e6c3802",
+        "change": "keys/, private_key.hex, public_key.b64, *.hrmlicense, license-issuer-dist.zip"
+      },
+      "tools/license-issuer/build.ps1": {
+        "blob_sha256_prefix": "d51a613d6980c127",
+        "change": "loopback bind, fail-closed launcher, temp-dir smoke test"
+      }
     },
     "run_id": 35973708182,
     "url": "https://github.com/sledovatel61/HR-Manager/actions/runs/35973708182",
@@ -53,20 +57,68 @@
     "updated_at": "2026-09-24T08:17:15Z",
     "conclusion": "success",
     "jobs": {
-      "Frontend checks": {"id": 107549097396, "conclusion": "success"},
-      "Backend integration tests (PostgreSQL)": {"id": 107549097502, "conclusion": "success"},
-      "Windows engine tests + installer smoke": {"id": 107549097538, "conclusion": "success"},
-      "Backend checks": {"id": 107549097590, "conclusion": "success"},
-      "Release pipeline fail-closed policy (ephemeral test signature)": {"id": 107549097597, "conclusion": "success"},
-      "Compose stack smoke test (dev + prod overlay)": {"id": 107550340154, "conclusion": "success"}
+      "Frontend checks": {
+        "id": 107549097396,
+        "conclusion": "success"
+      },
+      "Backend integration tests (PostgreSQL)": {
+        "id": 107549097502,
+        "conclusion": "success"
+      },
+      "Windows engine tests + installer smoke": {
+        "id": 107549097538,
+        "conclusion": "success"
+      },
+      "Backend checks": {
+        "id": 107549097590,
+        "conclusion": "success"
+      },
+      "Release pipeline fail-closed policy (ephemeral test signature)": {
+        "id": 107549097597,
+        "conclusion": "success"
+      },
+      "Compose stack smoke test (dev + prod overlay)": {
+        "id": 107550340154,
+        "conclusion": "success"
+      }
     },
     "artifacts": [
-      {"name": "authenticode-logs", "id": 10797586098, "bytes": 2535, "digest": "sha256:713e5611639479f426d1dc51c2c639ac8d5510b19130cd3b8018876b60fdd019"},
-      {"name": "pilot-drill-integration", "id": 10797571396, "bytes": 1783, "digest": "sha256:3094a513f8917db9a17a87a8e20be14627e19bcafefd86071c6a046614533ae4"},
-      {"name": "signed-installer-diagnostic", "id": 10797511449, "bytes": 1983461, "digest": "sha256:6b97c3fb88609f5e38acbbec3583eda0c328eb3d7e7cd59e828d4dac29806770"},
-      {"name": "pilot-drill-windows", "id": 10797273340, "bytes": 1781, "digest": "sha256:e6fb0db69d9cc36e8a0cdf8f6b4a359a5278ea9f58ad3a92d87d069666dee36a"},
-      {"name": "hr-manager-windows-setup", "id": 10797148741, "bytes": 1999345, "digest": "sha256:db54ffda85afe9994b67d77bbfe4e1654cfed22115c269315ed12756feb36b8d"},
-      {"name": "pilot-drill-backend", "id": 10796938933, "bytes": 2037, "digest": "sha256:9852731186009160d8a6d165f633c422b86bb690e9a80688bd68cd7bf7c260f8"}
+      {
+        "name": "authenticode-logs",
+        "id": 10797586098,
+        "bytes": 2535,
+        "digest": "sha256:713e5611639479f426d1dc51c2c639ac8d5510b19130cd3b8018876b60fdd019"
+      },
+      {
+        "name": "pilot-drill-integration",
+        "id": 10797571396,
+        "bytes": 1783,
+        "digest": "sha256:3094a513f8917db9a17a87a8e20be14627e19bcafefd86071c6a046614533ae4"
+      },
+      {
+        "name": "signed-installer-diagnostic",
+        "id": 10797511449,
+        "bytes": 1983461,
+        "digest": "sha256:6b97c3fb88609f5e38acbbec3583eda0c328eb3d7e7cd59e828d4dac29806770"
+      },
+      {
+        "name": "pilot-drill-windows",
+        "id": 10797273340,
+        "bytes": 1781,
+        "digest": "sha256:e6fb0db69d9cc36e8a0cdf8f6b4a359a5278ea9f58ad3a92d87d069666dee36a"
+      },
+      {
+        "name": "hr-manager-windows-setup",
+        "id": 10797148741,
+        "bytes": 1999345,
+        "digest": "sha256:db54ffda85afe9994b67d77bbfe4e1654cfed22115c269315ed12756feb36b8d"
+      },
+      {
+        "name": "pilot-drill-backend",
+        "id": 10796938933,
+        "bytes": 2037,
+        "digest": "sha256:9852731186009160d8a6d165f633c422b86bb690e9a80688bd68cd7bf7c260f8"
+      }
     ],
     "scope_notes": [
       "The session branch is based on main, so this run uses main's ci.yml: it does NOT contain the three license-chain steps or the compose-pilot-license-chain artifact that PR #34's workflow adds (checked: no such artifact in the run's artifact list).",
@@ -74,7 +126,6 @@
       "Therefore this run is evidence that the change does not break the repository's CI, not evidence about the issuer bundle at runtime."
     ]
   },
-
   "chain_report": {
     "file": "compose-pilot-license-chain.ci.json",
     "run_id": 35964596589,
@@ -86,42 +137,68 @@
     "why_not_reimported": "On 2026-09-24 the review sandbox can no longer read GitHub log blobs or artifact zips (both redirect to storage that answers EOF: `gh run view --job … --log` and `gh run download …` fail). Run 35965657324 re-executes the same three chain steps with conclusion=success (jobs API) and produces an artifact of the same size, so the behaviour is re-confirmed; only the verbatim report body stays the one imported from run 35964596589.",
     "key_fingerprint_note": "The truncated SHA-256 fingerprints inside this imported report belong to the EPHEMERAL 32-byte key generated inside that CI job; they are not any real key."
   },
-
   "history": [
     {
       "run_id": 35964596589,
       "head_sha": "7c7f64529fec28e17abdf9601bb5055762ece8df",
       "note": "ci-only follow-up to the fix commit 96f12bc (prints the redacted chain report to the log and step summary)",
       "jobs_conclusion": "success (6/6)",
-      "artifact": {"name": "compose-pilot-license-chain", "id": 10794046262, "digest": "sha256:dd7747c173f00324ed775beef0f0cba09c8ccc3df642c9ddaecc5a13d94d2588", "bytes": 2252}
+      "artifact": {
+        "name": "compose-pilot-license-chain",
+        "id": 10794046262,
+        "digest": "sha256:dd7747c173f00324ed775beef0f0cba09c8ccc3df642c9ddaecc5a13d94d2588",
+        "bytes": 2252
+      }
     },
     {
       "run_id": 35963793099,
       "head_sha": "96f12bc8926a6fc8dbce447bbd8b81889e595c09",
       "note": "the Compose fail-closed fix commit itself; chain step 12/12 [pass], verdict PASS",
       "jobs_conclusion": "success (6/6)",
-      "artifact": {"name": "compose-pilot-license-chain", "id": 10793765774, "digest": "sha256:93cb7628ef8ed69adb31ef328d45cf5044d8858e865651f149ce5ba2c328a4e2", "bytes": 2255}
+      "artifact": {
+        "name": "compose-pilot-license-chain",
+        "id": 10793765774,
+        "digest": "sha256:93cb7628ef8ed69adb31ef328d45cf5044d8858e865651f149ce5ba2c328a4e2",
+        "bytes": 2255
+      }
     }
   ],
-
   "windows_job_evidence": {
     "static": "[PASS] пилотный оверлей: открытый ключ лицензии обязателен (${HRM_LICENSE_PUBLIC_KEY:?}) для backend, worker и backup (static.tests.ps1)",
     "engine": "[PASS] pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_key.b64 (совпадение SHA-256), без файла — пустое значение (engine.tests.ps1, real Write-HrmPilotEnv on Windows PowerShell 5.1)",
-    "seen_in_runs": [35963793099, 35964596589, 35965657324, 35973708182],
+    "seen_in_runs": [
+      35963793099,
+      35964596589,
+      35965657324,
+      35973708182
+    ],
     "scope_note": "The job runs on GitHub-hosted windows-latest and covers the PowerShell engine plus installer smoke. It does NOT run tools/license-issuer/build.ps1, run-gui.bat or run-html.bat and therefore is NOT the clean-Windows issuer check."
   },
-
   "issuer_runtime_check": {
     "status": "NOT RUN",
     "reason": "The review environment has no Windows and no way to run one: /dev/kvm absent, no vmx/svm CPU flags (0 matches), no qemu-*, wine or pwsh installed, and no network path to fetch packages or installation media (apt and all HTTPS fetches fail). build.ps1 was therefore never executed either, so no license-issuer-dist.zip exists.",
-    "where_recorded": ["review-artifacts/issuer-offline-evidence.json (steps windows_vm_*: NOT RUN)", "review-artifacts/windows-issuer-bundle-check.md", "review-artifacts/final-verdict.md"]
+    "where_recorded": [
+      "review-artifacts/issuer-offline-evidence.json (steps windows_vm_*: NOT RUN)",
+      "review-artifacts/windows-issuer-bundle-check.md",
+      "review-artifacts/final-verdict.md"
+    ]
   },
-
   "collection": {
     "collected_at": "2026-09-24",
     "method": "gh CLI against the GitHub REST API: `gh run view --json …`, `gh api …/actions/runs/<id>/jobs`, `gh api …/actions/runs/<id>/artifacts` (artifact `digest` = SHA-256 of the artifact zip; it matches the zip hashes recorded by hand for runs 35963793099 and 35964596589).",
     "unavailable_from_the_sandbox": [
       "job logs and artifact zips of runs 35965657324 and 35973708182 (storage answers EOF); job/step conclusions and artifact digests were read from the API instead"
     ]
+  },
+  "evidence_commit_ci": {
+    "sha": "2f67f52",
+    "role": "evidence/verdict commit of this pass (branch head when the report was written; review-artifacts/ only)",
+    "run_id": 35974427408,
+    "url": "https://github.com/sledovatel61/HR-Manager/actions/runs/35974427408",
+    "event": "pull_request",
+    "pull_request": 35,
+    "conclusion": "success",
+    "jobs_conclusion": "success (6/6: Frontend checks, Release pipeline fail-closed policy, Backend integration tests (PostgreSQL), Backend checks, Windows engine tests + installer smoke, Compose stack smoke test)",
+    "scope_note": "docs/artifacts only - the issuer sources are identical to the fix commit c515a49 (tool blobs verified by sha256 in this file), so this run adds no new runtime information about the issuer."
   }
 }
