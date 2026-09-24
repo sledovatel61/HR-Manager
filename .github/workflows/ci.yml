@@ -719,6 +719,7 @@ jobs:
           exit $code
 
       - name: Build autonomous bundle with Windows PowerShell 5.1
+        timeout-minutes: 15
         shell: powershell
         run: |
           # All Windows PowerShell 5.1 logic lives in the checked-in helper
@@ -732,6 +733,7 @@ jobs:
           exit $code
 
       - name: Runtime checks from a fresh unzip (spaces in path, no system Python, loopback, fail-closed)
+        timeout-minutes: 10
         shell: powershell
         run: |
           # All Windows PowerShell 5.1 logic lives in the checked-in helper
