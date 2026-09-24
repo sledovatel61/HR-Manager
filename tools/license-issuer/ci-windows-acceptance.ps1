@@ -299,7 +299,8 @@ function Invoke-LeakScan([string]$Stage, [string[]]$Allowed) {
         $hex = -join ($raw | ForEach-Object { $_.ToString("x2") })
         $b64 = [Convert]::ToBase64String($raw)
         $b64u = $b64.TrimEnd("=").Replace("+", "-").Replace("/", "_")
-        $forms = [ordered]@{ "hex" = $hex; "HEX" = $hex.ToUpperInvariant(); "base64" = $b64; "base64url" = $b64u }
+        # (hash-literal keys are case-insensitive in PowerShell: "hex"/"HEX" would collide)
+        $forms = [ordered]@{ "hex-lower" = $hex; "hex-upper" = $hex.ToUpperInvariant(); "base64" = $b64; "base64url" = $b64u }
         foreach ($f in $forms.Keys) {
             [void]$needles.Add(@{ Key = $name; Form = "$f/ascii"; Text = $latin1.GetString([System.Text.Encoding]::ASCII.GetBytes($forms[$f])) })
             [void]$needles.Add(@{ Key = $name; Form = "$f/utf16le"; Text = $latin1.GetString([System.Text.Encoding]::Unicode.GetBytes($forms[$f])) })
