@@ -710,40 +710,9 @@ jobs:
       - name: build.ps1 encoding + Windows PowerShell 5.1 parser check
         shell: powershell
         run: |
-          # Inline (no helper indirection) so every branch reports to the step
-          # summary. Path uses forward slashes: PowerShell accepts them on
-          # Windows, and this removes YAML/PS backslash-escaping risk.
-          $ErrorActionPreference = "Continue"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "step started: parser" -Encoding utf8
-          $path = "tools/license-issuer/build.ps1"
-          if (-not (Test-Path $path)) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "FAIL: build.ps1 missing at $path" -Encoding utf8
-            exit 1
-          }
-          $bytes = [System.IO.File]::ReadAllBytes($path)
-          $first = @($bytes[0..2]) -join ","
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("file loaded: " + (Get-Item $path).Length + " bytes, first3: " + $first) -Encoding utf8
-          if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("FAIL: build.ps1 has no UTF-8 BOM (first3: " + $first + ")") -Encoding utf8
-            exit 1
-          }
-          $nonAscii = @($bytes | Where-Object { $_ -ge 0x80 })
-          if ($nonAscii.Count -ne 0) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("FAIL: " + $nonAscii.Count + " non-ASCII bytes, first: 0x" + ("{0:X2}" -f $nonAscii[0])) -Encoding utf8
-            exit 1
-          }
-          $tokens = $null
-          $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
-          if ($null -ne $errors -and $errors.Count -ne 0) {
-            $lines = @($errors | ForEach-Object { "line {0}:{1} {2}" -f $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message })
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("FAIL: Windows PowerShell 5.1 parse errors: " + ($lines -join "`n")) -Encoding utf8
-            exit 1
-          }
-          $psv = (Get-Host).Version.ToString()
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("PASS: BOM + ASCII-only + 0 parse errors under Windows PowerShell " + $psv) -Encoding utf8
-          Write-Host "PASS: build.ps1 BOM+ASCII+parse OK under Windows PowerShell $psv"
-
+          Write-Host "MARKER-STEP-EXECUTED"
+          "MARKER-STEP-EXECUTED" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          exit 1
       - name: Build autonomous bundle with Windows PowerShell 5.1
         shell: powershell
         run: |
