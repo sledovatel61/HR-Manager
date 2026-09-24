@@ -12,6 +12,10 @@ button { margin-top: 10px; padding: 8px 14px; }
 pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .warning { color: #a00; background: #fff0f0; border: 1px solid #a00; padding: 8px; margin: 10px 0; }
 .ok { color: #060; background: #f0fff0; border: 1px solid #0a0; padding: 8px; margin: 10px 0; }
+/* private key boxes are NOT form controls (see the script): browsers store form-control values */
+.keybox { display: block; width: 100%; min-height: 1.4em; padding: 6px; margin-top: 4px; box-sizing: border-box; border: 1px solid #767676; font-family: monospace; word-break: break-all; white-space: nowrap; overflow-x: auto; background: #fff; }
+.keybox-ro { background: #f5f5f5; }
+.keybox:empty::before { content: attr(data-placeholder); color: #888; }
 </style>
 <script src="nacl-fast.js"></script>
 </head>
@@ -28,9 +32,9 @@ pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap;
 
 <h2>1. Ключи (Ed25519)</h2>
 <label>Приватный ключ (64 hex, секретно, 32 байта seed):</label>
-<input id="privHex" type="text" placeholder="64 hex" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true">
+<div id="privHex" class="keybox" contenteditable="true" role="textbox" aria-multiline="false" aria-label="private key hex" data-placeholder="64 hex" spellcheck="false" autocorrect="off" autocapitalize="off"></div>
 <label>Приватный ключ (base64 32 байта, для справки):</label>
-<input id="privB64" type="text" readonly autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true">
+<div id="privB64" class="keybox keybox-ro" role="textbox" aria-readonly="true" aria-label="private key base64"></div>
 <label>Публичный ключ (base64 44 символа, для сборки):</label>
 <input id="pubB64" type="text" placeholder="base64">
 <button onclick="genKeypair()">Сгенерировать новую пару (WebCrypto или TweetNaCl fallback)</button>
@@ -70,6 +74,31 @@ max_active_users:&lt;число&gt;
 <p>Офлайн: этот HTML работает без интернета. WebCrypto Ed25519 поддерживается в Edge 120+, Chrome 120+, Firefox 120+ (Windows 10/11 Edge по умолчанию — OK). Для file:// контекста crypto.subtle может быть недоступен — используйте run-html.bat (http://localhost) или run-gui.bat (автономный Python, без интернета, без системного Python). Fallback TweetNaCl (nacl-fast.js) используется если WebCrypto недоступен.</p>
 
 <script>
+// Private key boxes (#privHex, #privB64) are deliberately NOT <input> elements.
+// Browsers persist form-control values in the profile: the Windows acceptance run
+// found the private key in Edge's "Web Data" (autofill history) even with
+// autocomplete="off", and in "Sessions" (tab restore form state). Autofill and
+// session restore only collect <input>/<textarea>/<select>, so the key lives in a
+// contenteditable box (hex) and a plain text box (base64) instead. A small
+// `value` property keeps the rest of the page code unchanged.
+(function () {
+  ['privHex', 'privB64'].forEach(function (id) {
+    var el = document.getElementById(id);
+    Object.defineProperty(el, 'value', {
+      configurable: true,
+      get: function () { return (el.textContent || '').replace(/\s+/g, ''); },
+      set: function (v) { el.textContent = (v == null) ? '' : String(v); }
+    });
+  });
+  var hex = document.getElementById('privHex');
+  hex.addEventListener('paste', function (e) {   // plain text only, no markup
+    var t = (e.clipboardData || window.clipboardData).getData('text');
+    e.preventDefault();
+    document.execCommand('insertText', false, (t || '').replace(/\s+/g, ''));
+  });
+  hex.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
+})();
+
 function base64ToBytes(b64) {
   b64 = b64.trim().replace(/-/g,'+').replace(/_/g,'/');
   // Pad
@@ -325,9 +354,7 @@ function downloadResult() {
   URL.revokeObjectURL(url);
 }
 
-// The private key must not persist in the browser profile: autocomplete="off" on the
-// key fields keeps it out of autofill history ("Web Data") and session-restore form
-// state; on leaving the page the fields are cleared as well.
+// Leaving the page: clear the private key boxes as well.
 window.addEventListener('pagehide', function () {
   ['privHex', 'privB64'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
 });
