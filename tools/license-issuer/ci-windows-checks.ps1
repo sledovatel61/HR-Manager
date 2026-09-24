@@ -150,7 +150,10 @@ try {
             # exactly as written (no PowerShell re-quoting).
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = "cmd.exe"
-            $psi.Arguments = '/c "' + $BatPath + '" > "' + $OutFile + '" 2>&1'
+            # cmd /c strips the FIRST and LAST quote when the line has more than
+            # two quotes: wrap the whole command in one extra pair so the quoted
+            # paths (with spaces) survive intact.
+            $psi.Arguments = '/c ""' + $BatPath + '" > "' + $OutFile + '" 2>&1"'
             $psi.UseShellExecute = $false
             $psi.CreateNoWindow = $true
             return [System.Diagnostics.Process]::Start($psi)
@@ -176,6 +179,7 @@ try {
             $sysPy = Get-Command python -ErrorAction SilentlyContinue
             if ($sysPy) { throw "test setup failed: system python still reachable on PATH: $($sysPy.Source)" }
             $env:HRM_NO_PAUSE = "1"
+            $env:HRM_NO_BROWSER = "1"
 
             # --- CLI chain: gen-keypair -> issue -> verify ---
             $keysDir = Join-Path $root "keys"   # outside the bundle (the bundle is copied later)
