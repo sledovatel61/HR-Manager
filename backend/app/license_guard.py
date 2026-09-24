@@ -9,7 +9,12 @@ Allowed without license:
 - /api/setup/* (first-run)
 - /docs, /openapi.json, /redoc
 
-All other /api/* require valid license when enforcement enabled.
+Deny by default: EVERY other path — known route or not, with or without
+the ``/api`` prefix (nginx strips it before the backend sees the request,
+TestClient does not) — requires a valid license when enforcement is
+enabled. There is no "looks like an API path" heuristic: a router added
+tomorrow under a new root is protected automatically, and an unknown path
+answers 403 ``no_license`` instead of leaking a 404 past the guard.
 On expiry: normal work stops (403) but data not deleted; admin can login
 and upload new license.
 No private key, license texts or PII in logs — only redacted fingerprints.
@@ -48,6 +53,10 @@ ALLOWED_EXACT_OR_DIR: tuple[str, ...] = (
     "/ops/status",
     "/api/ops/backup-health",
     "/ops/backup-health",
+    # Aggregate Prometheus counters (no PII, no query strings by design):
+    # diagnostics must stay reachable while the pilot waits for a new file.
+    "/api/ops/metrics",
+    "/ops/metrics",
     "/api/admin/ops/pilot-readiness",
     "/admin/ops/pilot-readiness",
     "/api/setup",
@@ -95,58 +104,10 @@ class LicenseGuardMiddleware(BaseHTTPMiddleware):
         if _is_allowed(path):
             return await call_next(request)
 
-        protected_roots = (
-            "/candidates",
-            "/events",
-            "/admin/",
-            "/admin",
-            "/users",
-            "/audit",
-            "/analytics",
-            "/notifications",
-            "/reminders",
-            "/notification-preferences",
-            "/integrations",
-            "/documents",
-            "/document-",
-            "/updates",
-            "/license",
-        )
-        normalized = _normalize_path(path)
-        is_api_like = normalized.startswith("/api/") or any(
-            normalized == r.rstrip("/")
-            or normalized.startswith(r.rstrip("/") + "/")
-            or normalized.startswith(r)
-            for r in protected_roots
-        )
-        if not is_api_like:
-            permissive_block = any(
-                normalized.startswith(pr)
-                for pr in (
-                    "/candidates",
-                    "/events",
-                    "/admin",
-                    "/users",
-                    "/documents",
-                    "/analytics",
-                    "/license",
-                    "/auth",
-                    "/setup",
-                )
-            )
-            if normalized.startswith("/api/") or (permissive_block and not _is_allowed(normalized)):
-                is_api_like = True
-
-        if not is_api_like:
-            if not normalized.startswith("/api/") and not normalized.startswith("/"):
-                return await call_next(request)
-            if normalized in ("/", "/index.html") or "/assets/" in normalized:
-                return await call_next(request)
-            if normalized.startswith("/static/"):
-                return await call_next(request)
-            if not is_api_like:
-                return await call_next(request)
-
+        # Deny by default: nothing else is exempt. The frontend container
+        # serves the SPA and its assets itself; the backend only ever receives
+        # API paths (via the nginx ``/api/`` rewrite), so there is no static
+        # content to carve out here.
         try:
             state_settings = getattr(request.app.state, "settings", None)
             settings = state_settings if state_settings is not None else get_settings()

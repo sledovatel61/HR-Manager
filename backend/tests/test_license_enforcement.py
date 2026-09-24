@@ -268,20 +268,11 @@ def test_enforcement_blocks_business_endpoints_after_expiry(db_engine) -> None:
         else:
             r = client.request("DELETE", path, headers={"x-csrf-token": csrf})
 
-        if path in (
-            "/candidates",
-            "/api/candidates",
-            "/events",
-            "/api/events",
-            "/users",
-            "/api/users",
-            "/admin/audit",
-            "/api/admin/audit",
-            "/updates/status",
-            "/api/updates/status",
-        ):
-            assert r.status_code == 403, f"{method} {path} got {r.status_code}"
-            assert r.json().get("code") == "expired" or "истёк" in r.text
+        # Deny by default: every path outside the recovery allowlist — the
+        # real routes above AND an unknown one — is 403 expired (never a 404
+        # that would prove the request slipped past the guard).
+        assert r.status_code == 403, f"{method} {path} got {r.status_code}"
+        assert r.json().get("code") == "expired" or "истёк" in r.text
 
     allowed_paths = [
         "/license/status",

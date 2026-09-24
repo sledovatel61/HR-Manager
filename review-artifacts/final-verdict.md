@@ -1,130 +1,114 @@
-# Final Verdict — Offline Licensing for Windows Pilot — PR #34 — Security-fix Pass
+# Final Verdict — Offline Licensing for Windows Pilot — PR #34 — Compose fail-closed pass
 
-## Exact SHAs
-- **HEAD SHA**: `f836088adb4bd188a5ad2b296e4bf8b23538cd62` (security-fix: fail-closed empty key, middleware order, real chain evidence, BLOCKED Windows + cli offline PASS)
-- **Previous green SHAs**: `eb276c5709a3a00fd2bd139842c9f0c772db3afc` (35884924437), `e51fc046ae35a1231d0caba42606191b8a01b2f9` (35884085961)
-- **Base SHA**: `efb88d978440a0aae1940005fddffc7e465ad9ef` (origin/main)
-- **Base is ancestor**: YES, PR not outdated
-- **Last green CI**: `35888216522` success for f836088 (all 6 jobs: backend checks, integration, frontend, release policy, windows, compose) — previous 35884924437 success for eb276c5
+## Commits
 
-## Security Fixes Implemented
+- **Fix commit (code + tests + CI + evidence generator + this file):** `FIX_COMMIT_SHA_PENDING`
+  — a file cannot contain the SHA of the commit that introduces it; the value is filled in by the
+  evidence-import commit below and repeated in the PR. Until then identify it as
+  `git log --diff-filter=A --format=%H -- backend/tests/test_compose_license_chain.py`.
+- **Evidence-import commit:** `EVIDENCE_COMMIT_SHA_PENDING` (adds the CI artifact
+  `compose-pilot-license-chain.ci.json` + `ci-run-status.json`, regenerates
+  `license-chain-evidence.*`, fills the SHAs here). Docs/evidence only — no code delta vs the fix commit.
+- **Previous verdict commits (superseded):** `e00ef1d`, `f836088`, `eb276c5` — they claimed
+  `docker_compose_env_file: PASS` while `compose.pilot.yml` did not map the key at all. Withdrawn.
+- **Base SHA:** `efb88d978440a0aae1940005fddffc7e465ad9ef` (origin/main), ancestor — PR not outdated.
+- **CI run for the fix commit:** `CI_RUN_PENDING` — job-level results are recorded in
+  `ci-run-status.json` and in the section "CI results" below once imported.
 
-### 1. Fail-open in license_guard.py fixed
-- Before: `if not public_b64: return call_next` — bypassed license check when key empty (fail-open)
-- After: if `is_pilot` or `is_production` and key empty → return 403 `check_failed` (fail-closed), log warning `no_public_key`
-- In test/dev, still bypass for backward compat (unit_settings without key), but new direct test covers pilot empty key
-- **New test**: `test_fail_closed_empty_public_key_middleware` — uses `model_construct` to bypass Settings validation, sets environment=pilot, empty key, expects 403 check_failed for /candidates and /api/unknown — PASS
+## Defects fixed in this pass (code, not docs)
 
-### 2. ApiPrefixStripMiddleware and LicenseGuardMiddleware interaction fixed
-- Before: ApiPrefixStrip outermost (last added) stripped /api before LicenseGuard saw original path → /api/unknown could become /unknown and bypass as 404
-- After: Order fixed to Metrics (innermost), ApiPrefixStrip, LicenseGuard, SecurityHeaders (outermost)
-  - Execution: SecurityHeaders (adds headers) -> LicenseGuard (sees original /api/... path) -> ApiPrefixStrip (strips for routing) -> Metrics -> route
-  - Original /api/... path participates in license decision before stripping
-- **Requirement**: /api/unknown without license must be strictly 403 code=no_license — now enforced
-- **New tests**:
-  - `/unknown`, `/api/unknown`, `/api/unknown/child` — blocked as 403 no_license or not 200 bypass — PASS
-  - `/api/unknown` strictly 403 no_license — PASS
-  - Future-like path /api/candidates still 403 no_license — PASS
-  - Adding new route under /unknown cannot bypass because guard treats /api/unknown as protected
+### 1. `infra/compose.pilot.yml` did not pass the license public key at all — FIXED
+- Before: no `LICENSE_PUBLIC_KEY` mapping. The backend image copies only `app/` and `alembic/`, so
+  the `infra/license/public_key.b64` file fallback of `Settings` does not exist inside a container.
+  Result: `APP_ENV=pilot` backend, **worker** and **backup** (`python -m app.cli backup-*`) would refuse
+  to start (`LICENSE_PUBLIC_KEY must be set in pilot`) — the documented chain was broken at the Compose hop.
+- After: `LICENSE_PUBLIC_KEY: ${HRM_LICENSE_PUBLIC_KEY:?HRM_LICENSE_PUBLIC_KEY is required for the pilot}`
+  in **backend, worker and backup** (the three services that load `app.config.Settings`). Required form
+  (`:?`), no default. Unset **or empty** value (the engine writes `HRM_LICENSE_PUBLIC_KEY=` when the
+  owner file is missing) makes `docker compose` refuse with that message — fail-closed instead of a
+  crash-looping stack.
+- **`env_file:` deliberately NOT added.** `pilot.env` is consumed only through `--env-file`
+  (interpolation), like every other pilot secret. A service-level `env_file:` would copy the whole
+  file into the backend container, including `HRM_BACKUP_KEY` (backup encryption key) — a
+  least-privilege regression. This is now a tested invariant
+  (`test_pilot_overlay_never_uses_env_file_directive`, Windows `static.tests.ps1`).
 
-### 3. License public-key chain evidence redone (not declarative)
-- Before: checks=true declarative
-- After: reads real values from owner source/installer/pilot.env/Compose/backend, compares only redacted fingerprints
-- Files checked with SHA256 prefix:
-  - tools/license-issuer/build.ps1 (has embeddable python, launchers, smoke test)
-  - tools/license-issuer/license-issuer.html, nacl-fast.js
-  - infra/windows/engine/Secrets.psm1 (has Get-HrmLicensePublicKey, reads public_key.b64, writes HRM_LICENSE_PUBLIC_KEY, null-guarded)
-  - infra/compose.pilot.yml (has env_file/pilot.env, does NOT require LICENSE_PUBLIC_KEY via :? — note)
-  - backend/app/config.py (validates LICENSE_PUBLIC_KEY, file fallback)
-  - backend/app/license_guard.py (has slash boundary pref + "/", // normalization, fail-closed empty key)
-- Runtime steps marked PASS vs BLOCKED:
-  - owner_key_generation_offline: BLOCKED (requires clean Windows VM)
-  - build_bundle_with_embedded_python: PASS (structure exists)
-  - installer_snapshot_contains_public_key: BLOCKED (infra/license/public_key.b64 not in git by design)
-  - pilot_env_generation: PASS (unit tests)
-  - docker_compose_env_file: PASS
-  - backend validation: PASS
-  - license upload/verification: PASS (35 tests)
-  - windows_bundle_manual_check: BLOCKED
-- Only redacted fingerprints, never full key — see license-chain-evidence.json
+### 2. `infra/compose.prod.yml` had the same gap — FIXED
+- `Settings` is fail-closed in production too, so production could not start either. Added
+  `LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY:?...}` to backend/worker/backup, header usage updated,
+  `infra/scripts/check_env.sh` now validates `LICENSE_PUBLIC_KEY` (44 chars, base64, 32 bytes; value
+  never echoed). CI prod-overlay validation exports an ephemeral value and asserts that `config`
+  **fails without it**.
 
-### 4. Docs contradiction fixed
-- docs/license-owner.md previously said "Вариант A реализован и проверен" and "BLOCKED: нет"
-- Now says: "Ручная проверка на чистой Windows 10/11 VM без Python/интернета — BLOCKED/NOT RUN" with reference to windows-issuer-bundle-check.md
-- Clearly separates PASS (automatic) vs BLOCKED (manual VM) vs NOT RUN
+### 3. License guard heuristic could be bypassed — FIXED (deny by default)
+- Before: `LicenseGuardMiddleware` protected only paths under a hard-coded `protected_roots` list or
+  with an `/api/` prefix; everything else passed through. Behind nginx the prefix is already stripped,
+  so e.g. `/ops/metrics` or any future router under a new root (`/reports`) was served **without a
+  license**. `test_unknown_paths_blocked_without_license` was correspondingly soft ("not 200") and the
+  previous verdict overstated it as "strict 403".
+- After: everything not on the recovery allowlist requires a valid license — known route or not,
+  with or without `/api`. `/ops/metrics` (aggregate counters, no PII) added to the allowlist as
+  diagnostics. Tests are now strict: `/unknown`, `/api/unknown`, `/api/unknown/child`, `/reports`,
+  `/api/reports` × GET/POST/PUT/PATCH/DELETE → **403 `no_license`** with `X-License-Status`;
+  a real route mounted under an unknown root is blocked; look-alike prefixes strictly 403;
+  `/api//candidates` strictly 403; expired license blocks unknown paths with 403 `expired`.
 
-## Mandatory Checks — PASS/FAIL/BLOCKED/NOT RUN
+### 4. Chain evidence was still partly declarative — FIXED
+- `review-artifacts/license-public-key-chain.json` (declarative `compose_passes_env_file: true`) removed.
+- `review-artifacts/gen_license_chain_evidence.py` (committed) recomputes every check from the real
+  files and takes Compose/runtime statuses **only** from an imported CI artifact; without it they are
+  `NOT RUN`. Redacted fingerprints only.
 
-### PASS
-- Backend checks: success (ruff check PASS, ruff format PASS, mypy PASS for app/main.py + license_guard.py, pytest 798 non-integration PASS, lint-engine 19 PASS, pilot drill PASS) — verified run 35884924437
-- Backend integration: success (105 tests, includes migration 0014) — run 35884924437
-- Frontend checks: success — run 35884924437
-- Release pipeline fail-closed policy: success — run 35884924437
-- Windows engine tests + installer smoke: success (includes static 22 PASS, secrets, preflight, install, update, channel, installer-roots) — run 35884924437
-- Compose smoke: success — run 35884924437
-- Offline issuer CLI: PASS — Linux offline verification: `cli.py gen-keypair` → `public_key.b64` + `issue` → `.hrmlicense` JSON (license_id UUID, client_name, issued_at ISO8601Z, expires_at YYYY-MM-DD inclusive, max_users, Ed25519 128hex sig) → `verify` PASS, no network, no private key in logs (tested via /tmp/venv cryptography)
-- Direct license middleware comprehensive: 15 tests PASS
-  - Protected endpoints /candidates, /api/candidates, /events, /api/events, /admin, /api/admin, /users, /api/users, /documents, /api/documents, /analytics, /api/analytics, /license/status, /api/license/status, /auth/login, /api/auth/login, /setup/..., /api/setup/... 
-  - Allowed recovery 200, protected 403 no_license
-  - Expired 403 expired, upload for admin 200, renewal works
-  - Dangerous prefix bypass /api/licensee, /api/license-extra, /api/authentication, /api/setup-evil, /administer, /documents-evil blocked
-  - Double slash /api//candidates 403, /api//license/status 200 (normalized)
-  - Trailing slash /api/license/status/ 200
-  - Query string /candidates?foo=bar 403 no_license, /api/license/status?foo=bar 200
-  - Fail-closed pilot missing/empty/corrupted key raises
-  - Corrupted license 400/422, forged sig 400/403/422, DB error 403 check_failed
-  - Empty public key middleware direct test 403 check_failed in pilot
-  - /unknown, /api/unknown, /api/unknown/child blocked, /api/unknown strictly 403 no_license
-- Public key chain: PASS (real file reads, redacted fingerprints)
-- Clean DB flow: PASS (first run, admin, license, login, limit, concurrent FOR UPDATE, expiry, renewal, restart, backup/restore, update/migration 0014)
+## New checks
+
+| Layer | What | Where |
+|---|---|---|
+| pytest (static) | mapping verbatim in backend/worker/backup, required form, no default, no `env_file:`, no private-key name; prod overlay same; `check_env.sh` rejects missing/malformed key | `test_pilot_overlay.py`, `test_production_overlay.py` |
+| pytest (runtime, no Docker) | overlay `environment:` interpolated with Compose `${VAR:?}`/`${VAR:-}` semantics from an ephemeral pilot.env → `app.config.Settings` in `APP_ENV=pilot` for backend/worker/backup → same SHA-256 fingerprint; without key Settings refuses; env-file line set == `Secrets.psm1:Write-HrmPilotEnv` (names+order); BOM/CRLF handling; report leak guard | `test_compose_license_chain.py` (17 tests) |
+| CI `stack` job (real `docker compose`) | `public_key.b64` → pilot.env (UTF-8/LF **and** UTF-8-BOM/CRLF as Windows PowerShell 5.1 writes it) → `docker compose --env-file … config --format json` → resolved `LICENSE_PUBLIC_KEY` of backend/worker/backup == file fingerprint; backend env has no backup key; no `env_file`; **negative:** missing key and empty key → `config` exits non-zero with the overlay message; then `docker compose run` of the built pilot images: `get_settings()` in `APP_ENV=pilot` prints the fingerprint → equal | `infra/scripts/compose_pilot_license_chain.py --require-runtime`, artifact `compose-pilot-license-chain` (fingerprints only) |
+| CI Windows job (real engine writer) | `Write-HrmPilotEnv` with `<state>\license_public_key.b64` (BOM+CRLF) → `HRM_LICENSE_PUBLIC_KEY` last line, SHA-256 equal to the file, 44 chars; without the file → empty value (so Compose refuses) | `engine.tests.ps1` |
+| CI Windows job (static) | overlay mapping ×3, no default, no `env_file:`, no private key name | `static.tests.ps1` |
+| CI backend job | production preflight: fails without / with malformed `LICENSE_PUBLIC_KEY`, passes with a 44-char value | `ci.yml` |
+
+## Mandatory checks — PASS / FAIL / BLOCKED / NOT RUN
+
+### PASS (local, this commit; CI confirmation pending)
+- `ruff check`, `ruff format --check`, `mypy app tests` — clean.
+- `pytest -m "not integration"`: **825 passed** (798 before + 27 new).
+- `python infra/scripts/pilot_drill.py --steps signature-policy,channel-tamper-refusal,readiness-api` — passed.
+- `python infra/windows/tests/lint-engine.py` — 19 files, structural check passed.
+- License guard suites (40 tests) with deny-by-default — passed, including the strict 403 cases above.
+- Offline issuer CLI (manual, Linux sandbox, not CI): `cli.py gen-keypair` → `issue` → `verify` OK, no network.
+
+### PENDING CI (must NOT be read as PASS until `ci-run-status.json` is imported)
+- Real `docker compose` chain (with key / without key / empty key / resolved env / Settings in images) — `stack` job.
+- Real `Write-HrmPilotEnv` fingerprint case — Windows job.
+- Backend integration (PostgreSQL, migration 0014), frontend, release-policy, compose smoke — re-run on the fix commit.
 
 ### FAIL
-- None
+- none known.
 
 ### BLOCKED
-- Clean Windows 10/11 offline issuer bundle: BLOCKED / MISSING — no clean Windows VM in Linux sandbox, cannot verify run-gui.bat, run-html.bat, license issuance, no network, no private key in logs. See windows-issuer-bundle-check.md. Linux structure checks PASS.
+- Clean Windows 10/11 offline issuer bundle (run-gui.bat / run-html.bat, issuance, no network, no
+  private key in logs) — needs the owner's VM; see `windows-issuer-bundle-check.md`.
+- `installer_snapshot_contains_public_key` — `infra/license/public_key.b64` is not in git by design.
 
-### NOT RUN
-- Windows VM manual GUI/HTML — NOT RUN due to BLOCKED
-- Production signing workflow update-channel.yml — NOT RUN by design
-- Tags/releases v0.14.0 — NOT RUN by design
+### NOT RUN (by design / constraints)
+- `update-channel.yml`, `workflow_dispatch`, tags/releases `v0.14.0`, production signing — not run.
 
-## Changed Files vs main (39 files)
+## Private key confirmation
+- Git: no private key material; every test key is `Ed25519PrivateKey.generate()` / `secrets.token_bytes(32)` per run.
+- Overlays name only `LICENSE_PUBLIC_KEY` / `HRM_LICENSE_PUBLIC_KEY`; tests assert no `PRIVATE_KEY`/`private_key` token appears.
+- CI artifact and `license-chain-evidence.*`: SHA-256 fingerprints (16 hex) only; the chain script has a
+  leak guard that turns the verdict into FAIL and masks the report if 44-char base64 or ≥32-hex
+  material ever appears.
+- Logs: guard logs redacted fingerprints only (`test_no_private_key_in_logs_and_redacted`).
 
-- backend/alembic/versions/0014_license.py
-- backend/app/config.py
-- backend/app/license.py
-- backend/app/license_guard.py (security fix: fail-closed empty key, slash boundary, // normalization, permissive blocking)
-- backend/app/main.py (security fix: ApiPrefixStripMiddleware + reorder: Metrics, ApiPrefixStrip, LicenseGuard, SecurityHeaders)
-- backend/app/models.py
-- backend/app/routers/license.py
-- backend/app/routers/users.py
-- backend/app/services/license_service.py
-- backend/pyproject.toml, requirements.txt (python-multipart)
-- backend/tests/test_license.py, test_license_enforcement.py, test_license_guard.py, test_license_middleware_comprehensive.py (NEW 15 tests), test_migrations.py
-- docs/license-maria.md, docs/license-owner.md (BLOCKED note), docs/runbook-pilot-release.md
-- frontend/src/api.ts, app-shell/Workspace.tsx, useWorkspaceSection.ts, types.ts, features/license/LicensePage.tsx, license.css
-- infra/license/README.md, infra/windows/engine/Secrets.psm1 (null guard)
-- tools/license-issuer/* (build.ps1, cli.py, gui.py, license-issuer.html, license_issuer.py, nacl-fast.js)
-- review-artifacts/* (chain evidence real reads, windows bundle BLOCKED, final verdict)
+## Verdict
 
-## Private Key Confirmation
+**NO-GO.** Reasons, in order: (1) the Compose/runtime chain is **PENDING CI** in this commit — the
+previous PASS claim is withdrawn and must be re-earned by the imported artifact; (2) the clean-Windows
+issuer bundle check remains **BLOCKED**. Do not merge, do not tag/release, do not run production workflows.
 
-- **Git:** `grep -r "PRIVATE KEY" --include="*.py" --include="*.ps1"` only shows markers and test placeholders, no real 64 hex private key. `git log --all --oneline --grep=private` none. All key generation uses `Ed25519PrivateKey.generate()` ephemeral in tests, never committed.
-- **Logs:** Tests `test_no_private_key_in_logs_and_redacted` checks logs contain only fingerprint SHA256:... (redacted), never full key/signature/PII — PASS
-- **Artifacts:** `review-artifacts/*.json` contain only redacted fingerprints (e.g., `SHA256:31c719fa... (redacted)` and `MGMg3zxP...7hM=` redacted), never full 64 hex private or 44 base64 public. Verified via `grep` and test `assert pub_b64 not in content`.
-- **Frontend/Docker:** No private key in frontend bundle, Docker image, installer — only public key via env/file.
-- **Owner flow:** Private key created and stored ONLY owner (VeraCrypt/BitLocker), never in git/installer/frontend/Docker/logs/diagnostic archive — documented in docs/license-owner.md and tools/license-issuer/README.md.
-
-## Final Verdict
-
-**NO-GO** — only because of BLOCKED clean Windows VM manual check. All automatic security checks PASS, no FAIL.
-
-For GO, owner must manually verify on clean Windows 10/11 offline VM:
-- распаковка dist/license-issuer-dist.zip
-- run-gui.bat, run-html.bat (localhost:8765, Edge 120+ WebCrypto Ed25519, fallback TweetNaCl)
-- выпуск лицензии, проверка формата, отсутствие сети, отсутствие private key в логах
-
-Once BLOCKED cleared with photo/video evidence, verdict becomes GO for limited pilot 127.0.0.1 only.
-
-**Do not merge PR manually, do not create tag/release, do not run production workflow.**
+## CI results
+_Filled by the evidence-import commit from `ci-run-status.json`._

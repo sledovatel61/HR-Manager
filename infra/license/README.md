@@ -25,7 +25,7 @@
 5. Полный путь (проверено тестом `test_full_public_key_path_simulation`):
    - `infra/license/public_key.b64` → `Secrets.psm1:Get-HrmLicensePublicKey` → `pilot.env:HRM_LICENSE_PUBLIC_KEY` → Docker Compose → backend `LICENSE_PUBLIC_KEY` → `APP_ENV=pilot` требует ключ (fail-closed) → backend принимает валидную лицензию и отклоняет подделанную.
 
-6. В `infra/windows/engine/Secrets.psm1` при установке `HRM_LICENSE_PUBLIC_KEY` читается из этого файла и попадает в `pilot.env`.
+6. В `infra/windows/engine/Secrets.psm1` при установке `HRM_LICENSE_PUBLIC_KEY` читается из этого файла и попадает в `pilot.env`; `infra/compose.pilot.yml` передаёт его как `LICENSE_PUBLIC_KEY` в backend, worker и backup через обязательную интерполяцию `${HRM_LICENSE_PUBLIC_KEY:?}` (пустое или отсутствующее значение — отказ `docker compose`). Для production-оверлея аналогично: `LICENSE_PUBLIC_KEY=$(cat infra/license/public_key.b64)` в окружении, `infra/scripts/check_env.sh` проверяет формат.
 
 ## Безопасность
 

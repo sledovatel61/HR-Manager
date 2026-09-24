@@ -125,11 +125,13 @@ python tools/license-issuer/cli.py issue --client-name "Пилот Марии" -
 1. Владелец генерирует ключ, сохраняет приватный у себя (только у владельца).
 2. Публичный в `infra/license/public_key.b64` (44 символа).
 3. При установке Windows движок `Secrets.psm1:Get-HrmLicensePublicKey` читает ключ из файла (`infra/license/public_key.b64` относительно движка) и пишет в `pilot.env` как `HRM_LICENSE_PUBLIC_KEY`.
-4. Docker Compose передаёт `HRM_LICENSE_PUBLIC_KEY` в backend как `LICENSE_PUBLIC_KEY`.
-5. Backend: `Settings` в `APP_ENV=pilot` требует `LICENSE_PUBLIC_KEY` (fail-closed, без ключа не стартует).
+4. Docker Compose (`infra/compose.pilot.yml`) передаёт `HRM_LICENSE_PUBLIC_KEY` из `pilot.env` в контейнеры **backend, worker и backup** как `LICENSE_PUBLIC_KEY` — обязательно, через `${HRM_LICENSE_PUBLIC_KEY:?...}`. Файл `pilot.env` подключается только флагом `--env-file` (интерполяция); директивы `env_file:` в сервисах нет намеренно — иначе в контейнер backend попал бы весь файл, включая ключ шифрования бэкапов. Образ backend не содержит каталога `infra/`, поэтому переменная окружения — единственный путь ключа в контейнер.
+5. Backend: `Settings` в `APP_ENV=pilot` требует `LICENSE_PUBLIC_KEY` (fail-closed, без ключа не стартует). Worker и backup (`python -m app.cli ...`) загружают те же `Settings`, поэтому ключ нужен и им.
 6. Backend принимает действующую лицензию (подпись Ed25519) и отклоняет подделанную (тест `test_full_public_key_path_simulation`).
 
-См. автоматический тест `backend/tests/test_license_enforcement.py::test_full_public_key_path_simulation`.
+**Если ключа нет.** Без файла `public_key.b64` движок запишет в `pilot.env` пустую строку `HRM_LICENSE_PUBLIC_KEY=`, и `docker compose` откажется запускать пилот с сообщением `HRM_LICENSE_PUBLIC_KEY is required for the pilot`. Это ожидаемое поведение (fail-closed): положите `public_key.b64` в `infra\license\` релиза или в `<state>\license_public_key.b64` и повторите установку/обновление. Данные в томах при этом не затрагиваются.
+
+Проверки: `backend/tests/test_license_enforcement.py::test_full_public_key_path_simulation`, `backend/tests/test_pilot_overlay.py` (маппинг обязателен для backend/worker/backup, `env_file:` запрещён), `backend/tests/test_compose_license_chain.py` (окружение оверлея принимается `Settings` в `APP_ENV=pilot`, отпечаток ключа совпадает), в CI — шаг «Pilot overlay — license public-key chain» (настоящий `docker compose config` с ключом и без, resolved environment, `Settings` внутри собранных образов; артефакт `compose-pilot-license-chain` содержит только SHA-256-отпечатки) и Windows-тест движка `pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_key.b64`.
 
 ## Ротация/отзыв
 

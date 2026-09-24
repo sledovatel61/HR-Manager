@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.config import Settings
-from app.license import fingerprint_public_key
 from app.main import create_app
 from app.models import Base, User, UserRole
 from app.security import hash_password
@@ -222,10 +221,10 @@ def test_dangerous_prefix_bypass_blocked() -> None:
 
     for ep in DANGEROUS_PATHS:
         resp = client.get(ep)
-        if resp.status_code == 200:
-            pytest.fail(f"Dangerous path {ep} returned 200, should be blocked")
-        if resp.status_code == 403:
-            assert resp.json().get("code") == "no_license"
+        # Deny by default: a look-alike prefix is not on the allowlist, so it
+        # is strictly 403 no_license — never 200 and never a 404 leak.
+        assert resp.status_code == 403, f"{ep}: expected 403, got {resp.status_code}"
+        assert resp.json().get("code") == "no_license", ep
 
 
 def test_double_slash_and_trailing_slash() -> None:
@@ -237,9 +236,8 @@ def test_double_slash_and_trailing_slash() -> None:
     client = TestClient(app)
 
     resp = client.get("/api//candidates")
-    assert resp.status_code in (403, 404, 307, 308)
-    if resp.status_code == 403:
-        assert resp.json().get("code") == "no_license"
+    assert resp.status_code == 403, resp.status_code
+    assert resp.json().get("code") == "no_license"
 
     resp2 = client.get("/api/license/status/")
     assert resp2.status_code in (200, 307, 308, 404)
@@ -386,42 +384,45 @@ def test_fail_closed_db_error_returns_403_not_bypass() -> None:
     assert resp.json().get("code") in ("check_failed", "no_license")
 
 
-def test_public_key_chain_evidence() -> None:
-    """Create redacted evidence of public key chain."""
-    _priv_hex, pub_b64 = gen_keypair()
-    fp = fingerprint_public_key(pub_b64)
-
-    evidence_dir = Path(__file__).resolve().parents[2] / "review-artifacts"
-    evidence_dir.mkdir(exist_ok=True)
-    evidence_file = evidence_dir / "license-public-key-chain.json"
-
-    evidence = {
-        "fingerprint": fp,
-        "files": [
-            "infra/license/public_key.b64",
-            "tools/license-issuer/public_key.b64 (owner)",
-            "pilot.env HRM_LICENSE_PUBLIC_KEY",
-            "infra/compose.pilot.yml (env file)",
-            "backend/app/config.py LICENSE_PUBLIC_KEY",
-        ],
-        "checks": {
-            "owner_source_exists": True,
-            "build_includes_public_key": True,
-            "installer_snapshot_contains": True,
-            "pilot_env_writes_key": True,
-            "compose_passes_env_file": True,
-            "backend_validates_key": True,
-        },
-        "note": "Private key never in git. Only fingerprint shown.",
-    }
-
+def test_public_key_chain_evidence_is_computed_not_declared() -> None:
+    """The chain evidence must be COMPUTED from the real files (generator in
+    review-artifacts/), never written by a test with hard-coded ``True``
+    values. This test is read-only: it re-runs the generator's pure check
+    function and verifies the committed evidence is redacted."""
+    import importlib.util
     import json
+    import re
+    import sys
 
-    evidence_file.write_text(json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8")
-    assert evidence_file.exists()
-    content = evidence_file.read_text()
-    assert pub_b64 not in content
-    assert fp in content
+    repo = Path(__file__).resolve().parents[2]
+    gen_path = repo / "review-artifacts" / "gen_license_chain_evidence.py"
+    spec = importlib.util.spec_from_file_location("gen_license_chain_evidence", gen_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    checks = module.compute_checks()
+    false_checks = sorted(k for k, v in checks.items() if v is False)
+    assert not false_checks, false_checks
+    assert checks["compose_pilot_services_with_mapping"] == ["backend", "backup", "worker"]
+
+    # Without an imported CI artifact the Compose/runtime steps are NOT RUN —
+    # never PASS by declaration.
+    steps, meta = module.ci_runtime_steps()
+    if not meta.get("imported"):
+        assert all(v.startswith("NOT RUN") for v in steps.values()), steps
+    else:
+        assert meta.get("run_id") and meta.get("head_sha")
+
+    evidence = repo / "review-artifacts" / "license-chain-evidence.json"
+    text = evidence.read_text(encoding="utf-8")
+    assert not re.search(r"[A-Za-z0-9+/]{43}=", text), "unredacted 32-byte base64 in evidence"
+    data = json.loads(text)
+    assert data["checks_read_from_real_files"]["compose_requires_LICENSE_PUBLIC_KEY"] is True
+    assert data["checks_read_from_real_files"]["compose_requires_LICENSE_PUBLIC_KEY_via_?"] is True
+    # A stale declarative artifact must not come back.
+    assert not (repo / "review-artifacts" / "license-public-key-chain.json").exists()
 
 
 def test_fail_closed_empty_public_key_middleware() -> None:
@@ -465,7 +466,15 @@ def test_fail_closed_empty_public_key_middleware() -> None:
 
 
 def test_unknown_paths_blocked_without_license() -> None:
-    """Ensure /unknown and /api/unknown do not bypass license guard."""
+    """Deny by default: an unknown path is strictly 403 ``no_license``.
+
+    ``/unknown`` (as nginx would deliver it, prefix already stripped),
+    ``/api/unknown`` (as the TestClient/dev proxy delivers it) and a nested
+    child must all be refused by the guard itself — not answered with a 404
+    by the router, because a 404 would prove the request got past the
+    license check. A route added tomorrow under a new root is therefore
+    protected automatically.
+    """
     _, pub_b64 = gen_keypair()
     engine = create_engine(
         SQLITE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool
@@ -473,30 +482,57 @@ def test_unknown_paths_blocked_without_license() -> None:
     app, _ = make_app_with_license(pub_b64, engine)
     client = TestClient(app)
 
-    # /unknown is not a known route, but if it were added in future under
-    # protected area, it should still be blocked. Currently it will be 404
-    # or 403. The critical is it must NOT return 200 bypass.
-    for ep in ["/unknown", "/api/unknown", "/api/unknown/child"]:
-        resp = client.get(ep)
-        # Should not be 200 bypass
-        if resp.status_code == 200:
-            pytest.fail(f"{ep} returned 200 without license, bypass!")
-        # If 403, must be no_license (blocked)
-        if resp.status_code == 403:
-            assert resp.json().get("code") == "no_license"
+    for ep in ["/unknown", "/api/unknown", "/api/unknown/child", "/reports", "/api/reports"]:
+        for method in ("get", "post", "put", "patch", "delete"):
+            resp = getattr(client, method)(ep)
+            assert resp.status_code == 403, f"{method.upper()} {ep}: got {resp.status_code}"
+            assert resp.json().get("code") == "no_license", f"{method.upper()} {ep}"
+            assert resp.headers.get("X-License-Status") == "no_license"
 
-    # Existing future-like path: /api/candidates is protected, should be 403
+    # Existing protected path keeps the same strict answer.
     resp = client.get("/api/candidates")
     assert resp.status_code == 403
     assert resp.json().get("code") == "no_license"
 
-    # Ensure that adding a new route under /unknown would still be blocked
-    # Simulate by checking that guard treats /unknown as protected if it looks
-    # like api-like? Currently /unknown is not api-like, so it returns 404,
-    # but /api/unknown is api-like and should be blocked.
-    resp_api_unknown = client.get("/api/unknown")
-    assert resp_api_unknown.status_code == 403
-    assert resp_api_unknown.json().get("code") == "no_license"
+
+def test_new_router_under_unknown_root_is_protected_automatically() -> None:
+    """A real route mounted under a root the guard has never heard of must
+    still require a license (deny by default, no path heuristics)."""
+    _, pub_b64 = gen_keypair()
+    engine = create_engine(
+        SQLITE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    app, _ = make_app_with_license(pub_b64, engine)
+
+    @app.get("/reports/summary")
+    def _reports_summary() -> dict[str, str]:  # pragma: no cover - must not run
+        return {"leak": "yes"}
+
+    client = TestClient(app)
+    for ep in ("/reports/summary", "/api/reports/summary"):
+        resp = client.get(ep)
+        assert resp.status_code == 403, f"{ep}: got {resp.status_code}"
+        assert resp.json().get("code") == "no_license"
+        assert "leak" not in resp.text
+
+
+def test_ops_metrics_allowed_without_license_but_never_pii() -> None:
+    """Aggregate diagnostics stay reachable without a license (recovery
+    contour); they contain counters only."""
+    _, pub_b64 = gen_keypair()
+    engine = create_engine(
+        SQLITE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    app, _ = make_app_with_license(pub_b64, engine)
+    client = TestClient(app)
+    for ep in ("/ops/metrics", "/api/ops/metrics"):
+        resp = client.get(ep)
+        assert resp.status_code == 200, f"{ep}: got {resp.status_code}"
+        assert "no_license" not in resp.text
+    # ...but a look-alike sibling is not exempt.
+    resp = client.get("/api/ops/metrics-extra")
+    assert resp.status_code == 403
+    assert resp.json().get("code") == "no_license"
 
 
 def test_api_unknown_strictly_403_no_license() -> None:
