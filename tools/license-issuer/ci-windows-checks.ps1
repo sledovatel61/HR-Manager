@@ -44,7 +44,11 @@ function Report-Fail([string]$title, [string]$detail) {
 try {
     # ------------------------------------------------------------ parser
     if ($Phase -eq "parser") {
-      foreach ($scriptName in @("build.ps1", "ci-windows-checks.ps1", "windows-vm-checklist.ps1")) {
+      Write-Phase ("shell: PowerShell {0} ({1} edition), {2}" -f $PSVersionTable.PSVersion, $PSVersionTable.PSEdition, (Get-Process -Id $PID).Path)
+      if ($PSVersionTable.PSEdition -ne "Desktop" -or $PSVersionTable.PSVersion.Major -ne 5) {
+          Report-Fail "parser: not running under Windows PowerShell 5.1" ("edition=" + $PSVersionTable.PSEdition + " version=" + $PSVersionTable.PSVersion)
+      }
+      foreach ($scriptName in @("build.ps1", "ci-windows-checks.ps1", "ci-windows-acceptance.ps1", "windows-vm-checklist.ps1")) {
         $BuildScript = Join-Path $Root $scriptName
         if (-not (Test-Path $BuildScript)) {
             Report-Fail "parser: $scriptName not found" "expected: $BuildScript"
@@ -72,11 +76,45 @@ try {
             $lines = @($errors | ForEach-Object { "line {0}:{1} {2}" -f $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message })
             Report-Fail "parser: Windows PowerShell 5.1 found $($errors.Count) parse error(s) in $scriptName" ($lines -join "`n")
         }
-        $ok = "PASS: $scriptName - UTF-8 BOM present, ASCII-only, 0 parser errors under Windows PowerShell $((Get-Host).Version.ToString())"
+        $ok = "PASS: $scriptName - UTF-8 BOM present, ASCII-only, 0 parser errors under Windows PowerShell $($PSVersionTable.PSVersion)"
         Write-Phase $ok
         if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $ok -Encoding utf8 }
       }
       $BuildScript = Join-Path $Root "build.ps1"
+
+      # Every PowerShell file in the repository: real encoding + two parses.
+      # (1) Parser::ParseFile = exactly how Windows PowerShell 5.1 reads the file
+      #     on this machine (BOM -> UTF-8, no BOM -> ANSI code page of the runner).
+      # (2) ParseInput of the text as a Russian-locale owner PC would read it
+      #     (no BOM -> CP1251), the configuration that broke build.ps1.
+      $repoRoot = (Resolve-Path (Join-Path $Root "..\..")).Path
+      $allPs = @(& git -C $repoRoot ls-files "*.ps1" "*.psm1" "*.psd1")
+      $utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
+      $cp1251 = [System.Text.Encoding]::GetEncoding(1251)
+      $bad = @()
+      foreach ($rel in $allPs) {
+        $full = Join-Path $repoRoot $rel
+        $b = [System.IO.File]::ReadAllBytes($full)
+        $hasBom = ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)
+        $start = 0; if ($hasBom) { $start = 3 }
+        $na = 0; for ($i = $start; $i -lt $b.Length; $i++) { if ($b[$i] -ge 0x80) { $na++ } }
+        $validUtf8 = $true
+        try { [void]$utf8Strict.GetString($b, $start, $b.Length - $start) } catch { $validUtf8 = $false }
+        $t = $null; $e1 = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($full, [ref]$t, [ref]$e1)
+        if ($hasBom) { $text1251 = [System.Text.Encoding]::UTF8.GetString($b, 3, $b.Length - 3) } else { $text1251 = $cp1251.GetString($b) }
+        $t2 = $null; $e2 = $null
+        [void][System.Management.Automation.Language.Parser]::ParseInput($text1251, [ref]$t2, [ref]$e2)
+        $n1 = @($e1).Count; $n2 = @($e2).Count
+        $enc = "UTF-8 BOM"; if (-not $hasBom) { if ($na -eq 0) { $enc = "ASCII (no BOM)" } else { $enc = "NO BOM + non-ASCII" } }
+        Write-Phase ("{0,-55} {1,-18} nonASCII={2,-6} validUTF8={3,-5} ParseFile errors={4} CP1251-read errors={5}" -f $rel, $enc, $na, $validUtf8, $n1, $n2)
+        if ($n1 -ne 0 -or $n2 -ne 0 -or $enc -eq "NO BOM + non-ASCII" -or -not $validUtf8) {
+            $first = @($e1) + @($e2) | Select-Object -First 3 | ForEach-Object { "  line {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message }
+            $bad += ("$rel ($enc, ParseFile=$n1, CP1251=$n2)`n" + ($first -join "`n"))
+        }
+      }
+      if ($bad.Count -ne 0) { Report-Fail "parser: $($bad.Count) repository PowerShell file(s) not 5.1/CP1251-safe" ($bad -join "`n") }
+      Write-Phase ("PASS: all {0} repository PowerShell files: BOM or pure ASCII, valid UTF-8, 0 errors in ParseFile and in the CP1251 read" -f $allPs.Count)
     }
 
     # ------------------------------------------------------------ build
@@ -89,7 +127,12 @@ try {
         try {
             # Tee-Object has no -Encoding in Windows PowerShell 5.1: stream to
             # the host and collect, then write the log explicitly.
-            $buildLines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $BuildScript *>&1 | ForEach-Object { $line = $_.ToString(); Write-Host $line; $line })
+            # Full path: Windows PowerShell 5.1 (powershell.exe), never pwsh.exe.
+            $ps51 = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+            $ps51Info = (& $ps51 -NoProfile -Command '$PSVersionTable.PSVersion.ToString() + [char]32 + $PSVersionTable.PSEdition' | Out-String).Trim()
+            Write-Phase "build.ps1 runs via: $ps51 (PowerShell $ps51Info)"
+            if ($ps51Info -notmatch "^5\.1\.\S+ Desktop$") { throw "powershell.exe is not Windows PowerShell 5.1 Desktop: $ps51Info" }
+            $buildLines = @(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $BuildScript *>&1 | ForEach-Object { $line = $_.ToString(); Write-Host $line; $line })
             $code = $LASTEXITCODE
             Set-Content -Path $logFile -Value $buildLines -Encoding UTF8
         } finally { $ErrorActionPreference = $previousEap }
@@ -108,6 +151,11 @@ try {
         if ($hexRuns.Count -ne 0) {
             Report-Fail "build: build log contains $($hexRuns.Count) run(s) of 64+ hex characters" "possible key material leak; log tail: " + $logText.Substring([Math]::Max(0, $logText.Length - 2000))
         }
+        $hostLine = @($buildLines | Where-Object { $_ -match "^Host: PowerShell " }) | Select-Object -First 1
+        if (-not $hostLine -or $hostLine -notmatch "Desktop edition" -or $hostLine -notmatch "\\WindowsPowerShell\\v1\.0\\powershell\.exe") {
+            Report-Fail "build: build.ps1 did not report running under powershell.exe 5.1 Desktop" ("host line: " + $hostLine)
+        }
+        Write-Phase ("build.ps1 self-reported " + $hostLine)
         $ok = "PASS: zip present, no 64+ hex material in the build log"
         Write-Phase $ok
         if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $ok -Encoding utf8 }

@@ -57,6 +57,9 @@ $pyExe = Join-Path $pythonDir "python.exe"
 Write-Info "=== HR Manager License Issuer - autonomous build ==="
 Write-Info "OutDir: $OutDir"
 Write-Info "PythonVersion: $PythonVersion"
+# Evidence of the shell that actually runs this build (Windows PowerShell 5.1 =
+# Desktop edition, powershell.exe; pwsh 7 = Core edition, pwsh.exe).
+Write-Info ("Host: PowerShell {0} ({1} edition), {2}" -f $PSVersionTable.PSVersion, $PSVersionTable.PSEdition, (Get-Process -Id $PID).Path)
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
 
@@ -277,6 +280,7 @@ Copy-Item -Path "$PSScriptRoot\license-issuer.html" -Destination $appDir -Force
 if (Test-Path "$PSScriptRoot\nacl-fast.js") {
     Copy-Item -Path "$PSScriptRoot\nacl-fast.js" -Destination $appDir -Force
 }
+Copy-Item -Path "$PSScriptRoot\open_when_ready.py" -Destination $appDir -Force
 Copy-Item -Path "$PSScriptRoot\README.md" -Destination $appDir -Force
 
 # 4. Create launchers: bundled python only, fail-closed if it is missing (no
@@ -346,10 +350,11 @@ set "PYTHONUTF8=1"
 set "PYTHONPATH=%SCRIPT_DIR%"
 echo Starting local server at http://127.0.0.1:%PORT%/license-issuer.html (loopback only)
 echo Keep this window open. Press Ctrl+C to stop the server after use.
-REM Open the browser ~2s later (after the server below has bound the port).
-REM ping is used as the delay: "timeout" fails when stdin is not a console.
-REM HRM_NO_BROWSER=1 skips it for unattended runs (CI, checklists).
-if not defined HRM_NO_BROWSER start "" /b cmd /c "ping -n 3 127.0.0.1 >nul & start "" http://127.0.0.1:%PORT%/license-issuer.html"
+REM No fixed delay (race: the browser could hit the port before the server
+REM listens). open_when_ready.py (bundled python) polls the page on loopback and
+REM opens the browser only after HTTP 200 with the issuer page marker.
+REM HRM_NO_BROWSER=1: it only prints the [ready] line (CI, checklists).
+start "" /b "%PY_EXE%" "%SCRIPT_DIR%open_when_ready.py" "http://127.0.0.1:%PORT%/license-issuer.html"
 REM "%SCRIPT_DIR%." not "%SCRIPT_DIR%": %~dp0 ends with a backslash and \" is an
 REM escaped quote in Windows argv parsing (the directory would end in a quote -> 404).
 "%PY_EXE%" -m http.server %PORT% -b 127.0.0.1 --directory "%SCRIPT_DIR%."
