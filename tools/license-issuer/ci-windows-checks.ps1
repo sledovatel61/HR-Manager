@@ -306,7 +306,9 @@ try {
 
             # --- no private key in temp artifacts or test logs ---
             $swept = 0
-            foreach ($f in (Get-ChildItem $root -Recurse -File | Where-Object { $_.FullName -ne $privFile -and $_.Length -lt 10MB })) {
+            # the key file itself is excluded by name + parent dir: $env:TEMP may be an
+            # 8.3 short path while Get-ChildItem reports the long one.
+            foreach ($f in (Get-ChildItem $root -Recurse -File | Where-Object { -not ($_.Name -eq "private_key.hex" -and $_.Directory.Name -eq "keys") -and $_.Length -lt 10MB })) {
                 try {
                     if ((Get-Content $f.FullName -Raw -Encoding utf8 -ErrorAction Stop) -match [regex]::Escape($privHex)) {
                         throw "private key material found in: $($f.FullName)"

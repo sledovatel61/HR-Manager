@@ -219,7 +219,8 @@ try {
     if (-not $privHex) { Step-Fail "no private key generated - sweep skipped" }
     $swept = 0
     if ($privHex) {
-    foreach ($f in (Get-ChildItem $work, $out -Recurse -File | Where-Object { $_.FullName -ne $privFile -and $_.Length -lt 20MB })) {
+    # key file excluded by name + parent dir (8.3 short vs long path safe)
+    foreach ($f in (Get-ChildItem $work, $out -Recurse -File | Where-Object { -not ($_.Name -eq "private_key.hex" -and $_.Directory.Name -eq "keys") -and $_.Length -lt 20MB })) {
         try {
             if ((Get-Content $f.FullName -Raw -Encoding utf8 -ErrorAction Stop) -match [regex]::Escape($privHex)) {
                 Step-Fail "private key material found in: $($f.FullName)"
