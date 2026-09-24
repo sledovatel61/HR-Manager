@@ -16,7 +16,16 @@ import json
 import sys
 from pathlib import Path
 
-from license_issuer import generate_keypair, issue_license, load_private_key_from_file, load_public_key_from_file, verify_license
+try:
+    from license_issuer import generate_keypair, issue_license, load_private_key_from_file, load_public_key_from_file, verify_license
+except ImportError:
+    # When run from a different working directory, in particular with the
+    # bundled embeddable Python whose sys.path is defined by python*._pth and
+    # does not include the script directory.
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from license_issuer import generate_keypair, issue_license, load_private_key_from_file, load_public_key_from_file, verify_license
 
 
 def cmd_gen_keypair(args):

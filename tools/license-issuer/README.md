@@ -63,10 +63,15 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 Что делает build.ps1 (воспроизводимый, fail-closed):
 - Скачивает embeddable Python с python.org (только на этапе сборки)
 - Устанавливает cryptography в `Lib/site-packages` (только на этапе сборки, нужен интернет один раз)
+- Переписывает `python312._pth` детерминированно: `python312.zip`, `.`, `..\license-issuer`, `Lib\site-packages`, `import site`. Без `..\license-issuer` embeddable Python (он игнорирует `PYTHONPATH` и не добавляет каталог скрипта в `sys.path`) не импортирует соседний `license_issuer.py` — `run-cli.bat` падал с `ModuleNotFoundError: No module named 'license_issuer'`
 - Копирует `nacl-fast.js` (TweetNaCl 1.0.3, 2391 строка, из npm, public domain) для fallback
-- Создаёт launchers `run-gui.bat`, `run-cli.bat`, `run-html.bat` — используют `..\python\python.exe`, fail-closed если bundled Python отсутствует
-- Smoke-тест `gen-keypair`
+- Создаёт launchers `run-gui.bat`, `run-cli.bat`, `run-html.bat` — используют `..\python\python.exe`, **fail-closed** если bundled Python отсутствует (никакого fallback на системный Python), `cd /d "%~dp0"` + кавычки вокруг всех путей (работает с путями, содержащими пробелы), `PYTHONUTF8=1`
+- `run-html.bat` слушает **только `127.0.0.1`** (`python -m http.server 8765 -b 127.0.0.1 --directory "<app>"`), а не `0.0.0.0`
+- Smoke-тест полной цепочки `gen-keypair -> issue -> verify` в временной директории **вне репозитория**; если приватный ключ появляется в выводе — билд падает; каталог удаляется после завершения
 - Создаёт zip
+- Любой сбой (скачивание, pip, импорт cryptography, smoke-тест) завершает билд ненулевым кодом
+
+Кодировка `build.ps1`: файл сохранён **UTF-8 с BOM** и содержит только ASCII. Windows PowerShell 5.1 читает `.ps1` без BOM как ANSI; под CP1251 UTF-8-тире (байты `E2 80 94`) декодируется в правую кавычку U+201D, которую токенизатор принимает за закрывающую кавычку строки → parse error на весь скрипт. CI (job `license-issuer-windows`) проверяет BOM, ASCII-only и парсит файл настоящим Windows PowerShell 5.1 Parser'ом.
 
 ### Использование владельцем (офлайн, без Python, без интернета)
 
@@ -92,11 +97,12 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 
 ```bash
 pip install cryptography
-python cli.py gen-keypair
-python cli.py issue --client-name "Пилот Марии" --expires-at 2026-12-31 --max-users 5 --private-key <64hex> --out license.hrmlicense
+python cli.py gen-keypair --out-dir keys
+python cli.py issue --private-key-file keys/private_key.hex --client "Пилот Марии" --expires 2026-12-31 --max-users 5 --out license.hrmlicense
+python cli.py verify --public-key-file keys/public_key.b64 --license-file license.hrmlicense
 ```
 
-**Текущий статус:** Вариант A реализован — `build.ps1` + `nacl-fast.js` (2391 строка, из npm tweetnacl@1.0.3) + smoke-тест. Требуется ручная проверка на чистой Windows VM.
+**Текущий статус:** Вариант A реализован — `build.ps1` (UTF-8 BOM + ASCII, `..\license-issuer` в `python312._pth`, fail-closed launchers, `run-html.bat` на 127.0.0.1, smoke-тест `gen-keypair -> issue -> verify` вне репозитория) + `nacl-fast.js`. Автоматическая проверка на Windows: CI job `license-issuer-windows` (Windows PowerShell 5.1: parser-check, полная сборка, runtime-проверки из свежего unzip без системного Python, loopback, fail-closed, отсутствие ключей в логах). Ручная проверка на чистой Windows VM без Python/интернета — требуется для GO.
 
 ### Вариант HTML офлайн (WebCrypto)
 

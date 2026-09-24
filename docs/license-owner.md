@@ -104,11 +104,12 @@ C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://lo
 
 ```bash
 pip install cryptography
-python tools/license-issuer/cli.py gen-keypair
-python tools/license-issuer/cli.py issue --client-name "Пилот Марии" --expires-at 2026-12-31 --max-users 5 --private-key <64hex> --out license.hrmlicense
+python tools/license-issuer/cli.py gen-keypair --out-dir keys
+python tools/license-issuer/cli.py issue --private-key-file keys/private_key.hex --client "Пилот Марии" --expires 2026-12-31 --max-users 5 --out license.hrmlicense
+python tools/license-issuer/cli.py verify --public-key-file keys/public_key.b64 --license-file license.hrmlicense
 ```
 
-**Текущий статус:** Вариант A **реализован** — см. `build.ps1`, `nacl-fast.js` (2391 строка, из npm tweetnacl@1.0.3), smoke-тест `gen-keypair`. **Ручная проверка на чистой Windows 10/11 VM без Python/интернета — BLOCKED/NOT RUN** (нет чистой Windows VM в Linux sandbox, см. `review-artifacts/windows-issuer-bundle-check.md`). Linux структура проверена, но для GO требуется ручная VM.
+**Текущий статус:** Вариант A **реализован** — см. `build.ps1` (UTF-8 BOM + ASCII для Windows PowerShell 5.1; `..\license-issuer` в `python312._pth` — исправлен `ModuleNotFoundError: No module named 'license_issuer'`; fail-closed launchers без fallback на системный Python; `run-html.bat` слушает только 127.0.0.1; smoke-тест `gen-keypair -> issue -> verify` во временном каталоге вне репозитория) и `nacl-fast.js`. Автоматически на Windows: CI job `license-issuer-windows` (настоящий Windows PowerShell 5.1: parser-check файла, полная сборка, runtime-проверки из свежего unzip с путями, содержащими пробелы, PATH без системного Python, loopback-бинд, fail-closed, sweep на приватный ключ в логах/temp, чистота git-дерева). **Ручная проверка на чистой Windows 10/11 VM без Python/интернета — НЕ ВЫПОЛНЕНО** (см. `review-artifacts/windows-issuer-bundle-check.md`); для GO она всё ещё требуется.
 
 ### Вариант HTML офлайн (WebCrypto)
 
@@ -154,8 +155,8 @@ python tools/license-issuer/cli.py issue --client-name "Пилот Марии" -
 - **Frontend (проверено):** CI success.
 - **Windows engine lint (проверено):** `python infra/windows/tests/lint-engine.py` — 19 files OK.
 - **Windows engine tests + installer smoke + compose smoke:** CI success (35879963863).
-- **Автономность сборки (проверено частично в Linux):** `build.ps1` создаёт `dist/python/` с cryptography, smoke-тест `gen-keypair` проходит. **Ручная проверка на чистой Windows VM без Python/интернета — BLOCKED/NOT RUN** (нет VM в sandbox).
-- **HTML WebCrypto (проверено частично):** Edge 120+ поддерживает Ed25519, `run-html.bat` даёт localhost secure context. **Ручная проверка — BLOCKED/NOT RUN**.
+- **Автономность сборки (проверяется автоматически):** CI job `license-issuer-windows` на windows-latest: parser-check `build.ps1` Windows PowerShell 5.1, полная сборка под 5.1, распаковка в temp с пробелами в пути, CLI `gen-keypair -> issue -> verify` при PATH без системного Python, fail-closed (с системным Python на PATH и без), `run-html.bat` — LISTENING только на 127.0.0.1:8765 (netstat) + WMI-проверка, что слушатель — bundled python.exe, sweep на приватный ключ во всех файлах temp и логах, `git status --porcelain` чист. **Ручная проверка на чистой Windows VM без Python/интернета — NOT RUN.**
+- **HTML WebCrypto (проверено частично):** Edge 120+ поддерживает Ed25519, `run-html.bat` даёт loopback secure context (проверено автоматически: бинд 127.0.0.1 + отдача страницы). **Ручная проверка в реальном Edge — NOT RUN.**
 - **BLOCKED:** clean Windows 10/11 manual check — BLOCKED, см. `review-artifacts/windows-issuer-bundle-check.md`. Для GO требуется ручная VM.
 
 ## Документация — разделение (PASS/FAIL/BLOCKED/NOT RUN)
