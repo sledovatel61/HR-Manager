@@ -210,8 +210,18 @@ def ci_runtime_steps() -> tuple[dict[str, str], dict[str, Any]]:
         if any(p is None for p in present):
             return f"NOT RUN ({label}: step missing in artifact, {run_ref})"
         if all(p["status"] == "pass" for p in present if p):
-            fps = sorted({str(p["evidence"].get("fingerprint", "")) for p in present if p})
-            return f"PASS ({label}, {run_ref}; fingerprints {', '.join(f for f in fps if f)})"
+            fps: set[str] = set()
+            for p in present:
+                if not p:
+                    continue
+                ev = p.get("evidence", {})
+                if ev.get("fingerprint"):
+                    fps.add(str(ev["fingerprint"]))
+                for svc in (ev.get("services") or {}).values():
+                    if isinstance(svc, dict) and svc.get("fingerprint"):
+                        fps.add(str(svc["fingerprint"]))
+            extra = f"; ephemeral key fingerprint {', '.join(sorted(fps))}" if fps else ""
+            return f"PASS ({label}, {run_ref}{extra})"
         return f"FAIL ({label}, {run_ref})"
 
     windows = (status.get("jobs") or {}).get("Windows engine tests + installer smoke")

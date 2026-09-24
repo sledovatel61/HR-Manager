@@ -1,19 +1,45 @@
 # Final Verdict — Offline Licensing for Windows Pilot — PR #34 — Compose fail-closed pass
 
-## Commits
+## Commits and CI runs (this pass)
 
-- **Fix commit (code + tests + CI + evidence generator + this file):** `FIX_COMMIT_SHA_PENDING`
-  — a file cannot contain the SHA of the commit that introduces it; the value is filled in by the
-  evidence-import commit below and repeated in the PR. Until then identify it as
-  `git log --diff-filter=A --format=%H -- backend/tests/test_compose_license_chain.py`.
-- **Evidence-import commit:** `EVIDENCE_COMMIT_SHA_PENDING` (adds the CI artifact
-  `compose-pilot-license-chain.ci.json` + `ci-run-status.json`, regenerates
-  `license-chain-evidence.*`, fills the SHAs here). Docs/evidence only — no code delta vs the fix commit.
-- **Previous verdict commits (superseded):** `e00ef1d`, `f836088`, `eb276c5` — they claimed
-  `docker_compose_env_file: PASS` while `compose.pilot.yml` did not map the key at all. Withdrawn.
-- **Base SHA:** `efb88d978440a0aae1940005fddffc7e465ad9ef` (origin/main), ancestor — PR not outdated.
-- **CI run for the fix commit:** `CI_RUN_PENDING` — job-level results are recorded in
-  `ci-run-status.json` and in the section "CI results" below once imported.
+| Role | Commit | CI run | Result |
+|---|---|---|---|
+| **Fix commit X** (code + tests + CI + evidence generator) | `96f12bc8926a6fc8dbce447bbd8b81889e595c09` | [35963793099](https://github.com/sledovatel61/HR-Manager/actions/runs/35963793099) | 6/6 jobs success; chain step 12/12 `[pass]`, verdict PASS; artifact 10793765774 |
+| CI-only follow-up (prints the redacted chain report to the log/step summary; no backend/infra delta) | `7c7f64529fec28e17abdf9601bb5055762ece8df` | [35964596589](https://github.com/sledovatel61/HR-Manager/actions/runs/35964596589) | 6/6 jobs success; chain step 12/12 `[pass]`, verdict PASS; artifact 10794046262 |
+| **Evidence-import commit Y** (this file, `ci-run-status.json`, `compose-pilot-license-chain.ci.json`, regenerated `license-chain-evidence.*`, README) | the commit that adds `review-artifacts/ci-run-status.json` — `git log --diff-filter=A --format=%H -- review-artifacts/ci-run-status.json`; also named in the PR comment | — (docs only; CI re-runs on it, expected unchanged) | — |
+| Superseded verdict commits | `e00ef1d`, `f836088`, `eb276c5` | — | withdrawn: claimed `docker_compose_env_file: PASS` while the overlay mapped nothing |
+
+- **Base SHA:** `efb88d978440a0aae1940005fddffc7e465ad9ef` (origin/main), still the merge base — PR not outdated.
+- Job-level results of run 35964596589 (identical set in 35963793099): Backend checks ✅ · Backend integration tests (PostgreSQL) ✅ · Frontend checks ✅ · Windows engine tests + installer smoke ✅ · Release pipeline fail-closed policy (ephemeral test signature) ✅ · Compose stack smoke test (dev + prod overlay) ✅ — see `ci-run-status.json` (job ids, artifact ids, zip SHA-256).
+
+## What the CI actually executed for the chain (verbatim from the job logs)
+
+`stack` job, step "Pilot overlay — license public-key chain (real docker compose)", `docker compose 2.38.2`:
+
+```
+[pass] ephemeral_public_key            32 random bytes, base64 44 chars (ephemeral, never persisted)
+[pass] public_key_file                 infra/license/public_key.b64 written (CRLF) and read back trimmed
+[pass] pilot_env_utf8-lf               HRM_LICENSE_PUBLIC_KEY line present as the last line
+[pass] pilot_env_utf8bom-crlf          HRM_LICENSE_PUBLIC_KEY line present as the last line
+[pass] compose_available               docker compose 2.38.2
+[pass] compose_config_with_key_utf8-lf        resolved LICENSE_PUBLIC_KEY of backend/worker/backup equals the public_key.b64 fingerprint; backend gets no backup key; no env_file
+[pass] compose_config_with_key_utf8bom-crlf   (same, Windows-style env file)
+[pass] compose_config_without_key_missing     docker compose config exit 1: "required variable HRM_LICENSE_PUBLIC_KEY is missing a value: HRM_LICENSE_PUBLIC_KEY is required for the pilot"
+[pass] compose_config_without_key_empty       (same for an empty value, as the engine writes when the owner file is absent)
+[pass] runtime_settings_backend        app.config.Settings loaded in APP_ENV=pilot inside the built image; fingerprint equals public_key.b64; no backup key, no raw HRM_* vars in the container env
+[pass] runtime_settings_worker         (same)
+[pass] runtime_settings_backup         (same; backup container legitimately has the backup key)
+verdict: PASS
+```
+
+Windows job (Windows PowerShell 5.1, real engine modules):
+
+```
+[PASS] пилотный оверлей: открытый ключ лицензии обязателен (${HRM_LICENSE_PUBLIC_KEY:?}) для backend, worker и backup
+[PASS] pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_key.b64 (совпадение SHA-256), без файла — пустое значение
+```
+
+The fingerprint in the imported report (`sha256:e2f74e6c761c0684…`) belongs to the **ephemeral** key generated inside that CI job — not to any real key.
 
 ## Defects fixed in this pass (code, not docs)
 
@@ -72,7 +98,7 @@
 
 ## Mandatory checks — PASS / FAIL / BLOCKED / NOT RUN
 
-### PASS (local, this commit; CI confirmation pending)
+### PASS (local, fix commit 96f12bc — all re-confirmed by CI below)
 - `ruff check`, `ruff format --check`, `mypy app tests` — clean.
 - `pytest -m "not integration"`: **825 passed** (798 before + 27 new).
 - `python infra/scripts/pilot_drill.py --steps signature-policy,channel-tamper-refusal,readiness-api` — passed.
@@ -80,10 +106,10 @@
 - License guard suites (40 tests) with deny-by-default — passed, including the strict 403 cases above.
 - Offline issuer CLI (manual, Linux sandbox, not CI): `cli.py gen-keypair` → `issue` → `verify` OK, no network.
 
-### PENDING CI (must NOT be read as PASS until `ci-run-status.json` is imported)
-- Real `docker compose` chain (with key / without key / empty key / resolved env / Settings in images) — `stack` job.
-- Real `Write-HrmPilotEnv` fingerprint case — Windows job.
-- Backend integration (PostgreSQL, migration 0014), frontend, release-policy, compose smoke — re-run on the fix commit.
+### PASS (CI, real runners — runs 35963793099 and 35964596589)
+- Real `docker compose` chain: config with key (UTF-8/LF and UTF-8-BOM/CRLF), resolved env of backend/worker/backup, config **refused** without key and with empty key, `Settings` inside the built pilot images — 12/12, verdict PASS (`compose-pilot-license-chain.ci.json`).
+- Real `Write-HrmPilotEnv` fingerprint case and overlay static case — Windows job.
+- Backend checks (ruff/format/mypy/pytest/preflight incl. license cases), backend integration (PostgreSQL), frontend, release-policy, compose smoke, prod/proxy overlay negative check — all success.
 
 ### FAIL
 - none known.
@@ -106,9 +132,17 @@
 
 ## Verdict
 
-**NO-GO.** Reasons, in order: (1) the Compose/runtime chain is **PENDING CI** in this commit — the
-previous PASS claim is withdrawn and must be re-earned by the imported artifact; (2) the clean-Windows
-issuer bundle check remains **BLOCKED**. Do not merge, do not tag/release, do not run production workflows.
+**NO-GO** for the pilot release — but the reason has changed. The Compose/runtime chain is now
+**PASS on real CI** (imported artifact, not declared). What remains:
+
+1. **BLOCKED — clean Windows 10/11 issuer bundle check** (owner VM: `run-gui.bat` / `run-html.bat`,
+   issue a license offline, confirm no network and no private key in logs) — `windows-issuer-bundle-check.md`.
+2. **BLOCKED by design — `installer_snapshot_contains_public_key`**: `infra/license/public_key.b64` is
+   deliberately not in git; the owner bakes it into the release / `<state>\license_public_key.b64`.
+   Without it the stack now refuses to start with a clear message instead of crash-looping (verified in CI).
+
+Do not merge, do not tag/release, do not run production workflows. Once the owner completes (1),
+this verdict can move to GO for the closed 127.0.0.1 pilot; (2) is an operational step, not a defect.
 
 ## CI results
-_Filled by the evidence-import commit from `ci-run-status.json`._
+See the table at the top and `ci-run-status.json` (run 35964596589 @ `7c7f645`, run 35963793099 @ `96f12bc`; all six jobs `success` in both).

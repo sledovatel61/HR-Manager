@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "purpose": "Job-level CI results imported for review-artifacts/gen_license_chain_evidence.py; written by hand from the GitHub API/job logs, every value verifiable at the URLs below.",
+  "repo": "sledovatel61/HR-Manager",
+  "branch": "arena/01a0ccb9-hr-manager",
+  "pr": 34,
+  "fix_commit": "96f12bc8926a6fc8dbce447bbd8b81889e595c09",
+  "fix_commit_ci": {
+    "run_id": 35963793099,
+    "url": "https://github.com/sledovatel61/HR-Manager/actions/runs/35963793099",
+    "jobs": {
+      "Backend checks": "success",
+      "Backend integration tests (PostgreSQL)": "success",
+      "Frontend checks": "success",
+      "Windows engine tests + installer smoke": "success",
+      "Release pipeline fail-closed policy (ephemeral test signature)": "success",
+      "Compose stack smoke test (dev + prod overlay)": "success"
+    },
+    "stack_job_id": 107518765419,
+    "windows_job_id": 107517814916,
+    "chain_step": "Pilot overlay — license public-key chain (real docker compose): success, 12/12 [pass], verdict PASS",
+    "artifact": {
+      "name": "compose-pilot-license-chain",
+      "id": 10793765774,
+      "zip_sha256": "93cb7628ef8ed69adb31ef328d45cf5044d8858e865651f149ce5ba2c328a4e2",
+      "bytes": 2255
+    }
+  },
+  "run_id": 35964596589,
+  "head_sha": "7c7f64529fec28e17abdf9601bb5055762ece8df",
+  "head_commit_note": "ci-only follow-up to the fix commit: prints the redacted chain report between BEGIN/END markers in the job log and to the step summary (no code delta in backend/infra).",
+  "url": "https://github.com/sledovatel61/HR-Manager/actions/runs/35964596589",
+  "jobs": {
+    "Backend checks": "success",
+    "Backend integration tests (PostgreSQL)": "success",
+    "Frontend checks": "success",
+    "Windows engine tests + installer smoke": "success",
+    "Release pipeline fail-closed policy (ephemeral test signature)": "success",
+    "Compose stack smoke test (dev + prod overlay)": "success"
+  },
+  "job_ids": {
+    "Release pipeline fail-closed policy (ephemeral test signature)": 107520283122,
+    "Backend integration tests (PostgreSQL)": 107520283387,
+    "Backend checks": 107520283452,
+    "Windows engine tests + installer smoke": 107520283508,
+    "Frontend checks": 107520283521,
+    "Compose stack smoke test (dev + prod overlay)": 107521357971
+  },
+  "artifact": {
+    "name": "compose-pilot-license-chain",
+    "id": 10794046262,
+    "url": "https://github.com/sledovatel61/HR-Manager/actions/runs/35964596589/artifacts/10794046262",
+    "zip_sha256": "dd7747c173f00324ed775beef0f0cba09c8ccc3df642c9ddaecc5a13d94d2588",
+    "bytes": 2252
+  },
+  "chain_report_import": {
+    "file": "compose-pilot-license-chain.ci.json",
+    "method": "verbatim copy of the JSON printed by the step 'Print pilot license-chain report' between '-----BEGIN COMPOSE-LICENSE-CHAIN JSON-----' and '-----END COMPOSE-LICENSE-CHAIN JSON-----' in job 107521357971 (log timestamps 2026-09-24T06:33:23.697-.703Z); identical content is in the job's step summary and in artifact 10794046262. The artifact zip itself could not be downloaded from the review sandbox (GitHub blob storage is not reachable from it) — compare against the log/summary to verify.",
+    "key_fingerprint_note": "sha256:e2f74e6c761c0684… is the fingerprint of the EPHEMERAL 32-byte key generated inside that CI job; it is not any real key."
+  },
+  "windows_job_evidence": {
+    "static": "[PASS] пилотный оверлей: открытый ключ лицензии обязателен (${HRM_LICENSE_PUBLIC_KEY:?}) для backend, worker и backup (static.tests.ps1, 23 static cases passed)",
+    "engine": "[PASS] pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_key.b64 (совпадение SHA-256), без файла — пустое значение (engine.tests.ps1, real Write-HrmPilotEnv on Windows PowerShell 5.1; ephemeral key fingerprint printed redacted)",
+    "seen_in_run": 35963793099,
+    "windows_job_id_in_that_run": 107517814916
+  }
+}

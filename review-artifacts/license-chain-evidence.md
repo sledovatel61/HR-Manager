@@ -1,8 +1,8 @@
 # License public-key chain — evidence (generated from real files)
 
-- generated: 2026-09-24T06:10:33Z
+- generated: 2026-09-24T06:39:03Z
 - generator: `review-artifacts/gen_license_chain_evidence.py (reads real files; CI statuses only from imported artifacts)`
-- CI import: {"imported": false}
+- CI import: {"imported": true, "run_id": 35964596589, "head_sha": "7c7f64529fec28e17abdf9601bb5055762ece8df", "jobs": {"Backend checks": "success", "Backend integration tests (PostgreSQL)": "success", "Frontend checks": "success", "Windows engine tests + installer smoke": "success", "Release pipeline fail-closed policy (ephemeral test signature)": "success", "Compose stack smoke test (dev + prod overlay)": "success"}, "chain_verdict": "PASS", "chain_compose_version": "2.38.2"}
 
 ## Chain
 
@@ -32,12 +32,12 @@
 | `backend/app/config.py` | yes | 38120 | 722 | `7dfca46dd351...` |
 | `backend/app/license_guard.py` | yes | 6888 | 183 | `aa196a5b191c...` |
 | `backend/tests/test_pilot_overlay.py` | yes | 9353 | 238 | `a4f1bc7a3f09...` |
-| `backend/tests/test_production_overlay.py` | yes | 22868 | 531 | `6460fe20fce7...` |
-| `backend/tests/test_compose_license_chain.py` | yes | 13645 | 336 | `e44a77d28445...` |
-| `backend/tests/test_license_middleware_comprehensive.py` | yes | 19485 | 554 | `e4dc2f5421a8...` |
+| `backend/tests/test_production_overlay.py` | yes | 22867 | 530 | `310d26a5daa4...` |
+| `backend/tests/test_compose_license_chain.py` | yes | 13663 | 335 | `4c31ba5fec0e...` |
+| `backend/tests/test_license_middleware_comprehensive.py` | yes | 20075 | 556 | `c4130cf481dc...` |
 | `infra/windows/tests/engine.tests.ps1` | yes | 42813 | 678 | `bc224d6d6bae...` |
 | `infra/windows/tests/static.tests.ps1` | yes | 20855 | 286 | `243be428cc51...` |
-| `.github/workflows/ci.yml` | yes | 48645 | 818 | `6ada396906e5...` |
+| `.github/workflows/ci.yml` | yes | 49720 | 840 | `33223e31e366...` |
 
 ## Checks (computed)
 
@@ -85,10 +85,10 @@
 | `issuer_cli_offline_linux` | MANUAL PASS, not CI-verified (Linux sandbox, this session: cli.py gen-keypair → issue → verify, offline; see final-verdict.md) |
 | `build_bundle_with_embedded_python` | PASS (static: build.ps1 structure) / BLOCKED (runtime on clean Windows VM) |
 | `installer_snapshot_contains_public_key` | BLOCKED (infra/license/public_key.b64 is not in git by design; owner bakes it) |
-| `pilot_env_generation_real_engine_writer` | NOT RUN (no CI artifact imported yet — see ci-run-status.json) |
-| `docker_compose_config_with_key_resolved_env` | NOT RUN (no CI artifact imported yet — see ci-run-status.json) |
-| `docker_compose_config_without_key_refused` | NOT RUN (no CI artifact imported yet — see ci-run-status.json) |
-| `backend_settings_inside_pilot_images` | NOT RUN (no CI artifact imported yet — see ci-run-status.json) |
+| `pilot_env_generation_real_engine_writer` | PASS (Secrets.psm1 Write-HrmPilotEnv, engine.tests.ps1 case with SHA-256 equality, run 35964596589 @ 7c7f645) |
+| `docker_compose_config_with_key_resolved_env` | PASS (real docker compose config, backend/worker/backup resolved LICENSE_PUBLIC_KEY, run 35964596589 @ 7c7f645; ephemeral key fingerprint sha256:e2f74e6c761c0684…) |
+| `docker_compose_config_without_key_refused` | PASS (config refused with the overlay message for missing AND empty key, run 35964596589 @ 7c7f645) |
+| `backend_settings_inside_pilot_images` | PASS (app.config.Settings in the built pilot images, APP_ENV=pilot, run 35964596589 @ 7c7f645; ephemeral key fingerprint sha256:e2f74e6c761c0684…) |
 | `backend_LICENSE_PUBLIC_KEY_validation` | PASS (config.py fail-closed in pilot/production; pytest) |
 | `license_upload_and_verification` | PASS (Ed25519 verify; pytest license suites) |
 | `windows_bundle_manual_check` | BLOCKED (requires clean Windows 10/11 VM) |

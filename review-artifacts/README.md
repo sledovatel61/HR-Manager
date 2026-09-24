@@ -293,3 +293,24 @@ cp review-artifacts/update-channel.phase14.yml .github/workflows/update-channel.
 Пока файлы не перенесены, GitHub Actions по ветке работает со старым набором
 jobs: новых drill-шагов и production-политики релиза в CI ещё нет (сам код
 политики протестирован в backend-наборе тестов).
+
+## Этап 15 — офлайн-лицензия: цепочка открытого ключа (PR #34)
+
+Примечание: в этой ветке изменения `.github/workflows/ci.yml` **пушатся и
+исполняются** (см. run 35963793099 / 35964596589), поэтому отдельных копий
+workflow для этапа 15 нет — заметка про отсутствие разрешения `workflows`
+выше относится к более ранним веткам.
+
+| Файл | Назначение |
+|---|---|
+| `final-verdict.md` | итоговый вердикт: fix-коммит, run CI, результаты jobs, PASS/FAIL/BLOCKED/NOT RUN |
+| `gen_license_chain_evidence.py` | генератор `license-chain-evidence.*`: все проверки **вычисляются** из реальных файлов репозитория; статусы Compose/runtime берутся **только** из импортированного артефакта CI, иначе `NOT RUN`. Запуск: `python review-artifacts/gen_license_chain_evidence.py` |
+| `license-chain-evidence.json` / `.md` | результат генератора (только отпечатки SHA-256, без ключей) |
+| `compose-pilot-license-chain.ci.json` | дословная копия отчёта `infra/scripts/compose_pilot_license_chain.py`, напечатанного CI-шагом «Print pilot license-chain report» между маркерами `BEGIN/END COMPOSE-LICENSE-CHAIN JSON` (job 107521357971, run 35964596589; тот же контент — в step summary и артефакте `compose-pilot-license-chain` id 10794046262) |
+| `ci-run-status.json` | run id, head SHA, результаты всех jobs, id jobs/артефактов, способ получения отчёта |
+| `windows-issuer-bundle-check.md` | чек-лист ручной проверки офлайн-issuer на чистой Windows (BLOCKED без VM владельца) |
+
+Тест `backend/tests/test_license_middleware_comprehensive.py::test_public_key_chain_evidence_is_computed_not_declared`
+перезапускает `compute_checks()` генератора и проверяет, что evidence
+не содержит неотредактированного base64 и что декларативный
+`license-public-key-chain.json` (раньше писался тестом с захардкоженными `True`) не вернулся.
