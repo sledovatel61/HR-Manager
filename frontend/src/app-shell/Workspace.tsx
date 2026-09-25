@@ -1,4 +1,5 @@
 import { DocumentListsPage } from "../features/documents/DocumentListsPage";
+import { TemplatesPage } from "../features/document-templates/TemplatesPage";
 import { MyRulesPage } from "../features/documents/MyRulesPage";
 import { useEffect, useState } from "react";
 import { logout, onUnauthorized } from "../api";
@@ -36,6 +37,7 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   notifications: { label: "Уведомления", icon: "bell" },
   reminders: { label: "Напоминания", icon: "clock" },
   documents: { label: "Списки документов", icon: "table" },
+  templates: { label: "Шаблоны документов", icon: "file-text" },
   rules: { label: "Мои правила", icon: "settings" },
   preferences: { label: "Настройки уведомлений", icon: "settings" },
   integrations: { label: "Интеграции", icon: "arrow-right-left" },
@@ -51,7 +53,7 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   // reminders and preferences are available to every role; the admin
   // screen (queue diagnostics + pilot setup) is admin-only. The backend
   // re-checks every right regardless of the navigation.
-  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations", "documents", "rules"];
+  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations", "documents", "templates", "rules"];
   if (role === "hr") {
     return ["queue", "calendar", "kanban", "deleted", ...personal];
   }
@@ -167,6 +169,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           {section === "reminders" && <RemindersPage user={user} />}
           {section === "preferences" && <PreferencesPage />}
           {section === "documents" && <DocumentListsPage />}
+          {section === "templates" && <TemplatesPage />}
           {section === "rules" && <MyRulesPage />}
           {section === "integrations" && <IntegrationsPage user={user} />}
           {section === "updates" && <UpdateChannelPage />}
@@ -180,6 +183,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             section !== "reminders" &&
             section !== "preferences" &&
             section !== "documents" &&
+            section !== "templates" &&
             section !== "rules" &&
             section !== "integrations" &&
             section !== "updates" &&
