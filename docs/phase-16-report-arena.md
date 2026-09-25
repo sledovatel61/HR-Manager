@@ -281,10 +281,12 @@ Frontend (изменённые): `frontend/src/api.ts` (типизированн
 Итог: 7/7 job-ов зелёные на точном SHA. Последующие коммиты в PR — только
 документация (этот отчёт и правка формулировки базы), код не менялся.
 
-Предыдущий tip ветки — `6dfbe0a1c34daabe0169361b5a8eaeec049ab4ba`; прогон
-на нём тоже 7/7 зелёный:
-https://github.com/sledovatel61/HR-Manager/actions/runs/36115913573
-(изменения относительно проверенного SHA — только `docs/`).
+Прогоны докс-коммитов относительно проверенного SHA тоже 7/7 зелёные:
+`6dfbe0a1c34daabe0169361b5a8eaeec049ab4ba` —
+https://github.com/sledovatel61/HR-Manager/actions/runs/36115913573,
+`f57d7ea84cd8ec19fd007522668780d9b36d1b1a` —
+https://github.com/sledovatel61/HR-Manager/actions/runs/36119769759
+(в обоих случаях изменения относительно `5b15a45` — только `docs/`).
 
 ## 8. Ограничения и что осталось владельцу
 
