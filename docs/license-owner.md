@@ -69,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 Expand-Archive license-issuer-dist.zip -DestinationPath C:\Temp\lic
 C:\Temp\lic\license-issuer\run-gui.bat   # должен открыть GUI
 C:\Temp\lic\license-issuer\run-cli.bat gen-keypair  # должен выдать ключи
-C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://localhost:8765/license-issuer.html и WebCrypto Ed25519 работает
+C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://127.0.0.1:8765/license-issuer.html и WebCrypto Ed25519 работает
 ```
 
 ### Использование владельцем (офлайн, без Python, без интернета)
@@ -77,7 +77,7 @@ C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://lo
 1. Распакуйте `license-issuer-dist.zip` (например, `C:\HR-License\`).
 2. Двойной клик:
    - `run-gui.bat` — GUI Tkinter: Generate keypair, Issue license (рекомендуется)
-   - `run-html.bat` — HTML офлайн через `http://localhost:8765/license-issuer.html` (Edge 120+/Chrome 120+, secure context localhost, WebCrypto Ed25519, fallback TweetNaCl)
+   - `run-html.bat` — HTML офлайн через `http://127.0.0.1:8765/license-issuer.html` (Edge 120+/Chrome 120+, secure context localhost, WebCrypto Ed25519, fallback TweetNaCl)
    - `run-cli.bat gen-keypair` / `run-cli.bat issue ...` — CLI
 3. «Сгенерировать новую пару»:
    - Приватный ключ (64 hex) — **СОХРАНИТЕ** в зашифрованном месте, сделайте резервную копию!
@@ -95,7 +95,7 @@ C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://lo
 
 - `dist/python/` содержит `python.exe` + `Lib/site-packages/cryptography` — проверено `python -c "import cryptography"` в smoke-тесте.
 - Launchers используют `..\python\python.exe`, не системный Python. Если папка отсутствует — ошибка, а не тихий fallback.
-- `license-issuer.html` + `nacl-fast.js` работают без интернета. WebCrypto Ed25519 требует secure context: `run-html.bat` запускает `python -m http.server 8765` и открывает `http://localhost:8765/license-issuer.html` — localhost считается secure context, Edge 120+ поддерживает Ed25519 (проверено в Edge/Chrome 120+). Fallback TweetNaCl работает даже в file://.
+- `license-issuer.html` + `nacl-fast.js` работают без интернета. WebCrypto Ed25519 требует secure context: `run-html.bat` запускает bundled `serve_loopback.py` (только 127.0.0.1, без DNS) и открывает `http://127.0.0.1:8765/license-issuer.html` после готовности сервера — 127.0.0.1 считается secure context, Edge 120+ поддерживает Ed25519 (проверено в Edge/Chrome 120+). Fallback TweetNaCl работает даже в file://. Приватный ключ в HTML не набирается и не вставляется: сгенерируйте пару на странице или загрузите `private_key.hex` кнопкой выбора файла (набранный в странице текст Edge сохраняет в профиле). Используйте для выпуска лицензий отдельный профиль браузера или InPrivate: расширения браузера видят содержимое страницы.
 - Владелец после получения zip не скачивает ничего из интернета, не устанавливает Python.
 
 ### Вариант B (допустим только если Вариант A BLOCKED)
@@ -104,11 +104,12 @@ C:\Temp\lic\license-issuer\run-html.bat  # должен открыть http://lo
 
 ```bash
 pip install cryptography
-python tools/license-issuer/cli.py gen-keypair
-python tools/license-issuer/cli.py issue --client-name "Пилот Марии" --expires-at 2026-12-31 --max-users 5 --private-key <64hex> --out license.hrmlicense
+python tools/license-issuer/cli.py gen-keypair --out-dir keys
+python tools/license-issuer/cli.py issue --private-key-file keys/private_key.hex --client "Пилот Марии" --expires 2026-12-31 --max-users 5 --out license.hrmlicense
+python tools/license-issuer/cli.py verify --public-key-file keys/public_key.b64 --license-file license.hrmlicense
 ```
 
-**Текущий статус:** Вариант A **реализован** — см. `build.ps1`, `nacl-fast.js` (2391 строка, из npm tweetnacl@1.0.3), smoke-тест `gen-keypair`. **Ручная проверка на чистой Windows 10/11 VM без Python/интернета — BLOCKED/NOT RUN** (нет чистой Windows VM в Linux sandbox, см. `review-artifacts/windows-issuer-bundle-check.md`). Linux структура проверена, но для GO требуется ручная VM.
+**Текущий статус:** Вариант A **реализован** — см. `build.ps1` (UTF-8 BOM + ASCII для Windows PowerShell 5.1; `..\license-issuer` в `python312._pth` — исправлен `ModuleNotFoundError: No module named 'license_issuer'`; fail-closed launchers без fallback на системный Python; `run-html.bat` слушает только 127.0.0.1; smoke-тест `gen-keypair -> issue -> verify` во временном каталоге вне репозитория) и `nacl-fast.js`. Автоматически на Windows: CI job `license-issuer-windows` (настоящий Windows PowerShell 5.1: parser-check файла, полная сборка, runtime-проверки из свежего unzip с путями, содержащими пробелы, PATH без системного Python, loopback-бинд, fail-closed, sweep на приватный ключ в логах/temp, чистота git-дерева). GUI получает tkinter/Tcl/Tk из официального `tcltk.msi` (embeddable Python идёт без tkinter). CI job `license-issuer-windows` **зелёный** (run `36014099272`). **Ручная проверка на чистой Windows 10/11 VM без Python/интернета — НЕ ВЫПОЛНЕНО** (см. `review-artifacts/windows-issuer-bundle-check.md`); для GO она всё ещё требуется.
 
 ### Вариант HTML офлайн (WebCrypto)
 
@@ -154,8 +155,8 @@ python tools/license-issuer/cli.py issue --client-name "Пилот Марии" -
 - **Frontend (проверено):** CI success.
 - **Windows engine lint (проверено):** `python infra/windows/tests/lint-engine.py` — 19 files OK.
 - **Windows engine tests + installer smoke + compose smoke:** CI success (35879963863).
-- **Автономность сборки (проверено частично в Linux):** `build.ps1` создаёт `dist/python/` с cryptography, smoke-тест `gen-keypair` проходит. **Ручная проверка на чистой Windows VM без Python/интернета — BLOCKED/NOT RUN** (нет VM в sandbox).
-- **HTML WebCrypto (проверено частично):** Edge 120+ поддерживает Ed25519, `run-html.bat` даёт localhost secure context. **Ручная проверка — BLOCKED/NOT RUN**.
+- **Автономность сборки (проверяется автоматически):** CI job `license-issuer-windows` на windows-latest: parser-check `build.ps1` Windows PowerShell 5.1, полная сборка под 5.1, распаковка в temp с пробелами в пути, CLI `gen-keypair -> issue -> verify` при PATH без системного Python, fail-closed (с системным Python на PATH и без), `run-html.bat` — LISTENING только на 127.0.0.1:8765 (netstat) + WMI-проверка, что слушатель — bundled python.exe, sweep на приватный ключ во всех файлах temp и логах, `git status --porcelain` чист. **Ручная проверка на чистой Windows VM без Python/интернета — NOT RUN.**
+- **HTML WebCrypto (проверено частично):** Edge 120+ поддерживает Ed25519, `run-html.bat` даёт loopback secure context (проверено автоматически: бинд 127.0.0.1 + отдача страницы). **Ручная проверка в реальном Edge — NOT RUN.**
 - **BLOCKED:** clean Windows 10/11 manual check — BLOCKED, см. `review-artifacts/windows-issuer-bundle-check.md`. Для GO требуется ручная VM.
 
 ## Документация — разделение (PASS/FAIL/BLOCKED/NOT RUN)
