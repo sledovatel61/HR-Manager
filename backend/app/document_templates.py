@@ -220,7 +220,7 @@ def version_for(db: Session, template_id: UUID, version_id: UUID) -> DocumentTem
         .execution_options(populate_existing=True)
     )
     if row is None:
-        raise HTTPException(404, "Версия шаблона не найденa.")
+        raise HTTPException(404, "Версия шаблона не найдена.")
     return row
 
 
