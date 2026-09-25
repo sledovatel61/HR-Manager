@@ -317,6 +317,29 @@ describe("Документы по шаблону", () => {
     click.mockRestore();
   });
 
+  it("surfaces the backend 422 when the template scope does not match the stage", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.previewCandidateDocument).mockRejectedValue(
+      new api.ApiError(
+        422,
+        "Шаблон применим только к этапу «Оффер». Текущий этап кандидата: «Новый».",
+      ),
+    );
+    renderTab();
+    await screen.findByText("Документы по шаблону");
+    await user.selectOptions(
+      screen.getByLabelText("Опубликованная версия шаблона"),
+      "version-1",
+    );
+    await user.click(screen.getByRole("button", { name: "Предпросмотр" }));
+    expect(
+      await screen.findByText(
+        /Шаблон применим только к этапу «Оффер»\. Текущий этап кандидата: «Новый»\./,
+      ),
+    ).toBeInTheDocument();
+    expect(api.generateCandidateDocument).not.toHaveBeenCalled();
+  });
+
   it("explains why nothing can be generated without published templates", async () => {
     vi.mocked(api.listDocumentTemplates).mockResolvedValue({
       items: [{ ...template, versions: [draftVersion] }],

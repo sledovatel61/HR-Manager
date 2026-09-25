@@ -100,6 +100,52 @@ SOURCE_LABELS: dict[CandidateSource, str] = {
 DOWNLOAD_FORMATS = ("html", "txt")
 _CONTENT_TYPES = {"html": "text/html; charset=utf-8", "txt": "text/plain; charset=utf-8"}
 
+# "All stages" is stored as an empty string (the create schema maps ``null`` to
+# ``""``). The literal "all" is accepted too, so a row written directly into the
+# database cannot silently become inapplicable to every candidate.
+ALL_STAGES_SCOPES = ("", "all")
+
+
+def _text(value: CandidateStage | str) -> str:
+    """String form of a stage value, enum or plain string."""
+    return value.value if isinstance(value, CandidateStage) else str(value)
+
+
+def stage_label(stage: CandidateStage | str) -> str:
+    """Russian funnel label for a stage value, falling back to the raw value."""
+    for known, label in STAGE_LABELS.items():
+        if _text(known) == _text(stage):
+            return label
+    return _text(stage)
+
+
+def scope_applies(scope: str | None, stage: CandidateStage | str) -> bool:
+    """Whether a template scope covers a candidate's current stage.
+
+    Comparison is on the stored values of ``CandidateStage`` (lower case,
+    snake_case); no assumption is made about display labels.
+    """
+    value = (scope or "").strip().lower()
+    if value in ALL_STAGES_SCOPES:
+        return True
+    return value == _text(stage).strip().lower()
+
+
+def require_scope_match(template: DocumentTemplate, candidate: Candidate) -> None:
+    """Backend gate for preview and generation: the scope must cover the stage.
+
+    Applied to every caller regardless of role, so a direct API call cannot
+    bypass the stage scope. The message names only the template's own scope and
+    the candidate's funnel stage — never personal data.
+    """
+    if scope_applies(template.scope, candidate.stage):
+        return
+    raise HTTPException(
+        422,
+        f"Шаблон применим только к этапу «{stage_label(template.scope)}». "
+        f"Текущий этап кандидата: «{stage_label(candidate.stage)}».",
+    )
+
 
 def require_manage(db: Session, user: User) -> None:
     if not can_manage(db, user):
@@ -425,9 +471,14 @@ def render_for(
     default_timezone: str,
     now: datetime | None = None,
 ) -> tuple[DocumentTemplateVersion, RenderedDocument, list[str]]:
-    """Render one document. The version must be active (published)."""
+    """Render one document. The version must be active and in scope.
+
+    Both preview and generation go through this function, so the stage scope is
+    enforced identically for both and before any row is written.
+    """
     if version.state != "active":
         raise HTTPException(422, "Сформировать документ можно только из опубликованной версии.")
+    require_scope_match(template, candidate)
     timezone = user_timezone(db, user, default_timezone)
     values = placeholder_values(
         db, candidate=candidate, user=user, timezone=timezone, now=now or utc_now()
