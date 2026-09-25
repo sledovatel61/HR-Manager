@@ -262,9 +262,24 @@ Frontend (изменённые): `frontend/src/api.ts` (типизированн
 
 ## 7. CI на точном SHA
 
-Заполняется после открытия PR: точный SHA, список зелёных job-ов
-(backend checks, PostgreSQL integration, frontend checks, compose smoke) и
-ссылка на PR.
+- PR: https://github.com/sledovatel61/HR-Manager/pull/39
+  (base `arena/01a0d2c2-hr-manager`, head `arena/01a0d78b-hr-manager`).
+- Проверенный SHA: `5b15a45ad24f81b73eb4ec620763c3569ded0b43`
+  (последний коммит с изменениями кода; дальше идут только правки этого отчёта).
+- Прогон: https://github.com/sledovatel61/HR-Manager/actions/runs/36114888249
+
+| Job | Результат |
+| --- | --- |
+| Backend checks | ✅ pass (4m13s) |
+| Backend integration tests (PostgreSQL) | ✅ pass (2m28s) |
+| Frontend checks | ✅ pass (48s) |
+| Compose stack smoke test (dev + prod overlay) | ✅ pass (1m54s) |
+| Release pipeline fail-closed policy (ephemeral test signature) | ✅ pass (39s) |
+| License issuer bundle — Windows PowerShell 5.1 checks | ✅ pass (7m15s) |
+| Windows engine tests + installer smoke | ✅ pass (8m8s) |
+
+Итог: 7/7 job-ов зелёные на точном SHA. Последующие коммиты в PR — только
+документация (этот отчёт и правка формулировки базы), код не менялся.
 
 ## 8. Ограничения и что осталось владельцу
 
@@ -292,6 +307,8 @@ Frontend (изменённые): `frontend/src/api.ts` (типизированн
 
 ## 10. Handoff
 
+- PR: https://github.com/sledovatel61/HR-Manager/pull/39 (открыт, не влит;
+  база — ветка цепочки `arena/01a0d2c2-hr-manager`, не `main`).
 - Миграция `0015`; при откате — `alembic downgrade 0014` (удаляет только объекты
   Phase 16).
 - Новые контракты — в §2.3; расширение allowlist плейсхолдеров требует правки
