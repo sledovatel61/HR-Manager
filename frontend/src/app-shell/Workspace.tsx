@@ -1,4 +1,5 @@
 import { DocumentListsPage } from "../features/documents/DocumentListsPage";
+import { TemplatesPage } from "../features/document-templates/TemplatesPage";
 import { MyRulesPage } from "../features/documents/MyRulesPage";
 import { useEffect, useState } from "react";
 import { logout, onUnauthorized } from "../api";
@@ -16,6 +17,7 @@ import { IntegrationsPage } from "../features/notifications/IntegrationsPage";
 import { AdminQueuePage } from "../features/notifications/AdminQueuePage";
 import { UpdateChannelPage } from "../features/updates/UpdateChannelPage";
 import { PilotReadinessPage } from "../features/readiness/PilotReadinessPage";
+import { LicensePage } from "../features/license/LicensePage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
 import "./workspace.css";
@@ -35,11 +37,13 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   notifications: { label: "Уведомления", icon: "bell" },
   reminders: { label: "Напоминания", icon: "clock" },
   documents: { label: "Списки документов", icon: "table" },
+  templates: { label: "Шаблоны документов", icon: "file-text" },
   rules: { label: "Мои правила", icon: "settings" },
   preferences: { label: "Настройки уведомлений", icon: "settings" },
   integrations: { label: "Интеграции", icon: "arrow-right-left" },
   updates: { label: "Обновления", icon: "loader" },
   readiness: { label: "Готовность пилота", icon: "check-circle" },
+  license: { label: "Лицензия", icon: "shield" },
   admin: { label: "Администрирование", icon: "shield" },
 };
 
@@ -49,14 +53,15 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   // reminders and preferences are available to every role; the admin
   // screen (queue diagnostics + pilot setup) is admin-only. The backend
   // re-checks every right regardless of the navigation.
-  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations", "documents", "rules"];
+  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations", "documents", "templates", "rules"];
   if (role === "hr") {
     return ["queue", "calendar", "kanban", "deleted", ...personal];
   }
   if (role === "admin") {
     // «Готовность пилота» — read-only отчёт admin + update_channel_manage;
     // backend всё равно перепроверяет права и отвечает 403 без scope.
-    return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "readiness", "admin"];
+    // Лицензия — только admin (загрузка/замена).
+    return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "readiness", "license", "admin"];
   }
   return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "admin"];
 }
@@ -164,10 +169,12 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           {section === "reminders" && <RemindersPage user={user} />}
           {section === "preferences" && <PreferencesPage />}
           {section === "documents" && <DocumentListsPage />}
+          {section === "templates" && <TemplatesPage />}
           {section === "rules" && <MyRulesPage />}
           {section === "integrations" && <IntegrationsPage user={user} />}
           {section === "updates" && <UpdateChannelPage />}
           {section === "readiness" && <PilotReadinessPage />}
+          {section === "license" && <LicensePage />}
           {section === "admin" && <AdminQueuePage />}
           {section !== "calendar" &&
             section !== "kanban" &&
@@ -176,10 +183,12 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             section !== "reminders" &&
             section !== "preferences" &&
             section !== "documents" &&
+            section !== "templates" &&
             section !== "rules" &&
             section !== "integrations" &&
             section !== "updates" &&
             section !== "readiness" &&
+            section !== "license" &&
             section !== "admin" && (
             <CandidatesListPage
               key={section}

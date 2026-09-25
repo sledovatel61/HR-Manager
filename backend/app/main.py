@@ -27,6 +27,7 @@ from app.routers import (
     candidate_messages,
     candidates,
     document_rules,
+    document_templates,
     documents,
     events,
     health,
@@ -38,6 +39,9 @@ from app.routers import (
     setup,
     updates,
     users,
+)
+from app.routers import (
+    license as license_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +67,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         for name, value in _SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)
         return response
+
+
+class ApiPrefixStripMiddleware(BaseHTTPMiddleware):
+    """Strip /api prefix for compatibility with nginx rewrite and direct tests.
+
+    In production nginx rewrites /api/(.*) -> /$1. For direct TestClient calls
+    and for defense-in-depth, we also handle /api prefix inside the app so that
+    /api/candidates and /candidates behave identically.
+    """
+
+    async def dispatch(self, request: Request, call_next: object) -> Response:
+        path = request.scope.get("path", "")
+        while "//" in path:
+            path = path.replace("//", "/")
+        if path.startswith("/api/"):
+            request.scope["path"] = path[4:] or "/"
+        elif path == "/api":
+            request.scope["path"] = "/"
+        return await call_next(request)  # type: ignore[operator]
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):
@@ -123,7 +146,17 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
 
     app.state.host_evidence = PilotHostEvidenceStore()
 
+    # Middleware order (Starlette: last added is outermost, first to receive request):
+    # Desired execution: SecurityHeaders (outermost, adds headers) ->
+    # LicenseGuard (sees original /api/... path before stripping) ->
+    # ApiPrefixStrip (strips /api for routing) -> Metrics (innermost) -> route
+    # So add in reverse: Metrics first, ApiPrefixStrip second, LicenseGuard third,
+    # SecurityHeaders last.
     app.add_middleware(MetricsMiddleware)
+    app.add_middleware(ApiPrefixStripMiddleware)
+    from app.license_guard import LicenseGuardMiddleware
+
+    app.add_middleware(LicenseGuardMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(health.router)
@@ -134,6 +167,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(candidates.router)
     app.include_router(documents.router)
     app.include_router(document_rules.router)
+    app.include_router(document_templates.router)
     app.include_router(events.router)
     app.include_router(candidate_messages.router)
     app.include_router(candidate_messages.public_router)
@@ -144,6 +178,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(preferences.router)
     app.include_router(setup.router)
     app.include_router(updates.router)
+    app.include_router(license_router.router)
     return app
 
 

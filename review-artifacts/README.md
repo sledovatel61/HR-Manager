@@ -293,3 +293,115 @@ cp review-artifacts/update-channel.phase14.yml .github/workflows/update-channel.
 Пока файлы не перенесены, GitHub Actions по ветке работает со старым набором
 jobs: новых drill-шагов и production-политики релиза в CI ещё нет (сам код
 политики протестирован в backend-наборе тестов).
+
+## Этап 15 — офлайн-лицензия: цепочка открытого ключа (PR #34)
+
+Примечание: в этой ветке изменения `.github/workflows/ci.yml` **пушатся и
+исполняются** (см. run 35963793099 / 35964596589), поэтому отдельных копий
+workflow для этапа 15 нет — заметка про отсутствие разрешения `workflows`
+выше относится к более ранним веткам.
+
+| Файл | Назначение |
+|---|---|
+| `final-verdict.md` | итоговый вердикт: fix-коммит, run CI, результаты jobs, PASS/FAIL/BLOCKED/NOT RUN |
+| `gen_license_chain_evidence.py` | генератор `license-chain-evidence.*`: все проверки **вычисляются** из реальных файлов репозитория; статусы Compose/runtime берутся **только** из импортированного артефакта CI, иначе `NOT RUN`. Запуск: `python review-artifacts/gen_license_chain_evidence.py` |
+| `license-chain-evidence.json` / `.md` | результат генератора (только отпечатки SHA-256, без ключей) |
+| `compose-pilot-license-chain.ci.json` | дословная копия отчёта `infra/scripts/compose_pilot_license_chain.py`, напечатанного CI-шагом «Print pilot license-chain report» между маркерами `BEGIN/END COMPOSE-LICENSE-CHAIN JSON` (job 107521357971, run 35964596589; тот же контент — в step summary и артефакте `compose-pilot-license-chain` id 10794046262) |
+| `ci-run-status.json` | run id, head SHA, результаты всех jobs, id jobs/артефактов, способ получения отчёта |
+| `windows-issuer-bundle-check.md` | чек-лист ручной проверки офлайн-issuer на чистой Windows (BLOCKED без VM владельца) |
+
+Тест `backend/tests/test_license_middleware_comprehensive.py::test_public_key_chain_evidence_is_computed_not_declared`
+перезапускает `compute_checks()` генератора и проверяет, что evidence
+не содержит неотредактированного base64 и что декларативный
+`license-public-key-chain.json` (раньше писался тестом с захардкоженными `True`) не вернулся.
+
+## Этап 16 — release-перепроверка PR #34 на HEAD `e59aa5b` (ветка `arena/01a0d255-hr-manager`)
+
+Ветка сессии не содержит кода PR #34 (она основана на `main`), поэтому все проверки выполнялись **по
+извлечённому дереву ревьюируемого коммита** (`git archive e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784`), а не по
+рабочему каталогу. Изменения этой перепроверки затрагивают **только** `review-artifacts/`: backend, Compose,
+infra, frontend и `tools/` не менялись, тесты не переписывались, merge/tag/release/production workflow не
+запускались.
+
+| Файл | Назначение |
+|---|---|
+| `issuer-offline-evidence.json` / `.md` | **новое**: результат автономных проверок issuer'а на Linux (30 PASS / 0 FAIL / 8 GAP / 8 NOT RUN). Что реально запускалось: `cli.py gen-keypair → issue → verify` под harness'ом, запрещающим сокеты (0 сетевых вызовов); offline-HTML в JS VM с заглушкой DOM (пути WebCrypto и TweetNaCl, 0 сетевых попыток); backend-верификация выпущенных лицензий настоящим `parse_and_verify_license_text`; негативные контроли; статические проверки лаунчеров. Что **не** запускалось: `run-gui.bat`, `run-html.bat`, GUI Tkinter, `build.ps1` — отмечено `NOT RUN`. |
+| `gen_issuer_offline_evidence.py` | **новое**: генератор предыдущего файла. Требует интерпретатор с `cryptography` (+ зависимости backend для верификации) и `node`; всё сгенерированное сырьё живёт во временном каталоге вне репозитория, артефакты содержат только отпечатки/длины/булевы значения (есть assert, что ни один созданный секрет не попал в файл). Запуск: `python3 review-artifacts/gen_issuer_offline_evidence.py --python .venv/bin/python` |
+| `final-verdict.md` | **обновлён**: вердикт для HEAD `e59aa5b` и run `35965657324` (все шесть jobs `success`, три шага license-chain `success`, digest артефакта), список PASS/BLOCKED/NOT RUN, находки G1–G6, подтверждение отсутствия ключей/PII, и раздел про перенос артефактов в PR-ветку |
+| `windows-issuer-bundle-check.md` | **обновлён**: статус остался **BLOCKED** (в среде ревью нет Windows: нет `/dev/kvm`, нет `vmx`/`svm`, нет qemu/wine/pwsh). Добавлены результаты статических/Linux-проверок, находки по лаунчерам и подробный чек-лист владельца с правилами редактирования доказательств |
+| `ci-run-status.json` | **обновлён**: head-run `35965657324` @ `e59aa5b` (id jobs, conclusions, id и `digest` артефакта) + история прогонов `35964596589`, `35963793099`. `digest` из Artifacts API совпал с ранее вписанными вручную SHA-256 zip — независимая проверка той записи. Отдельный блок `chain_report` фиксирует, что тело отчёта импортировано из прогона `35964596589` (логи/артефакты нового прогона из sandbox недоступны: blob storage отдаёт EOF) |
+| `license-chain-evidence.json` / `.md` | перегенерированы для `e59aa5b`: значения `checks_read_from_real_files` совпали с версией, сгенерированной на PR-ветке, — подтверждение, что дерево ревьюируемого коммита соответствует протестированному. Добавлено поле `reviewed_tree` |
+| `gen_license_chain_evidence.py` | добавлена поддержка `HRM_EVIDENCE_REF=<sha>`: читает дерево указанного коммита (через `git archive`), поэтому evidence можно перегенерировать из любой ветки; блок `ci_import` теперь различает прогон-источник отчёта и head-run PR |
+
+Перенос в PR #34 (ветка сессии не может пушить в `arena/01a0ccb9-hr-manager`):
+
+```bash
+git checkout arena/01a0ccb9-hr-manager
+git checkout arena/01a0d255-hr-manager -- review-artifacts/
+git diff --stat   # ожидаются только файлы review-artifacts/
+```
+
+Вердикт остаётся **NO-GO**: без реального прогона `run-gui.bat` / `run-html.bat` на чистой Windows 10/11 `GO`
+не выпускается.
+
+## Этап 17 — правки issuer'а по замечаниям ревью PR #34 (ветка `arena/01a0d255-hr-manager`, draft PR #35)
+
+Все правки — только owner-side тулинг; backend/Compose/infra/frontend не менялись, тесты не переписывались,
+merge/tag/release/production workflow не запускались. Ветка сессии основана на `main` и не содержит кода PR #34,
+поэтому результат доставлен патчем и как отдельный draft-PR #35 (обязательно **не** для merge в таком виде).
+
+| Изменение | Проверка «до/после» (baseline = PR head `e59aa5b`) |
+|---|---|
+| `run-html.bat`: `python -m http.server %PORT% -b 127.0.0.1 --directory <bundle>`, страница `http://127.0.0.1:8765/...` | `run_html_bat_binds_loopback_only`: FAIL → **PASS**; измерено: с `-b` процесс слушает только `127.0.0.1`, без `-b` — `0.0.0.0` |
+| `run-html.bat`: убран тихий fallback на системный `python`, теперь fail-closed | `run_html_bat_fails_closed_without_system_python`: FAIL → **PASS** |
+| `run-gui.bat`: убран совет ставить/использовать системный Python | `run_gui_bat_no_system_python_advice`: FAIL → **PASS** |
+| smoke-тест сборки: `gen-keypair --out-dir <temp под GetTempPath()>` вне рабочего дерева git, удаление каталога в `finally`, билд падает при попадании ключа в лог | `smoke_test_runs_outside_the_repository`, `smoke_test_never_prints_key_material`: FAIL → **PASS** |
+| `.gitignore`: `keys/`, `private_key.hex`, `public_key.b64`, `*.hrmlicense`, `license-issuer-dist.zip` | `gitignore_blocks_key_and_license_material`: FAIL → **PASS**; `git ls-files -ci --exclude-standard` пуст |
+
+Файлы этапа: `license-issuer-fixes.patch` (применяется к PR head, проверено `git apply --check -p1`),
+`issuer-offline-evidence.{json,md}` (39 PASS / 0 FAIL / 3 GAP / 8 NOT RUN, before/after-таблица вычисляется
+генератором), обновлённые `final-verdict.md`, `ci-run-status.json`, `windows-issuer-bundle-check.md`.
+
+**Windows-проверка по-прежнему NOT RUN.** Среда ревью не может запустить Windows: нет `/dev/kvm`, нет флагов
+`vmx`/`svm`, нет qemu/wine/pwsh, установка пакетов и скачивание ISO невозможны (все внешние запросы падают).
+`build.ps1` не запускался, поэтому `license-issuer-dist.zip` не собран; `run-gui.bat` и `run-html.bat` ни разу не
+запускались, лицензия на Windows не выпускалась. Вердикт остаётся **NO-GO**, merge не рекомендуется.
+
+CI: PR head `e59aa5b` — run 35965657324 (6/6 success, три шага license-chain success); fix-commit `c515a49` —
+run 35973708182 (6/6 success; license-chain шагов в нём нет, т.к. ветка основана на `main`).
+
+## Этап 18 — перенос исправлений в ветку PR #34 (merge-коммит `f85a362`, PR #36)
+
+Сессия закреплена за веткой `arena/01a0d255-hr-manager` и не может пушить в `arena/01a0ccb9-hr-manager`,
+поэтому перенос сделан так: в ветку сессии влита ветка PR #34 (`git merge origin/arena/01a0ccb9-hr-manager`),
+конфликты add/add разрешены в пользу исправленных файлов, и открыт PR **#36** с базой `arena/01a0ccb9-hr-manager`.
+Merge PR #36 и есть перенос исправлений в PR #34 — это решение владельца, и не раньше, чем появится Windows-доказательство.
+
+Диф PR #36 относительно ветки PR #34 — ровно:
+
+```
+ .gitignore                     |   8 +
+ tools/license-issuer/build.ps1 |  57 +--
+ review-artifacts/*             | (доказательства, генераторы, вердикт)
+```
+
+`backend/`, `infra/`, Compose и `frontend/` не изменены; тесты не переписывались; ничего не смержено.
+
+| Артефакт | Содержимое |
+|---|---|
+| `issuer-offline-evidence.json` / `.md` | **39 PASS · 0 FAIL · 3 INFO · 3 GAP · 8 NOT RUN** для ревизии `f85a362`; таблица «до/после» (baseline — `e59aa5b`), где каждая исправляемая проверка падает до и проходит после; измеренный loopback; хэши лаунчеров |
+| `ci-run-status.json` | схема 2: PR-голова `e59aa5b`, фикс-коммит `c515a49`, **PR #36 и его CI-прогон `35977017563`** (id job'ов, conclusions, шаги license-chain, digest'ы артефактов), провенанс импортированного отчёта цепочки |
+| `license-chain-evidence.{json,md}` | перегенерированы для `HEAD`; все `checks_read_from_real_files` совпадают со значениями ветки PR |
+| `license-issuer-fixes.patch` | тот же двухфайловый фикс патчем (`git apply --check` по `e59aa5b` — ок) |
+| `final-verdict.md`, `windows-issuer-bundle-check.md` | вердикт (**NO-GO**) и чек-лист владельца; Windows-проверка остаётся **NOT RUN** |
+
+CI нового HEAD: прогон `35977017563` — 6/6 jobs success, и, поскольку ветка теперь содержит workflow из PR #34,
+в нём **выполнены три шага license-chain** (artifact `compose-pilot-license-chain` id 10798503119,
+`sha256:0f4772f9b81c9ddd…`). Отдельно отмечено: артефакты и логи этого прогона из sandbox недоступны (EOF), поэтому
+step conclusions и digest взяты из REST API, а дословное тело отчёта цепочки осталось импортированным из прогона
+35964596589.
+
+**Windows runtime validation — NOT RUN**, пока владелец не предоставит реальные доказательства с чистой Windows
+10/11 (страница HTTP 200, «Подпись корректна» для обоих issuer'ов, отсутствие приватного ключа в
+`%TEMP%`/`%APPDATA%`/бандле/загрузках, ноль исходящих соединений). До этого `GO` не выпускается, merge PR #36 и
+PR #34 не рекомендуется.
