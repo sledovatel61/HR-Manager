@@ -1,148 +1,119 @@
-# Final Verdict — Offline Licensing for Windows Pilot — PR #34 — Compose fail-closed pass
+# Final Verdict — Offline Licensing for Windows Pilot — PR #34 — review fixes ported to the PR branch at `f85a362` (CI run 35977017563)
 
-## Commits and CI runs (this pass)
+## TL;DR
 
-| Role | Commit | CI run | Result |
-|---|---|---|---|
-| **Fix commit X** (code + tests + CI + evidence generator) | `96f12bc8926a6fc8dbce447bbd8b81889e595c09` | [35963793099](https://github.com/sledovatel61/HR-Manager/actions/runs/35963793099) | 6/6 jobs success; chain step 12/12 `[pass]`, verdict PASS; artifact 10793765774 |
-| CI-only follow-up (prints the redacted chain report to the log/step summary; no backend/infra delta) | `7c7f64529fec28e17abdf9601bb5055762ece8df` | [35964596589](https://github.com/sledovatel61/HR-Manager/actions/runs/35964596589) | 6/6 jobs success; chain step 12/12 `[pass]`, verdict PASS; artifact 10794046262 |
-| **Evidence-import commit Y** (this file, `ci-run-status.json`, `compose-pilot-license-chain.ci.json`, regenerated `license-chain-evidence.*`, README) | the commit that adds `review-artifacts/ci-run-status.json` — `git log --diff-filter=A --format=%H -- review-artifacts/ci-run-status.json`; also named in the PR comment | — (docs only; CI re-runs on it, expected unchanged) | — |
-| Superseded verdict commits | `e00ef1d`, `f836088`, `eb276c5` | — | withdrawn: claimed `docker_compose_env_file: PASS` while the overlay mapped nothing |
+* **Verdict: NO-GO. Nothing was merged. Do not tag/release, do not run production workflows.**
+* The four confirmed owner-side fixes are now delivered **against the PR #34 branch itself**: this session branch
+  merged `arena/01a0ccb9-hr-manager` into itself and PR **[#36](https://github.com/sledovatel61/HR-Manager/pull/36)**
+  (`base = arena/01a0ccb9-hr-manager`) contains exactly the fix diff. Merging #36 is what lands the fixes in PR #34 —
+  that is the owner's call and it should wait for the Windows evidence. The session is pinned to
+  `arena/01a0d255-hr-manager`, so it cannot push to the PR #34 branch directly.
+* **CI ran for the new HEAD** `f85a362d34a7d30dea292ba67324781852180d33`:
+  [run 35977017563](https://github.com/sledovatel61/HR-Manager/actions/runs/35977017563) — **6/6 jobs `success`**,
+  and because the branch now carries PR #34's workflow, this run **also executed the three license-chain steps**
+  (`success`) and uploaded the `compose-pilot-license-chain` artifact (id `10798503119`,
+  `sha256:0f4772f9b81c9ddd…`). A duplicate run for the same head (`35977008271`) is also green.
+* **Windows runtime validation is `NOT RUN`** — no Windows and no way to run one in this environment (no `/dev/kvm`,
+  no `vmx`/`svm` flags, no `qemu-*`/`wine`/`pwsh`, no network path to fetch packages or installation media). So
+  `build.ps1` was never executed, `license-issuer-dist.zip` was not built, `run-gui.bat`/`run-html.bat` were never
+  launched and there is no on-VM evidence about network or key hygiene. This stays `NOT RUN` until the owner
+  provides real Windows evidence.
+* No `backend/`, Compose, `infra/` or `frontend/` file is modified; no test was rewritten; no merge, tag, release or
+  production workflow was triggered.
 
-- **Base SHA:** `efb88d978440a0aae1940005fddffc7e465ad9ef` (origin/main), still the merge base — PR not outdated.
-- Job-level results of run 35964596589 (identical set in 35963793099): Backend checks ✅ · Backend integration tests (PostgreSQL) ✅ · Frontend checks ✅ · Windows engine tests + installer smoke ✅ · Release pipeline fail-closed policy (ephemeral test signature) ✅ · Compose stack smoke test (dev + prod overlay) ✅ — see `ci-run-status.json` (job ids, artifact ids, zip SHA-256).
+## Revisions
 
-## What the CI actually executed for the chain (verbatim from the job logs)
-
-`stack` job, step "Pilot overlay — license public-key chain (real docker compose)", `docker compose 2.38.2`:
-
-```
-[pass] ephemeral_public_key            32 random bytes, base64 44 chars (ephemeral, never persisted)
-[pass] public_key_file                 infra/license/public_key.b64 written (CRLF) and read back trimmed
-[pass] pilot_env_utf8-lf               HRM_LICENSE_PUBLIC_KEY line present as the last line
-[pass] pilot_env_utf8bom-crlf          HRM_LICENSE_PUBLIC_KEY line present as the last line
-[pass] compose_available               docker compose 2.38.2
-[pass] compose_config_with_key_utf8-lf        resolved LICENSE_PUBLIC_KEY of backend/worker/backup equals the public_key.b64 fingerprint; backend gets no backup key; no env_file
-[pass] compose_config_with_key_utf8bom-crlf   (same, Windows-style env file)
-[pass] compose_config_without_key_missing     docker compose config exit 1: "required variable HRM_LICENSE_PUBLIC_KEY is missing a value: HRM_LICENSE_PUBLIC_KEY is required for the pilot"
-[pass] compose_config_without_key_empty       (same for an empty value, as the engine writes when the owner file is absent)
-[pass] runtime_settings_backend        app.config.Settings loaded in APP_ENV=pilot inside the built image; fingerprint equals public_key.b64; no backup key, no raw HRM_* vars in the container env
-[pass] runtime_settings_worker         (same)
-[pass] runtime_settings_backup         (same; backup container legitimately has the backup key)
-verdict: PASS
-```
-
-Windows job (Windows PowerShell 5.1, real engine modules):
-
-```
-[PASS] пилотный оверлей: открытый ключ лицензии обязателен (${HRM_LICENSE_PUBLIC_KEY:?}) для backend, worker и backup
-[PASS] pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_key.b64 (совпадение SHA-256), без файла — пустое значение
-```
-
-The fingerprint in the imported report (`sha256:e2f74e6c761c0684…`) belongs to the **ephemeral** key generated inside that CI job — not to any real key.
-
-## Defects fixed in this pass (code, not docs)
-
-### 1. `infra/compose.pilot.yml` did not pass the license public key at all — FIXED
-- Before: no `LICENSE_PUBLIC_KEY` mapping. The backend image copies only `app/` and `alembic/`, so
-  the `infra/license/public_key.b64` file fallback of `Settings` does not exist inside a container.
-  Result: `APP_ENV=pilot` backend, **worker** and **backup** (`python -m app.cli backup-*`) would refuse
-  to start (`LICENSE_PUBLIC_KEY must be set in pilot`) — the documented chain was broken at the Compose hop.
-- After: `LICENSE_PUBLIC_KEY: ${HRM_LICENSE_PUBLIC_KEY:?HRM_LICENSE_PUBLIC_KEY is required for the pilot}`
-  in **backend, worker and backup** (the three services that load `app.config.Settings`). Required form
-  (`:?`), no default. Unset **or empty** value (the engine writes `HRM_LICENSE_PUBLIC_KEY=` when the
-  owner file is missing) makes `docker compose` refuse with that message — fail-closed instead of a
-  crash-looping stack.
-- **`env_file:` deliberately NOT added.** `pilot.env` is consumed only through `--env-file`
-  (interpolation), like every other pilot secret. A service-level `env_file:` would copy the whole
-  file into the backend container, including `HRM_BACKUP_KEY` (backup encryption key) — a
-  least-privilege regression. This is now a tested invariant
-  (`test_pilot_overlay_never_uses_env_file_directive`, Windows `static.tests.ps1`).
-
-### 2. `infra/compose.prod.yml` had the same gap — FIXED
-- `Settings` is fail-closed in production too, so production could not start either. Added
-  `LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY:?...}` to backend/worker/backup, header usage updated,
-  `infra/scripts/check_env.sh` now validates `LICENSE_PUBLIC_KEY` (44 chars, base64, 32 bytes; value
-  never echoed). CI prod-overlay validation exports an ephemeral value and asserts that `config`
-  **fails without it**.
-
-### 3. License guard heuristic could be bypassed — FIXED (deny by default)
-- Before: `LicenseGuardMiddleware` protected only paths under a hard-coded `protected_roots` list or
-  with an `/api/` prefix; everything else passed through. Behind nginx the prefix is already stripped,
-  so e.g. `/ops/metrics` or any future router under a new root (`/reports`) was served **without a
-  license**. `test_unknown_paths_blocked_without_license` was correspondingly soft ("not 200") and the
-  previous verdict overstated it as "strict 403".
-- After: everything not on the recovery allowlist requires a valid license — known route or not,
-  with or without `/api`. `/ops/metrics` (aggregate counters, no PII) added to the allowlist as
-  diagnostics. Tests are now strict: `/unknown`, `/api/unknown`, `/api/unknown/child`, `/reports`,
-  `/api/reports` × GET/POST/PUT/PATCH/DELETE → **403 `no_license`** with `X-License-Status`;
-  a real route mounted under an unknown root is blocked; look-alike prefixes strictly 403;
-  `/api//candidates` strictly 403; expired license blocks unknown paths with 403 `expired`.
-
-### 4. Chain evidence was still partly declarative — FIXED
-- `review-artifacts/license-public-key-chain.json` (declarative `compose_passes_env_file: true`) removed.
-- `review-artifacts/gen_license_chain_evidence.py` (committed) recomputes every check from the real
-  files and takes Compose/runtime statuses **only** from an imported CI artifact; without it they are
-  `NOT RUN`. Redacted fingerprints only.
-
-## New checks
-
-| Layer | What | Where |
+| Role | Revision / ref | Notes |
 |---|---|---|
-| pytest (static) | mapping verbatim in backend/worker/backup, required form, no default, no `env_file:`, no private-key name; prod overlay same; `check_env.sh` rejects missing/malformed key | `test_pilot_overlay.py`, `test_production_overlay.py` |
-| pytest (runtime, no Docker) | overlay `environment:` interpolated with Compose `${VAR:?}`/`${VAR:-}` semantics from an ephemeral pilot.env → `app.config.Settings` in `APP_ENV=pilot` for backend/worker/backup → same SHA-256 fingerprint; without key Settings refuses; env-file line set == `Secrets.psm1:Write-HrmPilotEnv` (names+order); BOM/CRLF handling; report leak guard | `test_compose_license_chain.py` (17 tests) |
-| CI `stack` job (real `docker compose`) | `public_key.b64` → pilot.env (UTF-8/LF **and** UTF-8-BOM/CRLF as Windows PowerShell 5.1 writes it) → `docker compose --env-file … config --format json` → resolved `LICENSE_PUBLIC_KEY` of backend/worker/backup == file fingerprint; backend env has no backup key; no `env_file`; **negative:** missing key and empty key → `config` exits non-zero with the overlay message; then `docker compose run` of the built pilot images: `get_settings()` in `APP_ENV=pilot` prints the fingerprint → equal | `infra/scripts/compose_pilot_license_chain.py --require-runtime`, artifact `compose-pilot-license-chain` (fingerprints only) |
-| CI Windows job (real engine writer) | `Write-HrmPilotEnv` with `<state>\license_public_key.b64` (BOM+CRLF) → `HRM_LICENSE_PUBLIC_KEY` last line, SHA-256 equal to the file, 44 chars; without the file → empty value (so Compose refuses) | `engine.tests.ps1` |
-| CI Windows job (static) | overlay mapping ×3, no default, no `env_file:`, no private key name | `static.tests.ps1` |
-| CI backend job | production preflight: fails without / with malformed `LICENSE_PUBLIC_KEY`, passes with a 44-char value | `ci.yml` |
+| PR #34 | [#34](https://github.com/sledovatel61/HR-Manager/pull/34), head `e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784`, open, not merged | its head is unchanged by this pass |
+| Baseline (negative control) | `e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784` | every fix check fails here |
+| **Ported revision (this pass)** | `f85a362d34a7d30dea292ba67324781852180d33` — merge of `origin/arena/01a0ccb9-hr-manager` into the session branch, conflicts resolved in favour of the fixed files | the tree is PR #34 **plus** the fixes |
+| Port pull request | [#36](https://github.com/sledovatel61/HR-Manager/pull/36) → base `arena/01a0ccb9-hr-manager` | **not merged**; merging it puts the fixes into PR #34 |
+| Earlier fix commit | `c515a490db354436dbd0d18115e28ef5d8ece132` | the same two-file change before the merge; patch form: `review-artifacts/license-issuer-fixes.patch` (`sha256 daba388b1b99c038…`, verified with `git apply --check` against `e59aa5b`) |
 
-## Mandatory checks — PASS / FAIL / BLOCKED / NOT RUN
+Exact diff of PR #36 against the PR #34 branch (nothing else):
 
-### PASS (local, fix commit 96f12bc — all re-confirmed by CI below)
-- `ruff check`, `ruff format --check`, `mypy app tests` — clean.
-- `pytest -m "not integration"`: **825 passed** (798 before + 27 new).
-- `python infra/scripts/pilot_drill.py --steps signature-policy,channel-tamper-refusal,readiness-api` — passed.
-- `python infra/windows/tests/lint-engine.py` — 19 files, structural check passed.
-- License guard suites (40 tests) with deny-by-default — passed, including the strict 403 cases above.
-- Offline issuer CLI (manual, Linux sandbox, not CI): `cli.py gen-keypair` → `issue` → `verify` OK, no network.
+```
+ .gitignore                                      |   8 +
+ tools/license-issuer/build.ps1                  |  57 +--
+ review-artifacts/*                              |  (evidence, generators, verdict)
+```
 
-### PASS (CI, real runners — runs 35963793099 and 35964596589)
-- Real `docker compose` chain: config with key (UTF-8/LF and UTF-8-BOM/CRLF), resolved env of backend/worker/backup, config **refused** without key and with empty key, `Settings` inside the built pilot images — 12/12, verdict PASS (`compose-pilot-license-chain.ci.json`).
-- Real `Write-HrmPilotEnv` fingerprint case and overlay static case — Windows job.
-- Backend checks (ruff/format/mypy/pytest/preflight incl. license cases), backend integration (PostgreSQL), frontend, release-policy, compose smoke, prod/proxy overlay negative check — all success.
+## The four fixes — measured before → after (baseline `e59aa5b`, reviewed `f85a362`)
 
-### FAIL
-- none known.
+The generator materialises the **reviewed revision's own tree** from git objects outside the repository (the tree is
+complete, so no overlay is needed) and runs the same checks against the baseline tree as a negative control.
 
-### BLOCKED
-- Clean Windows 10/11 offline issuer bundle (run-gui.bat / run-html.bat, issuance, no network, no
-  private key in logs) — needs the owner's VM; see `windows-issuer-bundle-check.md`.
-- `installer_snapshot_contains_public_key` — `infra/license/public_key.b64` is not in git by design.
+| Requested fix | Check (`issuer-offline-evidence.json`) | before | after |
+|---|---|---|---|
+| `http.server` bound to `127.0.0.1` | `run_html_bat_binds_loopback_only` | FAIL | **PASS** |
+| no advice to use a system Python | `run_gui_bat_no_system_python_advice` | FAIL | **PASS** |
+| launcher fails closed without the bundle | `run_html_bat_fails_closed_without_system_python` | FAIL | **PASS** |
+| smoke test outside git + no key in the build log | `smoke_test_runs_outside_the_repository` / `smoke_test_never_prints_key_material` | FAIL / FAIL | **PASS / PASS** |
+| `.gitignore` blocks keys and licenses | `gitignore_blocks_key_and_license_material` | FAIL | **PASS** |
 
-### NOT RUN (by design / constraints)
-- `update-channel.yml`, `workflow_dispatch`, tags/releases `v0.14.0`, production signing — not run.
+Loopback is measured with socket attribution to the server PID (`/proc/<pid>/fd`), same interpreter and command line:
+`-b 127.0.0.1` → listens on `127.0.0.1` only; the previous command line (no `-b`) → `0.0.0.0`. The smoke test runs
+`gen-keypair --out-dir <GUID dir under %TEMP%>`, asserts that the private key never appears in the build output
+(`refusing to continue`), removes the directory in a `finally` block and exits non-zero on failure.
 
-## Private key confirmation
-- Git: no private key material; every test key is `Ed25519PrivateKey.generate()` / `secrets.token_bytes(32)` per run.
-- Overlays name only `LICENSE_PUBLIC_KEY` / `HRM_LICENSE_PUBLIC_KEY`; tests assert no `PRIVATE_KEY`/`private_key` token appears.
-- CI artifact and `license-chain-evidence.*`: SHA-256 fingerprints (16 hex) only; the chain script has a
-  leak guard that turns the verdict into FAIL and masks the report if 44-char base64 or ≥32-hex
-  material ever appears.
-- Logs: guard logs redacted fingerprints only (`test_no_private_key_in_logs_and_redacted`).
+## CI for the new HEAD
+
+| Revision | Run | Result |
+|---|---|---|
+| `f85a362` (PR #36 head, = PR #34 tree + fixes) | [35977017563](https://github.com/sledovatel61/HR-Manager/actions/runs/35977017563) | **6/6 jobs `success`**: Backend checks `107559790351` · Frontend checks `107559790445` · Release pipeline fail-closed policy `107559790493` · Backend integration tests (PostgreSQL) `107559790502` · Windows engine tests + installer smoke `107559790507` · Compose stack smoke test `107560788159`. License-chain steps: “Pilot overlay — license public-key chain (real docker compose)” ✅, “Print pilot license-chain report” ✅, “Upload pilot license-chain evidence” ✅; artifact `compose-pilot-license-chain` id `10798503119`, 2254 bytes, `sha256:0f4772f9b81c9ddd…` |
+| same head (duplicate) | 35977008271 | `success` (created while the earlier bridge PR #35 existed; #35 is now closed) |
+| PR #34 head `e59aa5b` | [35965657324](https://github.com/sledovatel61/HR-Manager/actions/runs/35965657324) | 6/6 `success` + license-chain steps `success` |
+
+Because the branch carries PR #34's `ci.yml`, this run is stronger than the pre-merge runs of this session: it
+re-exercises the license chain on real `docker compose`. What it still does **not** do: execute `build.ps1`,
+`run-gui.bat` or `run-html.bat` (the `.bat` files exist only after the bundle build). The verbatim chain report body
+of run 35977017563 could not be re-imported (artifact zips and job logs answer EOF from this sandbox), so
+`compose-pilot-license-chain.ci.json` still holds the body imported from run 35964596589 and
+`ci-run-status.json → port.ci_run` records this run's API-verified step conclusions, artifact id and digest.
+
+## NOT RUN — the only remaining blocker (owner's Windows VM)
+
+| Item | Status |
+|---|---|
+| `build.ps1` executed / `license-issuer-dist.zip` built | **NOT RUN** (needs python.org at build time; unreachable here) |
+| `run-gui.bat` on a clean Windows 10/11 VM without Python/pip/internet | **NOT RUN** |
+| `run-html.bat` on that VM (Edge at `http://127.0.0.1:8765/…`) | **NOT RUN** |
+| Issue + verify a license through the GUI and through the HTML page on the VM | **NOT RUN** |
+| Upload both licenses to the backend from the VM | **NOT RUN** (both issuers' output *is* verified against the backend's own verification function on Linux) |
+| No outbound connections on the VM (Wireshark / Resource Monitor) | **NOT RUN** |
+| No private key in `%TEMP%`, `%APPDATA%`, bundle, browser downloads on the VM | **NOT RUN** |
+| PowerShell syntax validated by a real parser | **NOT RUN** here (no `pwsh`); CI validates the repo's PowerShell on `windows-latest`, the bundle still needs the VM run |
+
+Checklist and redaction rules: `review-artifacts/windows-issuer-bundle-check.md`.
+
+## Evidence produced in this pass (redacted only)
+
+| File | Content |
+|---|---|
+| `issuer-offline-evidence.json` / `.md` (+ generator) | **39 PASS · 0 FAIL · 3 INFO · 3 GAP · 8 NOT RUN** for `f85a362`, with the before/after table, launcher hashes, the loopback measurement and secret-leak assertions |
+| `ci-run-status.json` | schema 2: PR #34 head, fix commit, **port PR #36 + its CI run** (job ids, conclusions, chain steps, artifact digests), provenance of the imported chain report, and the explicit statement that the Windows check is `NOT RUN` |
+| `license-chain-evidence.{json,md}` | regenerated for the reviewed revision (`HRM_EVIDENCE_REF=HEAD`); `checks_read_from_real_files` values identical to the values the PR branch produced |
+| `license-issuer-fixes.patch` | the two-file fix as a patch, still `git apply`-clean against `e59aa5b` |
+| `windows-issuer-bundle-check.md` | remaining owner checklist with the measured reasons for `NOT RUN` |
+
+Redaction: only fingerprints, lengths, HTTP codes, blob SHA-256 prefixes and booleans — no private key, no public key
+in full, no complete license, no signature, no real client name. Test licenses use the synthetic client name
+`Синтетический Пилот (синтетическое тестовое значение)`; the backend's key fingerprint is masked as
+`SHA256:<redacted>` (over-redaction on purpose).
+
+## Known remaining product deltas (unchanged, not fixed here)
+
+| ID | Delta | Effect |
+|---|---|---|
+| G5 | The **HTML** issuer signs a license with `expires_at` in the past (no `issued_at <= expires_at` check); the CLI refuses it | backend rejects the upload with `bad_date` — clear error, no data loss |
+| G6 | Both issuers sign a `client_name` containing control characters | backend rejects with `bad_value`; reachable from the CLI via a shell argument |
 
 ## Verdict
 
-**NO-GO** for the pilot release — but the reason has changed. The Compose/runtime chain is now
-**PASS on real CI** (imported artifact, not declared). What remains:
-
-1. **BLOCKED — clean Windows 10/11 issuer bundle check** (owner VM: `run-gui.bat` / `run-html.bat`,
-   issue a license offline, confirm no network and no private key in logs) — `windows-issuer-bundle-check.md`.
-2. **BLOCKED by design — `installer_snapshot_contains_public_key`**: `infra/license/public_key.b64` is
-   deliberately not in git; the owner bakes it into the release / `<state>\license_public_key.b64`.
-   Without it the stack now refuses to start with a clear message instead of crash-looping (verified in CI).
-
-Do not merge, do not tag/release, do not run production workflows. Once the owner completes (1),
-this verdict can move to GO for the closed 127.0.0.1 pilot; (2) is an operational step, not a defect.
-
-## CI results
-See the table at the top and `ci-run-status.json` (run 35964596589 @ `7c7f645`, run 35963793099 @ `96f12bc`; all six jobs `success` in both).
+**NO-GO.** The fixes are ported to the PR #34 branch as PR #36 and CI for the new HEAD is green — including the
+license-chain steps — but the **clean Windows 10/11 issuer runtime check has not been performed**, so `GO` is not
+issued and merging is not recommended. Do not merge #36 (or PR #34) until the owner completes
+`windows-issuer-bundle-check.md` on the VM and publishes the redacted evidence: page HTTP 200 at
+`http://127.0.0.1:8765/`, "signature correct" from both issuers, absent private-key hex in
+`%TEMP%`/`%APPDATA%`/bundle/downloads, and zero outbound connections.
