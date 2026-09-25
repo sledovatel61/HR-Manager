@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import document_templates as ops
+from app.document_templates import scope_applies
 from app.models import (
     AccessGrant,
     AccessGrantScope,
@@ -585,6 +586,229 @@ def test_generation_requires_candidate_access(client: TestClient, db_session: Se
     assert client.get(
         f"/candidates/{candidate.id}/generated-documents", headers=owner_headers
     ).json() == {"items": [], "total": 0, "limit": 20, "offset": 0}
+
+
+# --- Stage scope --------------------------------------------------------------
+
+
+def test_scope_applies_helper_matches_stored_stage_values() -> None:
+    """The gate compares stored values, not display labels."""
+    assert scope_applies("", CandidateStage.NEW) is True
+    assert scope_applies(None, CandidateStage.FIRED) is True
+    assert scope_applies("all", CandidateStage.REACHED) is True
+    # Case/whitespace of a stored scope must not turn a valid template off.
+    assert scope_applies(" Offer ", CandidateStage.OFFER) is True
+    # A label is not a value: «Оффер» is not the stored form of offer.
+    assert scope_applies("Оффер", CandidateStage.OFFER) is False
+    # Only a matching value (and an unknown value) behave as documented.
+    assert scope_applies("hired", CandidateStage.HIRED) is True
+    assert scope_applies("hired", CandidateStage.OFFER) is False
+    assert scope_applies("", CandidateStage.NEW) is True
+
+
+def _scoped_template(client: TestClient, db: Session, *, scope: str | None) -> dict:
+    admin = make_user(db, username=f"scoped-admin-{scope or 'all'}", role=UserRole.ADMIN)
+    headers = {"X-CSRF-Token": _login(client, admin.username)}
+    template = _create_template(client, headers, scope=scope)
+    version = template["versions"][0]
+    template = _activate(client, headers, template, version["id"])
+    return {"template": template, "version": template["versions"][0], "headers": headers}
+
+
+def test_scope_for_all_stages_renders_every_stage(client: TestClient, db_session: Session) -> None:
+    fixture = _scoped_template(client, db_session, scope=None)
+    assert fixture["template"]["scope"] == ""
+    hr = make_user(db_session, username="scope-all-hr")
+    headers = {"X-CSRF-Token": _login(client, hr.username)}
+    for index, stage in enumerate((CandidateStage.NEW, CandidateStage.HIRED), start=1):
+        candidate = make_candidate(db_session, owner=hr, stage=stage)
+        preview = client.post(
+            f"/candidates/{candidate.id}/generated-documents/preview",
+            json={"template_version_id": fixture["version"]["id"]},
+            headers=headers,
+        )
+        assert preview.status_code == 200, (stage, preview.text)
+        created = client.post(
+            f"/candidates/{candidate.id}/generated-documents",
+            json={
+                "template_version_id": fixture["version"]["id"],
+                "idempotency_key": f"scope-all-key-{index:02d}",
+            },
+            headers=headers,
+        )
+        assert created.status_code == 201, (stage, created.text)
+        assert created.json()["revision"] == 1
+
+
+def test_scope_matching_stage_allows_preview_and_generate(
+    client: TestClient, db_session: Session
+) -> None:
+    fixture = _scoped_template(client, db_session, scope="offer")
+    hr = make_user(db_session, username="scope-match-hr")
+    candidate = make_candidate(db_session, owner=hr, stage=CandidateStage.OFFER)
+    headers = {"X-CSRF-Token": _login(client, hr.username)}
+    preview = client.post(
+        f"/candidates/{candidate.id}/generated-documents/preview",
+        json={"template_version_id": fixture["version"]["id"]},
+        headers=headers,
+    )
+    assert preview.status_code == 200, preview.text
+    created = client.post(
+        f"/candidates/{candidate.id}/generated-documents",
+        json={"template_version_id": fixture["version"]["id"], "idempotency_key": "scope-ok-00001"},
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+
+
+def test_scope_mismatch_returns_422_for_preview_and_generate(
+    client: TestClient, db_session: Session
+) -> None:
+    fixture = _scoped_template(client, db_session, scope="offer")
+    hr = make_user(db_session, username="scope-miss-hr")
+    candidate = make_candidate(db_session, owner=hr, stage=CandidateStage.NEW)
+    headers = {"X-CSRF-Token": _login(client, hr.username)}
+    version_id = fixture["version"]["id"]
+
+    preview = client.post(
+        f"/candidates/{candidate.id}/generated-documents/preview",
+        json={"template_version_id": version_id},
+        headers=headers,
+    )
+    assert preview.status_code == 422, preview.text
+    detail = preview.json()["detail"]
+    assert "Оффер" in detail and "Новый" in detail
+    # The message carries no candidate data.
+    assert candidate.full_name not in detail and (candidate.email or "—") not in detail
+
+    created = client.post(
+        f"/candidates/{candidate.id}/generated-documents",
+        json={"template_version_id": version_id, "idempotency_key": "scope-bad-00001"},
+        headers=headers,
+    )
+    assert created.status_code == 422, created.text
+    assert created.json()["detail"] == detail
+    # Nothing was persisted and the revision counter did not move.
+    assert db_session.scalars(select(CandidateDocumentGeneration)).all() == []
+    assert (
+        client.get(f"/candidates/{candidate.id}/generated-documents", headers=headers).json()[
+            "total"
+        ]
+        == 0
+    )
+
+    # After the candidate reaches the scoped stage the same call succeeds, and
+    # a failed attempt left no idempotency trace behind.
+    candidate.stage = CandidateStage.OFFER
+    db_session.commit()
+    retry = client.post(
+        f"/candidates/{candidate.id}/generated-documents",
+        json={"template_version_id": version_id, "idempotency_key": "scope-bad-00001"},
+        headers=headers,
+    )
+    assert retry.status_code == 201, retry.text
+    assert retry.json()["revision"] == 1
+
+
+def test_scope_check_keeps_snapshot_and_idempotency_intact(
+    client: TestClient, db_session: Session
+) -> None:
+    """A snapshot created in scope survives a later stage change of the candidate."""
+    fixture = _scoped_template(client, db_session, scope="offer")
+    hr = make_user(db_session, username="scope-snap-hr")
+    candidate = make_candidate(db_session, owner=hr, stage=CandidateStage.OFFER)
+    headers = {"X-CSRF-Token": _login(client, hr.username)}
+    version_id = fixture["version"]["id"]
+    payload = {"template_version_id": version_id, "idempotency_key": "scope-snap-0001"}
+    created = client.post(
+        f"/candidates/{candidate.id}/generated-documents", json=payload, headers=headers
+    )
+    assert created.status_code == 201, created.text
+
+    # The candidate moves out of scope: history stays readable, the document
+    # does not change, and the idempotent replay still returns the same row.
+    candidate.stage = CandidateStage.HIRED
+    db_session.commit()
+    replay = client.post(
+        f"/candidates/{candidate.id}/generated-documents", json=payload, headers=headers
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == created.json()["id"]
+    assert replay.json()["body_text"] == created.json()["body_text"]
+    stored = client.get(
+        f"/candidates/{candidate.id}/generated-documents/{created.json()['id']}",
+        headers=headers,
+    )
+    assert stored.status_code == 200
+    assert stored.json()["content_sha256"] == created.json()["content_sha256"]
+    # A new document for the same candidate now fails the scope gate.
+    fresh = client.post(
+        f"/candidates/{candidate.id}/generated-documents",
+        json={"template_version_id": version_id, "idempotency_key": "scope-snap-0002"},
+        headers=headers,
+    )
+    assert fresh.status_code == 422
+
+
+def test_scope_mismatch_does_not_leak_foreign_candidates(
+    client: TestClient, db_session: Session
+) -> None:
+    """RBAC wins over the scope gate: a foreign candidate is a 404, never a 422."""
+    fixture = _scoped_template(client, db_session, scope="offer")
+    owner = make_user(db_session, username="scope-owner")
+    stranger = make_user(db_session, username="scope-stranger")
+    candidate = make_candidate(db_session, owner=owner, stage=CandidateStage.NEW)
+    headers = {"X-CSRF-Token": _login(client, stranger.username)}
+    version_id = fixture["version"]["id"]
+    assert (
+        client.post(
+            f"/candidates/{candidate.id}/generated-documents/preview",
+            json={"template_version_id": version_id},
+            headers=headers,
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/candidates/{candidate.id}/generated-documents",
+            json={"template_version_id": version_id, "idempotency_key": "scope-idor-0001"},
+            headers=headers,
+        ).status_code
+        == 404
+    )
+
+
+def test_scope_literal_all_written_outside_the_api_stays_applicable(
+    client: TestClient, db_session: Session
+) -> None:
+    """The API stores the empty string for "all stages"; a row written directly
+    into the database with the literal "all" must not become unusable."""
+    admin = make_user(db_session, username="legacy-admin", role=UserRole.ADMIN)
+    {"X-CSRF-Token": _login(client, admin.username)}
+    template = DocumentTemplate(kind="offer", scope="all", name="Легаси-шаблон", author_id=admin.id)
+    db_session.add(template)
+    db_session.flush()
+    version = DocumentTemplateVersion(
+        template_id=template.id,
+        number=1,
+        state="active",
+        title="Оффер",
+        body="Привет, {{candidate.full_name}}",
+        placeholders=["candidate.full_name"],
+        author_id=admin.id,
+        activated_at=ops.utc_now(),
+    )
+    db_session.add(version)
+    db_session.commit()
+
+    hr = make_user(db_session, username="legacy-hr")
+    candidate = make_candidate(db_session, owner=hr, stage=CandidateStage.REJECTED)
+    preview = client.post(
+        f"/candidates/{candidate.id}/generated-documents/preview",
+        json={"template_version_id": str(version.id)},
+        headers={"X-CSRF-Token": _login(client, hr.username)},
+    )
+    assert preview.status_code == 200, preview.text
 
 
 # --- Download -----------------------------------------------------------------

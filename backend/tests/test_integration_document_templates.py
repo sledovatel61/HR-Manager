@@ -21,8 +21,10 @@ from sqlalchemy.orm import Session
 
 from app.document_templates import activate_version, generate
 from app.models import (
+    AuditEvent,
     Candidate,
     CandidateDocumentGeneration,
+    CandidateStage,
     DocumentTemplateVersion,
     User,
     UserRole,
@@ -354,3 +356,110 @@ def test_pg_http_flow_matches_units(pg_client: TestClient, pg_db: Session) -> No
     ).all()
     assert [row[0] for row in audit] == ["document_generated", "document_downloaded"]
     assert all(row[1] == candidate.id for row in audit)
+
+
+def test_pg_scope_gate_blocks_before_insert(
+    pg_client: TestClient, pg_db: Session, pg_engine: Engine
+) -> None:
+    """The stage scope is enforced on PostgreSQL exactly as in the unit suite.
+
+    ``scope`` is part of a template's frozen identity (the trigger forbids
+    changing it), so the scoped and all-stages templates are created through the
+    API. A mismatch answers 422 from preview and from generate, leaves no row and
+    no audit record, while a matching generation keeps its snapshot and its
+    idempotent replay after the candidate leaves the scope.
+    """
+    admin, scoped_template, _headers = _published_template(pg_client, pg_db)
+    hr = make_user(pg_db, username="pg-scope-hr", full_name="Петрова Мария")
+    candidate = make_candidate(pg_db, owner=hr, full_name="Иванов Иван")
+    scoped_version = scoped_template["versions"][0]["id"]
+
+    # A scope can only be set at creation time; the API validates the value.
+    scoped = pg_client.post(
+        "/document-templates",
+        json={**CONTENT, "kind": "anketa", "name": "Анкета (оффер)", "scope": "offer"},
+        headers=_auth(pg_client, admin.username),
+    )
+    assert scoped.status_code == 201, scoped.text
+    open_template = pg_client.post(
+        "/document-templates",
+        json={**CONTENT, "kind": "dogovor", "name": "Договор (все этапы)"},
+        headers=_auth(pg_client, admin.username),
+    )
+    assert open_template.status_code == 201, open_template.text
+    assert open_template.json()["scope"] == ""
+    scoped_version_id = scoped.json()["versions"][0]["id"]
+    open_version_id = open_template.json()["versions"][0]["id"]
+    # A version must be published before it can render anything.
+    for template, version_id in (
+        (scoped.json(), scoped_version_id),
+        (open_template.json(), open_version_id),
+    ):
+        activated = pg_client.post(
+            f"/document-templates/{template['id']}/versions/{version_id}/activate",
+            json={"expected_revision": template["revision"]},
+            headers=_auth(pg_client, admin.username),
+        )
+        assert activated.status_code == 200, activated.text
+
+    preview = pg_client.post(
+        f"/candidates/{candidate.id}/generated-documents/preview",
+        json={"template_version_id": scoped_version_id},
+        headers=_auth(pg_client, hr.username),
+    )
+    assert preview.status_code == 422, preview.text
+    assert "Оффер" in preview.json()["detail"]
+    generate = pg_client.post(
+        f"/candidates/{candidate.id}/generated-documents",
+        json={"template_version_id": scoped_version_id, "idempotency_key": "pg-scope-0001"},
+        headers=_auth(pg_client, hr.username),
+    )
+    assert generate.status_code == 422, generate.text
+
+    # The all-stages template works for the same candidate right away.
+    open_preview = pg_client.post(
+        f"/candidates/{candidate.id}/generated-documents/preview",
+        json={"template_version_id": open_version_id},
+        headers=_auth(pg_client, hr.username),
+    )
+    assert open_preview.status_code == 200, open_preview.text
+
+    with Session(pg_engine) as db:
+        assert db.scalars(select(CandidateDocumentGeneration)).all() == []
+        actions = db.scalars(
+            select(AuditEvent.action).where(AuditEvent.action == "document_generated")
+        ).all()
+        assert actions == []
+
+    # Reaching the scoped stage opens the gate on the very same key.
+    candidate.stage = CandidateStage.OFFER
+    pg_db.commit()
+    created = pg_client.post(
+        f"/candidates/{candidate.id}/generated-documents",
+        json={"template_version_id": scoped_version_id, "idempotency_key": "pg-scope-0001"},
+        headers=_auth(pg_client, hr.username),
+    )
+    assert created.status_code == 201, created.text
+
+    # Leaving the scope keeps the snapshot and the idempotent replay, but blocks
+    # a new document.
+    candidate.stage = CandidateStage.HIRED
+    pg_db.commit()
+    replay = pg_client.post(
+        f"/candidates/{candidate.id}/generated-documents",
+        json={"template_version_id": scoped_version_id, "idempotency_key": "pg-scope-0001"},
+        headers=_auth(pg_client, hr.username),
+    )
+    assert replay.status_code == 200
+    assert replay.json()["id"] == created.json()["id"]
+    blocked = pg_client.post(
+        f"/candidates/{candidate.id}/generated-documents",
+        json={"template_version_id": scoped_version_id, "idempotency_key": "pg-scope-0002"},
+        headers=_auth(pg_client, hr.username),
+    )
+    assert blocked.status_code == 422
+
+    # The unmatched template stays untouched by all of this.
+    assert scoped_version != scoped_version_id
+    with Session(pg_engine) as db:
+        assert len(db.scalars(select(CandidateDocumentGeneration)).all()) == 1
