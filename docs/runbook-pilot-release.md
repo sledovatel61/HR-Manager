@@ -415,7 +415,7 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 
 Использование владельцем (офлайн, без Python, без интернета, двойной клик):
 1. Распаковать `license-issuer-dist.zip`
-2. `run-gui.bat` — GUI (рекомендуется) или `run-html.bat` — HTML через http://localhost:8765 (Edge 120+, secure context localhost, WebCrypto Ed25519, fallback TweetNaCl) или `run-cli.bat gen-keypair`
+2. `run-gui.bat` — GUI (рекомендуется) или `run-html.bat` — HTML через http://127.0.0.1:8765 (Edge 120+, secure context 127.0.0.1, WebCrypto Ed25519, fallback TweetNaCl) или `run-cli.bat gen-keypair`
 3. **Приватный ключ хранится ТОЛЬКО у владельца**: VeraCrypt/BitLocker-папка, зашифрованная флешка, аппаратный токен. Никогда не попадает в git, установщик, frontend, Docker image, логи, диагностический архив.
 4. Публичный ключ (`public_key.b64` — 44 символа base64 32 байта) копируется в `infra/license/public_key.b64` перед сборкой пилотного образа. При установке `Secrets.psm1:Get-HrmLicensePublicKey` читает его и пишет в `pilot.env` как `HRM_LICENSE_PUBLIC_KEY`.
 5. Полный путь (проверено тестом `test_full_public_key_path_simulation`):

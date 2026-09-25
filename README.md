@@ -3,11 +3,12 @@
 Сетевая система для командного подбора персонала: несколько HR-менеджеров
 ведут кандидатов в единой PostgreSQL-базе, руководитель получает аналитику.
 
-**Статус: этапы 0–11 завершены; следующий — этап 12 после согласования
-продуктового контракта.** Phase 11 принята в PR #18 и влита в `main`
-merge-коммитом `a6ac73cb797919383b80ce65b1614cd6e4dad47f`. Актуальный handoff находится в
-[`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md), отчёт принятой реализации — в
-[`docs/phase-11-report-arena.md`](docs/phase-11-report-arena.md). Зашифрованные
+**Статус: в `main` влиты этапы 0–14. Этапы 15 (офлайн-лицензия пилота) и
+16 (версионируемые шаблоны документов) ведутся в открытой цепочке PR-ов поверх
+`main` и в `main` не влиты.** Актуальный handoff находится в
+[`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md); отчёт Phase 16 —
+[`docs/phase-16-report-arena.md`](docs/phase-16-report-arena.md), справочник
+плейсхолдеров — [`docs/document-placeholders.md`](docs/document-placeholders.md). Зашифрованные
 backup (AES-256-GCM) с retention ≥ 7 дней и restore drill в отдельную БД,
 deploy-скрипт с автоматическим rollback, HTTPS reverse proxy и
 observability-сигналы — см. [`docs/backup-and-restore.md`](docs/backup-and-restore.md).
@@ -498,7 +499,9 @@ frontend и `/api/health`, остановка БД → `/health` 503, гаран
 - [`docs/phase-12-local-acceptance.md`](docs/phase-12-local-acceptance.md) — итоговая локальная приёмка Windows;
 - [`prompts/PHASE_13_PROMPT.md`](prompts/PHASE_13_PROMPT.md) — задание этапа 13;
 - [`docs/phase-13-local-acceptance.md`](docs/phase-13-local-acceptance.md) — итоговая локальная приёмка этапа 13;
-- [`prompts/PHASE_14_PROMPT.md`](prompts/PHASE_14_PROMPT.md) — контракт следующего этапа;
+- [`prompts/PHASE_14_PROMPT.md`](prompts/PHASE_14_PROMPT.md) — контракт этапа 14;
+- [`docs/phase-16-report-arena.md`](docs/phase-16-report-arena.md) — отчёт этапа 16 (шаблоны документов);
+- [`docs/document-placeholders.md`](docs/document-placeholders.md) — справочник плейсхолдеров шаблонов;
 - [`design/IMPLEMENTATION_GUIDE.md`](design/IMPLEMENTATION_GUIDE.md) — план
   переноса дизайна «Живая воронка» в production.
 
@@ -555,3 +558,25 @@ Windows-пилот: графический установщик `HR Manager Setu
 поверх уже принятого update/rollback Phase 12. Задание:
 [`prompts/PHASE_13_PROMPT.md`](prompts/PHASE_13_PROMPT.md); отчёт:
 [`docs/phase-13-report-arena.md`](docs/phase-13-report-arena.md).
+
+## Phase 16 — шаблоны документов (текстовый MVP)
+
+Версионируемые текстовые шаблоны и генерация документов кандидата:
+
+- шаблон = управляемый вид (`offer`, `anketa`, `dogovor`, `script`, `form`),
+  область (все этапы или конкретный) и имя; содержимое живёт в неизменяемых
+  версиях `draft → active → archived`, правка — это новая версия;
+- публикация создаётся в разделе «Шаблоны документов» (`#/templates`) и
+  аудируется; активная версия одна на шаблон, старая уходит в архив;
+- в карточке кандидата вкладка «По шаблону» рендерит документ из опубликованной
+  версии, сохраняет неизменяемый снимок (текст, HTML, SHA-256) и отдаёт его на
+  скачивание; HTML печатается в PDF средствами браузера;
+- плейсхолдеры — закрытый allowlist (`candidate.*`, `hr.*`, `system.*`),
+  значения экранируются, произвольного HTML/Jinja/SQL нет;
+- файлы не загружаются и не хранятся, PDF/DOCX на сервере не генерируются,
+  кандидату ничего не отправляется. Управление — администратор или
+  `document_lists_manage`.
+
+Детали, матрица требований и открытые вопросы:
+[`docs/phase-16-report-arena.md`](docs/phase-16-report-arena.md);
+плейсхолдеры: [`docs/document-placeholders.md`](docs/document-placeholders.md).
