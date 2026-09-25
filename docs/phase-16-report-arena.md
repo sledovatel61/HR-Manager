@@ -299,19 +299,24 @@ Frontend (изменённые): `frontend/src/api.ts` (типизированн
 
 - PR: https://github.com/sledovatel61/HR-Manager/pull/39
   (base `arena/01a0d2c2-hr-manager`, head `arena/01a0d78b-hr-manager`).
-- Проверенный SHA: `5b15a45ad24f81b73eb4ec620763c3569ded0b43`
-  (последний коммит с изменениями кода; дальше идут только правки этого отчёта).
-- Прогон: https://github.com/sledovatel61/HR-Manager/actions/runs/36114888249
+- **Проверенный SHA с актуальным кодом: `e8049720eb42e00d87fb8326b3f6d0366fd3d4ee`**
+  (коммит «enforce the template stage scope on preview and generation»).
+  Прогон: https://github.com/sledovatel61/HR-Manager/actions/runs/36128767616
+- Предыдущий проверенный SHA (до scope-гейта):
+  `5b15a45ad24f81b73eb4ec620763c3569ded0b43`,
+  прогон https://github.com/sledovatel61/HR-Manager/actions/runs/36114888249
+- Любые коммиты после `e804972` — только правки этого отчёта; код на них не
+  меняется, а прогоны остаются 7/7 (проверено на докс-коммитах ранее).
 
-| Job | Результат |
-| --- | --- |
-| Backend checks | ✅ pass (4m13s) |
-| Backend integration tests (PostgreSQL) | ✅ pass (2m28s) |
-| Frontend checks | ✅ pass (48s) |
-| Compose stack smoke test (dev + prod overlay) | ✅ pass (1m54s) |
-| Release pipeline fail-closed policy (ephemeral test signature) | ✅ pass (39s) |
-| License issuer bundle — Windows PowerShell 5.1 checks | ✅ pass (7m15s) |
-| Windows engine tests + installer smoke | ✅ pass (8m8s) |
+| Job | `e804972` (актуальный код) | `5b15a45` (первый прогон) |
+| --- | --- | --- |
+| Backend checks | ✅ pass (4m6s) | ✅ pass (4m13s) |
+| Backend integration tests (PostgreSQL) | ✅ pass (2m31s) | ✅ pass (2m28s) |
+| Frontend checks | ✅ pass (43s) | ✅ pass (48s) |
+| Compose stack smoke test (dev + prod overlay) | ✅ pass (1m49s) | ✅ pass (1m54s) |
+| Release pipeline fail-closed policy (ephemeral test signature) | ✅ pass (40s) | ✅ pass (39s) |
+| License issuer bundle — Windows PowerShell 5.1 checks | ✅ pass (9m30s) | ✅ pass (7m15s) |
+| Windows engine tests + installer smoke | ✅ pass (12m8s) | ✅ pass (8m8s) |
 
 Итог: 7/7 job-ов зелёные на точном SHA. Последующие коммиты в PR — только
 документация (этот отчёт и правка формулировки базы), код не менялся.
@@ -344,13 +349,18 @@ https://github.com/sledovatel61/HR-Manager/actions/runs/36119769759
    от поздних фаз).
 3. Дополнить `EXPECTED_TABLES` в `tests/test_migrations.py` таблицей `licenses`
    (пре-существующий пропуск Phase 15).
-4. Решить F1/F3/F4 с заказчиком и, при необходимости, расширять контур
-   отдельным этапом (файловое хранилище, ретенция, строгий admin-only).
+4. Решить F3/F4 с заказчиком и, при необходимости, расширять контур отдельным
+   этапом (ретенция и удаление ПДн, строгий admin-only).
+5. Будущая фаза: загрузка файлов (DOCX/PDF, сканы) — хранилище, антивирус,
+   права, ретенция и версионирование бинарников; в Phase 16 её нет по решению
+   заказчика (см. §1).
 
 ## 10. Handoff
 
 - PR: https://github.com/sledovatel61/HR-Manager/pull/39 (открыт, не влит;
   база — ветка цепочки `arena/01a0d2c2-hr-manager`, не `main`).
+- Проверенный код: `e8049720eb42e00d87fb8326b3f6d0366fd3d4ee`, CI 7/7
+  (https://github.com/sledovatel61/HR-Manager/actions/runs/36128767616).
 - Миграция `0015`; при откате — `alembic downgrade 0014` (удаляет только объекты
   Phase 16).
 - Новые контракты — в §2.3; расширение allowlist плейсхолдеров требует правки
