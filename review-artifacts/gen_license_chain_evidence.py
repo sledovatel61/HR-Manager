@@ -16,14 +16,48 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import secrets
+import shutil
+import subprocess
+import tarfile
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parent
+
+
+def _reviewed_tree() -> Path:
+    """Tree the checks read.
+
+    Default: the working tree this script lives in (the PR branch).
+    With HRM_EVIDENCE_REF=<sha> the tree of that commit is extracted from the
+    local object database instead, so the evidence can be regenerated for a
+    concrete reviewed commit (e.g. the PR head) from any branch:
+
+        HRM_EVIDENCE_REF=e59aa5b7a3df49b61a8b7c599601bfbd4e9b2784 \
+          python3 review-artifacts/gen_license_chain_evidence.py
+    """
+    ref = (os.environ.get("HRM_EVIDENCE_REF") or "").strip()
+    if not ref:
+        return HERE.parent
+    tmp = Path(tempfile.mkdtemp(prefix="hrm-chain-evidence-"))
+    archive = tmp / "tree.tar"
+    subprocess.run(
+        ["git", "-C", str(HERE.parent), "archive", "--format=tar", "-o", str(archive), ref],
+        check=True,
+        capture_output=True,
+    )
+    with tarfile.open(archive) as tf:
+        tf.extractall(tmp)  # noqa: S202 - our own archive of a reviewed commit
+    shutil.rmtree(tmp / "review-artifacts", ignore_errors=True)
+    return tmp
+
+
+REPO = _reviewed_tree()
 OUT_JSON = HERE / "license-chain-evidence.json"
 OUT_MD = HERE / "license-chain-evidence.md"
 CI_CHAIN = HERE / "compose-pilot-license-chain.ci.json"
@@ -194,16 +228,32 @@ def ci_runtime_steps() -> tuple[dict[str, str], dict[str, Any]]:
 
     status = json.loads(CI_STATUS.read_text(encoding="utf-8"))
     chain = json.loads(CI_CHAIN.read_text(encoding="utf-8"))
+    # The chain report file is imported from one concrete run (its logs are not
+    # always readable from the review sandbox), while the PR head run may be a
+    # later one. Schema 1 kept these at the top level, schema 2 nests them.
+    head = status.get("reviewed_head") or {}
+    report = status.get("chain_report") or {}
+    report_run_id = report.get("run_id", head.get("run_id", status.get("run_id")))
+    report_sha = report.get("head_sha", head.get("sha", status.get("head_sha")))
+    head_artifact = head.get("artifact") or status.get("artifact") or {}
     meta = {
         "imported": True,
-        "run_id": status.get("run_id"),
-        "head_sha": status.get("head_sha"),
-        "jobs": status.get("jobs"),
+        "run_id": report_run_id,
+        "head_sha": report_sha,
+        "report_run_id": report_run_id,
+        "report_head_sha": report_sha,
+        "head_run_id": head.get("run_id", status.get("run_id")),
+        "head_sha_of_pr": head.get("sha", status.get("head_sha")),
+        "head_jobs": head.get("jobs", status.get("jobs")),
+        "head_all_jobs_conclusion": head.get("all_jobs_conclusion", status.get("all_jobs_conclusion")),
+        "head_artifact_digest": head_artifact.get("digest") or (status.get("artifact") or {}).get("digest"),
+        "port_pr": (status.get("port") or {}).get("pr"),
+        "port_head_ci": (status.get("port") or {}).get("ci_run", {}),
         "chain_verdict": chain.get("verdict"),
         "chain_compose_version": chain.get("compose_version"),
     }
     by_id = {s["id"]: s for s in chain.get("steps", [])}
-    run_ref = f"run {status.get('run_id')} @ {str(status.get('head_sha'))[:7]}"
+    run_ref = f"report of run {report_run_id} @ {str(report_sha)[:7]}"
 
     def st(ids: list[str], label: str) -> str:
         present = [by_id.get(i) for i in ids]
@@ -253,19 +303,25 @@ def main() -> int:
     checks = compute_checks()
     ci_steps, ci_meta = ci_runtime_steps()
     runtime_steps: dict[str, str] = {
-        "owner_key_generation_offline_windows": "BLOCKED (requires clean Windows 10/11 VM without Python/internet)",
-        "issuer_cli_offline_linux": "MANUAL PASS, not CI-verified (Linux sandbox, this session: "
-        "cli.py gen-keypair → issue → verify, offline; see final-verdict.md)",
+        "owner_key_generation_offline_windows": "BLOCKED (requires clean Windows 10/11 VM without Python/internet); "
+        "the issuer code itself is covered on Linux by issuer-offline-evidence.json",
+        "issuer_cli_offline_linux": "PASS (reproducible Linux-sandbox check, not CI): cli.py gen-keypair → "
+        "issue → verify under a socket-denying harness (0 network attempts) and the backend "
+        "license_service verifies the result; regenerate with "
+        "review-artifacts/gen_issuer_offline_evidence.py — see issuer-offline-evidence.json",
         "build_bundle_with_embedded_python": "PASS (static: build.ps1 structure) / BLOCKED (runtime on clean Windows VM)",
         "installer_snapshot_contains_public_key": "BLOCKED (infra/license/public_key.b64 is not in git by design; owner bakes it)",
         **ci_steps,
         "backend_LICENSE_PUBLIC_KEY_validation": "PASS (config.py fail-closed in pilot/production; pytest)",
         "license_upload_and_verification": "PASS (Ed25519 verify; pytest license suites)",
-        "windows_bundle_manual_check": "BLOCKED (requires clean Windows 10/11 VM)",
+        "windows_bundle_manual_check": "BLOCKED (requires clean Windows 10/11 VM): run-gui.bat / run-html.bat were "
+        "NOT executed anywhere; their content is verified only statically — see "
+        "windows-issuer-bundle-check.md and issuer-offline-evidence.json",
     }
     report = {
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "generator": "review-artifacts/gen_license_chain_evidence.py (reads real files; CI statuses only from imported artifacts)",
+        "reviewed_tree": (os.environ.get("HRM_EVIDENCE_REF") or "").strip() or "working tree",
         "fingerprint_redacted_example": f"SHA256:{demo_fp[:16]}... (redacted, ephemeral demo value)",
         "public_key_b64_length": 44,
         "public_key_b64_redacted_example": f"{demo_key[:8]}...{demo_key[-4:]} (44 chars, redacted, ephemeral demo value)",

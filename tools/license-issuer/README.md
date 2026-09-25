@@ -63,17 +63,24 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 Что делает build.ps1 (воспроизводимый, fail-closed):
 - Скачивает embeddable Python с python.org (только на этапе сборки)
 - Устанавливает cryptography в `Lib/site-packages` (только на этапе сборки, нужен интернет один раз)
+- Добавляет **tkinter/Tcl/Tk** для GUI: embeddable Python поставляется без tkinter (`run-gui.bat` падал с `No module named 'tkinter'`). Берётся официальный `tcltk.msi` той же версии с python.org и распаковывается административно (`msiexec /a`: без записей в реестр, ничего не устанавливается): `_tkinter.pyd` + DLL Tcl/Tk → `python\`, пакет → `python\tkinter`, библиотеки → `python\tcl`. Проверка: `import tkinter; tkinter.Tcl()` bundled-интерпретатором, иначе exit 1
+- Переписывает `python312._pth` детерминированно: `python312.zip`, `.`, `..\license-issuer`, `Lib\site-packages`, `import site`. Без `..\license-issuer` embeddable Python (он игнорирует `PYTHONPATH` и не добавляет каталог скрипта в `sys.path`) не импортирует соседний `license_issuer.py` — `run-cli.bat` падал с `ModuleNotFoundError: No module named 'license_issuer'`
 - Копирует `nacl-fast.js` (TweetNaCl 1.0.3, 2391 строка, из npm, public domain) для fallback
-- Создаёт launchers `run-gui.bat`, `run-cli.bat`, `run-html.bat` — используют `..\python\python.exe`, fail-closed если bundled Python отсутствует
-- Smoke-тест `gen-keypair`
+- Создаёт launchers `run-gui.bat`, `run-cli.bat`, `run-html.bat` — используют `..\python\python.exe`, **fail-closed** если bundled Python отсутствует (никакого fallback на системный Python), `cd /d "%~dp0"` + кавычки вокруг всех путей (работает с путями, содержащими пробелы), `PYTHONUTF8=1`
+- `run-html.bat` слушает **только `127.0.0.1`** (`python serve_loopback.py 8765 "%SCRIPT_DIR%."`), а не `0.0.0.0`. `serve_loopback.py` вместо `python -m http.server`: адрес 127.0.0.1 зашит в код (параметра bind нет), без разрешения имён (стандартный `http.server` при старте вызывает `getaddrinfo`/`socket.getfqdn()` — в приёмочном прогоне на Windows это давало события DNS-Client у bundled python.exe), без листинга каталогов, `Cache-Control: no-store`, занятый порт → понятная ошибка и exit 1. Точка в конце обязательна: `%~dp0` заканчивается на `\`, а `\"` в разборе argv Windows — экранированная кавычка (без точки сервер отдавал 404 на все запросы). Браузер открывает `open_when_ready.py` (bundled python) **только после** HTTP 200 со страницей issuer на 127.0.0.1 (опрос каждые 0,25 с до 30 с, сырой IPv4-сокет: без прокси и без DNS) — раньше была фиксированная задержка ~2 с, и на медленной машине браузер мог открыться до старта сервера (connection refused). `HRM_NO_BROWSER=1` / `HRM_NO_PAUSE=1` — для автоматических запусков
+- `license-issuer.html`: приватный ключ **не вводится с клавиатуры и не вставляется** — его можно только сгенерировать на странице или загрузить из `private_key.hex` кнопкой выбора файла (FileReader); поля ключа только для чтения, не являются элементами формы и очищаются при уходе со страницы. Причина — сканирование утечек в приёмочном прогоне на Windows (Edge 153): Edge сохранял приватный ключ в профиле браузера — `Web Data` (автозаполнение, несмотря на `autocomplete="off"`), `Sessions` (восстановление вкладок) и `Web Data` → таблица `autofill_edge_field_values` (текст, набранный даже в `contenteditable`). Показанный страницей (сгенерированный) ключ Edge не сохранял, набранный — сохранял
+- Smoke-тест полной цепочки `gen-keypair -> issue -> verify` в временной директории **вне репозитория**; если приватный ключ появляется в выводе — билд падает; каталог удаляется после завершения
 - Создаёт zip
+- Любой сбой (скачивание, pip, импорт cryptography, smoke-тест) завершает билд ненулевым кодом
+
+Кодировка `build.ps1`: файл сохранён **UTF-8 с BOM** и содержит только ASCII. Windows PowerShell 5.1 читает `.ps1` без BOM как ANSI; под CP1251 UTF-8-тире (байты `E2 80 94`) декодируется в правую кавычку U+201D, которую токенизатор принимает за закрывающую кавычку строки → parse error на весь скрипт. CI (job `license-issuer-windows`) проверяет BOM, ASCII-only и парсит файл настоящим Windows PowerShell 5.1 Parser'ом.
 
 ### Использование владельцем (офлайн, без Python, без интернета)
 
 1. Распакуйте `license-issuer-dist.zip`
 2. Двойной клик:
    - `run-gui.bat` — GUI Tkinter (рекомендуется, автономно)
-   - `run-html.bat` — HTML через `http://localhost:8765/license-issuer.html` (Edge 120+, WebCrypto Ed25519, secure context localhost, fallback TweetNaCl)
+   - `run-html.bat` — HTML через `http://127.0.0.1:8765/license-issuer.html` (Edge 120+, WebCrypto Ed25519, secure context localhost, fallback TweetNaCl)
    - `run-cli.bat gen-keypair` — CLI
 3. Generate keypair — сохраните приватный (64 hex) в зашифрованном хранилище!
 4. Публичный (base64 44 символа) → `infra/license/public_key.b64` перед сборкой пилотного образа
@@ -92,15 +99,16 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 
 ```bash
 pip install cryptography
-python cli.py gen-keypair
-python cli.py issue --client-name "Пилот Марии" --expires-at 2026-12-31 --max-users 5 --private-key <64hex> --out license.hrmlicense
+python cli.py gen-keypair --out-dir keys
+python cli.py issue --private-key-file keys/private_key.hex --client "Пилот Марии" --expires 2026-12-31 --max-users 5 --out license.hrmlicense
+python cli.py verify --public-key-file keys/public_key.b64 --license-file license.hrmlicense
 ```
 
-**Текущий статус:** Вариант A реализован — `build.ps1` + `nacl-fast.js` (2391 строка, из npm tweetnacl@1.0.3) + smoke-тест. Требуется ручная проверка на чистой Windows VM.
+**Текущий статус:** Вариант A реализован — `build.ps1` (UTF-8 BOM + ASCII, `..\license-issuer` в `python312._pth`, fail-closed launchers, `run-html.bat` на 127.0.0.1, smoke-тест `gen-keypair -> issue -> verify` вне репозитория) + `nacl-fast.js`. Автоматическая проверка на Windows: CI job `license-issuer-windows` (Windows PowerShell 5.1: parser-check, полная сборка, runtime-проверки из свежего unzip без системного Python, loopback, fail-closed, отсутствие ключей в логах). Ручная проверка на чистой Windows VM без Python/интернета — требуется для GO.
 
 ### Вариант HTML офлайн (WebCrypto)
 
-Откройте через `run-html.bat` (рекомендуется, даёт http://localhost:8765, secure context) или напрямую в Edge 120+:
+Откройте через `run-html.bat` (рекомендуется, даёт http://127.0.0.1:8765, secure context) или напрямую в Edge 120+:
 
 - Сгенерировать пару → сохранить приватный, скопировать публичный
 - Выпустить лицензию → скачать файл

@@ -12,6 +12,11 @@ button { margin-top: 10px; padding: 8px 14px; }
 pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .warning { color: #a00; background: #fff0f0; border: 1px solid #a00; padding: 8px; margin: 10px 0; }
 .ok { color: #060; background: #f0fff0; border: 1px solid #0a0; padding: 8px; margin: 10px 0; }
+/* private key boxes are NOT form controls (see the script): browsers store form-control values */
+.keybox { display: block; width: 100%; min-height: 1.4em; padding: 6px; margin-top: 4px; box-sizing: border-box; border: 1px solid #767676; font-family: monospace; word-break: break-all; white-space: nowrap; overflow-x: auto; background: #fff; }
+.keybox-ro { background: #f5f5f5; }
+.keybox:empty::before { content: attr(data-placeholder); color: #888; }
+.hint { color: #555; font-size: 13px; margin: 4px 0; }
 </style>
 <script src="nacl-fast.js"></script>
 </head>
@@ -23,14 +28,17 @@ pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap;
 Никогда не коммитьте private_key в git, не добавляйте в установщик, Docker, логи, диагностический архив.<br>
 Сделайте резервную копию в зашифрованном хранилище (VeraCrypt/BitLocker/зашифрованная флешка).<br>
 Публичный ключ (base64 44 символа) скопируйте в <code>infra/license/public_key.b64</code> перед сборкой пилотного образа или в <code>HRM_LICENSE_PUBLIC_KEY</code>.<br>
-<strong>Автономность:</strong> этот HTML работает без интернета. Для secure context (WebCrypto) откройте через <code>run-html.bat</code> (http://localhost:8765) или https. В file:// контексте Edge может блокировать crypto.subtle — тогда используйте <code>run-gui.bat</code> или <code>run-cli.bat</code> из автономного пакета (bundled Python, без интернета, без системного Python).
+<strong>Автономность:</strong> этот HTML работает без интернета. Для secure context (WebCrypto) откройте через <code>run-html.bat</code> (http://127.0.0.1:8765) или https. В file:// контексте Edge может блокировать crypto.subtle — тогда используйте <code>run-gui.bat</code> или <code>run-cli.bat</code> из автономного пакета (bundled Python, без интернета, без системного Python).
 </div>
 
 <h2>1. Ключи (Ed25519)</h2>
 <label>Приватный ключ (64 hex, секретно, 32 байта seed):</label>
-<input id="privHex" type="text" placeholder="64 hex">
+<div id="privHex" class="keybox keybox-ro" role="textbox" aria-readonly="true" aria-label="private key hex" data-placeholder="сгенерируйте новую пару или загрузите private_key.hex"></div>
+<label>Загрузить приватный ключ из файла <code>private_key.hex</code> (из <code>run-cli.bat gen-keypair</code> / <code>run-gui.bat</code>):</label>
+<input id="privFile" type="file" accept=".hex,.txt,text/plain">
+<p class="hint">Ввод приватного ключа с клавиатуры и вставка отключены намеренно: Edge сохраняет набранный в странице текст в профиле браузера (автозаполнение), даже при <code>autocomplete="off"</code>.</p>
 <label>Приватный ключ (base64 32 байта, для справки):</label>
-<input id="privB64" type="text" readonly>
+<div id="privB64" class="keybox keybox-ro" role="textbox" aria-readonly="true" aria-label="private key base64"></div>
 <label>Публичный ключ (base64 44 символа, для сборки):</label>
 <input id="pubB64" type="text" placeholder="base64">
 <button onclick="genKeypair()">Сгенерировать новую пару (WebCrypto или TweetNaCl fallback)</button>
@@ -70,6 +78,41 @@ max_active_users:&lt;число&gt;
 <p>Офлайн: этот HTML работает без интернета. WebCrypto Ed25519 поддерживается в Edge 120+, Chrome 120+, Firefox 120+ (Windows 10/11 Edge по умолчанию — OK). Для file:// контекста crypto.subtle может быть недоступен — используйте run-html.bat (http://localhost) или run-gui.bat (автономный Python, без интернета, без системного Python). Fallback TweetNaCl (nacl-fast.js) используется если WebCrypto недоступен.</p>
 
 <script>
+// Private key boxes (#privHex, #privB64) are deliberately NOT form controls and
+// NOT editable. The Windows acceptance run found the private key in Edge's profile:
+// "Web Data" (autofill, even with autocomplete="off"), "Sessions" (tab restore form
+// state) and finally Edge's own table autofill_edge_field_values, which records text
+// the user TYPES into a page even in a contenteditable box. Keys shown by the page
+// (generated) were not recorded; typed ones were. So the private key is never typed:
+// it is generated here or loaded from private_key.hex via the file picker (FileReader),
+// and shown read-only. A small `value` property keeps the rest of the code unchanged.
+(function () {
+  ['privHex', 'privB64'].forEach(function (id) {
+    var el = document.getElementById(id);
+    Object.defineProperty(el, 'value', {
+      configurable: true,
+      get: function () { return (el.textContent || '').replace(/\s+/g, ''); },
+      set: function (v) { el.textContent = (v == null) ? '' : String(v); }
+    });
+  });
+  document.getElementById('privFile').addEventListener('change', function () {
+    var input = this, f = input.files && input.files[0];
+    if (!f) return;
+    if (f.size > 1024) { input.value = ''; alert('Файл слишком большой для private_key.hex (ожидается 64 hex)'); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      input.value = '';   // do not keep the file selection in the form
+      var hex = String(reader.result || '').replace(/\s+/g, '');
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) { alert('Файл не содержит приватный ключ (ожидается 64 hex)'); return; }
+      document.getElementById('privHex').value = hex.toLowerCase();
+      document.getElementById('privB64').value = bytesToBase64(hexToBytes(hex));
+      setStatus('Приватный ключ загружен из файла ' + f.name + '. Укажите публичный ключ (или «Вычислить публичный из приватного»).', true);
+    };
+    reader.onerror = function () { input.value = ''; alert('Не удалось прочитать файл'); };
+    reader.readAsText(f);
+  });
+})();
+
 function base64ToBytes(b64) {
   b64 = b64.trim().replace(/-/g,'+').replace(/_/g,'/');
   // Pad
@@ -129,7 +172,7 @@ async function checkSupport() {
   if (webCryptoOk) {
     setStatus('WebCrypto Ed25519 поддерживается — офлайн подпись готова (Edge 120+/Chrome 120+). Fallback TweetNaCl '+(hasNacl?'доступен':'не загружен (скачайте nacl-fast.js для file://)'), true);
   } else if (hasNacl) {
-    setStatus('WebCrypto Ed25519 НЕ доступен (file:// без secure context или старый браузер) — используется TweetNaCl fallback (офлайн, без интернета). Для WebCrypto откройте через run-html.bat http://localhost:8765', true);
+    setStatus('WebCrypto Ed25519 НЕ доступен (file:// без secure context или старый браузер) — используется TweetNaCl fallback (офлайн, без интернета). Для WebCrypto откройте через run-html.bat http://127.0.0.1:8765', true);
   } else {
     setStatus('WebCrypto Ed25519 НЕ поддерживается и TweetNaCl не загружен: скачайте nacl-fast.js (https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.js) или используйте Python CLI (run-gui.bat / run-cli.bat) из автономного пакета.', false);
   }
@@ -324,6 +367,11 @@ function downloadResult() {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// Leaving the page: clear the private key boxes as well.
+window.addEventListener('pagehide', function () {
+  ['privHex', 'privB64'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
+});
 </script>
 </body>
 </html>
