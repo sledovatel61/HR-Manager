@@ -977,3 +977,96 @@ export interface LicenseStatus {
   message?: string;
   note?: string;
 }
+
+/** Phase 16: versioned document templates (textual MVP — no files). */
+export type TemplateVersionState = "draft" | "active" | "archived";
+
+/** One immutable version of a template. Content never changes after saving. */
+export interface DocumentTemplateVersion {
+  id: string;
+  template_id: string;
+  number: number;
+  state: TemplateVersionState;
+  title: string;
+  body: string;
+  /** Placeholder tokens used by this version (allowlist only). */
+  placeholders: string[];
+  author_id: string;
+  created_at: string;
+  activated_at: string | null;
+}
+
+export interface DocumentTemplate {
+  id: string;
+  /** Controlled kind key (`offer`, `anketa`, `dogovor`, …), not a free label. */
+  kind: string;
+  /** Empty string = available for every stage, otherwise a CandidateStage. */
+  scope: string;
+  name: string;
+  /** Optimistic counter; every rename or new version bumps it. */
+  revision: number;
+  author_id: string;
+  created_at: string;
+  updated_at: string;
+  versions: DocumentTemplateVersion[];
+}
+
+export interface DocumentTemplates {
+  items: DocumentTemplate[];
+  /** False for HR without the document_lists_manage grant. */
+  can_manage: boolean;
+}
+
+/** One typed placeholder from the server-side allowlist. */
+export interface TemplatePlaceholder {
+  token: string;
+  description: string;
+}
+
+export interface TemplateVersionInput {
+  title: string;
+  body: string;
+}
+
+/** Immutable snapshot of a document rendered for a candidate. */
+export interface GeneratedDocument {
+  id: string;
+  candidate_id: string;
+  template_id: string;
+  template_version_id: string;
+  template_number: number;
+  template_name: string;
+  template_title: string;
+  kind: string;
+  revision: number;
+  body_text: string;
+  content_sha256: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface GeneratedDocumentPreview extends GeneratedDocument {
+  body_html: string;
+}
+
+export interface GeneratedDocumentPage {
+  items: GeneratedDocument[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Render result before saving (nothing is stored by a preview). */
+export interface DocumentRenderPreview {
+  template_id: string;
+  template_version_id: string;
+  template_number: number;
+  template_name: string;
+  kind: string;
+  title: string;
+  body_text: string;
+  body_html: string;
+  placeholders: string[];
+}
+
+export type GeneratedDocumentFormat = "html" | "txt";
