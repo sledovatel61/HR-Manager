@@ -17,6 +17,7 @@ dependencies = [
     "argon2-cffi>=23.1,<26",
     "email-validator>=2.2,<3",
     "cryptography>=44,<51",
+    "python-multipart>=0.0.9,<1",
 ]
 
 [project.optional-dependencies]
@@ -73,3 +74,11 @@ mypy_path = "."
 # pytest fixtures do not need complete signature annotations.
 module = ["tests.conftest"]
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["tests.test_license", "tests.test_license_guard", "tests.test_license_enforcement"]
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["tests.test_pilot_overlay", "tests.test_production_overlay", "tests.test_release_pipeline", "tests.test_release_policy", "tests.test_trust_store", "tests.test_release_authenticode", "tests.test_authenticode_pem_preflight", "tests.test_integration_external", "tests.test_integration_candidate_messages", "tests.test_smtp_adapter"]
+ignore_missing_imports = true

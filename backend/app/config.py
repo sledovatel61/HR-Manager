@@ -82,7 +82,9 @@ Environment variables
                            anti-abuse of the public confirmation endpoint
 """
 
+import base64
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -109,6 +111,10 @@ DEVELOPMENT_BACKUP_ENC_KEY = "ZGV2LW9ubHktYmFja3VwLWtleS0wMDAwMDAwMDAwMDA="
 # The backup key is exactly 32 bytes (AES-256): 44 base64 characters.
 BACKUP_KEY_BYTES = 32
 BACKUP_KEY_BASE64_LENGTH = 44
+
+# License (offline pilot): Ed25519 public key, base64 of 32 bytes, same size.
+LICENSE_PUBLIC_KEY_BYTES = 32
+LICENSE_PUBLIC_KEY_BASE64_LENGTH = 44
 
 MIN_SECRET_KEY_LENGTH = 32
 
@@ -254,6 +260,15 @@ class Settings(BaseSettings):
     pilot_setup_rate_window_seconds: int = Field(
         default=300, validation_alias="PILOT_SETUP_RATE_WINDOW_SECONDS"
     )
+
+    # Phase 15: offline license for closed pilot (installation/server license).
+    # Ed25519 public key (base64, 32 bytes). In pilot/production it MUST be
+    # set (either via env LICENSE_PUBLIC_KEY or via file
+    # infra/license/public_key.b64 baked into the image by the owner).
+    # In test/development an explicit test key may be set; if empty,
+    # enforcement is disabled (tests can enable it via env).
+    # Private key is NEVER in git/installer/frontend/Docker/logs.
+    license_public_key: str = Field(default="", validation_alias="LICENSE_PUBLIC_KEY")
 
     # Ops/release contour (roadmap phase 7).
     release_sha: str = Field(default="", validation_alias="RELEASE_SHA")
@@ -439,6 +454,36 @@ class Settings(BaseSettings):
         problems: list[str] = []
         url = make_url(self.database_url)
 
+        # License public key: env first, then file fallback for pilot/production.
+        # File is baked by owner via installer -> infra/license/public_key.b64
+        # (public only).
+        license_key = (self.license_public_key or "").strip()
+        if not license_key and (self.is_pilot or self.is_production):
+            try:
+                candidate = (
+                    Path(__file__).resolve().parents[2] / "infra" / "license" / "public_key.b64"
+                )
+                if candidate.is_file():
+                    file_content = candidate.read_text(encoding="utf-8").strip()
+                    if file_content:
+                        license_key = file_content
+                        self.license_public_key = license_key
+            except Exception:
+                pass
+        if license_key:
+            try:
+                decoded = base64.b64decode(license_key, validate=True)
+                if len(decoded) != LICENSE_PUBLIC_KEY_BYTES:
+                    problems.append(
+                        f"LICENSE_PUBLIC_KEY must decode to {LICENSE_PUBLIC_KEY_BYTES} bytes "
+                        f"({LICENSE_PUBLIC_KEY_BASE64_LENGTH} base64 chars)"
+                    )
+            except Exception:
+                problems.append(
+                    f"LICENSE_PUBLIC_KEY must be valid base64 "
+                    f"({LICENSE_PUBLIC_KEY_BASE64_LENGTH} chars)"
+                )
+
         # SQLite is allowed ONLY for isolated unit tests (APP_ENV=test).
         # Development and production always use PostgreSQL.
         if self.environment != "test" and url.get_backend_name() == "sqlite":
@@ -455,6 +500,13 @@ class Settings(BaseSettings):
         hardened = self.is_production or self.is_pilot
         if hardened:
             label = "production" if self.is_production else "pilot"
+            # Pilot/production must have a license public key (no disabled check)
+            if not license_key:
+                problems.append(
+                    f"LICENSE_PUBLIC_KEY must be set in {label} "
+                    "(env LICENSE_PUBLIC_KEY or file "
+                    "infra/license/public_key.b64 baked by owner)"
+                )
             if not self.secret_key or self.secret_key == DEVELOPMENT_SECRET_KEY:
                 problems.append(f"SECRET_KEY must be set to a non-default value in {label}")
             elif len(self.secret_key) < MIN_SECRET_KEY_LENGTH:
