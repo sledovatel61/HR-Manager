@@ -27,6 +27,7 @@ from app.routers import (
     candidate_messages,
     candidates,
     document_rules,
+    document_templates,
     documents,
     events,
     health,
@@ -166,6 +167,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(candidates.router)
     app.include_router(documents.router)
     app.include_router(document_rules.router)
+    app.include_router(document_templates.router)
     app.include_router(events.router)
     app.include_router(candidate_messages.router)
     app.include_router(candidate_messages.public_router)
