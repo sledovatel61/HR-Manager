@@ -63,6 +63,16 @@ import type {
   User,
   UserListItems,
 } from "./types";
+import type {
+  DocumentRenderPreview,
+  DocumentTemplate,
+  DocumentTemplates,
+  GeneratedDocumentFormat,
+  GeneratedDocumentPage,
+  GeneratedDocumentPreview,
+  TemplatePlaceholder,
+  TemplateVersionInput,
+} from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
@@ -900,4 +910,167 @@ export async function uploadLicenseFile(file: File): Promise<LicenseStatus> {
 export async function uploadLicenseJson(body: { license_text?: string; license?: unknown }): Promise<LicenseStatus> {
   await request<{ license_id: string }>("/license/upload-json", { method: "POST", body });
   return fetchLicenseStatus();
+}
+
+// --- Phase 16: versioned document templates ---------------------------------
+//
+// Textual MVP: templates and their immutable versions live on the server, the
+// interface edits text only (no file uploads). Management needs the admin role
+// or the existing `document_lists_manage` grant; reading published versions is
+// available to every employee.
+
+export async function listDocumentTemplates(): Promise<DocumentTemplates> {
+  return request<DocumentTemplates>("/document-templates");
+}
+
+/** The placeholder allowlist: tokens are public, their values never are. */
+export async function listTemplatePlaceholders(): Promise<{
+  items: TemplatePlaceholder[];
+}> {
+  return request<{ items: TemplatePlaceholder[] }>("/document-templates/placeholders");
+}
+
+export async function createDocumentTemplate(input: {
+  kind: string;
+  scope: string | null;
+  name: string;
+  title: string;
+  body: string;
+}): Promise<DocumentTemplate> {
+  return request<DocumentTemplate>("/document-templates", { method: "POST", body: input });
+}
+
+export async function renameDocumentTemplate(
+  templateId: string,
+  input: { name: string; expected_revision: number }
+): Promise<DocumentTemplate> {
+  return request<DocumentTemplate>(`/document-templates/${templateId}`, {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+export async function addDocumentTemplateVersion(
+  templateId: string,
+  input: TemplateVersionInput & { expected_revision: number }
+): Promise<DocumentTemplate> {
+  return request<DocumentTemplate>(`/document-templates/${templateId}/versions`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+async function templateVersionAction(
+  templateId: string,
+  versionId: string,
+  operation: "activate" | "archive",
+  expectedRevision: number
+): Promise<DocumentTemplate> {
+  return request<DocumentTemplate>(
+    `/document-templates/${templateId}/versions/${versionId}/${operation}`,
+    {
+      method: "POST",
+      body: { expected_revision: expectedRevision },
+    }
+  );
+}
+
+export async function activateDocumentTemplateVersion(
+  templateId: string,
+  versionId: string,
+  expectedRevision: number
+): Promise<DocumentTemplate> {
+  return templateVersionAction(templateId, versionId, "activate", expectedRevision);
+}
+
+export async function archiveDocumentTemplateVersion(
+  templateId: string,
+  versionId: string,
+  expectedRevision: number
+): Promise<DocumentTemplate> {
+  return templateVersionAction(templateId, versionId, "archive", expectedRevision);
+}
+
+/** Render a document for a candidate without saving it. */
+export async function previewCandidateDocument(
+  candidateId: string,
+  templateVersionId: string
+): Promise<DocumentRenderPreview> {
+  return request<DocumentRenderPreview>(
+    `/candidates/${candidateId}/generated-documents/preview`,
+    { method: "POST", body: { template_version_id: templateVersionId } }
+  );
+}
+
+/** Save an immutable snapshot of the rendered document. */
+export async function generateCandidateDocument(
+  candidateId: string,
+  templateVersionId: string,
+  idempotencyKey: string
+): Promise<GeneratedDocumentPreview> {
+  return request<GeneratedDocumentPreview>(
+    `/candidates/${candidateId}/generated-documents`,
+    {
+      method: "POST",
+      body: {
+        template_version_id: templateVersionId,
+        idempotency_key: idempotencyKey,
+      },
+    }
+  );
+}
+
+export async function listGeneratedDocuments(
+  candidateId: string,
+  query: { limit?: number; offset?: number } = {}
+): Promise<GeneratedDocumentPage> {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.offset !== undefined) params.set("offset", String(query.offset));
+  const suffix = params.toString() ? `?${params}` : "";
+  return request<GeneratedDocumentPage>(
+    `/candidates/${candidateId}/generated-documents${suffix}`
+  );
+}
+
+/**
+ * Download the stored artifact (HTML for browser Print→PDF, or plain text).
+ * The server answers with an attachment and an audit row; nothing is sent to
+ * the candidate.
+ */
+export async function downloadGeneratedDocument(
+  candidateId: string,
+  generationId: string,
+  format: GeneratedDocumentFormat
+): Promise<{ blob: Blob; filename: string }> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE}/candidates/${candidateId}/generated-documents/${generationId}/download?format=${format}`,
+      { method: "GET", credentials: "same-origin" }
+    );
+  } catch {
+    throw new ApiError(0, "Сеть недоступна: не удалось связаться с сервером.");
+  }
+  if (response.status === 401) emitUnauthorized();
+  if (!response.ok) {
+    let rawDetail: unknown = null;
+    try {
+      const data: unknown = await response.json();
+      if (data && typeof data === "object" && "detail" in data) {
+        rawDetail = (data as { detail: unknown }).detail;
+      }
+    } catch {
+      // non-JSON error body — keep the generic message
+    }
+    const detail =
+      typeof rawDetail === "string" ? rawDetail : `Ошибка скачивания (${response.status}).`;
+    throw new ApiError(response.status, detail, rawDetail);
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+  return {
+    blob: await response.blob(),
+    filename: match?.[1] ?? "document.html",
+  };
 }
