@@ -1,7 +1,8 @@
 # Текущее состояние и handoff
 
-> Фазы 0–13 приняты. Phase 13 завершена в PR #23; точные результаты локальной
-> приёмки находятся в `docs/phase-13-local-acceptance.md`.
+> В `main` влиты этапы 0–14 (Phase 14 — эксплуатационная готовность
+> Windows-пилота). Этапы 15 (офлайн-лицензия) и 16 (шаблоны документов) ведутся
+> в открытой цепочке PR-ов поверх `main`; цепочка в `main` не влита.
 
 ## Что принято
 
@@ -102,9 +103,43 @@ PostgreSQL integration и Compose должны подтверждаться CI �
 - Полная матрица результатов и честные ограничения:
   [phase-13-local-acceptance.md](phase-13-local-acceptance.md).
 
+## Результат Phase 14
+
+Эксплуатационная готовность Windows-пилота: production release signing,
+автоматизированный end-to-end release/upgrade drill, предпусковая диагностика,
+проверяемые restore/rollback, наблюдаемость и операторский runbook. Этап влит в
+`main`; полный отчёт и честные ограничения:
+[`phase-14-report-arena.md`](phase-14-report-arena.md).
+
+## Результат Phase 15 — офлайн-лицензия пилота
+
+Проверяемая офлайн-лицензия установки: миграция `0014_license`, проверка подписи
+на сервере, deny-by-default middleware с закрытым allowlist и административный
+раздел «Лицензия». Документы: [`license-owner.md`](license-owner.md)
+(что подписывается и как выдаётся), [`license-maria.md`](license-maria.md)
+(локальная выдача), [`runbook-pilot-release.md`](runbook-pilot-release.md) §11.
+Лицензия — отдельная от продуктовых данных сущность: секретов и PII в ней нет.
+
+## Результат Phase 16 — шаблоны документов (текстовый MVP)
+
+- Миграция `0015`: `document_templates`, `document_template_versions`,
+  `candidate_document_generations` + PostgreSQL-гарды (append-only снимки,
+  замороженное содержимое версии, запрет удаления шаблона, одна активная версия).
+- API `/document-templates` (CRUD, версии, публикация, архивация) и
+  `/candidates/{id}/generated-documents` (предпросмотр, сохранение снимка,
+  история, скачивание HTML/текст). Управление — admin или
+  `document_lists_manage`; документы кандидата — по owner-based `can_access`.
+- Интерфейс: раздел `#/templates` для всех ролей и вкладка «По шаблону» в
+  карточке кандидата.
+- Плейсхолдеры — закрытый allowlist: [`document-placeholders.md`](document-placeholders.md).
+- Файлы не загружаются и не хранятся, PDF/DOCX не генерируются, кандидату ничего
+  не отправляется. Открытые вопросы (F1 «текст или файл», F2 `update_channel_manage`,
+  F3 retention/удаление ПДн, F4 строгий admin-only) и матрица требований:
+  [`phase-16-report-arena.md`](phase-16-report-arena.md).
+
 ## Следующая фаза
 
-Phase 14 доводит технически готовый Windows-контур до ограниченного безопасного
-пилота: production release signing, end-to-end release/upgrade drill,
-предпусковая диагностика, restore/rollback и операторский runbook. Полный
-контракт: [`prompts/PHASE_14_PROMPT.md`](../prompts/PHASE_14_PROMPT.md).
+Ожидает решения заказчика: чтение требования «загружает новую версию» (F1),
+политика ретенции и удаления ПДн (F3) и правило публикации (F4). Отдельные
+технические follow-up вне Phase 16 перечислены в отчёте
+[`phase-16-report-arena.md`](phase-16-report-arena.md) §9.
