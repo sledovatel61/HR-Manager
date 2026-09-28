@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as api from "../../api";
 import { ToastProvider } from "../../design-system/components/Toast";
@@ -189,6 +189,10 @@ describe("Шаблоны документов", () => {
     await screen.findByText("Оффер (базовый)");
     await user.click(screen.getByText("Версии и статусы"));
     await user.click(screen.getByRole("button", { name: "Опубликовать" }));
+    // Публикация заменяет текущую опубликованную версию — требуется подтверждение.
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Опубликовать версию 2?");
+    await user.click(within(dialog).getByRole("button", { name: "Опубликовать" }));
     await waitFor(() =>
       expect(api.activateDocumentTemplateVersion).toHaveBeenCalledWith(
         "template-1",
@@ -208,6 +212,12 @@ describe("Шаблоны документов", () => {
     await screen.findByText("Оффер (базовый)");
     await user.click(screen.getByText("Версии и статусы"));
     await user.click(screen.getByRole("button", { name: "В архив" }));
+    // Архивирование опубликованной версии оставит шаблон без публикации —
+    // опасное действие, требуется подтверждение.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Архивировать версию 1?");
+    expect(api.archiveDocumentTemplateVersion).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: "В архив" }));
     expect(await screen.findByText(/Конфликт версии/)).toBeInTheDocument();
   });
 
@@ -239,6 +249,125 @@ describe("Шаблоны документов", () => {
     await user.click(screen.getByText("Доступные плейсхолдеры (2)"));
     expect(screen.getByText("{{ candidate.full_name }}")).toBeInTheDocument();
     expect(screen.getByText(/Свободный HTML, выражения и SQL/)).toBeInTheDocument();
+  });
+
+  it("shows an empty state with a create CTA when there are no templates", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listDocumentTemplates).mockResolvedValue({
+      items: [],
+      can_manage: true,
+    });
+    renderTemplates();
+
+    expect(await screen.findByText("Шаблонов пока нет")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Создать первый шаблон" }));
+    expect(
+      await screen.findByRole("heading", { name: "Новый шаблон" }),
+    ).toBeInTheDocument();
+    expect(api.createDocumentTemplate).not.toHaveBeenCalled();
+  });
+
+  it("shows an error state and reloads on retry", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listDocumentTemplates).mockRejectedValueOnce(
+      new api.ApiError(500, "Сервер временно недоступен."),
+    );
+    renderTemplates();
+
+    expect(await screen.findByText("Не удалось загрузить данные")).toBeInTheDocument();
+    expect(screen.queryByText("Оффер (базовый)")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Повторить попытку" }));
+    expect(await screen.findByText("Оффер (базовый)")).toBeInTheDocument();
+  });
+
+  it("renders the permission-denied state when listing answers 403", async () => {
+    vi.mocked(api.listDocumentTemplates).mockRejectedValue(
+      new api.ApiError(403, "Нет права управления шаблонами документов."),
+    );
+    renderTemplates();
+
+    expect(await screen.findByText("Недостаточно прав")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Новый шаблон" })).not.toBeInTheDocument();
+  });
+
+  it("shows template creation and update dates", async () => {
+    renderTemplates();
+    await screen.findByText("Оффер (базовый)");
+    const expected = new Date("2026-09-20T10:00:00Z").toLocaleString("ru-RU");
+    const updated = new Date("2026-09-21T10:00:00Z").toLocaleString("ru-RU");
+    expect(screen.getByText(`Создан: ${expected} · Изменён: ${updated}`)).toBeInTheDocument();
+  });
+
+  it("filters templates by search text and reports an empty result", async () => {
+    const user = userEvent.setup();
+    renderTemplates();
+    await screen.findByText("Оффер (базовый)");
+
+    await user.type(screen.getByLabelText("Поиск шаблона"), "договор");
+    expect(await screen.findByText(/Показано 0 из 1/)).toBeInTheDocument();
+    expect(screen.getByText("Ничего не найдено")).toBeInTheDocument();
+    expect(screen.queryByText("Оффер (базовый)")).not.toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("Поиск шаблона"));
+    await user.type(screen.getByLabelText("Поиск шаблона"), "базовый");
+    expect(await screen.findByText(/Показано 1 из 1/)).toBeInTheDocument();
+    expect(screen.getByText("Оффер (базовый)")).toBeInTheDocument();
+  });
+
+  it("filters templates by publication status", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listDocumentTemplates).mockResolvedValue({
+      items: [
+        template,
+        { ...template, id: "template-2", name: "Анкета (черновик)", versions: [draftVersion] },
+      ],
+      can_manage: true,
+    });
+    renderTemplates();
+    await screen.findByText("Оффер (базовый)");
+    expect(screen.getByText("Анкета (черновик)")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Статус"), "published");
+    expect(await screen.findByText(/Показано 1 из 2/)).toBeInTheDocument();
+    expect(screen.getByText("Оффер (базовый)")).toBeInTheDocument();
+    expect(screen.queryByText("Анкета (черновик)")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Статус"), "unpublished");
+    expect(await screen.findByText(/Показано 1 из 2/)).toBeInTheDocument();
+    expect(screen.getByText("Анкета (черновик)")).toBeInTheDocument();
+    expect(screen.queryByText("Оффер (базовый)")).not.toBeInTheDocument();
+  });
+
+  it("surfaces a backend 422 validation message in Russian", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.createDocumentTemplate).mockRejectedValue(
+      new api.ApiError(422, "Ошибка запроса (422).", [
+        { msg: "Value error, Укажите название шаблона.", type: "value_error" },
+      ]),
+    );
+    renderTemplates();
+    await screen.findByText("Оффер (базовый)");
+    await user.click(screen.getByRole("button", { name: "Новый шаблон" }));
+    await user.type(screen.getByLabelText(/^Название/), " ");
+    await user.type(screen.getByLabelText(/Заголовок документа/), "Оффер");
+    await user.type(screen.getByLabelText(/Текст шаблона/), "Текст");
+    await user.click(screen.getByRole("button", { name: "Сохранить черновик" }));
+
+    expect(await screen.findByText("Укажите название шаблона.")).toBeInTheDocument();
+    // Форма осталась открытой — черновик не потерян молча.
+    expect(screen.getByRole("heading", { name: "Новый шаблон" })).toBeInTheDocument();
+  });
+
+  it("opens the related document lists section as a separate action", async () => {
+    const user = userEvent.setup();
+    window.location.hash = "#/templates";
+    renderTemplates();
+    await screen.findByText("Оффер (базовый)");
+
+    await user.click(screen.getByRole("button", { name: "Списки документов" }));
+    expect(window.location.hash).toBe("#/documents");
+    window.location.hash = "";
   });
 });
 
