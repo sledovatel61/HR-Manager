@@ -34,6 +34,15 @@ describe("useWorkspaceSection", () => {
     expect(license.result.current[0]).toBe("license");
   });
 
+  it("resolves the rules and documents deep links", () => {
+    const rules = renderRouter("#/rules");
+    expect(rules.result.current[0]).toBe("rules");
+    rules.unmount();
+
+    const documents = renderRouter("#/documents");
+    expect(documents.result.current[0]).toBe("documents");
+  });
+
   it("falls back for an unknown hash", () => {
     const { result } = renderRouter("#/does-not-exist");
     expect(result.current[0]).toBe("candidates");
