@@ -1,0 +1,118 @@
+diff --git a/.gitignore b/.gitignore
+index 113acb5..6deaeca 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -4,6 +4,14 @@
+ !.env.example
+ !.env.agent-2.yml
+ 
++# ---- Owner-side offline license issuer (keys and licenses must never be committed) ----
++# tools/license-issuer writes them; infra/license/public_key.b64 is baked by the owner, not by git.
++keys/
++private_key.hex
++*.hrmlicense
++public_key.b64
++license-issuer-dist.zip
++
+ # ---- Python / backend ----
+ __pycache__/
+ *.py[cod]
+diff --git a/tools/license-issuer/build.ps1 b/tools/license-issuer/build.ps1
+index f9749a3..72d45a5 100644
+--- a/tools/license-issuer/build.ps1
++++ b/tools/license-issuer/build.ps1
+@@ -2,7 +2,9 @@
+ # Goal: after build, owner gets a folder that runs WITHOUT system Python, pip, internet.
+ # - Embeddable Python 3.12.3 + cryptography pre-installed (built once by maintainer with internet)
+ # - GUI (Tkinter), CLI, and HTML (WebCrypto) all work offline via bundled python http.server
+-# - Private key NEVER leaves owner PC, never in git/installer/Docker/logs
++#   (run-html.bat serves on 127.0.0.1 only - the bundle is never exposed to the LAN)
++# - Private key NEVER leaves owner PC, never in git/installer/Docker/logs; the smoke
++#   test runs in a temporary directory outside the repository
+ # - Fail-closed: if download fails, build fails, no silent fallback to system Python in final artifact
+ #
+ # Usage (maintainer, once, with internet):
+@@ -166,7 +168,7 @@ set PY_EXE=%SCRIPT_DIR%..\python\python.exe
+ if not exist "%PY_EXE%" (
+   echo [ERROR] Bundled Python not found at %PY_EXE%
+   echo This distribution must contain python\ folder. Re-download full license-issuer-dist.zip
+-  echo Alternatively, install Python 3.12+ and run: python "%SCRIPT_DIR%gui.py"
++  echo The issuer never falls back to a system Python: the private key must stay inside this bundle.
+   pause
+   exit /b 1
+ )
+@@ -194,21 +196,24 @@ $runHtmlBat = @"
+ @echo off
+ setlocal
+ REM HR Manager License Issuer — HTML offline via local http.server (secure context for WebCrypto)
+-REM Opens http://localhost:8765/license-issuer.html in default browser
+-REM Uses bundled python, no internet required
++REM Opens http://127.0.0.1:8765/license-issuer.html in default browser
++REM Server binds to 127.0.0.1 ONLY (loopback): the bundle is never exposed to the LAN
++REM Uses bundled python only, no system Python, no internet required
+ set SCRIPT_DIR=%~dp0
+ set PY_EXE=%SCRIPT_DIR%..\python\python.exe
+ set PORT=8765
+ if not exist "%PY_EXE%" (
+   echo [ERROR] Bundled Python not found at %PY_EXE%
+-  echo Trying system python...
+-  set PY_EXE=python
++  echo This distribution must contain python\ folder. Re-download full license-issuer-dist.zip
++  echo The issuer never falls back to a system Python: the private key must stay inside this bundle.
++  pause
++  exit /b 1
+ )
+-echo Starting local server at http://localhost:%PORT%/license-issuer.html
++echo Starting local server at http://127.0.0.1:%PORT%/license-issuer.html (loopback only)
+ echo Keep this window open, browser will open automatically...
+ echo Press Ctrl+C to stop server after use.
+-start "" http://localhost:%PORT%/license-issuer.html
+-"%PY_EXE%" -m http.server %PORT% --directory "%SCRIPT_DIR%"
++start "" http://127.0.0.1:%PORT%/license-issuer.html
++"%PY_EXE%" -m http.server %PORT% -b 127.0.0.1 --directory "%SCRIPT_DIR%"
+ "@
+ Set-Content -Path (Join-Path $appDir "run-html.bat") -Value $runHtmlBat -Encoding ASCII
+ 
+@@ -263,14 +268,36 @@ This bundle was built with:
+ Set-Content -Path (Join-Path $appDir "HOWTO.txt") -Value $howto -Encoding UTF8
+ Set-Content -Path (Join-Path $OutDir "HOWTO.txt") -Value $howto -Encoding UTF8
+ 
+-# 5. Smoke test: gen-keypair using bundled python
+-Write-Info "Running smoke test: gen-keypair via bundled Python..."
++# 5. Smoke test: gen-keypair using bundled python, in a temporary directory
++#    OUTSIDE the repository, then remove everything again. The smoke test must
++#    never leave key material in the git work tree and never echo it into the
++#    build log.
++Write-Info "Running smoke test: gen-keypair via bundled Python (temporary directory outside the repo)..."
++$smokeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("hrm-issuer-smoke-" + [guid]::NewGuid().ToString("N"))
++$smokeKeysCreated = $false
+ try {
+-    $smokeOut = & $pyExe (Join-Path $appDir "cli.py") gen-keypair 2>&1
+-    Write-Host $smokeOut
+-    if ($smokeOut -match "private") { Write-Info "Smoke test PASS: gen-keypair works" } else { Write-Warn "Smoke test output unexpected" }
++    New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
++    $smokeOut = (& $pyExe (Join-Path $appDir "cli.py") gen-keypair --out-dir $smokeDir 2>&1 | Out-String)
++    $smokeExit = $LASTEXITCODE
++    if ($smokeExit -ne 0) { throw "cli.py gen-keypair exited with code $smokeExit" }
++    $smokePriv = Join-Path $smokeDir "private_key.hex"
++    $smokePub = Join-Path $smokeDir "public_key.b64"
++    if (-not (Test-Path $smokePriv) -or -not (Test-Path $smokePub)) {
++        throw "cli.py gen-keypair did not create the expected key files in $smokeDir"
++    }
++    $smokeKeysCreated = $true
++    $smokePrivHex = (Get-Content -Path $smokePriv -Raw).Trim()
++    if ($smokePrivHex -and ($smokeOut -match [regex]::Escape($smokePrivHex))) {
++        throw "cli.py gen-keypair printed private key material - refusing to continue"
++    }
++    Write-Info "Smoke test PASS: gen-keypair works with the bundled Python; no key material in this log, no key material in the repository"
+ } catch {
+-    Write-Warn "Smoke test failed: $_"
++    Write-Err "Smoke test failed: $_"
++    exit 1
++} finally {
++    if (Test-Path $smokeDir) { Remove-Item -Path $smokeDir -Recurse -Force -ErrorAction SilentlyContinue }
++    if (Test-Path $smokeDir) { Write-Warn "could not remove temporary smoke directory $smokeDir - delete it manually" }
++    elseif ($smokeKeysCreated) { Write-Info "Temporary smoke directory removed" }
+ }
+ 
+ # 6. Create zip for owner (autonomous, no internet needed)

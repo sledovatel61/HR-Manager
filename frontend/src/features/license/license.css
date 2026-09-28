@@ -1,0 +1,17 @@
+.license-page { max-width: 800px; margin: 0 auto; padding: 16px; }
+.license-page h2 { font-size: 20px; margin-bottom: 12px; }
+.license-page h3 { font-size: 16px; margin: 16px 0 8px; }
+.license-card { background: var(--surface, #fff); border: 1px solid var(--border, #ddd); border-radius: 8px; padding: 16px; margin: 12px 0; }
+.license-details { display: grid; grid-template-columns: 180px 1fr; gap: 8px 12px; }
+.license-details dt { font-weight: 600; color: var(--text-muted, #555); }
+.license-details dd { margin: 0; word-break: break-all; }
+.license-alert { padding: 12px; border-radius: 6px; margin: 12px 0; }
+.license-alert--error { background: #fff0f0; border: 1px solid #c00; color: #600; }
+.license-alert--warn { background: #fff8e6; border: 1px solid #c90; color: #664d00; }
+.license-alert--ok { background: #f0fff0; border: 1px solid #0a0; color: #060; }
+.license-upload { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border, #ddd); }
+.license-actions { display: flex; gap: 12px; margin-top: 12px; }
+.license-help { margin-top: 24px; font-size: 14px; }
+.license-help ul { margin: 8px 0 0 20px; }
+.license-pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap; word-break: break-all; border-radius: 4px; }
+.muted { color: var(--text-muted, #666); font-size: 13px; }

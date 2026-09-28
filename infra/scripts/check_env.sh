@@ -19,6 +19,7 @@ APP_ENV="${APP_ENV:-}"
 SECRET_KEY="${SECRET_KEY:-}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
 BOOTSTRAP_ADMIN_PASSWORD="${BOOTSTRAP_ADMIN_PASSWORD:-}"
+LICENSE_PUBLIC_KEY="${LICENSE_PUBLIC_KEY:-}"
 BACKUP_ENABLED="${BACKUP_ENABLED:-}"
 BACKUP_KEY_ID="${BACKUP_KEY_ID:-}"
 BACKUP_ENC_KEY="${BACKUP_ENC_KEY:-}"
@@ -41,6 +42,20 @@ if [ -z "$BOOTSTRAP_ADMIN_PASSWORD" ] || [ "$BOOTSTRAP_ADMIN_PASSWORD" = "AdminA
 fi
 if [ "${#BOOTSTRAP_ADMIN_PASSWORD}" -lt 12 ]; then
   fail "BOOTSTRAP_ADMIN_PASSWORD must be at least 12 characters long"
+fi
+
+# Offline license (phase 15). The backend refuses to start in production
+# without the Ed25519 PUBLIC verification key (base64 of 32 bytes, 44
+# characters) and the overlay maps it with ${LICENSE_PUBLIC_KEY:?}. Only the
+# public key is ever configured on the server; the private key stays with
+# the owner. The value itself is never echoed here.
+if [ -z "$LICENSE_PUBLIC_KEY" ]; then
+  fail "LICENSE_PUBLIC_KEY is not set; the backend requires the license public key in production"
+fi
+if [ "${#LICENSE_PUBLIC_KEY}" -ne 44 ] \
+  || ! printf '%s' "$LICENSE_PUBLIC_KEY" | base64 -d >/dev/null 2>&1 \
+  || [ "$(printf '%s' "$LICENSE_PUBLIC_KEY" | base64 -d | wc -c)" -ne 32 ]; then
+  fail "LICENSE_PUBLIC_KEY must be a base64-encoded 32-byte Ed25519 public key (44 characters)"
 fi
 
 # Backup contour (phase 7). By default backup secret problems are WARNINGS:

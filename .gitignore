@@ -4,6 +4,14 @@
 !.env.example
 !.env.agent-2.yml
 
+# ---- Owner-side offline license issuer (keys and licenses must never be committed) ----
+# tools/license-issuer writes them; infra/license/public_key.b64 is baked by the owner, not by git.
+keys/
+private_key.hex
+*.hrmlicense
+public_key.b64
+license-issuer-dist.zip
+
 # ---- Python / backend ----
 __pycache__/
 *.py[cod]
