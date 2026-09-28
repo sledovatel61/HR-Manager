@@ -243,9 +243,7 @@ def test_one_of_two_admins_can_be_demoted(client: TestClient, db_session: Sessio
     assert admin1.role == UserRole.ADMIN
 
 
-def test_admin_can_still_edit_own_non_role_fields(
-    client: TestClient, db_session: Session
-) -> None:
+def test_admin_can_still_edit_own_non_role_fields(client: TestClient, db_session: Session) -> None:
     """The self-role ban does not block editing other allowed own fields."""
     headers = _auth_headers(client, "admin1", UserRole.ADMIN, db_session)
     admin = db_session.scalar(select(User).where(User.username == "admin1"))
