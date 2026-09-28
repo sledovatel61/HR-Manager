@@ -15,7 +15,8 @@ export type WorkspaceSection =
   | "integrations"
   | "updates"
   | "readiness"
-  | "admin";
+  | "admin"
+  | "users";
 
 const SECTION_HASHES: Record<WorkspaceSection, string> = {
   queue: "#/queue",
@@ -33,6 +34,7 @@ const SECTION_HASHES: Record<WorkspaceSection, string> = {
   updates: "#/updates",
   readiness: "#/readiness",
   admin: "#/admin",
+  users: "#/users",
 };
 
 function sectionFromHash(hash: string, fallback: WorkspaceSection): WorkspaceSection {

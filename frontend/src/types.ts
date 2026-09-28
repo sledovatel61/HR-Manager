@@ -46,6 +46,14 @@ export interface CurrentUser {
   working_mode?: WorkingMode | null;
 }
 
+/** PATCH /admin/users/{user_id} payload: все поля необязательны (backend UserUpdate). */
+export interface UserUpdateInput {
+  full_name?: string;
+  role?: UserRole;
+  password?: string;
+  is_active?: boolean;
+}
+
 export type WorkingMode = "hr" | "manager" | "admin";
 
 export const WORKING_MODE_LABELS: Record<WorkingMode, string> = {
