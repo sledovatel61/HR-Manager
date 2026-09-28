@@ -125,6 +125,42 @@ Test-Case "pilot.env: токен обмена есть до создания в�
     Assert-HrmNotContains $env2 $realToken "старый токен остался в pilot.env после создания владельца"
 }
 
+Test-Case "pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_key.b64 (совпадение SHA-256), без файла — пустое значение" {
+    Initialize-HrmTestEngine
+    New-HrmMockWorld | Out-Null
+    $state = Get-HrmTestStateDir
+    Initialize-HrmStateDir $state | Out-Null
+    Remove-Item Env:HRM_LICENSE_PUBLIC_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_SOURCE_DIR -ErrorAction SilentlyContinue
+    # 1. Без файла ключа движок пишет ПУСТОЕ значение: compose (${HRM_LICENSE_PUBLIC_KEY:?})
+    #    откажется стартовать — fail-closed, а не тихий запуск без лицензии.
+    $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080
+    $envText = Get-Content (Get-HrmEnvFile $state) -Raw
+    Assert-HrmTrue ([regex]::IsMatch($envText, '(?m)^HRM_LICENSE_PUBLIC_KEY=\s*$')) "без файла ключа строка HRM_LICENSE_PUBLIC_KEY должна быть пустой"
+    # 2. Эфемерный «открытый ключ» (32 случайных байта, base64 44 символа) — не настоящий ключ.
+    $bytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $publicKey = [Convert]::ToBase64String($bytes)
+    Assert-HrmEqual 44 $publicKey.Length "длина base64 открытого ключа"
+    $keyFile = Join-Path $state "license_public_key.b64"
+    # Файл владельца: как его создаёт Windows — с BOM и CRLF; движок обязан обрезать.
+    [System.IO.File]::WriteAllText($keyFile, ($publicKey + "`r`n"), (New-Object System.Text.UTF8Encoding $true))
+    $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080
+    $envText2 = Get-Content (Get-HrmEnvFile $state) -Raw
+    $line = @($envText2 -split "`n" | Where-Object { $_ -like "HRM_LICENSE_PUBLIC_KEY=*" })
+    Assert-HrmEqual 1 $line.Count "ровно одна строка HRM_LICENSE_PUBLIC_KEY в pilot.env"
+    $written = ($line[0] -replace "^HRM_LICENSE_PUBLIC_KEY=", "").Trim()
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $fpFile = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($publicKey))).Replace("-", "").ToLowerInvariant()
+    $fpEnv = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($written))).Replace("-", "").ToLowerInvariant()
+    Assert-HrmEqual $fpFile $fpEnv "SHA-256 ключа в pilot.env не совпадает с файлом владельца"
+    Assert-HrmEqual 44 $written.Length "в pilot.env должен попасть ключ без BOM/CRLF (44 символа)"
+    Assert-HrmTrue ($envText2.TrimEnd("`r", "`n").EndsWith("HRM_LICENSE_PUBLIC_KEY=" + $publicKey)) "HRM_LICENSE_PUBLIC_KEY должна быть последней строкой pilot.env"
+    # 3. Ключ — не секрет, но и закрытого ключа в файле быть не может.
+    Assert-HrmNotContains $envText2 "PRIVATE" "в pilot.env упомянут закрытый ключ"
+    Write-Host ("  отпечаток открытого ключа (redacted): sha256:" + $fpEnv.Substring(0, 16) + "…")
+}
+
 Test-Case "редакция секретов: логи и вывод никогда не содержат зарегистрированных значений" {
     Initialize-HrmTestEngine
     Register-HrmSecret "topsecret-12345678"

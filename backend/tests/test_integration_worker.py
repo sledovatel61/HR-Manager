@@ -135,9 +135,13 @@ def test_lease_recovery_and_reprocessing_after_crash(pg_db: Session, pg_engine: 
     assert any(attempt.error_class == "lease_expired" for attempt in attempts)
 
 
-def test_end_to_end_event_to_notification(pg_client: TestClient, pg_db: Session) -> None:
+def test_end_to_end_event_to_notification(
+    pg_client: TestClient, pg_db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """API event → transactional outbox → worker claim/process → notification."""
     _clean_queue(pg_db)
+    # Friday 15:00 Moscow: inside working hours, so delivery is independent of wall time.
+    monkeypatch.setattr("app.notification_service.utc_now", lambda: NOW)
     owner = make_user(pg_db, username="hr-e2e-owner", role=UserRole.HR)
     assignee = make_user(pg_db, username="hr-e2e-assignee", role=UserRole.HR)
     make_user(pg_db, username="mgr-e2e", role=UserRole.MANAGER)
@@ -149,14 +153,14 @@ def test_end_to_end_event_to_notification(pg_client: TestClient, pg_db: Session)
         owner_user_id=owner.id,
         stage=CandidateStage.NEW,
         stage_position=0,
-        created_at=utc_now(),
-        updated_at=utc_now(),
+        created_at=NOW,
+        updated_at=NOW,
     )
     pg_db.add(candidate)
     pg_db.commit()
 
     csrf = _login(pg_client, "mgr-e2e")
-    future = utc_now() + timedelta(hours=2)
+    future = NOW + timedelta(hours=2)
     created = pg_client.post(
         "/events",
         json={
@@ -184,10 +188,10 @@ def test_end_to_end_event_to_notification(pg_client: TestClient, pg_db: Session)
 
     # Process everything due now with the worker machinery.
     settings = _settings()
-    claimed = claim_batch(pg_db, now=utc_now(), batch_size=20, lease_seconds=120)
+    claimed = claim_batch(pg_db, now=NOW, batch_size=20, lease_seconds=120)
     assert len(claimed) >= 1
     for row in claimed:
-        process_row(pg_db, row, settings=settings, now=utc_now())
+        process_row(pg_db, row, settings=settings, now=NOW)
 
     notifications = (
         pg_db.execute(select(Notification).where(Notification.user_id == assignee.id))
@@ -198,9 +202,9 @@ def test_end_to_end_event_to_notification(pg_client: TestClient, pg_db: Session)
     assert notifications[0].type == NotificationType.EVENT_ASSIGNED
 
     # Reprocessing the same rows delivers nothing new (idempotent).
-    claimed_again = claim_batch(pg_db, now=utc_now(), batch_size=20, lease_seconds=120)
+    claimed_again = claim_batch(pg_db, now=NOW, batch_size=20, lease_seconds=120)
     for row in claimed_again:
-        process_row(pg_db, row, settings=settings, now=utc_now())
+        process_row(pg_db, row, settings=settings, now=NOW)
     assert len(pg_db.execute(select(Notification)).scalars().all()) == 1
 
 

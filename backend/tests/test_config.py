@@ -19,6 +19,7 @@ BASE_PRODUCTION_ENV = {
     "SECRET_KEY": "x" * 48,
     "DATABASE_URL": "postgresql+psycopg://app:strong-pass@db:5432/hr_manager",
     "BOOTSTRAP_ADMIN_PASSWORD": "Strong-Bootstrap-Pass-1",
+    "LICENSE_PUBLIC_KEY": "4VfWiKkLv7JG6i3jfeWRvBXczWH+Qt1cfyFjtBTCPow=",
 }
 
 
@@ -145,6 +146,7 @@ BASE_PILOT_ENV = {
     "SECRET_KEY": "x" * 48,
     "DATABASE_URL": "postgresql+psycopg://pilot:strong-pass@db:5432/hr_manager",
     "PILOT_BOOTSTRAP_EXCHANGE_TOKEN": "e" * 64,
+    "LICENSE_PUBLIC_KEY": "4VfWiKkLv7JG6i3jfeWRvBXczWH+Qt1cfyFjtBTCPow=",
 }
 
 

@@ -123,8 +123,59 @@ def test_pilot_overlay_requires_generated_secrets(pilot_overlay: dict[str, Any])
         "${HRM_BACKUP_KEY_ID:?",
         "${HRM_UPDATE_ENGINE_TOKEN:?",
         "${HRM_STAGING_DIR:?",
+        "${HRM_LICENSE_PUBLIC_KEY:?",
     ):
         assert required in rendered, required
+
+
+PILOT_LICENSE_MAPPING = (
+    "${HRM_LICENSE_PUBLIC_KEY:?HRM_LICENSE_PUBLIC_KEY is required for the pilot}"
+)
+
+
+def test_pilot_overlay_requires_license_public_key_for_every_settings_service(
+    pilot_overlay: dict[str, Any],
+) -> None:
+    """Phase 15: APP_ENV=pilot refuses to start without the license PUBLIC
+    key and the backend image carries no infra/license/ file, so the overlay
+    is the only path for the key. It must be mapped verbatim — required
+    (`:?`), no default — into every service that loads app.config.Settings:
+    backend, worker and backup (`python -m app.cli backup-*`)."""
+    for service in ("backend", "worker", "backup"):
+        env = _env_map(pilot_overlay["services"][service])
+        assert env.get("LICENSE_PUBLIC_KEY") == PILOT_LICENSE_MAPPING, (
+            service,
+            env.get("LICENSE_PUBLIC_KEY"),
+        )
+    # No service outside the Settings trio needs the key.
+    for service in ("db", "frontend", "mailpit"):
+        env = _env_map(pilot_overlay["services"][service])
+        assert "LICENSE_PUBLIC_KEY" not in env, service
+
+
+def test_pilot_overlay_never_uses_env_file_directive(pilot_overlay: dict[str, Any]) -> None:
+    """pilot.env is consumed ONLY through `docker compose --env-file`
+    (interpolation). A service-level `env_file:` would copy every secret in
+    the file into that container — e.g. the backup encryption key into the
+    backend — so its absence is a least-privilege invariant, not an
+    omission."""
+    for name, service in pilot_overlay["services"].items():
+        assert "env_file" not in service, name
+    backend_env = _env_map(pilot_overlay["services"]["backend"])
+    for forbidden in ("BACKUP_ENC_KEY", "BACKUP_KEY_ID", "HRM_BACKUP_KEY"):
+        assert forbidden not in backend_env, forbidden
+    assert "HRM_BACKUP_KEY" not in " ".join(backend_env.values())
+
+
+def test_pilot_overlay_carries_only_the_public_license_key(
+    pilot_overlay: dict[str, Any],
+) -> None:
+    """The private signing key must not even be *named* in the overlay."""
+    rendered = yaml.dump(pilot_overlay) + PILOT_OVERLAY.read_text(encoding="utf-8")
+    for forbidden in ("PRIVATE_KEY", "private_key", "LICENSE_PRIVATE", "HRM_LICENSE_PRIVATE"):
+        assert forbidden not in rendered, forbidden
+    # Exactly the public key variable, exactly the required form.
+    assert PILOT_OVERLAY.read_text(encoding="utf-8").count(PILOT_LICENSE_MAPPING) == 3
 
 
 def test_pilot_overlay_disables_external_channels_by_default(

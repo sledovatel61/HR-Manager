@@ -1,0 +1,198 @@
+{
+  "schema": 1,
+  "title": "Pilot overlay: license public-key chain (public_key.b64 -> pilot.env -> docker compose -> resolved environment -> Settings)",
+  "generated_at": "2026-09-24T06:33:23Z",
+  "compose_version": "2.38.2",
+  "compose_files": [
+    "infra/docker-compose.yml",
+    "infra/compose.pilot.yml"
+  ],
+  "verdict": "PASS",
+  "redaction": "only SHA-256 fingerprints (16 hex) of the transported text; no key material, no secrets, no rendered config is stored",
+  "duration_seconds": 4.0,
+  "steps": [
+    {
+      "id": "ephemeral_public_key",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "32 random bytes, base64 44 chars (ephemeral, never persisted)",
+      "evidence": {
+        "fingerprint": "sha256:e2f74e6c761c0684…",
+        "length": 44
+      }
+    },
+    {
+      "id": "public_key_file",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "infra/license/public_key.b64 written (CRLF) and read back trimmed",
+      "evidence": {
+        "fingerprint": "sha256:e2f74e6c761c0684…",
+        "bytes": 46
+      }
+    },
+    {
+      "id": "pilot_env_utf8-lf",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "HRM_LICENSE_PUBLIC_KEY line present as the last line (utf8-lf)",
+      "evidence": {
+        "fingerprint": "sha256:e2f74e6c761c0684…",
+        "line_count": 14,
+        "last_line_is_license": true
+      }
+    },
+    {
+      "id": "pilot_env_utf8bom-crlf",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "HRM_LICENSE_PUBLIC_KEY line present as the last line (utf8bom-crlf)",
+      "evidence": {
+        "fingerprint": "sha256:e2f74e6c761c0684…",
+        "line_count": 14,
+        "last_line_is_license": true
+      }
+    },
+    {
+      "id": "compose_available",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "docker compose 2.38.2",
+      "evidence": {
+        "version": "2.38.2"
+      }
+    },
+    {
+      "id": "compose_config_with_key_utf8-lf",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "resolved LICENSE_PUBLIC_KEY of backend/worker/backup equals the public_key.b64 fingerprint; backend gets no backup key; no env_file",
+      "evidence": {
+        "services": {
+          "backend": {
+            "fingerprint": "sha256:e2f74e6c761c0684…",
+            "matches_public_key_file": true,
+            "APP_ENV": "pilot",
+            "has_env_file_directive": false
+          },
+          "worker": {
+            "fingerprint": "sha256:e2f74e6c761c0684…",
+            "matches_public_key_file": true,
+            "APP_ENV": "pilot",
+            "has_env_file_directive": false
+          },
+          "backup": {
+            "fingerprint": "sha256:e2f74e6c761c0684…",
+            "matches_public_key_file": true,
+            "APP_ENV": "pilot",
+            "has_env_file_directive": false
+          }
+        },
+        "backend_forbidden_names": [],
+        "backend_has_backup_key_value": false,
+        "services_with_env_file": []
+      }
+    },
+    {
+      "id": "compose_config_with_key_utf8bom-crlf",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "resolved LICENSE_PUBLIC_KEY of backend/worker/backup equals the public_key.b64 fingerprint; backend gets no backup key; no env_file",
+      "evidence": {
+        "services": {
+          "backend": {
+            "fingerprint": "sha256:e2f74e6c761c0684…",
+            "matches_public_key_file": true,
+            "APP_ENV": "pilot",
+            "has_env_file_directive": false
+          },
+          "worker": {
+            "fingerprint": "sha256:e2f74e6c761c0684…",
+            "matches_public_key_file": true,
+            "APP_ENV": "pilot",
+            "has_env_file_directive": false
+          },
+          "backup": {
+            "fingerprint": "sha256:e2f74e6c761c0684…",
+            "matches_public_key_file": true,
+            "APP_ENV": "pilot",
+            "has_env_file_directive": false
+          }
+        },
+        "backend_forbidden_names": [],
+        "backend_has_backup_key_value": false,
+        "services_with_env_file": []
+      }
+    },
+    {
+      "id": "compose_config_without_key_missing",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "HRM_LICENSE_PUBLIC_KEY missing: docker compose config exit 1 with the overlay's required-message",
+      "evidence": {
+        "exit_code": 1,
+        "message_present": true,
+        "stderr_tail": "error while interpolating services.backend.environment.LICENSE_PUBLIC_KEY: required variable HRM_LICENSE_PUBLIC_KEY is missing a value: HRM_LICENSE_PUBLIC_KEY is required for the pilot"
+      }
+    },
+    {
+      "id": "compose_config_without_key_empty",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "HRM_LICENSE_PUBLIC_KEY empty: docker compose config exit 1 with the overlay's required-message",
+      "evidence": {
+        "exit_code": 1,
+        "message_present": true,
+        "stderr_tail": "error while interpolating services.backend.environment.LICENSE_PUBLIC_KEY: required variable HRM_LICENSE_PUBLIC_KEY is missing a value: HRM_LICENSE_PUBLIC_KEY is required for the pilot"
+      }
+    },
+    {
+      "id": "runtime_settings_backend",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "backend: app.config.Settings loaded in APP_ENV=pilot; license_public_key fingerprint equals public_key.b64",
+      "evidence": {
+        "exit_code": 0,
+        "APP_ENV": "pilot",
+        "license_public_key_len": "44",
+        "fingerprint": "sha256:e2f74e6c761c0684…",
+        "matches_public_key_file": true,
+        "container_env_has_backup_enc_key": "False",
+        "container_env_has_raw_HRM_vars": "False",
+        "stderr_tail": ""
+      }
+    },
+    {
+      "id": "runtime_settings_worker",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "worker: app.config.Settings loaded in APP_ENV=pilot; license_public_key fingerprint equals public_key.b64",
+      "evidence": {
+        "exit_code": 0,
+        "APP_ENV": "pilot",
+        "license_public_key_len": "44",
+        "fingerprint": "sha256:e2f74e6c761c0684…",
+        "matches_public_key_file": true,
+        "container_env_has_backup_enc_key": "False",
+        "container_env_has_raw_HRM_vars": "False",
+        "stderr_tail": ""
+      }
+    },
+    {
+      "id": "runtime_settings_backup",
+      "status": "pass",
+      "mandatory": true,
+      "summary": "backup: app.config.Settings loaded in APP_ENV=pilot; license_public_key fingerprint equals public_key.b64",
+      "evidence": {
+        "exit_code": 0,
+        "APP_ENV": "pilot",
+        "license_public_key_len": "44",
+        "fingerprint": "sha256:e2f74e6c761c0684…",
+        "matches_public_key_file": true,
+        "container_env_has_backup_enc_key": "True",
+        "container_env_has_raw_HRM_vars": "False",
+        "stderr_tail": ""
+      }
+    }
+  ]
+}

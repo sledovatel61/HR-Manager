@@ -116,6 +116,52 @@ function Clear-HrmExchangeToken {
     }
 }
 
+function Get-HrmLicensePublicKey {
+    # Публичный ключ лицензии (не секрет) — читается из файла public_key.b64
+    # в каталоге релиза или из состояния. Возвращает base64 32 байта или пустую строку.
+    param([string]$StateDir)
+    # 1. Если уже сохранён в состоянии (owner установил вручную), используем его
+    if ($StateDir) {
+        try {
+            $stateFile = Join-Path $StateDir "license_public_key.b64"
+            if (Test-Path $stateFile) {
+                $content = (Get-Content -Path $stateFile -Raw -Encoding UTF8).Trim()
+                if ($content -match "^[A-Za-z0-9+/]{43}=$|^[A-Za-z0-9+/]{44}$|^[A-Za-z0-9_-]{43,44}$") {
+                    return $content
+                }
+            }
+        } catch {}
+    }
+    # 2. Ищем в релизе: infra/license/public_key.b64 относительно скрипта движка
+    $engineDir = $PSScriptRoot
+    $candidates = @()
+    if ($engineDir) {
+        try { $candidates += Join-Path $engineDir "..\..\license\public_key.b64" } catch {}
+        try { $candidates += Join-Path $engineDir "..\..\..\infra\license\public_key.b64" } catch {}
+    }
+    if ($StateDir) {
+        try { $candidates += Join-Path $StateDir "..\Program Files\HRManager\infra\license\public_key.b64" } catch {}
+    }
+    if ($env:HRM_SOURCE_DIR) {
+        try { $candidates += Join-Path $env:HRM_SOURCE_DIR "infra\license\public_key.b64" } catch {}
+    }
+    foreach ($p in $candidates) {
+        if (-not $p) { continue }
+        try {
+            $resolved = [System.IO.Path]::GetFullPath($p)
+            if (Test-Path $resolved) {
+                $content = (Get-Content -Path $resolved -Raw -Encoding UTF8).Trim()
+                if ($content) { return $content }
+            }
+        } catch {}
+    }
+    # 3. Env var override (для тестов)
+    if ($env:HRM_LICENSE_PUBLIC_KEY) {
+        return $env:HRM_LICENSE_PUBLIC_KEY.Trim()
+    }
+    return ""
+}
+
 function Write-HrmPilotEnv {
     # Генерирует pilot.env для docker compose. Файл защищён ACL; содержимое
     # никогда не выводится.
@@ -142,6 +188,7 @@ function Write-HrmPilotEnv {
     # из channel.json; staging-каталог host отделён от каталога секретов.
     $channel = Get-HrmChannelConfig $StateDir
     $keysJson = ($channel.public_keys | ConvertTo-Json -Compress)
+    $licensePub = Get-HrmLicensePublicKey $StateDir
     $lines = @(
         ("HRM_POSTGRES_PASSWORD={0}" -f $secrets["HRM_POSTGRES_PASSWORD"]),
         ("HRM_SIGNING_KEY={0}" -f $secrets["HRM_SIGNING_KEY"]),
@@ -157,7 +204,8 @@ function Write-HrmPilotEnv {
         # Кавычки JSON экранируются literal-заменой: -replace использует
         # regex-синтаксис replacement и удалил бы обратный слэш.
         ("HRM_UPDATE_CHANNEL_PUBLIC_KEYS=`"{0}`"" -f ([Regex]::Replace($keysJson, '"', '\"'))),
-        ("HRM_UPDATE_CHECK_MIN_INTERVAL={0}" -f $channel.check_min_interval_seconds)
+        ("HRM_UPDATE_CHECK_MIN_INTERVAL={0}" -f $channel.check_min_interval_seconds),
+        ("HRM_LICENSE_PUBLIC_KEY={0}" -f $licensePub)
     )
     $envFile = Get-HrmEnvFile $StateDir
     Set-Content -Path $envFile -Value $lines -Encoding UTF8

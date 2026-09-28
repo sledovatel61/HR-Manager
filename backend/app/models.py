@@ -192,6 +192,29 @@ class AuditAction(StrEnum):
     UPDATE_DOWNLOAD_FAILED = "update_download_failed"
     UPDATE_INSTALL_REQUESTED = "update_install_requested"
     UPDATE_ENGINE_REPORTED = "update_engine_reported"
+    # Phase 15: offline pilot license (installation/server).
+    LICENSE_UPLOADED = "license_uploaded"
+    LICENSE_REPLACED = "license_replaced"
+    LICENSE_REJECTED = "license_rejected"
+    LICENSE_EXPIRED = "license_expired"
+    LICENSE_CHECK_FAILED = "license_check_failed"
+    LICENSE_VALIDATION_ERROR = "license_validation_error"
+    # Phase 16: versioned document templates and generated documents (textual
+    # MVP — no files, no PDF/DOCX, no delivery to candidates). Details carry
+    # ids, versions and hashes only: never the template body or a generated
+    # document's text.
+    DOCUMENT_TEMPLATE_CREATED = "document_template_created"
+    DOCUMENT_TEMPLATE_RENAMED = "document_template_renamed"
+    # Version-level actions stay within 32 characters on purpose: migration
+    # 0010's downgrade narrows audit_log.action back to VARCHAR(32), so a longer
+    # value left behind by a later phase breaks ``alembic downgrade base``.
+    # A data-safe downgrade for the pre-existing over-long Phase 10 actions
+    # (e.g. candidate_channel_consent_updated) is a separate technical task.
+    TEMPLATE_VERSION_CREATED = "template_version_created"
+    TEMPLATE_VERSION_ACTIVATED = "template_version_activated"
+    TEMPLATE_VERSION_ARCHIVED = "template_version_archived"
+    DOCUMENT_GENERATED = "document_generated"
+    DOCUMENT_DOWNLOADED = "document_downloaded"
 
 
 class CandidateStage(StrEnum):
@@ -2226,3 +2249,179 @@ class BootstrapTicket(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class License(Base):
+    """Phase 15: offline pilot license — installation/server license.
+
+    One row per license file uploaded. Only one row is active at a time
+    (is_active=True). History rows remain for audit. The license file
+    itself is NOT stored (only its metadata and signature) to avoid PII
+    leakage via logs/dumps; the signature is stored for verification
+    but never logged in plaintext beyond redacted fingerprint.
+    """
+
+    __tablename__ = "licenses"
+    __table_args__ = (
+        Index("ix_licenses_license_id", "license_id", unique=True),
+        Index("ix_licenses_is_active", "is_active"),
+        Index("ix_licenses_expires_at", "expires_at"),
+        CheckConstraint("max_active_users >= 1", name="ck_licenses_max_users_min"),
+        CheckConstraint("max_active_users <= 1000", name="ck_licenses_max_users_max"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    license_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    client_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    expires_at: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD inclusive
+    expires_at_end: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)  # end of day UTC
+    max_active_users: Mapped[int] = mapped_column(Integer, nullable=False)
+    signature: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    # Clock rollback protection: last time license was seen valid.
+    last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    uploaded_by: Mapped[User | None] = relationship(foreign_keys=[uploaded_by_user_id])
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"<License id={self.license_id} client={self.client_name!r} expires={self.expires_at}>"
+        )
+
+
+# Phase 16: versioned document templates and immutable generated documents.
+# Roadmap stage 6 («контент и шаблоны») is implemented here as textual content
+# managed through the interface: no files, no scans, no external storage, no
+# PDF/DOCX conversion and no delivery to candidates. Version content is frozen
+# (a correction creates a new version) and every generated document is stored
+# as an immutable snapshot of the exact text that was produced.
+class DocumentTemplate(Base):
+    """Stable template entity: a controlled ``kind`` key plus an area of
+    application (``scope``: an empty string for the whole base or one funnel
+    stage). ``name`` is an editable display name — it is never part of a
+    version's content, and renaming is audited."""
+
+    __tablename__ = "document_templates"
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="ck_document_templates_revision"),
+        Index("ix_document_templates_scope_kind", "scope", "kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    # Optimistic concurrency counter for template-level operations.
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", name="fk_document_templates_author", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, onupdate=utc_now)
+
+
+class DocumentTemplateVersion(Base):
+    """An immutable content version. Only ``state`` (draft/active/archived)
+    and ``activated_at`` ever change after creation; ``placeholders`` is the
+    sorted, de-duplicated list of allowlisted tokens used by ``body``."""
+
+    __tablename__ = "document_template_versions"
+    __table_args__ = (
+        UniqueConstraint("template_id", "number", name="uq_template_versions_number"),
+        CheckConstraint("number > 0", name="ck_template_versions_number"),
+        CheckConstraint(
+            "state IN ('draft','active','archived')", name="ck_template_versions_state"
+        ),
+        CheckConstraint(
+            "length(body) >= 1 AND length(body) <= 20000",
+            name="ck_template_versions_body_length",
+        ),
+        Index(
+            "uq_template_versions_active",
+            "template_id",
+            unique=True,
+            postgresql_where=text("state = 'active'"),
+            sqlite_where=text("state = 'active'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "document_templates.id", name="fk_template_versions_template", ondelete="RESTRICT"
+        )
+    )
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    placeholders: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", name="fk_template_versions_author", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)
+    activated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class CandidateDocumentGeneration(Base):
+    """Immutable snapshot of one document generated for a candidate.
+
+    ``body_text``/``body_html`` are the exact rendered artifacts; the template
+    identity (id, number, name and title) is copied at generation time so a
+    later rename, new version or archive never changes an existing document.
+    ``revision`` numbers documents per candidate. Physical deletion does not
+    exist (phase 11 policy)."""
+
+    __tablename__ = "candidate_document_generations"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "revision", name="uq_document_generations_revision"),
+        CheckConstraint("revision > 0", name="ck_document_generations_revision"),
+        CheckConstraint("template_number > 0", name="ck_document_generations_number"),
+        Index("ix_document_generations_candidate", "candidate_id", "revision"),
+        Index(
+            "uq_document_generations_idempotency",
+            "created_by",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+            sqlite_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", name="fk_document_generations_candidate", ondelete="RESTRICT")
+    )
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "document_templates.id", name="fk_document_generations_template", ondelete="RESTRICT"
+        )
+    )
+    template_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "document_template_versions.id",
+            name="fk_document_generations_version",
+            ondelete="RESTRICT",
+        )
+    )
+    template_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    template_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    template_title: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    body_text: Mapped[str] = mapped_column(Text, nullable=False)
+    body_html: Mapped[str] = mapped_column(Text, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", name="fk_document_generations_author", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)

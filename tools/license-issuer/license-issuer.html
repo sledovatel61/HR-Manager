@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>HR Manager — License Issuer (offline, owner only)</title>
+<style>
+body { font-family: sans-serif; max-width: 900px; margin: 20px auto; padding: 10px; }
+h1 { font-size: 20px; }
+label { display: block; margin-top: 12px; font-weight: bold; }
+input, textarea { width: 100%; padding: 6px; margin-top: 4px; box-sizing: border-box; }
+button { margin-top: 10px; padding: 8px 14px; }
+pre { background: #f5f5f5; padding: 10px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+.warning { color: #a00; background: #fff0f0; border: 1px solid #a00; padding: 8px; margin: 10px 0; }
+.ok { color: #060; background: #f0fff0; border: 1px solid #0a0; padding: 8px; margin: 10px 0; }
+/* private key boxes are NOT form controls (see the script): browsers store form-control values */
+.keybox { display: block; width: 100%; min-height: 1.4em; padding: 6px; margin-top: 4px; box-sizing: border-box; border: 1px solid #767676; font-family: monospace; word-break: break-all; white-space: nowrap; overflow-x: auto; background: #fff; }
+.keybox-ro { background: #f5f5f5; }
+.keybox:empty::before { content: attr(data-placeholder); color: #888; }
+.hint { color: #555; font-size: 13px; margin: 4px 0; }
+</style>
+<script src="nacl-fast.js"></script>
+</head>
+<body>
+<h1>HR Manager — License Issuer (офлайн, только у владельца)</h1>
+<div id="status" class="ok">Проверка WebCrypto Ed25519...</div>
+<div class="warning">
+<strong>Приватный ключ — СЕКРЕТНО, только у владельца!</strong><br>
+Никогда не коммитьте private_key в git, не добавляйте в установщик, Docker, логи, диагностический архив.<br>
+Сделайте резервную копию в зашифрованном хранилище (VeraCrypt/BitLocker/зашифрованная флешка).<br>
+Публичный ключ (base64 44 символа) скопируйте в <code>infra/license/public_key.b64</code> перед сборкой пилотного образа или в <code>HRM_LICENSE_PUBLIC_KEY</code>.<br>
+<strong>Автономность:</strong> этот HTML работает без интернета. Для secure context (WebCrypto) откройте через <code>run-html.bat</code> (http://127.0.0.1:8765) или https. В file:// контексте Edge может блокировать crypto.subtle — тогда используйте <code>run-gui.bat</code> или <code>run-cli.bat</code> из автономного пакета (bundled Python, без интернета, без системного Python).
+</div>
+
+<h2>1. Ключи (Ed25519)</h2>
+<label>Приватный ключ (64 hex, секретно, 32 байта seed):</label>
+<div id="privHex" class="keybox keybox-ro" role="textbox" aria-readonly="true" aria-label="private key hex" data-placeholder="сгенерируйте новую пару или загрузите private_key.hex"></div>
+<label>Загрузить приватный ключ из файла <code>private_key.hex</code> (из <code>run-cli.bat gen-keypair</code> / <code>run-gui.bat</code>):</label>
+<input id="privFile" type="file" accept=".hex,.txt,text/plain">
+<p class="hint">Ввод приватного ключа с клавиатуры и вставка отключены намеренно: Edge сохраняет набранный в странице текст в профиле браузера (автозаполнение), даже при <code>autocomplete="off"</code>.</p>
+<label>Приватный ключ (base64 32 байта, для справки):</label>
+<div id="privB64" class="keybox keybox-ro" role="textbox" aria-readonly="true" aria-label="private key base64"></div>
+<label>Публичный ключ (base64 44 символа, для сборки):</label>
+<input id="pubB64" type="text" placeholder="base64">
+<button onclick="genKeypair()">Сгенерировать новую пару (WebCrypto или TweetNaCl fallback)</button>
+<button onclick="derivePubFromPriv()">Вычислить публичный из приватного (если есть priv)</button>
+
+<h2>2. Выпустить лицензию</h2>
+<label>Имя клиента/пилота (например, Пилот Марии):</label>
+<input id="clientName" value="Пилот Марии">
+<label>Действует до (YYYY-MM-DD, включительно до 23:59:59 UTC):</label>
+<input id="expiresAt" value="2026-12-31">
+<label>Лимит активных пользователей (1..1000, включает Марию):</label>
+<input id="maxUsers" value="5" type="number" min="1" max="1000">
+<label>License ID (UUID, пусто = сгенерировать):</label>
+<input id="licenseId" placeholder="auto">
+<button onclick="issueLicense()">Выпустить лицензию</button>
+<pre id="result"></pre>
+<button onclick="downloadResult()">Скачать .hrmlicense файл</button>
+<button onclick="verifyCurrent()">Проверить подпись текущей лицензии</button>
+
+<h2>3. Проверка чужой лицензии</h2>
+<label>Вставьте JSON лицензии для проверки:</label>
+<textarea id="verifyInput" rows="10"></textarea>
+<button onclick="verifyExternal()">Проверить подпись</button>
+
+<h2>Справка</h2>
+<p><strong>Формат канонических байт для подписи (фиксированный порядок, LF, UTF-8):</strong></p>
+<pre>license_id:&lt;uuid&gt;
+client_name:&lt;имя&gt;
+issued_at:&lt;YYYY-MM-DDTHH:MM:SSZ&gt;
+expires_at:&lt;YYYY-MM-DD&gt;
+max_active_users:&lt;число&gt;
+</pre>
+<p>Подпись — Ed25519 detached, 128 hex. Проверяется публичным ключом base64 32 байта.</p>
+<p>Дата <code>expires_at</code> действует включительно до конца дня 23:59:59 UTC. Например, 2026-12-31 значит валидна до 2026-12-31T23:59:59Z.</p>
+<p>Защита от перевода часов: сервер хранит <code>last_seen_at</code> и если текущее время &lt; last_seen_at - 1 час, лицензия блокируется (best-effort).</p>
+<p>Инструкция для Марии: Настройки → Лицензия → Загрузить файл .hrmlicense или вставить JSON → Сохранить. При истечении — админ может войти и загрузить новую лицензию, данные не удаляются.</p>
+<p>Офлайн: этот HTML работает без интернета. WebCrypto Ed25519 поддерживается в Edge 120+, Chrome 120+, Firefox 120+ (Windows 10/11 Edge по умолчанию — OK). Для file:// контекста crypto.subtle может быть недоступен — используйте run-html.bat (http://localhost) или run-gui.bat (автономный Python, без интернета, без системного Python). Fallback TweetNaCl (nacl-fast.js) используется если WebCrypto недоступен.</p>
+
+<script>
+// Private key boxes (#privHex, #privB64) are deliberately NOT form controls and
+// NOT editable. The Windows acceptance run found the private key in Edge's profile:
+// "Web Data" (autofill, even with autocomplete="off"), "Sessions" (tab restore form
+// state) and finally Edge's own table autofill_edge_field_values, which records text
+// the user TYPES into a page even in a contenteditable box. Keys shown by the page
+// (generated) were not recorded; typed ones were. So the private key is never typed:
+// it is generated here or loaded from private_key.hex via the file picker (FileReader),
+// and shown read-only. A small `value` property keeps the rest of the code unchanged.
+(function () {
+  ['privHex', 'privB64'].forEach(function (id) {
+    var el = document.getElementById(id);
+    Object.defineProperty(el, 'value', {
+      configurable: true,
+      get: function () { return (el.textContent || '').replace(/\s+/g, ''); },
+      set: function (v) { el.textContent = (v == null) ? '' : String(v); }
+    });
+  });
+  document.getElementById('privFile').addEventListener('change', function () {
+    var input = this, f = input.files && input.files[0];
+    if (!f) return;
+    if (f.size > 1024) { input.value = ''; alert('Файл слишком большой для private_key.hex (ожидается 64 hex)'); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      input.value = '';   // do not keep the file selection in the form
+      var hex = String(reader.result || '').replace(/\s+/g, '');
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) { alert('Файл не содержит приватный ключ (ожидается 64 hex)'); return; }
+      document.getElementById('privHex').value = hex.toLowerCase();
+      document.getElementById('privB64').value = bytesToBase64(hexToBytes(hex));
+      setStatus('Приватный ключ загружен из файла ' + f.name + '. Укажите публичный ключ (или «Вычислить публичный из приватного»).', true);
+    };
+    reader.onerror = function () { input.value = ''; alert('Не удалось прочитать файл'); };
+    reader.readAsText(f);
+  });
+})();
+
+function base64ToBytes(b64) {
+  b64 = b64.trim().replace(/-/g,'+').replace(/_/g,'/');
+  // Pad
+  while (b64.length %4!==0) b64+='=';
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+  return arr;
+}
+function bytesToBase64(bytes) {
+  let bin = "";
+  for (let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function hexToBytes(hex) {
+  hex=hex.trim();
+  if (hex.length%2!==0) throw new Error('hex length');
+  const bytes = new Uint8Array(hex.length/2);
+  for (let i=0;i<bytes.length;i++) bytes[i]=parseInt(hex.substr(i*2,2),16);
+  return bytes;
+}
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+function canonicalBytes(data) {
+  const fields = ["license_id","client_name","issued_at","expires_at","max_active_users"];
+  let s = "";
+  for (const f of fields) s += f + ":" + data[f] + "\n";
+  return new TextEncoder().encode(s);
+}
+function uuidv4() {
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+  );
+}
+
+let lastKeyPair = null; // {privateKey, publicKey, privRaw 32, pubRaw 32, naclKeyPair}
+
+function setStatus(msg, ok=true) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = ok ? 'ok' : 'warning';
+}
+
+async function checkSupport() {
+  const hasNacl = (typeof nacl !== 'undefined' && nacl.sign);
+  let webCryptoOk = false;
+  try {
+    if (crypto.subtle) {
+      const kp = await crypto.subtle.generateKey({name: "Ed25519"}, true, ["sign","verify"]);
+      await crypto.subtle.exportKey("raw", kp.publicKey);
+      webCryptoOk = true;
+    }
+  } catch (e) {
+    webCryptoOk = false;
+  }
+  if (webCryptoOk) {
+    setStatus('WebCrypto Ed25519 поддерживается — офлайн подпись готова (Edge 120+/Chrome 120+). Fallback TweetNaCl '+(hasNacl?'доступен':'не загружен (скачайте nacl-fast.js для file://)'), true);
+  } else if (hasNacl) {
+    setStatus('WebCrypto Ed25519 НЕ доступен (file:// без secure context или старый браузер) — используется TweetNaCl fallback (офлайн, без интернета). Для WebCrypto откройте через run-html.bat http://127.0.0.1:8765', true);
+  } else {
+    setStatus('WebCrypto Ed25519 НЕ поддерживается и TweetNaCl не загружен: скачайте nacl-fast.js (https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.js) или используйте Python CLI (run-gui.bat / run-cli.bat) из автономного пакета.', false);
+  }
+}
+checkSupport();
+
+async function genKeypair() {
+  try {
+    // Try WebCrypto first
+    if (crypto.subtle) {
+      try {
+        const kp = await crypto.subtle.generateKey({name: "Ed25519"}, true, ["sign","verify"]);
+        const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+        const privPkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
+        const privRaw = privPkcs8.slice(-32);
+        lastKeyPair = {privateKey: kp.privateKey, publicKey: kp.publicKey, privRaw, pubRaw, naclKeyPair: null};
+        document.getElementById('privHex').value = bytesToHex(privRaw);
+        document.getElementById('privB64').value = bytesToBase64(privRaw);
+        document.getElementById('pubB64').value = bytesToBase64(pubRaw);
+        setStatus('Ключи сгенерированы via WebCrypto. СОХРАНИТЕ приватный ключ в зашифрованном хранилище!', true);
+        return;
+      } catch (e) {
+        console.warn('WebCrypto gen failed, fallback to nacl', e);
+      }
+    }
+    // Fallback to TweetNaCl
+    if (typeof nacl !== 'undefined' && nacl.sign && nacl.sign.keyPair) {
+      const kp = nacl.sign.keyPair();
+      const pubRaw = kp.publicKey;
+      const privRaw = kp.secretKey.slice(0,32);
+      lastKeyPair = {privateKey: null, publicKey: null, privRaw, pubRaw, naclKeyPair: kp};
+      document.getElementById('privHex').value = bytesToHex(privRaw);
+      document.getElementById('privB64').value = bytesToBase64(privRaw);
+      document.getElementById('pubB64').value = bytesToBase64(pubRaw);
+      setStatus('Ключи сгенерированы via TweetNaCl fallback (офлайн). СОХРАНИТЕ приватный!', true);
+      return;
+    }
+    throw new Error('No WebCrypto and no nacl available');
+  } catch (e) {
+    alert('Ошибка генерации: '+e);
+    setStatus('Ошибка: '+e, false);
+  }
+}
+
+async function derivePubFromPriv() {
+  try {
+    const privHex = document.getElementById('privHex').value.trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(privHex)) { alert('Приватный ключ должен быть 64 hex'); return; }
+    const privRaw = hexToBytes(privHex);
+    if (typeof nacl !== 'undefined' && nacl.sign && nacl.sign.keyPair && nacl.sign.keyPair.fromSeed) {
+      const kp = nacl.sign.keyPair.fromSeed(privRaw);
+      const pubRaw = kp.publicKey;
+      document.getElementById('pubB64').value = bytesToBase64(pubRaw);
+      document.getElementById('privB64').value = bytesToBase64(privRaw);
+      setStatus('Публичный ключ выведен из приватного via TweetNaCl (fallback).', true);
+      return;
+    }
+    alert('Для вывода публичного ключа из приватного нужен TweetNaCl (nacl-fast.js). WebCrypto не может вывести напрямую. Скачайте nacl-fast.js или используйте Python CLI: python cli.py gen-keypair');
+  } catch (e) {
+    alert('Ошибка вывода публичного: '+e);
+  }
+}
+
+async function importPrivateKeyFromHex(privHex) {
+  const privRaw = hexToBytes(privHex);
+  const header = new Uint8Array([0x30,0x2e,0x02,0x01,0x00,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x04,0x22,0x04,0x20]);
+  const pkcs8 = new Uint8Array(header.length + privRaw.length);
+  pkcs8.set(header,0);
+  pkcs8.set(privRaw, header.length);
+  const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, {name:"Ed25519"}, false, ["sign"]);
+  return {privateKey, privRaw};
+}
+
+async function issueLicense() {
+  try {
+    const client = document.getElementById('clientName').value.trim();
+    const expires = document.getElementById('expiresAt').value.trim();
+    const maxUsers = parseInt(document.getElementById('maxUsers').value,10);
+    const privHex = document.getElementById('privHex').value.trim();
+    let licenseId = document.getElementById('licenseId').value.trim();
+    if (!licenseId) licenseId = uuidv4();
+    const issuedAt = new Date().toISOString().replace(/\.\d+Z$/,'Z');
+
+    if (!client) { alert('Имя клиента пустое'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(expires)) { alert('expires_at должен быть YYYY-MM-DD'); return; }
+    if (!(maxUsers>=1 && maxUsers<=1000)) { alert('max_users 1..1000'); return; }
+    if (!/^[0-9a-fA-F]{64}$/.test(privHex)) { alert('Приватный ключ должен быть 64 hex'); return; }
+
+    const payload = {
+      license_id: licenseId,
+      client_name: client,
+      issued_at: issuedAt,
+      expires_at: expires,
+      max_active_users: maxUsers
+    };
+    const msg = canonicalBytes(payload);
+    let sigBytes;
+    // Try WebCrypto
+    if (crypto.subtle) {
+      try {
+        const {privateKey} = await importPrivateKeyFromHex(privHex);
+        const sigBuf = await crypto.subtle.sign({name:"Ed25519"}, privateKey, msg);
+        sigBytes = new Uint8Array(sigBuf);
+      } catch (e) {
+        console.warn('WebCrypto sign failed, fallback nacl', e);
+        sigBytes = null;
+      }
+    }
+    if (!sigBytes) {
+      // Fallback nacl
+      if (typeof nacl !== 'undefined' && nacl.sign && nacl.sign.detached) {
+        const privRaw = hexToBytes(privHex);
+        // nacl needs 64-byte secretKey: seed + publicKey
+        let kp;
+        if (nacl.sign.keyPair.fromSeed) {
+          kp = nacl.sign.keyPair.fromSeed(privRaw);
+        } else {
+          throw new Error('nacl.sign.keyPair.fromSeed not available');
+        }
+        sigBytes = nacl.sign.detached(msg, kp.secretKey);
+      } else {
+        throw new Error('No signing method available (WebCrypto failed and nacl not loaded)');
+      }
+    }
+    const result = {...payload, signature: bytesToHex(sigBytes)};
+    document.getElementById('result').textContent = JSON.stringify(result, null, 2);
+    setStatus('Лицензия выпущена и подписана.', true);
+  } catch (e) {
+    alert('Ошибка выпуска: '+e);
+    setStatus('Ошибка: '+e, false);
+  }
+}
+
+async function verifyLicenseData(data, pubB64) {
+  const pubBytes = base64ToBytes(pubB64);
+  const msg = canonicalBytes(data);
+  const sigBytes = hexToBytes(data.signature);
+  // Try WebCrypto first
+  if (crypto.subtle) {
+    try {
+      const publicKey = await crypto.subtle.importKey("raw", pubBytes, {name:"Ed25519"}, false, ["verify"]);
+      const ok = await crypto.subtle.verify({name:"Ed25519"}, publicKey, sigBytes, msg);
+      return ok;
+    } catch (e) {
+      console.warn('WebCrypto verify failed, fallback nacl', e);
+    }
+  }
+  if (typeof nacl !== 'undefined' && nacl.sign && nacl.sign.detached && nacl.sign.detached.verify) {
+    return nacl.sign.detached.verify(msg, sigBytes, pubBytes);
+  }
+  throw new Error('No verify method');
+}
+
+async function verifyCurrent() {
+  try {
+    const pubB64 = document.getElementById('pubB64').value.trim();
+    const licText = document.getElementById('result').textContent.trim();
+    if (!licText) { alert('Нет лицензии для проверки'); return; }
+    const data = JSON.parse(licText);
+    const ok = await verifyLicenseData(data, pubB64);
+    alert(ok ? 'Подпись корректна' : 'Подпись НЕВЕРНА');
+  } catch (e) {
+    alert('Ошибка проверки: '+e);
+  }
+}
+async function verifyExternal() {
+  try {
+    const pubB64 = document.getElementById('pubB64').value.trim();
+    const licText = document.getElementById('verifyInput').value.trim() || document.getElementById('result').textContent.trim();
+    if (!licText) { alert('Вставьте лицензию'); return; }
+    const data = JSON.parse(licText);
+    const ok = await verifyLicenseData(data, pubB64);
+    alert(ok ? 'Подпись корректна' : 'Подпись НЕВЕРНА');
+  } catch (e) {
+    alert('Ошибка: '+e);
+  }
+}
+
+function downloadResult() {
+  const text = document.getElementById('result').textContent;
+  if (!text) { alert('Нет лицензии для сохранения'); return; }
+  const blob = new Blob([text+"\n"], {type: "application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  try {
+    const data = JSON.parse(text);
+    a.download = (data.client_name.replace(/\s+/g,'_') + '_' + data.expires_at + '.hrmlicense');
+  } catch {
+    a.download = 'license.hrmlicense';
+  }
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Leaving the page: clear the private key boxes as well.
+window.addEventListener('pagehide', function () {
+  ['privHex', 'privB64'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
+});
+</script>
+</body>
+</html>

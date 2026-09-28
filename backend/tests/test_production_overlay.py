@@ -263,6 +263,8 @@ def test_check_env_backup_semantics() -> None:
         "SECRET_KEY": "s" * 40,
         "POSTGRES_PASSWORD": "p" * 20,
         "BOOTSTRAP_ADMIN_PASSWORD": "b" * 16,
+        # Phase 15: the preflight requires the license PUBLIC key (44 chars).
+        "LICENSE_PUBLIC_KEY": base64.b64encode(b"\x01" * 32).decode(),
     }
 
     def run(extra: dict[str, str]) -> subprocess.CompletedProcess:
@@ -434,6 +436,7 @@ def test_check_env_rejects_broken_channel_config() -> None:
         "SECRET_KEY": "x" * 32,
         "POSTGRES_PASSWORD": "strong-ci-pass-123",
         "BOOTSTRAP_ADMIN_PASSWORD": "strong-ci-pass-123",
+        "LICENSE_PUBLIC_KEY": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
     }
 
     def run(extra: dict[str, str]) -> int:
@@ -473,3 +476,55 @@ def test_check_env_rejects_broken_channel_config() -> None:
         )
         == 0
     )
+
+
+def test_check_env_requires_license_public_key() -> None:
+    """Phase 15: production preflight is fail-closed on the license PUBLIC
+    key — missing, wrong length, bad base64 or wrong byte size all fail;
+    a 44-char base64 of 32 bytes passes. The value is never echoed."""
+    import base64
+    import subprocess
+
+    script = str(SCRIPTS_DIR / "check_env.sh")
+    good = base64.b64encode(bytes(range(32))).decode()
+    base_env = {
+        "PATH": "/usr/bin:/bin",
+        "APP_ENV": "production",
+        "SECRET_KEY": "s" * 40,
+        "POSTGRES_PASSWORD": "p" * 20,
+        "BOOTSTRAP_ADMIN_PASSWORD": "b" * 16,
+    }
+
+    def run(extra: dict[str, str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", script], env=dict(base_env, **extra), capture_output=True, text=True
+        )
+
+    missing = run({})
+    assert missing.returncode != 0
+    assert "LICENSE_PUBLIC_KEY is not set" in missing.stderr
+    assert run({"LICENSE_PUBLIC_KEY": ""}).returncode != 0
+    assert run({"LICENSE_PUBLIC_KEY": "short"}).returncode != 0
+    assert run({"LICENSE_PUBLIC_KEY": "!" * 44}).returncode != 0
+    # 44 chars but decodes to 33 bytes? base64 of 33 bytes is 44 chars ("=" free):
+    assert run({"LICENSE_PUBLIC_KEY": base64.b64encode(b"z" * 33).decode()}).returncode != 0
+    ok = run({"LICENSE_PUBLIC_KEY": good})
+    assert ok.returncode == 0, ok.stderr
+    assert good not in ok.stdout + ok.stderr
+
+
+def test_prod_overlay_requires_license_public_key_for_every_settings_service(
+    prod_overlay: dict[str, Any],
+) -> None:
+    """Phase 15: APP_ENV=production refuses to start without the license
+    public key, so the overlay must map it — required (`:?`), no default —
+    into every service that loads app.config.Settings."""
+    expected = "${LICENSE_PUBLIC_KEY:?"
+    for service in ("backend", "worker", "backup"):
+        env: dict[str, str] = prod_overlay["services"][service]["environment"]
+        value = str(env.get("LICENSE_PUBLIC_KEY", ""))
+        assert value.startswith(expected), (service, value)
+        assert ":-" not in value, (service, "a default would silently disable the guard")
+    rendered = yaml.dump(prod_overlay)
+    for forbidden in ("PRIVATE_KEY", "private_key", "LICENSE_PRIVATE"):
+        assert forbidden not in rendered, forbidden
