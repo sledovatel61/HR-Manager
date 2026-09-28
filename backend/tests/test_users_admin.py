@@ -190,6 +190,106 @@ def test_admin_cannot_deactivate_themselves(client: TestClient, db_session: Sess
     assert result.status_code == 400
 
 
+def test_admin_cannot_change_own_role(client: TestClient, db_session: Session) -> None:
+    """Self-role change is rejected even when another admin remains."""
+    headers = _auth_headers(client, "admin1", UserRole.ADMIN, db_session)
+    make_user(db_session, username="admin2", role=UserRole.ADMIN)
+    admin = db_session.scalar(select(User).where(User.username == "admin1"))
+    assert admin is not None
+
+    result = client.patch(f"/admin/users/{admin.id}", json={"role": "hr"}, headers=headers)
+    assert result.status_code == 400
+    assert result.json()["detail"] == "Нельзя изменить собственную роль."
+    db_session.refresh(admin)
+    assert admin.role == UserRole.ADMIN
+
+
+def test_last_admin_cannot_be_demoted(client: TestClient, db_session: Session) -> None:
+    """The system cannot lose its last administrator through the API."""
+    headers = _auth_headers(client, "admin1", UserRole.ADMIN, db_session)
+    admin = db_session.scalar(select(User).where(User.username == "admin1"))
+    assert admin is not None
+
+    result = client.patch(f"/admin/users/{admin.id}", json={"role": "hr"}, headers=headers)
+    assert result.status_code == 409
+    assert result.json()["detail"] == (
+        "Нельзя понизить последнего администратора. "
+        "Сначала назначьте администратора другого пользователя."
+    )
+    db_session.refresh(admin)
+    assert admin.role == UserRole.ADMIN
+
+
+def test_one_of_two_admins_can_be_demoted(client: TestClient, db_session: Session) -> None:
+    """Demotion is allowed while another administrator remains."""
+    headers = _auth_headers(client, "admin1", UserRole.ADMIN, db_session)
+    admin2 = make_user(db_session, username="admin2", role=UserRole.ADMIN)
+
+    demoted = client.patch(f"/admin/users/{admin2.id}", json={"role": "hr"}, headers=headers)
+    assert demoted.status_code == 200
+    assert demoted.json()["role"] == "hr"
+
+    # The demoted user can no longer manage roles at all.
+    login_again = _login(client, "admin2")
+    assert login_again.status_code == 200
+    demoted_headers = {"X-CSRF-Token": login_again.json()["csrf_token"]}
+    admin1 = db_session.scalar(select(User).where(User.username == "admin1"))
+    assert admin1 is not None
+    blocked = client.patch(
+        f"/admin/users/{admin1.id}", json={"role": "manager"}, headers=demoted_headers
+    )
+    assert blocked.status_code == 403
+    db_session.refresh(admin1)
+    assert admin1.role == UserRole.ADMIN
+
+
+def test_admin_can_still_edit_own_non_role_fields(
+    client: TestClient, db_session: Session
+) -> None:
+    """The self-role ban does not block editing other allowed own fields."""
+    headers = _auth_headers(client, "admin1", UserRole.ADMIN, db_session)
+    admin = db_session.scalar(select(User).where(User.username == "admin1"))
+    assert admin is not None
+
+    result = client.patch(
+        f"/admin/users/{admin.id}",
+        json={"full_name": "Главный Администратор"},
+        headers=headers,
+    )
+    assert result.status_code == 200
+    assert result.json()["full_name"] == "Главный Администратор"
+    assert result.json()["role"] == "admin"
+    db_session.refresh(admin)
+    assert admin.role == UserRole.ADMIN
+
+
+def test_non_role_update_of_another_admin_is_allowed(
+    client: TestClient, db_session: Session
+) -> None:
+    headers = _auth_headers(client, "admin1", UserRole.ADMIN, db_session)
+    admin2 = make_user(db_session, username="admin2", role=UserRole.ADMIN)
+
+    renamed = client.patch(
+        f"/admin/users/{admin2.id}",
+        json={"full_name": "Второй Администратор"},
+        headers=headers,
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["full_name"] == "Второй Администратор"
+    assert renamed.json()["role"] == "admin"
+
+
+def test_non_admin_cannot_change_any_role(client: TestClient, db_session: Session) -> None:
+    """A manager cannot bypass the guards: the endpoint stays admin-only."""
+    headers = _auth_headers(client, "mgr", UserRole.MANAGER, db_session)
+    target = make_user(db_session, username="hr1", role=UserRole.HR)
+
+    result = client.patch(f"/admin/users/{target.id}", json={"role": "admin"}, headers=headers)
+    assert result.status_code == 403
+    db_session.refresh(target)
+    assert target.role == UserRole.HR
+
+
 def test_admin_can_unlock_user(client: TestClient, db_session: Session) -> None:
     headers = _auth_headers(client, "admin1", UserRole.ADMIN, db_session)
     target = make_user(db_session, username="locked", role=UserRole.HR)

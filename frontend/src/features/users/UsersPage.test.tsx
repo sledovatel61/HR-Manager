@@ -300,6 +300,82 @@ describe("UsersPage", () => {
     await waitFor(() => expect(api.updateUser).not.toHaveBeenCalled());
   });
 
+  it("disables the role select for the administrator's own account", async () => {
+    renderPage();
+    await screen.findByText("Администратор Системный");
+
+    await openEditFor(/Системный/);
+    const roleSelect = await screen.findByLabelText(/Роль/);
+    expect(roleSelect).toBeDisabled();
+    expect(roleSelect).toHaveValue("admin");
+    expect(screen.getByText("Нельзя изменить собственную роль.")).toBeInTheDocument();
+
+    // Попытка изменить роль через заблокированный select невозможна; сохранение
+    // без других изменений не отправляет PATCH вообще.
+    await userEvent.selectOptions(roleSelect, "hr").catch(() => undefined);
+    expect(roleSelect).toHaveValue("admin");
+    await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+    await waitFor(() => expect(api.updateUser).not.toHaveBeenCalled());
+  });
+
+  it("keeps the role select editable for other users", async () => {
+    renderPage();
+    await screen.findByText("Петрова Анна");
+
+    await openEditFor(/hr\.petrova/);
+    const roleSelect = await screen.findByLabelText(/Роль/);
+    expect(roleSelect).toBeEnabled();
+    expect(screen.queryByText("Нельзя изменить собственную роль.")).not.toBeInTheDocument();
+  });
+
+  it("still allows editing the administrator's own non-role fields", async () => {
+    renderPage();
+    await screen.findByText("Администратор Системный");
+
+    await openEditFor(/Системный/);
+    const fullNameInput = await screen.findByLabelText("ФИО");
+    await userEvent.clear(fullNameInput);
+    await userEvent.type(fullNameInput, "Администратор Обновлённый");
+    await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    // Роль в payload не попадает (не менялась), остальные поля сохраняются.
+    await waitFor(() =>
+      expect(api.updateUser).toHaveBeenCalledWith("11111111-1111-1111-1111-111111111111", {
+        full_name: "Администратор Обновлённый",
+      }),
+    );
+    expect(await screen.findByText("Администратор Обновлённый")).toBeInTheDocument();
+  });
+
+  it("surfaces a backend role rejection (400/409) and keeps the form open", async () => {
+    vi.mocked(api.updateUser).mockRejectedValueOnce(
+      new ApiError(
+        409,
+        "Нельзя понизить последнего администратора. Сначала назначьте администратора другого пользователя.",
+      ),
+    );
+    renderPage();
+    await screen.findByText("Петрова Анна");
+
+    await openEditFor(/hr\.petrova/);
+    const roleSelect = await screen.findByLabelText(/Роль/);
+    await userEvent.selectOptions(roleSelect, "manager");
+    await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    // Пользователь видит понятное сообщение backend.
+    expect(
+      await screen.findByText(/Нельзя понизить последнего администратора/),
+    ).toBeInTheDocument();
+    // Форма не закрыта молча, введённые данные не сброшены.
+    expect(
+      screen.getByRole("heading", { name: "Редактирование: hr.petrova" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/Роль/)).toHaveValue("manager");
+    expect(api.updateUser).toHaveBeenCalledWith("22222222-2222-2222-2222-222222222222", {
+      role: "manager",
+    });
+  });
+
   it("surfaces a backend rejection as a readable Russian message", async () => {
     vi.mocked(api.updateUser).mockRejectedValueOnce(
       new ApiError(400, "Нельзя отключить собственную учётную запись."),

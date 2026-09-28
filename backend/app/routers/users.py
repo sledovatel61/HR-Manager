@@ -205,6 +205,28 @@ def update_user(
             detail="Нельзя отключить собственную учётную запись.",
         )
 
+    if payload.role is not None and payload.role != user.role:
+        if user.role == UserRole.ADMIN and payload.role != UserRole.ADMIN:
+            # Lock the admin rows so two concurrent demotions cannot both act
+            # on the pre-change count (same pattern as the license seat check
+            # below); the count reflects committed rows under READ COMMITTED.
+            admin_ids = db.scalars(
+                select(User.id).where(User.role == UserRole.ADMIN).with_for_update()
+            ).all()
+            if len(admin_ids) <= 1:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Нельзя понизить последнего администратора. "
+                        "Сначала назначьте администратора другого пользователя."
+                    ),
+                )
+        if user.id == actor.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Нельзя изменить собственную роль.",
+            )
+
     if payload.is_active is True and user.is_active is False:
         public_b64 = (settings.license_public_key or "").strip()
         if public_b64:
