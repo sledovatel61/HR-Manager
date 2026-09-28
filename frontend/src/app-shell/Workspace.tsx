@@ -14,6 +14,7 @@ import { RemindersPage } from "../features/notifications/RemindersPage";
 import { PreferencesPage } from "../features/notifications/PreferencesPage";
 import { IntegrationsPage } from "../features/notifications/IntegrationsPage";
 import { AdminQueuePage } from "../features/notifications/AdminQueuePage";
+import { UsersPage } from "../features/users/UsersPage";
 import { UpdateChannelPage } from "../features/updates/UpdateChannelPage";
 import { PilotReadinessPage } from "../features/readiness/PilotReadinessPage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
@@ -41,6 +42,7 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   updates: { label: "Обновления", icon: "loader" },
   readiness: { label: "Готовность пилота", icon: "check-circle" },
   admin: { label: "Администрирование", icon: "shield" },
+  users: { label: "Пользователи", icon: "users" },
 };
 
 function sectionsForRole(role: UserRole): WorkspaceSection[] {
@@ -56,7 +58,9 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   if (role === "admin") {
     // «Готовность пилота» — read-only отчёт admin + update_channel_manage;
     // backend всё равно перепроверяет права и отвечает 403 без scope.
-    return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "readiness", "admin"];
+    // «Пользователи» — управление учётными записями, строго admin-only
+    // (и в навигации, и повторно внутри самой страницы).
+    return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "readiness", "admin", "users"];
   }
   return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "admin"];
 }
@@ -169,6 +173,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           {section === "updates" && <UpdateChannelPage />}
           {section === "readiness" && <PilotReadinessPage />}
           {section === "admin" && <AdminQueuePage />}
+          {section === "users" && <UsersPage currentUser={user} />}
           {section !== "calendar" &&
             section !== "kanban" &&
             section !== "analytics" &&
@@ -180,7 +185,8 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             section !== "integrations" &&
             section !== "updates" &&
             section !== "readiness" &&
-            section !== "admin" && (
+            section !== "admin" &&
+            section !== "users" && (
             <CandidatesListPage
               key={section}
               user={user}

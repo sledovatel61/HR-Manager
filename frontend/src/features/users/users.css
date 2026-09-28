@@ -1,0 +1,146 @@
+/* Admin: управление пользователями (UsersPage). Все цвета — только токены
+ * дизайн-системы (design-system/tokens.css), без непроверенных legacy-переменных. */
+
+.users-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.users-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+}
+
+.users-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.users-title {
+  margin: 0;
+  font-size: var(--text-size-md);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+}
+
+.users-subtitle {
+  margin: 4px 0 0;
+  font-size: var(--text-size-xs);
+  color: var(--text-tertiary);
+}
+
+.users-table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+  font-size: var(--text-size-sm);
+}
+
+.users-table th {
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
+  font-weight: var(--font-weight-medium);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.users-table td {
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+
+.users-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.users-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.users-fullname {
+  color: var(--text-primary);
+}
+
+.users-username {
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
+}
+
+/* Статус учётной записи никогда не передаётся только цветом: текст читаем
+ * в любом тоне (WCAG 1.4.1). */
+.users-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-size-2xs);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+}
+
+.users-pill.ok {
+  background: var(--status-success-bg);
+  color: var(--status-success-fg);
+}
+
+.users-pill.bad {
+  background: var(--status-danger-bg);
+  color: var(--status-danger-fg);
+}
+
+.users-pill.neutral {
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral-fg);
+}
+
+.users-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.users-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.users-form-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.users-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-default);
+  cursor: pointer;
+}
+
+.users-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.users-warning {
+  margin: 0;
+  font-size: var(--text-size-xs);
+  color: var(--status-danger-fg);
+}
