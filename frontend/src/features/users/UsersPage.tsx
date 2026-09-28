@@ -450,12 +450,21 @@ export function UsersPage({ currentUser }: { currentUser: User }) {
                 />
               )}
             </Field>
-            <Field label="Роль" required>
+            <Field
+              label="Роль"
+              required
+              hint={
+                isSelf
+                  ? "Нельзя изменить собственную роль."
+                  : undefined
+              }
+            >
               {(id, describedBy) => (
                 <SelectInput
                   id={id}
                   aria-describedby={describedBy}
                   value={editForm.role}
+                  disabled={isSelf}
                   onChange={(event) => setEditForm({ ...editForm, role: event.target.value as UserRole })}
                 >
                   {ROLE_OPTIONS.map((role) => (
