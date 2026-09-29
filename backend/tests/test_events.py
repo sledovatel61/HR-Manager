@@ -687,12 +687,15 @@ def test_mutation_is_atomic_when_audit_write_fails(
 
     monkeypatch.setattr(events_router, "record_event", failing_record_event)
 
-    with pytest.raises(RuntimeError, match="simulated audit write failure"):
-        client.patch(
-            f"/events/{event.id}",
-            json={"expected_version": 1, "title": "Не должно сохраниться"},
-            headers={"X-CSRF-Token": csrf},
-        )
+    # TraceIdMiddleware swallows the exception and returns 500 with trace_id;
+    # the transaction must still be rolled back (checked below).
+    resp = client.patch(
+        f"/events/{event.id}",
+        json={"expected_version": 1, "title": "Не должно сохраниться"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 500
+    assert "trace_id" in resp.json()
 
     db_session.expire_all()
     stored = db_session.get(Event, event.id)
@@ -730,8 +733,9 @@ def test_create_mutation_is_atomic_when_audit_write_fails(
 
     monkeypatch.setattr(events_router, "record_event", failing_record_event)
 
-    with pytest.raises(RuntimeError, match="simulated audit write failure"):
-        client.post("/events", json=_payload(str(candidate.id)), headers={"X-CSRF-Token": csrf})
+    resp = client.post("/events", json=_payload(str(candidate.id)), headers={"X-CSRF-Token": csrf})
+    assert resp.status_code == 500
+    assert "trace_id" in resp.json()
 
     assert db_session.scalar(select(func.count()).select_from(Event)) == 0
     assert db_session.scalar(select(func.count()).select_from(EventHistory)) == 0

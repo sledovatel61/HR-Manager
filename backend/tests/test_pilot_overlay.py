@@ -74,7 +74,15 @@ def test_pilot_overlay_publishes_only_loopback_frontend(pilot_overlay: dict[str,
             published[name] = [str(port) for port in ports]
     assert set(published) == {"frontend"}, published
     for port in published["frontend"]:
-        assert port.startswith("127.0.0.1:"), port
+        # LAN feature: frontend bind is variable HRM_PILOT_BIND with default
+        # 127.0.0.1 (see infra/windows/engine/Secrets.psm1). Default must
+        # remain loopback; explicit 0.0.0.0 is only via engine's lan.json.
+        assert (
+            port == "${HRM_PILOT_BIND:-127.0.0.1}:${HRM_PILOT_PORT:-8080}:8080"
+            or port.startswith("127.0.0.1:")
+        ), port
+        if "HRM_PILOT_BIND" in port:
+            assert port.startswith("${HRM_PILOT_BIND:-127.0.0.1}:"), port
 
 
 def test_pilot_overlay_project_name_is_stable(pilot_overlay: dict[str, Any]) -> None:

@@ -37,7 +37,8 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet("install", "start", "stop", "status", "open", "update",
-        "uninstall", "diagnostics", "resume", "channel", "channel-config", "help")]
+        "uninstall", "diagnostics", "resume", "channel", "channel-config",
+        "support-bundle", "lan-access", "restart", "help")]
     [string]$Action = "help",
 
     # Обновление: доверенный каталог релиза (trust boundary — см. README).
@@ -75,14 +76,18 @@ param(
     # channel-config: смена URL канала (-SetUrl) или набора доверенных ключей
     # (-KeysJson <файл JSON {kid:{key,revoked}}>) — ротация/отзыв ключей.
     [string]$SetUrl,
-    [string]$KeysJson
+    [string]$KeysJson,
+
+    # lan-access: -Enable включает публикацию на LAN, -Disable выключает
+    [switch]$Enable,
+    [switch]$Disable
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
 $script:EngineDir = Join-Path $PSScriptRoot "engine"
-foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install", "Crypto", "Channel")) {
+foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install", "Crypto", "Channel", "Lan", "SupportBundle")) {
     Import-Module (Join-Path $script:EngineDir "$module.psm1") -Force -ErrorAction Stop
 }
 
@@ -105,9 +110,12 @@ function Show-HrmUsage {
         "  resume         Продолжить прерванную операцию (после перезагрузки/UAC)",
         "  channel        Цикл канала обновлений (-Watch — блокирующий наблюдатель)",
         "  channel-config Правка канала: -SetUrl <https>, -KeysJson <файл ключей>",
+        "  support-bundle Создать архив диагностики на рабочем столе",
+        "  lan-access     Доступ по локальной сети: -Enable / -Disable (без флагов — показать адрес)",
+        "  restart        Перезапуск приложения (stop + start)",
         "",
         "Параметры: -SourceDir, -InstallDir, -StateDir, -Port, -NonInteractive, -OpenBrowser",
-        "           -ReleaseDir, -Watch, -SetUrl, -KeysJson",
+        "           -ReleaseDir, -Watch, -SetUrl, -KeysJson, -Enable, -Disable",
         "Полная документация: infra/windows/README.md"
     )
     $lines | ForEach-Object { Write-Output $_ }
@@ -171,6 +179,19 @@ try {
             }
             Set-HrmChannelConfig -StateDir $StateDir -Url $SetUrl -PublicKeys $keys
             Write-HrmLog "info" "Конфигурация канала обновлена."
+        }
+        "support-bundle" {
+            $zip = New-HrmSupportBundle -InstallDir $InstallDir -StateDir $StateDir
+            Write-HrmLog "info" ("Архив диагностики создан: {0}" -f $zip)
+        }
+        "lan-access" {
+            Invoke-HrmLanAccess -InstallDir $InstallDir -StateDir $StateDir -Enable:$Enable.IsPresent -Disable:$Disable.IsPresent
+        }
+        "restart" {
+            Write-HrmLog "info" "Перезапуск приложения..."
+            Stop-HrmApp -InstallDir $InstallDir -StateDir $StateDir
+            Start-HrmApp -InstallDir $InstallDir -StateDir $StateDir
+            Write-HrmLog "info" "Перезапуск завершён."
         }
     }
     exit 0

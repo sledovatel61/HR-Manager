@@ -260,6 +260,15 @@ def loopback_client_ok(request: Request, settings: Settings) -> bool:
 
 def _is_loopback(host: str) -> bool:
     host = host.strip().lower()
+    # Strict loopback only: Docker/k8s internal ranges (10/8, 172.16/12,
+    # 192.168.65.x etc.) are NOT loopback — LAN clients must not be able to
+    # claim the first-run owner. Host loopback via 127.0.0.1 is the only
+    # trusted path; nginx overwrites X-Real-IP to $remote_addr, so a LAN
+    # client (e.g. 10.0.0.5 or 192.168.1.50) will be correctly rejected.
+    # Docker Desktop gateway (e.g. 192.168.65.1) is intentionally NOT treated
+    # as loopback: the engine's first-run claim is retried until the backend
+    # reports 127.0.0.1 (see Bootstrap.psm1), and after the owner exists the
+    # endpoint is closed anyway.
     return host == "127.0.0.1" or host == "::1" or host.startswith("127.")
 
 

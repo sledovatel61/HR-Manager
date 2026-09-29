@@ -89,6 +89,19 @@ Filename: "powershell.exe"; \
   Flags: runhidden; \
   RunOnceId: "HRMUninstallStop"
 
+[Icons]
+; Ярлыки пилота (B3): рабочий стол + меню Пуск — «HR Manager» открывает
+; приложение в браузере (скрытое окно PowerShell). Только в меню Пуск:
+; «отчёт для разработчика», «перезапуск», «доступ по сети». Автозапуск
+; после перезагрузки — через папку автозагрузки пользователя (если запущен
+; Docker Desktop) или вручную по ярлыку «HR Manager».
+Name: "{userdesktop}\HR Manager"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hr-manager.ps1"" -Action open"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Открыть HR Manager в браузере"
+Name: "{group}\HR Manager"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hr-manager.ps1"" -Action open"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Открыть HR Manager в браузере"
+Name: "{group}\HR Manager — отчёт для разработчика"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action support-bundle"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Создать архив диагностики для отправки разработчику"
+Name: "{group}\HR Manager — перезапуск"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hr-manager.ps1"" -Action restart"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Перезапустить контейнеры HR Manager"
+Name: "{group}\HR Manager — доступ по сети"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action lan-access"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Показать адрес для доступа коллеги по локальной сети"
+Name: "{userstartup}\HR Manager"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hr-manager.ps1"" -Action start"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Автозапуск HR Manager после входа в систему"
+
 [UninstallDelete]
 ; Штатное обновление заменяет файлы снимка уже после установки, поэтому Inno
 ; не считает их исходными файлами пакета. После остановки стека удаляем только
