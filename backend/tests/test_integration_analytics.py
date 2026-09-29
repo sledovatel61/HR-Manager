@@ -421,12 +421,15 @@ def test_create_rolls_back_when_audit_fails_on_postgres(
 
     monkeypatch.setattr(candidates_router, "record_event", failing_record_event)
 
-    with pytest.raises(RuntimeError, match="simulated audit write failure"):
-        pg_client.post(
-            "/candidates",
-            json={"full_name": "Не появится", "source": "site", "position": ""},
-            headers={"X-CSRF-Token": csrf},
-        )
+    # TraceIdMiddleware converts unhandled exceptions to 500 with trace_id
+    resp = pg_client.post(
+        "/candidates",
+        json={"full_name": "Не появится", "source": "site", "position": ""},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 500
+    assert "trace_id" in resp.json()
+    assert "X-Trace-Id" in resp.headers
 
     pg_db.expire_all()
     assert pg_db.scalar(select(func.count()).select_from(Candidate)) == 0
