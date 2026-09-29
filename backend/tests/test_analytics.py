@@ -808,12 +808,17 @@ def test_mutation_rolls_back_when_ledger_write_fails(
 
     monkeypatch.setattr(candidates_router, "record_fact", failing_record_fact)
 
-    with pytest.raises(RuntimeError, match="simulated ledger write failure"):
-        client.post(
-            "/candidates",
-            json={"full_name": "Не появится", "source": "site", "position": ""},
-            headers={"X-CSRF-Token": csrf},
-        )
+    # TraceIdMiddleware converts unhandled exceptions to 500 with trace_id
+    # (see app/main.py). Atomicity must still hold: no candidate nor fact
+    # is persisted even though the exception is swallowed at the middleware.
+    resp = client.post(
+        "/candidates",
+        json={"full_name": "Не появится", "source": "site", "position": ""},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 500
+    assert "trace_id" in resp.json()
+    assert "X-Trace-Id" in resp.headers
 
     db_session.expire_all()
     assert db_session.scalar(select(func.count()).select_from(Candidate)) == 0

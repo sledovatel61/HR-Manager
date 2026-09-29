@@ -132,6 +132,9 @@ Test-Case "pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_
     Initialize-HrmStateDir $state | Out-Null
     Remove-Item Env:HRM_LICENSE_PUBLIC_KEY -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_SOURCE_DIR -ErrorAction SilentlyContinue
+    # Гарантируем отсутствие внешнего файла ключа — без него движок пишет пустое значение
+    $stateKey = Join-Path $state "license_public_key.b64"
+    if (Test-Path $stateKey) { Remove-Item $stateKey -Force }
     # 1. Без файла ключа движок пишет ПУСТОЕ значение: compose (${HRM_LICENSE_PUBLIC_KEY:?})
     #    откажется стартовать — fail-closed, а не тихий запуск без лицензии.
     $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080

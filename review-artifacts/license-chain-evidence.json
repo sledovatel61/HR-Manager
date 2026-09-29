@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-09-24T08:53:45Z",
+  "generated_at": "2026-09-29T10:55:17Z",
   "generator": "review-artifacts/gen_license_chain_evidence.py (reads real files; CI statuses only from imported artifacts)",
-  "reviewed_tree": "HEAD",
-  "fingerprint_redacted_example": "SHA256:1b544c5d3579e5eb... (redacted, ephemeral demo value)",
+  "reviewed_tree": "working tree",
+  "fingerprint_redacted_example": "SHA256:b76736a8029a5a6a... (redacted, ephemeral demo value)",
   "public_key_b64_length": 44,
-  "public_key_b64_redacted_example": "+Vip1A/B...mdo= (44 chars, redacted, ephemeral demo value)",
+  "public_key_b64_redacted_example": "CBHtr+oH...JfE= (44 chars, redacted, ephemeral demo value)",
   "chain": [
     "owner PC: tools/license-issuer → private key (owner only) + public_key.b64",
     "release: infra/license/public_key.b64 (baked by owner, not in git)",
@@ -17,16 +17,16 @@
     {
       "file": "tools/license-issuer/build.ps1",
       "exists": true,
-      "size": 14686,
-      "lines": 320,
-      "sha256_prefix": "d51a613d6980..."
+      "size": 25950,
+      "lines": 491,
+      "sha256_prefix": "e198f8acebfa..."
     },
     {
       "file": "tools/license-issuer/license-issuer.html",
       "exists": true,
-      "size": 17087,
-      "lines": 329,
-      "sha256_prefix": "d8b39349bf86..."
+      "size": 20863,
+      "lines": 377,
+      "sha256_prefix": "d49fa43a9d82..."
     },
     {
       "file": "tools/license-issuer/nacl-fast.js",
@@ -38,9 +38,9 @@
     {
       "file": "tools/license-issuer/cli.py",
       "exists": true,
-      "size": 5866,
-      "lines": 118,
-      "sha256_prefix": "c67948c74d71..."
+      "size": 6302,
+      "lines": 125,
+      "sha256_prefix": "29ea0b4956a0..."
     },
     {
       "file": "tools/license-issuer/license_issuer.py",
@@ -52,16 +52,16 @@
     {
       "file": "infra/windows/engine/Secrets.psm1",
       "exists": true,
-      "size": 11470,
-      "lines": 233,
-      "sha256_prefix": "c771145bad06..."
+      "size": 11276,
+      "lines": 227,
+      "sha256_prefix": "b29719c11f3e..."
     },
     {
       "file": "infra/compose.pilot.yml",
       "exists": true,
-      "size": 9324,
-      "lines": 179,
-      "sha256_prefix": "eab4f81abd05..."
+      "size": 9704,
+      "lines": 184,
+      "sha256_prefix": "9e5ee0299755..."
     },
     {
       "file": "infra/compose.prod.yml",
@@ -87,9 +87,9 @@
     {
       "file": "infra/scripts/compose_pilot_license_chain.py",
       "exists": true,
-      "size": 22598,
-      "lines": 566,
-      "sha256_prefix": "e79985241310..."
+      "size": 22634,
+      "lines": 567,
+      "sha256_prefix": "b20606d6e4e1..."
     },
     {
       "file": "backend/Dockerfile",
@@ -101,9 +101,9 @@
     {
       "file": "backend/app/config.py",
       "exists": true,
-      "size": 38120,
-      "lines": 722,
-      "sha256_prefix": "7dfca46dd351..."
+      "size": 37678,
+      "lines": 710,
+      "sha256_prefix": "24d8ae07ce73..."
     },
     {
       "file": "backend/app/license_guard.py",
@@ -115,9 +115,9 @@
     {
       "file": "backend/tests/test_pilot_overlay.py",
       "exists": true,
-      "size": 9353,
-      "lines": 238,
-      "sha256_prefix": "a4f1bc7a3f09..."
+      "size": 9797,
+      "lines": 246,
+      "sha256_prefix": "d435c39555e7..."
     },
     {
       "file": "backend/tests/test_production_overlay.py",
@@ -143,23 +143,23 @@
     {
       "file": "infra/windows/tests/engine.tests.ps1",
       "exists": true,
-      "size": 42813,
-      "lines": 678,
-      "sha256_prefix": "bc224d6d6bae..."
+      "size": 43096,
+      "lines": 681,
+      "sha256_prefix": "c287cc15f451..."
     },
     {
       "file": "infra/windows/tests/static.tests.ps1",
       "exists": true,
-      "size": 20855,
-      "lines": 286,
-      "sha256_prefix": "243be428cc51..."
+      "size": 21416,
+      "lines": 292,
+      "sha256_prefix": "4d867fee49ee..."
     },
     {
       "file": ".github/workflows/ci.yml",
       "exists": true,
-      "size": 49720,
-      "lines": 840,
-      "sha256_prefix": "33223e31e366..."
+      "size": 64578,
+      "lines": 1074,
+      "sha256_prefix": "637a3754cf22..."
     }
   ],
   "checks_read_from_real_files": {
@@ -185,7 +185,7 @@
     "check_env_sh_validates_LICENSE_PUBLIC_KEY": true,
     "backend_image_does_not_contain_infra_license_dir": true,
     "backend_config_validates_LICENSE_PUBLIC_KEY": true,
-    "backend_config_has_file_fallback": true,
+    "backend_config_has_no_file_fallback": true,
     "backend_guard_deny_by_default": true,
     "backend_guard_has_slash_boundary": true,
     "backend_guard_has_double_slash_normalization": true,

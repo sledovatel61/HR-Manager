@@ -133,6 +133,52 @@ $releaseJson = [ordered]@{
 }
 Write-HrmUtf8NoBom -Path (Join-Path $appStaging "release.json") -Text ($releaseJson | ConvertTo-Json)
 
+Write-Host "Resolving license public key (pilot, fail-closed)..."
+$licensePublicKey = ""
+$licenseSource = ""
+$repoLicenseFile = Join-Path $repoRoot "infra\license\public_key.b64"
+if (Test-Path $repoLicenseFile) {
+    $content = ([System.IO.File]::ReadAllText($repoLicenseFile, [System.Text.Encoding]::UTF8)).Trim()
+    if ($content -match "PRIVATE KEY|BEGIN .*PRIVATE") {
+        throw "infra/license/public_key.b64 contains private material - build stopped"
+    }
+    if ($content) {
+        $licensePublicKey = $content
+        $licenseSource = $repoLicenseFile
+        Write-Host "Found license public key in $repoLicenseFile"
+    }
+}
+if (-not $licensePublicKey -and $env:HRM_LICENSE_PUBLIC_KEY) {
+    $content = ([string]$env:HRM_LICENSE_PUBLIC_KEY).Trim()
+    if ($content -match "PRIVATE KEY|BEGIN .*PRIVATE") {
+        throw "HRM_LICENSE_PUBLIC_KEY contains private material - build stopped"
+    }
+    if ($content) {
+        $licensePublicKey = $content
+        $licenseSource = "env HRM_LICENSE_PUBLIC_KEY"
+        Write-Host "Using license public key from env HRM_LICENSE_PUBLIC_KEY"
+    }
+}
+if (-not $licensePublicKey) {
+    throw "LICENSE PUBLIC KEY missing: place public key in infra/license/public_key.b64 (44 chars base64) or set GitHub variable/secret HRM_LICENSE_PUBLIC_KEY. Pilot cannot run without public key (fail-closed). See docs/OWNER_QUICKSTART.md and infra/license/README.md."
+}
+try {
+    $decoded = [Convert]::FromBase64String($licensePublicKey)
+    # валидация base64 32 байта (44 символа) — fail-closed
+    if ($decoded.Length -ne 32) {
+        throw "LICENSE_PUBLIC_KEY must decode to 32 bytes (32 байта), got $($decoded.Length)"
+    }
+} catch {
+    throw "LICENSE_PUBLIC_KEY invalid (must be base64 32 bytes / 32 байта, 44 chars): $_"
+}
+$stagedLicenseDir = Join-Path $appStaging "infra\license"
+New-Item -ItemType Directory -Path $stagedLicenseDir -Force | Out-Null
+$stagedLicenseFile = Join-Path $stagedLicenseDir "public_key.b64"
+[System.IO.File]::WriteAllText($stagedLicenseFile, $licensePublicKey + "`n", (New-Object System.Text.UTF8Encoding($false)))
+Write-Host ("License public key embedded from {0}: {1}... (redacted)" -f $licenseSource, $licensePublicKey.Substring(0, 8))
+$licenseFp = (Get-FileHash -Path $stagedLicenseFile -Algorithm SHA256).Hash.ToLowerInvariant()
+Write-Host ("License public key file SHA256: {0}" -f $licenseFp)
+
 $trustStoreInfo = $null
 if ($TrustStoreFile) {
     Write-Host "Resolving trust store: $TrustStoreFile (cwd $(Get-Location))"
@@ -214,6 +260,12 @@ $manifest = [ordered]@{
         sha256 = (Get-FileHash -Path $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     trust_store = $trustStoreInfo
+    license = [ordered]@{
+        public_key_file = "infra/license/public_key.b64"
+        sha256 = $licenseFp
+        source = $licenseSource
+        fingerprint = ("SHA256:{0}... (redacted)" -f $licenseFp.Substring(0,16))
+    }
     signing = [ordered]@{
         status = "unsigned"
         instruction = "installer/README.md (раздел 'Кодовая подпись') и installer/sign.ps1"

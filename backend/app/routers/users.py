@@ -7,9 +7,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_event
-from app.config import Settings, get_settings
+from app.config import Settings
 from app.db import get_db
-from app.deps import get_current_user, require_roles
+from app.deps import get_current_user, get_settings_from_request, require_roles
 from app.models import AuditAction, User, UserRole
 from app.schemas import (
     UserCreate,
@@ -99,7 +99,7 @@ def create_user(
     request: Request,
     db: Session = Depends(get_db),
     actor: User = Depends(_admin_only),
-    settings: Settings = Depends(get_settings),
+    settings: Settings = Depends(get_settings_from_request),
 ) -> UserOut:
     """Create user with mandatory password, enforce license limit."""
     try:
@@ -194,7 +194,7 @@ def update_user(
     request: Request,
     db: Session = Depends(get_db),
     actor: User = Depends(_admin_only),
-    settings: Settings = Depends(get_settings),
+    settings: Settings = Depends(get_settings_from_request),
 ) -> UserOut:
     """Update full name, role, active flag and/or password."""
     user = _get_user_or_404(db, user_id)

@@ -88,6 +88,37 @@ class ApiPrefixStripMiddleware(BaseHTTPMiddleware):
         return await call_next(request)  # type: ignore[operator]
 
 
+class TraceIdMiddleware(BaseHTTPMiddleware):
+    """Attach trace id to each request, log unhandled errors with it (no bodies/PII)."""
+
+    async def dispatch(self, request: Request, call_next: object) -> Response:
+        import uuid
+
+        trace_id = str(uuid.uuid4())
+        request.state.trace_id = trace_id  # type: ignore[attr-defined, unused-ignore]
+        try:
+            response = await call_next(request)  # type: ignore[operator]
+        except Exception as exc:
+            # Never log request bodies, query strings with PII, or full traceback with data.
+            # Only exception type, method, path template, and trace_id.
+            logger.error(
+                "unhandled error trace_id=%s method=%s path=%s exc=%s",
+                trace_id,
+                request.method,
+                request.url.path,
+                type(exc).__name__,
+            )
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal server error", "trace_id": trace_id},
+                headers={"X-Trace-Id": trace_id},
+            )
+        response.headers["X-Trace-Id"] = trace_id
+        return response
+
+
 class MetricsMiddleware(BaseHTTPMiddleware):
     """Record aggregate request metrics (route template + status class only)."""
 
@@ -149,10 +180,11 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     # Middleware order (Starlette: last added is outermost, first to receive request):
     # Desired execution: SecurityHeaders (outermost, adds headers) ->
     # LicenseGuard (sees original /api/... path before stripping) ->
-    # ApiPrefixStrip (strips /api for routing) -> Metrics (innermost) -> route
-    # So add in reverse: Metrics first, ApiPrefixStrip second, LicenseGuard third,
+    # ApiPrefixStrip (strips /api for routing) -> Metrics + TraceId (innermost) -> route
+    # So add in reverse: TraceId+Metrics first, ApiPrefixStrip second, LicenseGuard third,
     # SecurityHeaders last.
     app.add_middleware(MetricsMiddleware)
+    app.add_middleware(TraceIdMiddleware)
     app.add_middleware(ApiPrefixStripMiddleware)
     from app.license_guard import LicenseGuardMiddleware
 

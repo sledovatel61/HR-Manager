@@ -84,7 +84,6 @@ Environment variables
 
 import base64
 from functools import lru_cache
-from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -263,8 +262,9 @@ class Settings(BaseSettings):
 
     # Phase 15: offline license for closed pilot (installation/server license).
     # Ed25519 public key (base64, 32 bytes). In pilot/production it MUST be
-    # set (either via env LICENSE_PUBLIC_KEY or via file
-    # infra/license/public_key.b64 baked into the image by the owner).
+    # set via runtime configuration (env LICENSE_PUBLIC_KEY, injected by the
+    # engine from the external StateDir file). No fallback from git checkout
+    # (infra/license/public_key.b64) is used.
     # In test/development an explicit test key may be set; if empty,
     # enforcement is disabled (tests can enable it via env).
     # Private key is NEVER in git/installer/frontend/Docker/logs.
@@ -454,22 +454,12 @@ class Settings(BaseSettings):
         problems: list[str] = []
         url = make_url(self.database_url)
 
-        # License public key: env first, then file fallback for pilot/production.
-        # File is baked by owner via installer -> infra/license/public_key.b64
-        # (public only).
+        # License public key: must be provided via runtime configuration
+        # (env LICENSE_PUBLIC_KEY). No fallback from git checkout
+        # (infra/license/public_key.b64) — the installer writes the key into
+        # the external local StateDir file and the engine injects it into
+        # pilot.env; backend sees it only as an env var.
         license_key = (self.license_public_key or "").strip()
-        if not license_key and (self.is_pilot or self.is_production):
-            try:
-                candidate = (
-                    Path(__file__).resolve().parents[2] / "infra" / "license" / "public_key.b64"
-                )
-                if candidate.is_file():
-                    file_content = candidate.read_text(encoding="utf-8").strip()
-                    if file_content:
-                        license_key = file_content
-                        self.license_public_key = license_key
-            except Exception:
-                pass
         if license_key:
             try:
                 decoded = base64.b64decode(license_key, validate=True)
@@ -503,9 +493,7 @@ class Settings(BaseSettings):
             # Pilot/production must have a license public key (no disabled check)
             if not license_key:
                 problems.append(
-                    f"LICENSE_PUBLIC_KEY must be set in {label} "
-                    "(env LICENSE_PUBLIC_KEY or file "
-                    "infra/license/public_key.b64 baked by owner)"
+                    f"LICENSE_PUBLIC_KEY must be set in {label} (env LICENSE_PUBLIC_KEY)"
                 )
             if not self.secret_key or self.secret_key == DEVELOPMENT_SECRET_KEY:
                 problems.append(f"SECRET_KEY must be set to a non-default value in {label}")

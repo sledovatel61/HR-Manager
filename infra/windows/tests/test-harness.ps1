@@ -79,7 +79,7 @@ function Initialize-HrmTestEngine {
         $TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM тест движка " + [System.Guid]::NewGuid().ToString("N").Substring(0, 8))
     }
     $engineDir = Join-Path $PSScriptRoot "..\engine"
-    foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install", "Crypto", "Channel")) {
+    foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install", "Crypto", "Channel", "Lan", "SupportBundle")) {
         Import-Module (Join-Path $engineDir "$module.psm1") -Force -ErrorAction Stop
     }
     $env:HRM_NONINTERACTIVE = "1"
@@ -111,6 +111,13 @@ function New-HrmFakeSnapshot {
     New-Item -ItemType Directory -Path (Join-Path $Root "frontend") -Force | Out-Null
     $repoRoot = Join-Path $PSScriptRoot "..\..\.."
     Copy-Item (Join-Path $repoRoot "infra\compose.pilot.yml") (Join-Path $infra "compose.pilot.yml") -Force
+    # Лицензионный публичный ключ — внешний файл snapshot (копируется установщиком в StateDir)
+    $licDir = Join-Path $infra "license"
+    New-Item -ItemType Directory -Path $licDir -Force | Out-Null
+    $pubBytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($pubBytes)
+    $pubB64 = [Convert]::ToBase64String($pubBytes)
+    Set-Content -Path (Join-Path $licDir "public_key.b64") -Value $pubB64 -Encoding UTF8 -NoNewline
     Set-Content -Path (Join-Path $Root "backend\marker.txt") -Value "v1"
     (@{ release_sha = $ReleaseSha; version = "1.0.0" } | ConvertTo-Json) |
         Set-Content -Path (Join-Path $Root "release.json") -Encoding UTF8
@@ -239,6 +246,16 @@ function New-HrmMockWorld {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "worker stale" }
                 }
             }
+            if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "logs")) {
+                # Container logs for support-bundle: return redacted-ish dummy logs
+                $svc = $Arguments[-1]
+                $dummy = "[$svc] dummy log line 1`n[$svc] dummy log line 2 with secret SHOULD_BE_REDACTED"
+                return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $dummy; Stderr = "" }
+            }
+            if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "images") {
+                # For Get-HrmPreviousImagePresent and host report
+                return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "hr-manager-pilot-backend:pilot`nhr-manager-pilot-frontend:pilot"; Stderr = "" }
+            }
             if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "run")) {
                 $joined = ($Arguments -join " ")
                 if ($joined -match "backup-now|\bbackup oneshot\b") {
@@ -274,6 +291,10 @@ function New-HrmMockWorld {
             $global:HRM_MockWorld.IcaclsArgs += , @($Arguments)
             return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ""; Stderr = "" }
         }
+        if ($Name -eq "netsh.exe") {
+            # Firewall rule: just record, succeed
+            return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "Ok."; Stderr = "" }
+        }
         if ($Name -eq "git.exe") {
             return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.ReleaseSha; Stderr = "" }
         }
@@ -300,6 +321,12 @@ function New-HrmMockWorld {
         }
         if ($Uri -like "*/api/ops/backup-health") {
             return @{ StatusCode = $global:HRM_MockWorld.BackupHealthStatusCode; Body = $global:HRM_MockWorld.BackupHealthBody }
+        }
+        if ($Uri -like "*/api/license/status") {
+            return @{ StatusCode = 200; Body = [pscustomobject]@{ has_license = $true; is_valid = $true; license = [pscustomobject]@{ expires_at = "2026-12-31"; max_active_users = 5; client_name = "Пилот Марии" } } }
+        }
+        if ($Uri -like "*/api/admin/ops/pilot-readiness") {
+            return @{ StatusCode = 200; Body = [pscustomobject]@{ verdict = "готово" } }
         }
         # Фронтенд
         return @{ StatusCode = $global:HRM_MockWorld.FrontendStatus; Body = "ok" }
