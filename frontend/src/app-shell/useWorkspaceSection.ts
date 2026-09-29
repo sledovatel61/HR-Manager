@@ -5,6 +5,7 @@ export type WorkspaceSection =
   | "candidates"
   | "calendar"
   | "kanban"
+  | "schedule"
   | "deleted"
   | "analytics"
   | "notifications"
@@ -25,6 +26,7 @@ const SECTION_HASHES: Record<WorkspaceSection, string> = {
   candidates: "#/candidates",
   calendar: "#/calendar",
   kanban: "#/kanban",
+  schedule: "#/schedule",
   deleted: "#/deleted",
   analytics: "#/analytics",
   notifications: "#/notifications",

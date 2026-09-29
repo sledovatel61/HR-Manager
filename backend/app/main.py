@@ -39,6 +39,7 @@ from app.routers import (
     setup,
     updates,
     users,
+    work_schedule,
 )
 from app.routers import (
     license as license_router,
@@ -165,6 +166,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(users.router)
     app.include_router(audit.router)
     app.include_router(candidates.router)
+    app.include_router(work_schedule.router)
     app.include_router(documents.router)
     app.include_router(document_rules.router)
     app.include_router(document_templates.router)

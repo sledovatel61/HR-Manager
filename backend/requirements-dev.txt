@@ -7,3 +7,5 @@ mypy==1.20.2
 types-PyYAML==6.0.12.20260815
 # Runtime parser for the update-channel workflow sanity test (backend/tests).
 PyYAML==6.0.3
+# Типизация openpyxl (runtime-зависимость выгрузки графика выхода).
+types-openpyxl==3.1.5.20260827

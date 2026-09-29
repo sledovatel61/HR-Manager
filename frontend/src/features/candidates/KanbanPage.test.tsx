@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../../design-system/components/Toast";
@@ -12,6 +12,7 @@ vi.mock("../../api", async (importOriginal) => {
     listCandidates: vi.fn(),
     listHrUsers: vi.fn(),
     updateCandidate: vi.fn(),
+    fetchWorkScheduleSuggestions: vi.fn(),
   };
 });
 
@@ -39,6 +40,12 @@ function candidate(stage: CandidateStage, id = "44444444-4444-4444-4444-44444444
     owner_user_id: HR.id,
     owner_username: "hr1",
     stage,
+    start_date: null,
+    start_time: null,
+    start_organization: null,
+    start_department: null,
+    shift: null,
+    start_comment: null,
     created_at: "2026-09-01T10:00:00Z",
     updated_at: "2026-09-02T10:00:00Z",
     deleted_at: null,
@@ -58,6 +65,11 @@ function renderKanban() {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.listHrUsers).mockResolvedValue({ items: [], total: 0 });
+  vi.mocked(api.fetchWorkScheduleSuggestions).mockResolvedValue({
+    organizations: [],
+    departments: [],
+    shifts: [],
+  });
   vi.mocked(api.listCandidates).mockImplementation(async (query) => {
     const stage = query?.stage;
     const items = stage === "new" ? [candidate("new")] : [];
@@ -153,5 +165,58 @@ describe("KanbanPage", () => {
 
   it("labels columns with the shared STAGE_LABELS vocabulary", () => {
     expect(STAGE_LABELS.started).toBe("Вышел");
+  });
+
+  it("opens «Укажите дату выхода» when moving to «Вышел» without a date", async () => {
+    vi.mocked(api.updateCandidate).mockResolvedValue(candidate("started"));
+    renderKanban();
+
+    await screen.findByText("Кандидат new");
+    const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.selectOptions(
+      within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
+      "started"
+    );
+
+    // Сервер не примет «Вышел» без даты: сначала спрашиваем дату, PATCH ещё не ушёл.
+    expect(
+      await screen.findByRole("dialog", { name: "Укажите дату выхода" })
+    ).toBeInTheDocument();
+    expect(api.updateCandidate).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(/Дата выхода/), {
+      target: { value: "2026-08-10" },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Перевести в «Вышел»" }));
+
+    await waitFor(() =>
+      expect(api.updateCandidate).toHaveBeenCalledWith("44444444-4444-4444-4444-444444444444", {
+        stage: "started",
+        start_date: "2026-08-10",
+        start_time: null,
+      })
+    );
+  });
+
+  it("shows the server error in the date dialog and keeps the card in place", async () => {
+    vi.mocked(api.updateCandidate).mockRejectedValue(
+      new api.ApiError(422, "Укажите дату выхода: перевод в этап «Вышел» без даты невозможен.")
+    );
+    renderKanban();
+
+    await screen.findByText("Кандидат new");
+    const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.selectOptions(
+      within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
+      "started"
+    );
+    await screen.findByRole("dialog", { name: "Укажите дату выхода" });
+    await userEvent.click(screen.getByRole("button", { name: "Перевести в «Вышел»" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Укажите дату выхода" });
+    expect(
+      await within(dialog).findByText(/перевод в этап «Вышел» без даты невозможен/)
+    ).toBeInTheDocument();
+    expect(within(newColumn).getByText("Кандидат new")).toBeInTheDocument();
   });
 });
