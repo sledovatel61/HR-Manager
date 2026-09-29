@@ -156,12 +156,15 @@ def test_patch_rollback_when_audit_fails_on_postgres(
 
     monkeypatch.setattr(events_router, "record_event", failing_record_event)
 
-    with pytest.raises(RuntimeError, match="simulated audit write failure"):
-        pg_client.patch(
-            f"/events/{event.id}",
-            json={"expected_version": 1, "title": "Не должно сохраниться"},
-            headers={"X-CSRF-Token": csrf},
-        )
+    # TraceIdMiddleware swallows the exception and returns 500 with trace_id
+    resp = pg_client.patch(
+        f"/events/{event.id}",
+        json={"expected_version": 1, "title": "Не должно сохраниться"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 500
+    assert "trace_id" in resp.json()
+    assert "X-Trace-Id" in resp.headers
 
     pg_db.expire_all()
     stored = pg_db.get(Event, event.id)

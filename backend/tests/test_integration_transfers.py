@@ -233,12 +233,15 @@ def test_transfer_is_atomic_when_audit_write_fails_on_postgres(
 
     monkeypatch.setattr(candidates_router, "record_event", failing_record_event)
 
-    with pytest.raises(RuntimeError, match="simulated audit write failure"):
-        pg_client.post(
-            f"/candidates/{candidate.id}/transfer",
-            json={"new_owner_user_id": str(hr2.id), "reason": "Не должно сохраниться"},
-            headers={"X-CSRF-Token": csrf},
-        )
+    # TraceIdMiddleware converts unhandled exceptions to 500 with trace_id
+    resp = pg_client.post(
+        f"/candidates/{candidate.id}/transfer",
+        json={"new_owner_user_id": str(hr2.id), "reason": "Не должно сохраниться"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 500
+    assert "trace_id" in resp.json()
+    assert "X-Trace-Id" in resp.headers
 
     pg_db.expire_all()
     stored = pg_db.get(Candidate, candidate.id)

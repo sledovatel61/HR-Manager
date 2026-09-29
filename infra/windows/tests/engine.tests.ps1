@@ -133,7 +133,8 @@ Test-Case "pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_
     Remove-Item Env:HRM_LICENSE_PUBLIC_KEY -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_SOURCE_DIR -ErrorAction SilentlyContinue
     # Скрыть репозиторный ключ (B1: committed) на время проверки fail-closed — без файла должно быть пусто
-    $repoKey = Join-Path $RepoRoot "infra\license\public_key.b64"
+    $repoRootCalc = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+    $repoKey = Join-Path $repoRootCalc "infra\license\public_key.b64"
     $repoBackup = $null
     if (Test-Path $repoKey) { $repoBackup = Get-Content $repoKey -Raw; Remove-Item $repoKey -Force }
     try {
