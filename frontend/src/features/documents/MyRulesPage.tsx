@@ -11,7 +11,7 @@
  * предыдущей версии — выключение/правка требуют подтверждения.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, documentRequest as request } from "../../api";
 import { Button } from "../../design-system/components/Button";
 import { ConfirmDialog } from "../../design-system/components/ConfirmDialog";
@@ -29,6 +29,7 @@ import {
   CANDIDATE_STAGE_ORDER,
   STAGE_LABELS,
   type CandidateStage,
+  type NotificationPreferences,
 } from "../../types";
 import type {
   DocumentLists,
@@ -38,6 +39,7 @@ import type {
   RuleParams,
 } from "./types";
 import { errorText, useResource } from "./hooks";
+import { buildRulePreview } from "./rulePreview";
 import "./documents.css";
 
 const actions: Record<RuleParams["action"], string> = {
@@ -178,6 +180,24 @@ export function MyRulesPage() {
   }, []);
   const resource = useResource(load);
 
+  // Настройки уведомлений автора — только для живого блока «Что произойдёт»
+  // (тихие часы, рабочие дни, часовой пояс). Если загрузить не удалось,
+  // блок честно пишет обобщённо, без конкретных часов.
+  const [prefs, setPrefs] = useState<NotificationPreferences | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    request<NotificationPreferences>("/notification-preferences")
+      .then((loaded) => {
+        if (!cancelled) setPrefs(loaded);
+      })
+      .catch(() => {
+        /* preview останется с обобщённой фразой про настройки */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 403 при загрузке (errorText-сообщение) — штатное «Недостаточно прав»
   // вместо общей ошибки; остальное — error state с retry.
   const accessDenied = resource.error.startsWith("Недостаточно прав");
@@ -261,10 +281,13 @@ export function MyRulesPage() {
     }
   };
 
-  const published =
-    resource.data?.lists.items.flatMap((l) =>
-      l.versions.filter((v) => v.state === "published"),
-    ) ?? [];
+  const published = useMemo(
+    () =>
+      resource.data?.lists.items.flatMap((l) =>
+        l.versions.filter((v) => v.state === "published"),
+      ) ?? [],
+    [resource.data],
+  );
 
   /** Имя списка для карточки: по опубликованной версии из /document-lists. */
   const listNameOf = (rule: DocumentRule): string => {
@@ -274,20 +297,50 @@ export function MyRulesPage() {
     return match?.name ?? "";
   };
 
+  /** Сводка карточки теми же человеческими словами, что поля формы:
+   * «Когда это происходит» / «Что сделать» / «Куда отправить». */
   const ruleSummary = (rule: DocumentRule): string => {
-    const parts = [triggerLabels[rule.params.trigger], actionShort[rule.params.action]];
-    if (rule.params.days !== null) parts.push(`через ${rule.params.days} дн.`);
-    const channel =
+    const stage = STAGE_LABELS[rule.params.stage];
+    const when =
+      rule.params.trigger === "stage_transition"
+        ? `кандидат перешёл на этап «${stage}»`
+        : `прошло ${rule.params.days ?? 1} дн. после применения списка, а документы не получены (этап «${stage}»)`;
+    const listName = listNameOf(rule);
+    const what = listName
+      ? `${actionShort[rule.params.action]} «${listName}»`
+      : actionShort[rule.params.action];
+    const where =
       rule.params.channel === "email"
         ? "по почте"
         : rule.params.channel === "telegram"
           ? "в Telegram"
-          : "";
-    if (channel) parts.push(channel);
-    const listName = listNameOf(rule);
-    if (listName) parts.push(`список «${listName}»`);
-    return parts.join(" · ");
+          : "без отправки кандидату";
+    return `Когда это происходит: ${when}. Что сделать: ${what}. Куда отправить: ${where}.`;
   };
+
+  /** Живой блок «Что произойдёт»: чистый клиентский расчёт по данным формы
+   * и настройкам профиля — без сервера, ничего не создаёт и не отправляет.
+   * Пересчитывается на каждое изменение полей (зависимость от `editor`). */
+  const editorPreview = useMemo(() => {
+    if (!editor) return null;
+    const selectedVersion = published.find(
+      (v) =>
+        v.list_id === editor.input.params.list_id &&
+        (!v.stage || v.stage === editor.input.params.stage),
+    );
+    const requiredItems =
+      selectedVersion?.items.filter((item) => item.required).map((item) => item.name) ?? [];
+    const items =
+      requiredItems.length > 0
+        ? requiredItems
+        : (selectedVersion?.items.map((item) => item.name) ?? []);
+    return buildRulePreview(editor.input, {
+      prefs,
+      listName: selectedVersion?.name ?? "",
+      listItems: items,
+      now: new Date(),
+    });
+  }, [editor, prefs, published]);
 
   if (accessDenied) {
     return (
@@ -470,9 +523,7 @@ export function MyRulesPage() {
                   {rule.enabled ? "Включено" : "Выключено"}
                 </Badge>
               </header>
-              <p>
-                {ruleSummary(rule)} · этап: {STAGE_LABELS[rule.params.stage]}
-              </p>
+              <p>{ruleSummary(rule)}</p>
               <p className="document-meta">{actions[rule.params.action]}</p>
               <div className="document-actions">
                 <Button
@@ -522,6 +573,7 @@ export function MyRulesPage() {
           title={editor.id ? "Редактирование правила" : "Новое правило"}
           description="Редактирование отменяет ожидающие задания предыдущей версии правила."
         >
+          <div className="rule-editor">
           <form
             className="document-form"
             onSubmit={(e) => {
@@ -577,7 +629,7 @@ export function MyRulesPage() {
                 />
               )}
             </Field>
-            <Field label="Триггер" required>
+            <Field label="Когда это происходит" required>
               {(id, describedBy) => (
                 <SelectInput
                   id={id}
@@ -625,7 +677,7 @@ export function MyRulesPage() {
                 </SelectInput>
               )}
             </Field>
-            <Field label="Действие" required>
+            <Field label="Что сделать" required>
               {(id, describedBy) => (
                 <SelectInput
                   id={id}
@@ -707,7 +759,7 @@ export function MyRulesPage() {
                 <p className="document-meta">
                   Обязательное условие: есть недостающие обязательные документы.
                 </p>
-                <Field label="Канал" required>
+                <Field label="Куда отправить" required>
                   {(id, describedBy) => (
                     <SelectInput
                       id={id}
@@ -754,6 +806,76 @@ export function MyRulesPage() {
               </Button>
             </div>
           </form>
+
+          {editorPreview && (
+            <aside className="rule-preview" aria-label="Что произойдёт">
+              <h3 className="rule-preview-title">Что произойдёт</h3>
+              <div aria-live="polite">
+                {editorPreview.missing.length > 0 ? (
+                  <p className="rule-preview-missing">
+                    Пока не хватает: {editorPreview.missing.join(", ")}. Заполните
+                    эти поля — и здесь появится описание.
+                  </p>
+                ) : (
+                  <>
+                    <p className="rule-preview-summary">
+                      {editorPreview.when}, {editorPreview.what} — куда отправить:{" "}
+                      {editorPreview.where}. Правило сработает только для
+                      кандидатов, к которым у вас есть доступ.
+                    </p>
+                    {editorPreview.disabled && (
+                      <p className="rule-preview-warn">
+                        Правило выключено — оно не будет срабатывать, пока вы не
+                        включите его.
+                      </p>
+                    )}
+                    <p className="rule-preview-timing">{editorPreview.timing}</p>
+                    {editorPreview.textSample && (
+                      <>
+                        <p className="document-meta">
+                          Образец текста кандидату (первые ~200 символов):
+                        </p>
+                        <pre className="rule-preview-text">
+                          {editorPreview.textSample}
+                        </pre>
+                        <p className="document-meta">
+                          Имя кандидата и реально недостающие документы подставит
+                          сервер перед отправкой.
+                        </p>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <details className="rule-howto">
+                <summary>Как это работает</summary>
+                <ol>
+                  <li>
+                    Правило срабатывает на событие: переход кандидата на этап или
+                    наступление срока, когда документы не получены.
+                  </li>
+                  <li>
+                    Правило работает только с кандидатами, к которым у вас есть
+                    доступ.
+                  </li>
+                  <li>
+                    Отправка учитывает ваши тихие часы, рабочие дни и часовой
+                    пояс — ночью и в выходные сообщения ждут.
+                  </li>
+                  <li>
+                    Правка или выключение правила отменяет ожидающие отправки
+                    предыдущей версии.
+                  </li>
+                  <li>
+                    Каждое срабатывание видно в «Истории срабатываний» на
+                    карточке правила.
+                  </li>
+                </ol>
+              </details>
+            </aside>
+          )}
+          </div>
         </Modal>
       )}
 

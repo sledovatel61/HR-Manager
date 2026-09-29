@@ -15,10 +15,9 @@ import { NotificationCenterPage } from "../features/notifications/NotificationCe
 import { RemindersPage } from "../features/notifications/RemindersPage";
 import { PreferencesPage } from "../features/notifications/PreferencesPage";
 import { IntegrationsPage } from "../features/notifications/IntegrationsPage";
-import { AdminQueuePage } from "../features/notifications/AdminQueuePage";
 import { UsersPage } from "../features/users/UsersPage";
 import { UpdateChannelPage } from "../features/updates/UpdateChannelPage";
-import { PilotReadinessPage } from "../features/readiness/PilotReadinessPage";
+import { AdminPage } from "../features/admin/AdminPage";
 import { LicensePage } from "../features/license/LicensePage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
 import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
@@ -45,7 +44,6 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   preferences: { label: "Настройки уведомлений", icon: "settings" },
   integrations: { label: "Интеграции", icon: "arrow-right-left" },
   updates: { label: "Обновления", icon: "loader" },
-  readiness: { label: "Готовность пилота", icon: "check-circle" },
   license: { label: "Лицензия", icon: "shield" },
   admin: { label: "Администрирование", icon: "shield" },
   users: { label: "Пользователи", icon: "users" },
@@ -62,12 +60,13 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
     return ["queue", "calendar", "kanban", "schedule", "deleted", ...personal];
   }
   if (role === "admin") {
-    // «Готовность пилота» — read-only отчёт admin + update_channel_manage;
-    // backend всё равно перепроверяет права и отвечает 403 без scope.
+    // Диагностика запуска и обновлений — вкладка внутри «Администрирование»
+    // (бывший отдельный пункт «Готовность пилота»): права прежние,
+    // admin + update_channel_manage; backend перепроверяет и отвечает 403.
     // Лицензия — только admin (загрузка/замена).
     // «Пользователи» — управление учётными записями, строго admin-only
     // (и в навигации, и повторно внутри самой страницы).
-    return ["candidates", "calendar", "kanban", "schedule", "deleted", "analytics", ...personal, "updates", "readiness", "license", "admin", "users"];
+    return ["candidates", "calendar", "kanban", "schedule", "deleted", "analytics", ...personal, "updates", "license", "admin", "users"];
   }
   return ["candidates", "calendar", "kanban", "schedule", "deleted", "analytics", ...personal, "updates", "admin"];
 }
@@ -84,7 +83,12 @@ function initialsOf(fullName: string, username: string): string {
 export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
   const { user } = current;
   const sections = sectionsForRole(user.role);
-  const [section, navigate] = useWorkspaceSection(sections[0]);
+  const [section, navigate, adminTab, navigateAdminTab] =
+    useWorkspaceSection(sections[0]);
+  // Deep-link на раздел, недоступный роли (например, #/admin у HR или старый
+  // #/readiness у руководителя), приводит к первому доступному разделу;
+  // права всё равно перепроверяет сервер.
+  const activeSection = sections.includes(section) ? section : sections[0];
   const [pendingCandidateId, setPendingCandidateId] = useState<string | null>(null);
 
   // A 401 from any API call means the session is gone: return to login.
@@ -126,8 +130,8 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             <button
               key={item}
               type="button"
-              className={`sidebar-link ${item === section ? "is-active" : ""}`}
-              aria-current={item === section ? "page" : undefined}
+              className={`sidebar-link ${item === activeSection ? "is-active" : ""}`}
+              aria-current={item === activeSection ? "page" : undefined}
               onClick={() => navigate(item)}
             >
               <Icon name={SECTION_META[item].icon} size={16} />
@@ -139,7 +143,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
 
       <div className="workspace-main">
         <header className="topbar">
-          <h1 className="topbar-title">{SECTION_META[section].label}</h1>
+          <h1 className="topbar-title">{SECTION_META[activeSection].label}</h1>
           <div className="topbar-right">
             <NotificationBell onOpenCandidate={openCandidate} />
             <div className="topbar-user">
@@ -164,48 +168,48 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
         </header>
 
         <main id="main-content" className="workspace-content" tabIndex={-1}>
-          {section === "calendar" && (
+          {activeSection === "calendar" && (
             <CalendarPage user={user} onOpenCandidate={openCandidate} />
           )}
-          {section === "kanban" && <KanbanPage user={user} />}
-          {section === "schedule" && (
+          {activeSection === "kanban" && <KanbanPage user={user} />}
+          {activeSection === "schedule" && (
             <SchedulePage user={user} onOpenCandidate={openCandidate} />
           )}
-          {section === "analytics" && <AnalyticsPage user={user} />}
-          {section === "notifications" && (
+          {activeSection === "analytics" && <AnalyticsPage user={user} />}
+          {activeSection === "notifications" && (
             <NotificationCenterPage onOpenCandidate={openCandidate} />
           )}
-          {section === "reminders" && <RemindersPage user={user} />}
-          {section === "preferences" && <PreferencesPage />}
-          {section === "documents" && <DocumentListsPage />}
-          {section === "templates" && <TemplatesPage />}
-          {section === "rules" && <MyRulesPage />}
-          {section === "integrations" && <IntegrationsPage user={user} />}
-          {section === "updates" && <UpdateChannelPage />}
-          {section === "readiness" && <PilotReadinessPage />}
-          {section === "license" && <LicensePage />}
-          {section === "admin" && <AdminQueuePage />}
-          {section === "users" && <UsersPage currentUser={user} />}
-          {section !== "calendar" &&
-            section !== "kanban" &&
-            section !== "schedule" &&
-            section !== "analytics" &&
-            section !== "notifications" &&
-            section !== "reminders" &&
-            section !== "preferences" &&
-            section !== "documents" &&
-            section !== "templates" &&
-            section !== "rules" &&
-            section !== "integrations" &&
-            section !== "updates" &&
-            section !== "readiness" &&
-            section !== "license" &&
-            section !== "admin" &&
-            section !== "users" && (
+          {activeSection === "reminders" && <RemindersPage user={user} />}
+          {activeSection === "preferences" && <PreferencesPage />}
+          {activeSection === "documents" && <DocumentListsPage />}
+          {activeSection === "templates" && <TemplatesPage />}
+          {activeSection === "rules" && <MyRulesPage />}
+          {activeSection === "integrations" && <IntegrationsPage user={user} />}
+          {activeSection === "updates" && <UpdateChannelPage />}
+          {activeSection === "license" && <LicensePage />}
+          {activeSection === "admin" && (
+            <AdminPage role={user.role} tab={adminTab} onTabChange={navigateAdminTab} />
+          )}
+          {activeSection === "users" && <UsersPage currentUser={user} />}
+          {activeSection !== "calendar" &&
+            activeSection !== "kanban" &&
+            activeSection !== "schedule" &&
+            activeSection !== "analytics" &&
+            activeSection !== "notifications" &&
+            activeSection !== "reminders" &&
+            activeSection !== "preferences" &&
+            activeSection !== "documents" &&
+            activeSection !== "templates" &&
+            activeSection !== "rules" &&
+            activeSection !== "integrations" &&
+            activeSection !== "updates" &&
+            activeSection !== "license" &&
+            activeSection !== "admin" &&
+            activeSection !== "users" && (
             <CandidatesListPage
-              key={section}
+              key={activeSection}
               user={user}
-              mode={section === "deleted" ? "deleted" : section === "queue" ? "queue" : "all"}
+              mode={activeSection === "deleted" ? "deleted" : activeSection === "queue" ? "queue" : "all"}
               openCandidateId={pendingCandidateId}
               onCandidateOpened={() => setPendingCandidateId(null)}
             />

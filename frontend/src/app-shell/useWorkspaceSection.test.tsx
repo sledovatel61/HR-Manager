@@ -74,4 +74,31 @@ describe("useWorkspaceSection", () => {
     expect(window.location.hash).toBe("#/templates");
     expect(result.current[0]).toBe("templates");
   });
+
+  it("redirects the legacy #/readiness deep link to the admin diagnostics tab", async () => {
+    const { result } = renderRouter("#/readiness");
+    // Раздел — администрирование, вкладка — диагностика, хэш переписан
+    // на новый (старый пункт меню «Готовность пилота» убран).
+    expect(result.current[0]).toBe("admin");
+    expect(result.current[2]).toBe("diagnostics");
+    await waitFor(() => expect(window.location.hash).toBe("#/admin/diagnostics"));
+  });
+
+  it("resolves #/admin/diagnostics to the admin section with the diagnostics tab", () => {
+    const { result } = renderRouter("#/admin/diagnostics");
+    expect(result.current[0]).toBe("admin");
+    expect(result.current[2]).toBe("diagnostics");
+  });
+
+  it("defaults the admin tab to the queue and switches it via navigateAdminTab", async () => {
+    const { result } = renderRouter("#/admin");
+    expect(result.current[2]).toBe("queue");
+
+    const navigateAdminTab = result.current[3];
+    await act(async () => {
+      navigateAdminTab("diagnostics");
+    });
+    expect(window.location.hash).toBe("#/admin/diagnostics");
+    expect(result.current[2]).toBe("diagnostics");
+  });
 });
