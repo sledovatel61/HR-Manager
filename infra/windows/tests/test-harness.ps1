@@ -111,6 +111,13 @@ function New-HrmFakeSnapshot {
     New-Item -ItemType Directory -Path (Join-Path $Root "frontend") -Force | Out-Null
     $repoRoot = Join-Path $PSScriptRoot "..\..\.."
     Copy-Item (Join-Path $repoRoot "infra\compose.pilot.yml") (Join-Path $infra "compose.pilot.yml") -Force
+    # Лицензионный публичный ключ — внешний файл snapshot (копируется установщиком в StateDir)
+    $licDir = Join-Path $infra "license"
+    New-Item -ItemType Directory -Path $licDir -Force | Out-Null
+    $pubBytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($pubBytes)
+    $pubB64 = [Convert]::ToBase64String($pubBytes)
+    Set-Content -Path (Join-Path $licDir "public_key.b64") -Value $pubB64 -Encoding UTF8 -NoNewline
     Set-Content -Path (Join-Path $Root "backend\marker.txt") -Value "v1"
     (@{ release_sha = $ReleaseSha; version = "1.0.0" } | ConvertTo-Json) |
         Set-Content -Path (Join-Path $Root "release.json") -Encoding UTF8

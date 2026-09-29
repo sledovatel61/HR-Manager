@@ -5,7 +5,6 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -268,25 +267,21 @@ def test_query_string_does_not_bypass() -> None:
 
 
 def test_fail_closed_pilot_missing_key() -> None:
-    with patch("pathlib.Path.is_file", return_value=False):
-        with pytest.raises(Exception) as exc:
-            Settings.model_validate(
-                {
-                    "APP_ENV": "pilot",
-                    "SECRET_KEY": "strong-secret-key-1234567890abcdef1234567890",
-                    "DATABASE_URL": "postgresql+psycopg://user:pass@localhost/db",
-                    "LICENSE_PUBLIC_KEY": "",
-                    "PILOT_BOOTSTRAP_EXCHANGE_TOKEN": "a" * 32,
-                }
-            )
-        assert "LICENSE_PUBLIC_KEY" in str(exc.value)
+    with pytest.raises(Exception) as exc:
+        Settings.model_validate(
+            {
+                "APP_ENV": "pilot",
+                "SECRET_KEY": "strong-secret-key-1234567890abcdef1234567890",
+                "DATABASE_URL": "postgresql+psycopg://user:pass@localhost/db",
+                "LICENSE_PUBLIC_KEY": "",
+                "PILOT_BOOTSTRAP_EXCHANGE_TOKEN": "a" * 32,
+            }
+        )
+    assert "LICENSE_PUBLIC_KEY" in str(exc.value)
 
 
 def test_fail_closed_pilot_empty_key() -> None:
-    with (
-        patch("pathlib.Path.is_file", return_value=False),
-        pytest.raises(Exception),  # noqa: B017
-    ):
+    with pytest.raises(Exception):  # noqa: B017
         Settings.model_validate(
             {
                 "APP_ENV": "pilot",
