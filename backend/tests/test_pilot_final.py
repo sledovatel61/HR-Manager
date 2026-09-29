@@ -246,7 +246,8 @@ def test_x_real_ip_spoof_blocked(db_engine):
     # Проверим, что nginx.conf действительно перезаписывает.
     import pathlib
 
-    nginx = pathlib.Path("frontend/nginx.conf").read_text(encoding="utf-8")
+    nginx = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "nginx.conf"
+    nginx = nginx.read_text(encoding="utf-8")
     assert "proxy_set_header X-Real-IP $remote_addr;" in nginx
     assert "proxy_set_header X-Real-IP 127.0.0.1;" not in nginx
 

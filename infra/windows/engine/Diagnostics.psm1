@@ -153,7 +153,6 @@ function Get-HrmDiagnostics {
     $result["hint"] = $hint
     if ($AsJson) {
         Protect-HrmOutput (($result | ConvertTo-Json -Depth 6))
-        Protect-HrmOutput $hint
     }
     else {
         $rows = @(

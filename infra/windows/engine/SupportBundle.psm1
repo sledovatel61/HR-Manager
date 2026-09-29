@@ -11,6 +11,14 @@
 
 Set-StrictMode -Version 2.0
 
+function Redact-HrmPii {
+    # Доп. удаление PII: email и телефоны (используется для всех файлов отчёта)
+    param([string]$Text)
+    $t = [regex]::Replace($Text, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<email-redacted>')
+    $t = [regex]::Replace($t, '\+?[0-9][0-9\-\s\(\)]{7,}[0-9]', '<phone-redacted>')
+    return $t
+}
+
 function Get-HrmDesktopPath {
     # Возвращает путь к рабочему столу (мокабельно в тестах через env).
     if ($env:HRM_DESKTOP_DIR -and (Test-Path $env:HRM_DESKTOP_DIR)) { return $env:HRM_DESKTOP_DIR }
@@ -63,7 +71,7 @@ function New-HrmSupportBundle {
                 Get-HrmDiagnostics -InstallDir $InstallDir -StateDir $StateDir -AsJson 2>&1 | ForEach-Object { $jsonLines += $_.ToString() }
                 ($jsonLines -join "`n")
             }
-            $diagText = Redact-HrmText $diagText
+            $diagText = Redact-HrmPii (Redact-HrmText $diagText)
             [System.IO.File]::WriteAllText((Join-Path $tmpDir "diagnostics.json"), $diagText, (New-Object System.Text.UTF8Encoding($false)))
         } catch {
             [System.IO.File]::WriteAllText((Join-Path $tmpDir "diagnostics.json"), (Redact-HrmText $_.Exception.Message), (New-Object System.Text.UTF8Encoding($false)))
@@ -73,7 +81,7 @@ function New-HrmSupportBundle {
         try {
             if ($null -ne $record) {
                 $recJson = ($record | ConvertTo-Json -Depth 8)
-                $recJson = Redact-HrmText $recJson
+                $recJson = Redact-HrmPii (Redact-HrmText $recJson)
                 [System.IO.File]::WriteAllText((Join-Path $tmpDir "install-record.json"), $recJson, (New-Object System.Text.UTF8Encoding($false)))
             }
         } catch {}
@@ -83,7 +91,7 @@ function New-HrmSupportBundle {
             $relPath = Join-Path $InstallDir "release.json"
             if (Test-Path $relPath) {
                 $relText = Get-Content -Path $relPath -Raw -Encoding UTF8
-                $relText = Redact-HrmText $relText
+                $relText = Redact-HrmPii (Redact-HrmText $relText)
                 [System.IO.File]::WriteAllText((Join-Path $tmpDir "release.json"), $relText, (New-Object System.Text.UTF8Encoding($false)))
             }
         } catch {}
@@ -96,7 +104,7 @@ function New-HrmSupportBundle {
                 # Удалить поле signature если есть, и любые PII
                 $licJson = ($licBody | ConvertTo-Json -Depth 8)
                 # Доп. редакция: удалить email/телефоны если вдруг попали (хотя статус их не содержит)
-                $licJson = Redact-HrmText $licJson
+                $licJson = Redact-HrmPii (Redact-HrmText $licJson)
                 # Удалить signature из текста если присутствует
                 $licJson = [regex]::Replace($licJson, '"signature"\s*:\s*"[^"]*"', '"signature":"<redacted>"')
                 [System.IO.File]::WriteAllText((Join-Path $tmpDir "license-status.json"), $licJson, (New-Object System.Text.UTF8Encoding($false)))
@@ -111,7 +119,7 @@ function New-HrmSupportBundle {
                 $res = Invoke-HrmHttp -Uri "$baseUrl/api/$endpoint"
                 $txt = ($res.Body | ConvertTo-Json -Depth 8 -ErrorAction SilentlyContinue)
                 if (-not $txt) { $txt = [string]$res.Body }
-                $txt = Redact-HrmText $txt
+                $txt = Redact-HrmPii (Redact-HrmText $txt)
                 $fname = "health-$($endpoint.Replace('/','-')).json"
                 [System.IO.File]::WriteAllText((Join-Path $tmpDir $fname), $txt, (New-Object System.Text.UTF8Encoding($false)))
             } catch {
@@ -124,7 +132,7 @@ function New-HrmSupportBundle {
             $readRes = Invoke-HrmHttp -Uri "$baseUrl/api/admin/ops/pilot-readiness"
             $readTxt = ($readRes.Body | ConvertTo-Json -Depth 8 -ErrorAction SilentlyContinue)
             if (-not $readTxt) { $readTxt = [string]$readRes.Body }
-            $readTxt = Redact-HrmText $readTxt
+            $readTxt = Redact-HrmPii (Redact-HrmText $readTxt)
             [System.IO.File]::WriteAllText((Join-Path $tmpDir "pilot-readiness.json"), $readTxt, (New-Object System.Text.UTF8Encoding($false)))
         } catch {
             [System.IO.File]::WriteAllText((Join-Path $tmpDir "pilot-readiness.json"), (Redact-HrmText $_.Exception.Message), (New-Object System.Text.UTF8Encoding($false)))
@@ -137,10 +145,7 @@ function New-HrmSupportBundle {
                 $combined = ""
                 if ($logs.Stdout) { $combined += $logs.Stdout }
                 if ($logs.Stderr) { $combined += "`n" + $logs.Stderr }
-                $combined = Redact-HrmText $combined
-                # Доп. удаление PII-паттернов: email, телефон
-                $combined = [regex]::Replace($combined, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<email-redacted>')
-                $combined = [regex]::Replace($combined, '\+?[0-9][0-9\-\s\(\)]{7,}[0-9]', '<phone-redacted>')
+                $combined = Redact-HrmPii (Redact-HrmText $combined)
                 [System.IO.File]::WriteAllText((Join-Path $tmpDir "logs-$svc.txt"), $combined, (New-Object System.Text.UTF8Encoding($false)))
             } catch {}
         }
@@ -151,7 +156,7 @@ function New-HrmSupportBundle {
             $journalPath = Get-HrmUpdateJournal $StateDir
             if (Test-Path $journalPath) {
                 $jText = Get-Content -Path $journalPath -Raw -Encoding UTF8
-                $jText = Redact-HrmText $jText
+                $jText = Redact-HrmPii (Redact-HrmText $jText)
                 [System.IO.File]::WriteAllText((Join-Path $tmpDir "update-journal.json"), $jText, (New-Object System.Text.UTF8Encoding($false)))
             }
         } catch {}
@@ -159,7 +164,7 @@ function New-HrmSupportBundle {
             $chanPath = Get-HrmChannelConfigFile $StateDir
             if (Test-Path $chanPath) {
                 $cText = Get-Content -Path $chanPath -Raw -Encoding UTF8
-                $cText = Redact-HrmText $cText
+                $cText = Redact-HrmPii (Redact-HrmText $cText)
                 [System.IO.File]::WriteAllText((Join-Path $tmpDir "channel.json"), $cText, (New-Object System.Text.UTF8Encoding($false)))
             }
         } catch {}
@@ -167,7 +172,7 @@ function New-HrmSupportBundle {
             $lanPath = Get-HrmLanConfigFile $StateDir
             if (Test-Path $lanPath) {
                 $lText = Get-Content -Path $lanPath -Raw -Encoding UTF8
-                $lText = Redact-HrmText $lText
+                $lText = Redact-HrmPii (Redact-HrmText $lText)
                 [System.IO.File]::WriteAllText((Join-Path $tmpDir "lan.json"), $lText, (New-Object System.Text.UTF8Encoding($false)))
             }
         } catch {}
@@ -181,8 +186,8 @@ function New-HrmSupportBundle {
                 if (Test-Path $logFile) {
                     $content = Get-Content -Path $logFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
                     if ($content) {
-                        $content = Redact-HrmText $content
-                        $content = [regex]::Replace($content, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<email-redacted>')
+                        $content = Redact-HrmPii (Redact-HrmText $content)
+
                         $base = [System.IO.Path]::GetFileName($logFile)
                         [System.IO.File]::WriteAllText((Join-Path $tmpDir "installer-$base"), $content, (New-Object System.Text.UTF8Encoding($false)))
                     }
@@ -198,7 +203,7 @@ function New-HrmSupportBundle {
                 url = $baseUrl
             }
             $verText = ($verInfo | ConvertTo-Json -Depth 4)
-            $verText = Redact-HrmText $verText
+            $verText = Redact-HrmPii (Redact-HrmText $verText)
             [System.IO.File]::WriteAllText((Join-Path $tmpDir "version.json"), $verText, (New-Object System.Text.UTF8Encoding($false)))
         } catch {}
 
