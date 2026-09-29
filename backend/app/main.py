@@ -95,7 +95,7 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
         import uuid
 
         trace_id = str(uuid.uuid4())
-        request.state.trace_id = trace_id  # type: ignore[attr-defined]
+        request.state.trace_id = trace_id  # type: ignore[attr-defined, unused-ignore]
         try:
             response = await call_next(request)  # type: ignore[operator]
         except Exception as exc:

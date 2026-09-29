@@ -8,9 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_event
 from app.config import Settings
-from app.deps import get_settings_from_request
 from app.db import get_db
-from app.deps import get_current_user, require_roles
+from app.deps import get_current_user, get_settings_from_request, require_roles
 from app.models import AuditAction, User, UserRole
 from app.schemas import (
     UserCreate,

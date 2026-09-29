@@ -3,11 +3,10 @@
 import base64
 import uuid
 from datetime import UTC, date, datetime, timedelta
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -20,16 +19,29 @@ SQLITE_URL = "sqlite+pysqlite://"
 
 
 def gen_keypair():
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     priv = Ed25519PrivateKey.generate()
-    priv_hex = priv.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()).hex()
-    pub_b64 = base64.b64encode(priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
+    priv_hex = priv.private_bytes(
+        serialization.Encoding.Raw,
+        serialization.PrivateFormat.Raw,
+        serialization.NoEncryption(),
+    ).hex()
+    pub_b64 = base64.b64encode(
+        priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    ).decode()
     return priv_hex, pub_b64
 
 
-def issue_license_dict(client_name="Пилот Марии", expires_at=None, max_users=5, priv_hex=None, license_id=None, issued_at=None):
+def issue_license_dict(
+    client_name="Пилот Марии",
+    expires_at=None,
+    max_users=5,
+    priv_hex=None,
+    license_id=None,
+    issued_at=None,
+):
     if expires_at is None:
         expires_at = (date.today() + timedelta(days=365)).isoformat()
     if license_id is None:
@@ -49,7 +61,9 @@ def issue_license_dict(client_name="Пилот Марии", expires_at=None, max
 
 @pytest.fixture()
 def db_engine():
-    engine = create_engine(SQLITE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine = create_engine(
+        SQLITE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
     Base.metadata.create_all(engine)
     yield engine
     engine.dispose()
@@ -71,17 +85,35 @@ def test_license_limit_one_vs_two(db_engine):
     Base.metadata.create_all(db_engine)
     # Create admin and one active user
     with Session(db_engine) as s:
-        admin = User(id=uuid.uuid4(), username="admin", full_name="Admin", role=UserRole.ADMIN, password_hash=hash_password("AdminPass123!"), is_active=True)
-        hr1 = User(id=uuid.uuid4(), username="hr1", full_name="HR1", role=UserRole.HR, password_hash=hash_password("pass12345678"), is_active=True)
+        admin = User(
+            id=uuid.uuid4(),
+            username="admin",
+            full_name="Admin",
+            role=UserRole.ADMIN,
+            password_hash=hash_password("AdminPass123!"),
+            is_active=True,
+        )
+        hr1 = User(
+            id=uuid.uuid4(),
+            username="hr1",
+            full_name="HR1",
+            role=UserRole.HR,
+            password_hash=hash_password("pass12345678"),
+            is_active=True,
+        )
         s.add_all([admin, hr1])
         # License with limit 1 (includes admin) -> already 2 active, creation should fail even though DB has 2 >1? Actually server checks active_count >= max => fail
         lic1 = issue_license_dict(max_users=1, priv_hex=priv_hex)
         row1 = License(
             license_id=lic1["license_id"],
             client_name=lic1["client_name"],
-            issued_at=datetime.strptime(lic1["issued_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC),
+            issued_at=datetime.strptime(lic1["issued_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=UTC
+            ),
             expires_at=lic1["expires_at"],
-            expires_at_end=datetime.combine(date.fromisoformat(lic1["expires_at"]), datetime.max.time()).replace(tzinfo=UTC),
+            expires_at_end=datetime.combine(
+                date.fromisoformat(lic1["expires_at"]), datetime.max.time()
+            ).replace(tzinfo=UTC),
             max_active_users=1,
             signature=lic1["signature"],
             is_active=True,
@@ -129,19 +161,32 @@ def test_license_limit_one_vs_two(db_engine):
         pass
 
     # Second scenario: clean engine
-    engine2 = create_engine(SQLITE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine2 = create_engine(
+        SQLITE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
     Base.metadata.create_all(engine2)
     admin2_id = uuid.uuid4()
     with Session(engine2) as s:
-        admin2 = User(id=admin2_id, username="admin2", full_name="Admin2", role=UserRole.ADMIN, password_hash=hash_password("AdminPass123!"), is_active=True)
+        admin2 = User(
+            id=admin2_id,
+            username="admin2",
+            full_name="Admin2",
+            role=UserRole.ADMIN,
+            password_hash=hash_password("AdminPass123!"),
+            is_active=True,
+        )
         s.add(admin2)
         lic2 = issue_license_dict(max_users=1, priv_hex=priv_hex)
         row2 = License(
             license_id=lic2["license_id"],
             client_name=lic2["client_name"],
-            issued_at=datetime.strptime(lic2["issued_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC),
+            issued_at=datetime.strptime(lic2["issued_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=UTC
+            ),
             expires_at=lic2["expires_at"],
-            expires_at_end=datetime.combine(date.fromisoformat(lic2["expires_at"]), datetime.max.time()).replace(tzinfo=UTC),
+            expires_at_end=datetime.combine(
+                date.fromisoformat(lic2["expires_at"]), datetime.max.time()
+            ).replace(tzinfo=UTC),
             max_active_users=1,
             signature=lic2["signature"],
             is_active=True,
@@ -157,20 +202,29 @@ def test_license_limit_one_vs_two(db_engine):
     csrf2 = resp2.json()["csrf_token"]
     client2.cookies.update(resp2.cookies)
     # limit 1 -> second user blocked
-    r1 = client2.post("/admin/users", json={"username": "hr2", "full_name": "HR2", "role": "hr", "password": "StrongPass123!"}, headers={"x-csrf-token": csrf2})
+    r1 = client2.post(
+        "/admin/users",
+        json={"username": "hr2", "full_name": "HR2", "role": "hr", "password": "StrongPass123!"},
+        headers={"x-csrf-token": csrf2},
+    )
     assert r1.status_code == 409
     # Now upload license with limit 2
     lic3 = issue_license_dict(max_users=2, priv_hex=priv_hex)
     # Deactivate old and create new
     with Session(engine2) as s:
         old2 = s.scalar(select(License).where(License.is_active.is_(True)))
+        assert old2 is not None
         old2.is_active = False
         new_row = License(
             license_id=lic3["license_id"],
             client_name=lic3["client_name"],
-            issued_at=datetime.strptime(lic3["issued_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC),
+            issued_at=datetime.strptime(lic3["issued_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=UTC
+            ),
             expires_at=lic3["expires_at"],
-            expires_at_end=datetime.combine(date.fromisoformat(lic3["expires_at"]), datetime.max.time()).replace(tzinfo=UTC),
+            expires_at_end=datetime.combine(
+                date.fromisoformat(lic3["expires_at"]), datetime.max.time()
+            ).replace(tzinfo=UTC),
             max_active_users=2,
             signature=lic3["signature"],
             is_active=True,
@@ -179,7 +233,11 @@ def test_license_limit_one_vs_two(db_engine):
         )
         s.add(new_row)
         s.commit()
-    r2 = client2.post("/admin/users", json={"username": "hr2", "full_name": "HR2", "role": "hr", "password": "StrongPass123!"}, headers={"x-csrf-token": csrf2})
+    r2 = client2.post(
+        "/admin/users",
+        json={"username": "hr2", "full_name": "HR2", "role": "hr", "password": "StrongPass123!"},
+        headers={"x-csrf-token": csrf2},
+    )
     assert r2.status_code in (200, 201), r2.text
 
 
@@ -205,7 +263,6 @@ def test_x_real_ip_spoof_blocked(db_engine):
     # но с реального IP сети (симулируем через client host 192.168.1.100).
     # В TestClient host по умолчанию testclient считается loopback в test режиме,
     # поэтому для проверки подделки используем прямой вызов loopback_client_ok.
-    from app.setup_owner import loopback_client_ok
     from fastapi import Request
 
     # Создадим фейковый Request с заголовком 127.0.0.1 но client.host = 192.168.1.50
@@ -228,13 +285,21 @@ def test_x_real_ip_spoof_blocked(db_engine):
     # Это уязвимость если backend напрямую доступен. Но в пилоте backend не публикуется, поэтому риск принят.
     # Тест должен зафиксировать, что nginx перезаписывает header, а не backend.
     # Мы проверяем, что без заголовка LAN IP не проходит.
-    req_no_header = Request({"type": "http", "headers": [], "client": ("192.168.1.100", 12345), "method": "GET", "path": "/"})
+    req_no_header = Request(
+        {
+            "type": "http",
+            "headers": [],
+            "client": ("192.168.1.100", 12345),
+            "method": "GET",
+            "path": "/",
+        }
+    )
     # Но Request требует scope, упростим: вызов loopback_client_ok с реальным TestClient и заголовком
     # Попытка вызвать /setup/owner/claim с LAN IP и без loopback header — должна отклониться (404 or 403).
     # Сделаем запрос с X-Real-IP: 192.168.1.100 (LAN) — не loopback => 404 (first-run disabled or rejected)
     resp = client.post(
         "/setup/owner/claim",
-        json={"exchange_token": "b"*64, "surname": "Тест", "working_mode": "hr"},
+        json={"exchange_token": "b" * 64, "surname": "Тест", "working_mode": "hr"},
         headers={"x-real-ip": "192.168.1.100"},
     )
     # В test режиме host testclient считается loopback, но с x-real-ip не loopback — должен отклониться
@@ -246,10 +311,10 @@ def test_x_real_ip_spoof_blocked(db_engine):
     # Проверим, что nginx.conf действительно перезаписывает.
     import pathlib
 
-    nginx = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "nginx.conf"
-    nginx = nginx.read_text(encoding="utf-8")
-    assert "proxy_set_header X-Real-IP $remote_addr;" in nginx
-    assert "proxy_set_header X-Real-IP 127.0.0.1;" not in nginx
+    nginx_path = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "nginx.conf"
+    nginx_text = nginx_path.read_text(encoding="utf-8")
+    assert "proxy_set_header X-Real-IP $remote_addr;" in nginx_text
+    assert "proxy_set_header X-Real-IP 127.0.0.1;" not in nginx_text
 
 
 def test_trace_id_on_unhandled_error(db_engine, caplog):
@@ -268,7 +333,14 @@ def test_trace_id_on_unhandled_error(db_engine, caplog):
     Base.metadata.create_all(db_engine)
     # Create a valid license so guard passes
     with Session(db_engine) as s:
-        admin = User(id=uuid.uuid4(), username="admin_trace", full_name="Admin", role=UserRole.ADMIN, password_hash=hash_password("AdminPass123!"), is_active=True)
+        admin = User(
+            id=uuid.uuid4(),
+            username="admin_trace",
+            full_name="Admin",
+            role=UserRole.ADMIN,
+            password_hash=hash_password("AdminPass123!"),
+            is_active=True,
+        )
         s.add(admin)
         lic = issue_license_dict(max_users=10, priv_hex=priv_hex)
         row = License(
@@ -276,7 +348,9 @@ def test_trace_id_on_unhandled_error(db_engine, caplog):
             client_name=lic["client_name"],
             issued_at=datetime.strptime(lic["issued_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC),
             expires_at=lic["expires_at"],
-            expires_at_end=datetime.combine(date.fromisoformat(lic["expires_at"]), datetime.max.time()).replace(tzinfo=UTC),
+            expires_at_end=datetime.combine(
+                date.fromisoformat(lic["expires_at"]), datetime.max.time()
+            ).replace(tzinfo=UTC),
             max_active_users=10,
             signature=lic["signature"],
             is_active=True,
