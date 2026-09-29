@@ -70,6 +70,17 @@ const rule: DocumentRule = {
     days: null,
   },
 };
+/** Настройки уведомлений автора для живого блока «Что произойдёт». */
+const prefs = {
+  timezone: "Europe/Moscow",
+  quiet_hours_start: "22:00",
+  quiet_hours_end: "09:00",
+  workdays: [1, 2, 3, 4, 5],
+  enabled_types: [],
+  enabled_channels: [],
+  initialized: true,
+};
+
 beforeEach(() => {
   vi.resetAllMocks();
   api.mockImplementation(async (path) => {
@@ -77,6 +88,7 @@ beforeEach(() => {
     if (path === "/document-rules") return [rule] as never;
     if (path.endsWith("/history")) return [] as never;
     if (path.endsWith("/documents")) return documents as never;
+    if (path === "/notification-preferences") return prefs as never;
     return {} as never;
   });
 });
@@ -269,7 +281,7 @@ describe("Мои правила", () => {
     await screen.findByRole("dialog");
     await user.type(screen.getByLabelText(/Название правила/), "Оформление");
     await user.selectOptions(screen.getByLabelText(/^Список/), "list-1");
-    expect(screen.queryByLabelText(/^Канал/)).toBeNull();
+    expect(screen.queryByLabelText(/^Куда отправить/)).toBeNull();
     await user.click(screen.getByText("Сохранить правило"));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
@@ -295,15 +307,15 @@ describe("Мои правила", () => {
     await user.click(screen.getByText("Редактировать"));
     await screen.findByRole("dialog");
     await user.selectOptions(
-      screen.getByLabelText(/Триггер/),
+      screen.getByLabelText(/Когда это происходит/),
       "scheduled_reminder",
     );
-    expect(screen.getByLabelText(/^Действие/)).toHaveValue("document_reminder");
+    expect(screen.getByLabelText(/^Что сделать/)).toHaveValue("document_reminder");
     expect(screen.getByLabelText(/Через сколько дней/)).toHaveAttribute(
       "max",
       "30",
     );
-    await user.selectOptions(screen.getByLabelText(/^Канал/), "telegram");
+    await user.selectOptions(screen.getByLabelText(/^Куда отправить/), "telegram");
     await user.click(screen.getByText("Сохранить правило"));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
@@ -529,5 +541,115 @@ describe("Мои правила", () => {
     expect(within(historyDialog).getByText("Сообщение в очереди")).toBeInTheDocument();
     expect(within(historyDialog).getByText("Поставить запрос документов")).toBeInTheDocument();
     expect(within(historyDialog).getByText("abcdef12")).toBeInTheDocument();
+  });
+});
+
+describe("Блок «Что произойдёт» в форме правила", () => {
+  async function openCreateDialog() {
+    const user = userEvent.setup();
+    renderRules();
+    await screen.findByText(rule.name);
+    await user.click(screen.getByText("Создать правило"));
+    await screen.findByRole("dialog");
+    return user;
+  }
+
+  it("показывает живое описание рядом с формой", async () => {
+    await openCreateDialog();
+    expect(
+      screen.getByRole("heading", { name: "Что произойдёт" }),
+    ).toBeInTheDocument();
+  });
+
+  it("для неполной формы пишет, чего не хватает", async () => {
+    const user = await openCreateDialog();
+    // Пустая форма: нет названия и не выбран список.
+    expect(await screen.findByText(/Пока не хватает/)).toBeInTheDocument();
+    expect(screen.getByText(/название правила/)).toBeInTheDocument();
+    expect(screen.getByText(/список документов/)).toBeInTheDocument();
+    // По мере заполнения список недостающего сокращается.
+    await user.type(screen.getByLabelText(/Название правила/), "Оформление");
+    expect(screen.queryByText(/название правила/)).toBeNull();
+    expect(screen.getByText(/список документов/)).toBeInTheDocument();
+  });
+
+  it("после заполнения описывает событие, действие и канал", async () => {
+    const user = await openCreateDialog();
+    await user.type(screen.getByLabelText(/Название правила/), "Оформление");
+    await user.selectOptions(screen.getByLabelText(/^Список/), "list-1");
+    await screen.findByText(/Когда кандидат, к которому у вас есть доступ/);
+    // Действие по умолчанию — применить список: кандидат ничего не получает.
+    expect(screen.getByText(/кандидату ничего не отправляется/)).toBeInTheDocument();
+    expect(screen.queryByText(/Пока не хватает/)).toBeNull();
+  });
+
+  it("учитывает тихие часы из настроек профиля", async () => {
+    const user = await openCreateDialog();
+    await user.type(screen.getByLabelText(/Название правила/), "Оформление");
+    await user.selectOptions(screen.getByLabelText(/^Список/), "list-1");
+    // Тихие часы 22:00–09:00 из настроек (см. prefs выше); точное время
+    // отправки зависит от момента срабатывания — покрыто в rulePreview.test.
+    expect(await screen.findByText(/Тихие часы 22:00–09:00/)).toBeInTheDocument();
+    expect(screen.getByText(/отправим/)).toBeInTheDocument();
+  });
+
+  it("меняет текст при смене канала и действия", async () => {
+    const user = await openCreateDialog();
+    await user.type(screen.getByLabelText(/Название правила/), "Оформление");
+    await user.selectOptions(screen.getByLabelText(/^Список/), "list-1");
+    await user.selectOptions(screen.getByLabelText(/^Что сделать/), "document_request");
+    await screen.findByText(/отправит кандидату запрос документов/);
+    expect(screen.getByText(/на электронную почту кандидата/)).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText(/^Куда отправить/), "telegram");
+    await screen.findByText(/в Telegram кандидата/);
+  });
+
+  it("показывает образец текста письма кандидату", async () => {
+    const user = await openCreateDialog();
+    await user.type(screen.getByLabelText(/Название правила/), "Оформление");
+    await user.selectOptions(screen.getByLabelText(/^Список/), "list-1");
+    await user.selectOptions(screen.getByLabelText(/^Что сделать/), "document_request");
+    expect(
+      await screen.findByText(/Для продолжения оформления нам нужны/),
+    ).toBeInTheDocument();
+    // Обязательный документ выбранной версии — в образце.
+    expect(screen.getByText(/Паспорт/)).toBeInTheDocument();
+  });
+
+  it("сворачиваемый блок «Как это работает» раскрывается", async () => {
+    const user = await openCreateDialog();
+    const summary = screen.getByText("Как это работает");
+    await user.click(summary);
+    expect(
+      await screen.findByText(/Правило срабатывает на событие/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/отменяет ожидающие отправки/),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("Человечные названия полей правила", () => {
+  it("использует «Когда это происходит», «Что сделать», «Куда отправить» в форме", async () => {
+    const user = userEvent.setup();
+    renderRules();
+    await screen.findByText(rule.name);
+    await user.click(screen.getByText("Создать правило"));
+    await screen.findByRole("dialog");
+    expect(screen.getByLabelText(/^Когда это происходит/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Что сделать/)).toBeInTheDocument();
+    // Канал показывается только для отправки кандидату.
+    expect(screen.queryByLabelText(/^Куда отправить/)).toBeNull();
+    await user.selectOptions(screen.getByLabelText(/^Что сделать/), "document_request");
+    await user.selectOptions(screen.getByLabelText(/^Список/), "list-1");
+    expect(screen.getByLabelText(/^Куда отправить/)).toBeInTheDocument();
+  });
+
+  it("те же названия — в сводке карточки правила", async () => {
+    renderRules();
+    await screen.findByText(rule.name);
+    expect(screen.getByText(/Когда это происходит:/)).toBeInTheDocument();
+    expect(screen.getByText(/Что сделать:/)).toBeInTheDocument();
+    expect(screen.getByText(/Куда отправить:/)).toBeInTheDocument();
   });
 });
