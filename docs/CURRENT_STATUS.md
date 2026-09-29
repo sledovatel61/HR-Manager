@@ -1,8 +1,10 @@
 # Текущее состояние и handoff
 
-> В `main` влиты этапы 0–14 (Phase 14 — эксплуатационная готовность
-> Windows-пилота). Этапы 15 (офлайн-лицензия) и 16 (шаблоны документов) ведутся
-> в открытой цепочке PR-ов поверх `main`; цепочка в `main` не влита.
+> Фактический текущий checkout содержит реализацию этапов 0–16 (Phase 15 —
+> офлайн-лицензия, Phase 16 — текстовый MVP шаблонов документов). Этот файл и
+> `docs/handoff-release-0.14.0.md` являются актуальным описанием состояния;
+> старые формулировки «15–16 не влиты» больше не использовать. Функциональная
+> готовность не является разрешением на публикацию: пилот пока `NO-GO`.
 
 ## Что принято
 
@@ -144,3 +146,61 @@ PostgreSQL integration и Compose должны подтверждаться CI �
 Открыто: политика ретенции и удаления ПДн (F3) и правило публикации (F4).
 Отдельные технические follow-up вне Phase 16 перечислены в отчёте
 [`phase-16-report-arena.md`](phase-16-report-arena.md) §9.
+
+## Пилотный релиз: что осталось сделать
+
+Этот раздел отвечает на вопрос «можно ли запускать пилот». Ответ на текущий
+момент: **NO-GO**. Не смешивать завершённость функций с release readiness.
+
+> **Решение владельца 2026-09-29:** покупной сертификат (Authenticode/TSA)
+> пилот на ПК Марии **не блокирует** — SmartScreen обходится инструкцией.
+> Сертификат перенесён в «отложено до коммерческого релиза» (ниже).
+
+### Обязательные задачи пилота (агенты)
+
+- [ ] Установщик «из коробки» (B1–B6): `prompts/PILOT_FINAL_PROMPT.md`.
+- [ ] График выхода на работу (Этап 18): `prompts/PHASE_18_WORK_SCHEDULE_PROMPT.md`.
+- [ ] Понятные правила + диагностика в администрировании:
+  `prompts/UX_RULES_DIAGNOSTICS_PROMPT.md`.
+
+### Обязательные проверки пилота
+
+- [ ] Выполнить полный backend CI и backend test suite, PostgreSQL integration,
+  миграции с нуля, Compose smoke, frontend checks и Windows engine/installer
+  checks на exact release SHA. Ранее подтверждённый frontend-прогон: 25 файлов,
+  211 тестов; более поздние результаты Phase 16 описаны в её отчёте и также
+  требуют проверки против точного release baseline.
+- [ ] Провести чистую Windows 10/11 приёмку: установка, первый вход, loopback,
+  readiness, backup/restore, update, rollback, resume, сохранность данных и
+  uninstall.
+- [ ] Заполнить go/no-go evidence из `docs/runbook-pilot-release.md` и получить
+  письменный owner decision. До этого запрещены tag, GitHub Release,
+  production workflow dispatch и публикация installer/package.
+
+### Отложено до коммерческого релиза
+
+- Production Authenticode PFX, publisher identity, RFC 3161 TSA, signer/TSA
+  roots и шесть Authenticode/TSA secrets в `update-channel-signing`. Не
+  использовать fixture, self-signed certificate или придуманные значения.
+
+### Открытые критерии продукта
+
+- [ ] Принять решения по F2 `update_channel_manage`, F3 retention/удалению ПДн и
+  F4 строгому admin-only из отчёта Phase 16 либо явно исключить их из scope
+  пилота с письменным принятием риска.
+
+### Порядок следующей работы
+
+1. Сначала read-only проверить `git status`, ветку и exact SHA; не затирать
+   пользовательские изменения.
+2. Принять и смержить три задачи агентов (установщик, график выхода, правила и
+   диагностика), каждую — с зелёным CI.
+3. Запустить backend/интеграционные/Compose/Windows проверки на итоговом SHA и
+   сохранить ссылки на CI evidence.
+4. Собрать пилотный Setup.exe (workflow `pilot-release`, без Authenticode),
+   проверить Ed25519-лицензию и SHA256SUMS.
+5. Выполнить одну живую проверку на Windows и только после всех PASS вынести
+   GO/NO-GO.
+
+Главный стартовый документ следующего чата:
+[`handoff-release-0.14.0.md`](handoff-release-0.14.0.md).
