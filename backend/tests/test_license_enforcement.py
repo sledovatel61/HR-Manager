@@ -12,9 +12,9 @@ import tempfile
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
@@ -488,17 +488,16 @@ def test_first_run_clean_db_with_key(db_engine) -> None:
 
 
 def test_pilot_requires_key_and_test_dev_disabled_explicitly() -> None:
-    with patch("pathlib.Path.is_file", return_value=False):
-        with pytest.raises(ValueError):
-            Settings.model_validate(
-                {
-                    "APP_ENV": "pilot",
-                    "SECRET_KEY": "strong-secret-key-1234567890abcdef",
-                    "DATABASE_URL": "postgresql+psycopg://u:p@localhost/db",
-                    "LICENSE_PUBLIC_KEY": "",
-                    "PILOT_BOOTSTRAP_EXCHANGE_TOKEN": "a" * 64,
-                }
-            )
+    with patch("pathlib.Path.is_file", return_value=False), pytest.raises(ValueError):
+        Settings.model_validate(
+            {
+                "APP_ENV": "pilot",
+                "SECRET_KEY": "strong-secret-key-1234567890abcdef",
+                "DATABASE_URL": "postgresql+psycopg://u:p@localhost/db",
+                "LICENSE_PUBLIC_KEY": "",
+                "PILOT_BOOTSTRAP_EXCHANGE_TOKEN": "a" * 64,
+            }
+        )
     s_test = Settings.model_validate(
         {
             "APP_ENV": "test",
