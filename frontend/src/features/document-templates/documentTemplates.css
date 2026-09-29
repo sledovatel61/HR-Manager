@@ -42,6 +42,36 @@
   margin: 16px 0;
 }
 
+.templates-intro {
+  margin: 0 0 4px;
+  color: var(--text-secondary, #5b6b73);
+  font-size: var(--text-size-sm, 13px);
+}
+
+/* Поиск и фильтр статуса: компактная строка над списком. */
+.templates-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(200px, 260px) auto;
+  gap: 12px;
+  align-items: end;
+  margin: 0 0 8px;
+}
+
+@media (max-width: 720px) {
+  .templates-filters {
+    grid-template-columns: 1fr;
+  }
+}
+
+.templates-count {
+  padding-bottom: 10px;
+  white-space: nowrap;
+}
+
+.template-dates {
+  color: var(--text-tertiary, #8a97a0);
+}
+
 .template-actions {
   display: flex;
   align-items: center;

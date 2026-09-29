@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ApiError,
   activateDocumentTemplateVersion,
   addDocumentTemplateVersion,
   archiveDocumentTemplateVersion,
@@ -9,8 +10,15 @@ import {
   renameDocumentTemplate,
 } from "../../api";
 import { Button } from "../../design-system/components/Button";
+import { ConfirmDialog } from "../../design-system/components/ConfirmDialog";
 import { Field, SelectInput, TextInput } from "../../design-system/components/Field";
-import { ErrorState, SkeletonRows } from "../../design-system/components/StateViews";
+import { Modal } from "../../design-system/components/Modal";
+import {
+  EmptyState,
+  ErrorState,
+  PermissionDeniedState,
+  SkeletonRows,
+} from "../../design-system/components/StateViews";
 import { Badge } from "../../design-system/components/StatusChip";
 import { useToast } from "../../design-system/components/ToastContext";
 import {
@@ -47,6 +55,14 @@ const KIND_OPTIONS: { value: string; label: string }[] = [
   { value: "form", label: "Форма" },
 ];
 
+const STATUS_FILTER_OPTIONS = [
+  { value: "all", label: "Все шаблоны" },
+  { value: "published", label: "С опубликованной версией" },
+  { value: "unpublished", label: "Без опубликованной версии" },
+] as const;
+
+type StatusFilter = (typeof STATUS_FILTER_OPTIONS)[number]["value"];
+
 interface VersionDraft {
   title: string;
   body: string;
@@ -56,20 +72,63 @@ type EditorState =
   | { mode: "create"; kind: string; name: string; scope: string; draft: VersionDraft }
   | { mode: "version"; template: DocumentTemplate; draft: VersionDraft };
 
+/** Опасные действия над версией — проводятся только после подтверждения. */
+type PendingVersionAction = {
+  operation: "activate" | "archive";
+  template: DocumentTemplate;
+  version: DocumentTemplateVersion;
+};
+
+function formatDateTime(value: string): string {
+  return new Date(value).toLocaleString("ru-RU");
+}
+
+function hasActiveVersion(template: DocumentTemplate): boolean {
+  return template.versions.some((version) => version.state === "active");
+}
+
+/**
+ * Сообщение об ошибке на русском. Backend отдаёт готовые русские detail,
+ * pydantic-валидация приходит массивом — извлекаем текст первого нарушения
+ * («Value error, …» — префикс pydantic). Остальное — как в documents/hooks.
+ */
+function templateError(error: unknown): string {
+  if (
+    error instanceof ApiError &&
+    error.status === 422 &&
+    Array.isArray(error.rawDetail) &&
+    error.rawDetail.length > 0 &&
+    typeof error.rawDetail[0] === "object" &&
+    error.rawDetail[0] !== null &&
+    "msg" in error.rawDetail[0]
+  ) {
+    const message = String((error.rawDetail[0] as { msg: unknown }).msg)
+      .replace(/^Value error,\s*/, "")
+      .trim();
+    if (message) return message;
+  }
+  return errorText(error);
+}
+
 export function TemplatesPage() {
   const { pushToast } = useToast();
   const [templates, setTemplates] = useState<DocumentTemplate[] | null>(null);
   const [canManage, setCanManage] = useState(false);
   const [placeholders, setPlaceholders] = useState<TemplatePlaceholder[]>([]);
   const [loadError, setLoadError] = useState("");
+  const [forbidden, setForbidden] = useState(false);
   const [busy, setBusy] = useState(false);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [rename, setRename] = useState<{ template: DocumentTemplate; name: string } | null>(
     null,
   );
+  const [pendingAction, setPendingAction] = useState<PendingVersionAction | null>(null);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
   const load = useCallback(async () => {
     setLoadError("");
+    setForbidden(false);
     try {
       const [list, catalog] = await Promise.all([
         listDocumentTemplates(),
@@ -79,7 +138,11 @@ export function TemplatesPage() {
       setCanManage(list.can_manage);
       setPlaceholders(catalog.items);
     } catch (error) {
-      setLoadError(errorText(error));
+      if (error instanceof ApiError && error.status === 403) {
+        setForbidden(true);
+      } else {
+        setLoadError(errorText(error));
+      }
     }
   }, []);
 
@@ -96,7 +159,7 @@ export function TemplatesPage() {
       setRename(null);
       await load();
     } catch (error) {
-      pushToast("danger", errorText(error));
+      pushToast("danger", templateError(error));
     } finally {
       setBusy(false);
     }
@@ -105,161 +168,264 @@ export function TemplatesPage() {
   const kindLabel = (kind: string) =>
     KIND_OPTIONS.find((option) => option.value === kind)?.label ?? kind;
 
+  const visible = useMemo(() => {
+    if (!templates) return [];
+    const query = search.trim().toLowerCase();
+    return templates.filter((template) => {
+      if (statusFilter === "published" && !hasActiveVersion(template)) return false;
+      if (statusFilter === "unpublished" && hasActiveVersion(template)) return false;
+      if (!query) return true;
+      const scopeLabel = template.scope
+        ? (STAGE_LABELS[template.scope as CandidateStage] ?? template.scope)
+        : "все этапы";
+      const haystack = [
+        template.name,
+        template.kind,
+        kindLabel(template.kind),
+        scopeLabel,
+        ...template.versions.map((version) => version.title),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [search, statusFilter, templates]);
+
+  const filtersActive = search.trim() !== "" || statusFilter !== "all";
+
+  if (forbidden) {
+    return (
+      <PermissionDeniedState />
+    );
+  }
+  if (!templates && loadError) {
+    return <ErrorState onRetry={() => void load()} />;
+  }
+  if (!templates) {
+    return <SkeletonRows rows={4} columns={3} />;
+  }
+
   return (
     <section className="templates-page">
-      <h1>Шаблоны документов</h1>
-      <p>
+      <p className="templates-intro">
         Текстовые шаблоны с версиями. Опубликованная версия неизменяема: правка — это
         новая версия. Файлы не загружаются, документы кандидату не отправляются.
       </p>
 
-      {loadError && <ErrorState onRetry={() => void load()} />}
-      {!templates && !loadError && <SkeletonRows rows={4} columns={3} />}
+      <div className="templates-toolbar">
+        <Button
+          variant="primary"
+          icon="plus"
+          disabled={!canManage || busy}
+          onClick={() =>
+            setEditor({
+              mode: "create",
+              kind: "offer",
+              name: "",
+              scope: "",
+              draft: { title: "", body: "" },
+            })
+          }
+        >
+          Новый шаблон
+        </Button>
+        <Button
+          variant="ghost"
+          icon="table"
+          onClick={() => {
+            window.location.hash = "#/documents";
+          }}
+        >
+          Списки документов
+        </Button>
+        <span className="template-meta">
+          {canManage
+            ? "Управление доступно: администратор или право document_lists_manage."
+            : "Только просмотр опубликованных версий: для правок нужно право document_lists_manage."}
+        </span>
+      </div>
 
-      {templates && (
-        <>
-          <div className="templates-toolbar">
-            <Button
-              variant="primary"
-              icon="plus"
-              disabled={!canManage || busy}
-              onClick={() =>
-                setEditor({
-                  mode: "create",
-                  kind: "offer",
-                  name: "",
-                  scope: "",
-                  draft: { title: "", body: "" },
-                })
-              }
-            >
-              Новый шаблон
-            </Button>
-            <span className="template-meta">
-              {canManage
-                ? "Управление доступно: администратор или право document_lists_manage."
-                : "Только просмотр опубликованных версий: для правок нужно право document_lists_manage."}
+      {templates.length > 0 && (
+        <div className="templates-filters">
+          <Field label="Поиск шаблона">
+            {(id, describedBy) => (
+              <TextInput
+                id={id}
+                aria-describedby={describedBy}
+                type="search"
+                placeholder="Название, тип или заголовок версии"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            )}
+          </Field>
+          <Field label="Статус">
+            {(id, describedBy) => (
+              <SelectInput
+                id={id}
+                aria-describedby={describedBy}
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
+              >
+                {STATUS_FILTER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </SelectInput>
+            )}
+          </Field>
+          {filtersActive && (
+            <span className="template-meta templates-count" role="status">
+              Показано {visible.length} из {templates.length}
             </span>
-          </div>
+          )}
+        </div>
+      )}
 
-          {templates.length === 0 && <p>Шаблонов пока нет.</p>}
+      {templates.length === 0 && (
+        <EmptyState
+          icon="file-text"
+          title="Шаблонов пока нет"
+          description="Создайте первый текстовый шаблон: черновик, публикация версии — и шаблон станет доступен в карточках кандидатов."
+          action={
+            canManage && (
+              <Button
+                variant="primary"
+                icon="plus"
+                onClick={() =>
+                  setEditor({
+                    mode: "create",
+                    kind: "offer",
+                    name: "",
+                    scope: "",
+                    draft: { title: "", body: "" },
+                  })
+                }
+              >
+                Создать первый шаблон
+              </Button>
+            )
+          }
+        />
+      )}
 
-          {templates.map((template) => {
-            const active = template.versions.find((v) => v.state === "active");
-            const latest = template.versions[template.versions.length - 1];
-            return (
-              <article key={template.id} className="template-card">
-                <header className="template-card-head">
-                  <div>
-                    <h2>{template.name}</h2>
-                    <p className="template-meta">
-                      {kindLabel(template.kind)} ·{" "}
-                      {template.scope
-                        ? STAGE_LABELS[template.scope as CandidateStage]
-                        : "Все этапы"}{" "}
-                      · ревизия {template.revision} · версий {template.versions.length}
-                    </p>
-                  </div>
-                  {active ? (
-                    <Badge tone="success">Опубликована v{active.number}</Badge>
-                  ) : (
-                    <Badge tone="neutral">Нет опубликованной версии</Badge>
-                  )}
-                </header>
+      {templates.length > 0 && visible.length === 0 && (
+        <EmptyState
+          icon="search"
+          title="Ничего не найдено"
+          description="По запросу нет совпадений. Измените текст поиска или фильтр статуса."
+        />
+      )}
 
-                <div className="template-actions">
-                  <Button
-                    size="sm"
-                    disabled={!canManage || busy}
-                    onClick={() =>
-                      setEditor({
-                        mode: "version",
-                        template,
-                        draft: { title: latest?.title ?? "", body: latest?.body ?? "" },
-                      })
-                    }
-                  >
-                    Новая версия
-                  </Button>
-                  <Button
-                    size="sm"
-                    disabled={!canManage || busy}
-                    onClick={() => setRename({ template, name: template.name })}
-                  >
-                    Переименовать
-                  </Button>
-                </div>
+      {visible.map((template) => {
+        const active = template.versions.find((v) => v.state === "active");
+        const latest = template.versions[template.versions.length - 1];
+        return (
+          <article key={template.id} className="template-card">
+            <header className="template-card-head">
+              <div>
+                <h2>{template.name}</h2>
+                <p className="template-meta">
+                  {kindLabel(template.kind)} ·{" "}
+                  {template.scope
+                    ? (STAGE_LABELS[template.scope as CandidateStage] ?? template.scope)
+                    : "Все этапы"}{" "}
+                  · ревизия {template.revision} · версий {template.versions.length}
+                </p>
+                <p className="template-meta template-dates">
+                  Создан: {formatDateTime(template.created_at)} · Изменён:{" "}
+                  {formatDateTime(template.updated_at)}
+                </p>
+              </div>
+              {active ? (
+                <Badge tone="success">Опубликована v{active.number}</Badge>
+              ) : (
+                <Badge tone="neutral">Нет опубликованной версии</Badge>
+              )}
+            </header>
 
-                <details>
-                  <summary>Версии и статусы</summary>
-                  <table className="templates-table">
-                    <thead>
-                      <tr>
-                        <th>№</th>
-                        <th>Заголовок</th>
-                        <th>Статус</th>
-                        <th>Плейсхолдеры</th>
-                        <th>Действия</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {template.versions.map((version) => (
-                        <VersionRow
-                          key={version.id}
-                          version={version}
-                          canManage={canManage}
-                          busy={busy}
-                          onActivate={() =>
-                            void run(
-                              () =>
-                                activateDocumentTemplateVersion(
-                                  template.id,
-                                  version.id,
-                                  template.revision,
-                                ),
-                              `Версия ${version.number} опубликована`,
-                            )
-                          }
-                          onArchive={() =>
-                            void run(
-                              () =>
-                                archiveDocumentTemplateVersion(
-                                  template.id,
-                                  version.id,
-                                  template.revision,
-                                ),
-                              `Версия ${version.number} в архиве`,
-                            )
-                          }
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </details>
+            <div className="template-actions">
+              <Button
+                size="sm"
+                disabled={!canManage || busy}
+                onClick={() =>
+                  setEditor({
+                    mode: "version",
+                    template,
+                    draft: { title: latest?.title ?? "", body: latest?.body ?? "" },
+                  })
+                }
+              >
+                Новая версия
+              </Button>
+              <Button
+                size="sm"
+                disabled={!canManage || busy}
+                onClick={() => setRename({ template, name: template.name })}
+              >
+                Переименовать
+              </Button>
+            </div>
 
-                <details>
-                  <summary>Текст последней версии</summary>
-                  <pre className="template-body">{latest?.body ?? ""}</pre>
-                </details>
-              </article>
-            );
-          })}
+            <details>
+              <summary>Версии и статусы</summary>
+              <table className="templates-table">
+                <thead>
+                  <tr>
+                    <th>№</th>
+                    <th>Заголовок</th>
+                    <th>Статус</th>
+                    <th>Плейсхолдеры</th>
+                    <th>Действия</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {template.versions.map((version) => (
+                    <VersionRow
+                      key={version.id}
+                      version={version}
+                      canManage={canManage}
+                      busy={busy}
+                      onActivate={() =>
+                        setPendingAction({
+                          operation: "activate",
+                          template,
+                          version,
+                        })
+                      }
+                      onArchive={() =>
+                        setPendingAction({ operation: "archive", template, version })
+                      }
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </details>
 
-          <details className="template-card">
-            <summary>Доступные плейсхолдеры ({placeholders.length})</summary>
-            <p>
-              Значения подставляются только при создании документа и всегда экранируются.
-              Свободный HTML, выражения и SQL не поддерживаются.
-            </p>
-            <ul className="template-catalog">
-              {placeholders.map((item) => (
-                <li key={item.token}>
-                  <code>{`{{ ${item.token} }}`}</code> — {item.description}
-                </li>
-              ))}
-            </ul>
-          </details>
-        </>
+            <details>
+              <summary>Текст последней версии</summary>
+              <pre className="template-body">{latest?.body ?? ""}</pre>
+            </details>
+          </article>
+        );
+      })}
+
+      {templates.length > 0 && (
+        <details className="template-card">
+          <summary>Доступные плейсхолдеры ({placeholders.length})</summary>
+          <p>
+            Значения подставляются только при создании документа и всегда экранируются.
+            Свободный HTML, выражения и SQL не поддерживаются.
+          </p>
+          <ul className="template-catalog">
+            {placeholders.map((item) => (
+              <li key={item.token}>
+                <code>{`{{ ${item.token} }}`}</code> — {item.description}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       {editor && (
@@ -298,45 +464,87 @@ export function TemplatesPage() {
       )}
 
       {rename && (
-        <form
-          className="template-card template-form"
-          onSubmit={(event) => {
-            event.preventDefault();
+        <Modal
+          open
+          onClose={() => setRename(null)}
+          title="Переименовать шаблон"
+          description="Имя меняется отдельно от версий и не влияет на созданные документы: они хранят имя на момент создания."
+        >
+          <form
+            className="template-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void run(
+                () =>
+                  renameDocumentTemplate(rename.template.id, {
+                    name: rename.name,
+                    expected_revision: rename.template.revision,
+                  }),
+                "Шаблон переименован",
+              );
+            }}
+          >
+            <Field label="Название" required>
+              {(id) => (
+                <TextInput
+                  id={id}
+                  required
+                  maxLength={120}
+                  value={rename.name}
+                  onChange={(e) => setRename({ ...rename, name: e.target.value })}
+                />
+              )}
+            </Field>
+            <div className="template-actions">
+              <Button type="submit" variant="primary" disabled={busy}>
+                Сохранить имя
+              </Button>
+              <Button type="button" onClick={() => setRename(null)}>
+                Отмена
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {pendingAction && (
+        <ConfirmDialog
+          open
+          danger={pendingAction.operation === "archive"}
+          onCancel={() => setPendingAction(null)}
+          onConfirm={() => {
+            const { operation, template, version } = pendingAction;
+            setPendingAction(null);
+            if (operation === "activate") {
+              void run(
+                () =>
+                  activateDocumentTemplateVersion(
+                    template.id,
+                    version.id,
+                    template.revision,
+                  ),
+                `Версия ${version.number} опубликована`,
+              );
+              return;
+            }
             void run(
               () =>
-                renameDocumentTemplate(rename.template.id, {
-                  name: rename.name,
-                  expected_revision: rename.template.revision,
-                }),
-              "Шаблон переименован",
+                archiveDocumentTemplateVersion(template.id, version.id, template.revision),
+              `Версия ${version.number} в архиве`,
             );
           }}
-        >
-          <h2>Переименовать шаблон</h2>
-          <p>
-            Имя меняется отдельно от версий и не влияет на созданные документы: они
-            хранят имя на момент создания.
-          </p>
-          <Field label="Название" required>
-            {(id) => (
-              <TextInput
-                id={id}
-                required
-                maxLength={120}
-                value={rename.name}
-                onChange={(e) => setRename({ ...rename, name: e.target.value })}
-              />
-            )}
-          </Field>
-          <div className="template-actions">
-            <Button type="submit" variant="primary" disabled={busy}>
-              Сохранить имя
-            </Button>
-            <Button type="button" onClick={() => setRename(null)}>
-              Отмена
-            </Button>
-          </div>
-        </form>
+          title={
+            pendingAction.operation === "activate"
+              ? `Опубликовать версию ${pendingAction.version.number}?`
+              : `Архивировать версию ${pendingAction.version.number}?`
+          }
+          description={
+            pendingAction.operation === "activate"
+              ? `Сотрудники будут видеть текст версии ${pendingAction.version.number}. Текущая опубликованная версия этого шаблона, если она есть, автоматически уйдёт в архив.`
+              : `Версия ${pendingAction.version.number} перестанет публиковаться для новых документов. Если она опубликована, шаблон останется без опубликованной версии, пока вы не опубликуете другую.`
+          }
+          confirmLabel={pendingAction.operation === "activate" ? "Опубликовать" : "В архив"}
+        />
       )}
     </section>
   );
@@ -418,119 +626,125 @@ function TemplateEditor({
   };
 
   return (
-    <form
-      className="template-card template-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onSubmit();
-      }}
+    <Modal
+      open
+      onClose={onCancel}
+      size="lg"
+      title={
+        editor.mode === "create" ? "Новый шаблон" : `Новая версия: ${editor.template.name}`
+      }
+      description="Черновик не виден сотрудникам, пока вы не опубликуете версию."
     >
-      <h2>
-        {editor.mode === "create" ? "Новый шаблон" : `Новая версия: ${editor.template.name}`}
-      </h2>
-
-      {editor.mode === "create" && (
-        <>
-          <Field label="Тип документа" required>
-            {(id) => (
-              <SelectInput
-                id={id}
-                value={editor.kind}
-                onChange={(e) => onChange({ ...editor, kind: e.target.value })}
-              >
-                {KIND_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </SelectInput>
-            )}
-          </Field>
-          <Field label="Название" required>
-            {(id) => (
-              <TextInput
-                id={id}
-                required
-                maxLength={120}
-                value={editor.name}
-                onChange={(e) => onChange({ ...editor, name: e.target.value })}
-              />
-            )}
-          </Field>
-          <Field label="Этап (область действия)">
-            {(id) => (
-              <SelectInput
-                id={id}
-                value={editor.scope}
-                onChange={(e) => onChange({ ...editor, scope: e.target.value })}
-              >
-                <option value="">Все этапы</option>
-                {CANDIDATE_STAGE_ORDER.map((stage) => (
-                  <option key={stage} value={stage}>
-                    {STAGE_LABELS[stage]}
-                  </option>
-                ))}
-              </SelectInput>
-            )}
-          </Field>
-        </>
-      )}
-
-      <Field label="Заголовок документа" required>
-        {(id) => (
-          <TextInput
-            id={id}
-            required
-            maxLength={200}
-            value={editor.draft.title}
-            onChange={(e) =>
-              onChange({ ...editor, draft: { ...editor.draft, title: e.target.value } })
-            }
-          />
-        )}
-      </Field>
-
-      <Field
-        label="Текст шаблона"
-        required
-        hint="Разрешены абзацы, список «- » и **полужирный**. Значения плейсхолдеров экранируются."
+      <form
+        className="template-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
       >
-        {(id) => (
-          <textarea
-            id={id}
-            required
-            rows={10}
-            maxLength={20000}
-            value={editor.draft.body}
-            onChange={(e) =>
-              onChange({ ...editor, draft: { ...editor.draft, body: e.target.value } })
-            }
-          />
+        {editor.mode === "create" && (
+          <>
+            <Field label="Тип документа" required>
+              {(id) => (
+                <SelectInput
+                  id={id}
+                  value={editor.kind}
+                  onChange={(e) => onChange({ ...editor, kind: e.target.value })}
+                >
+                  {KIND_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </SelectInput>
+              )}
+            </Field>
+            <Field label="Название" required>
+              {(id) => (
+                <TextInput
+                  id={id}
+                  required
+                  maxLength={120}
+                  value={editor.name}
+                  onChange={(e) => onChange({ ...editor, name: e.target.value })}
+                />
+              )}
+            </Field>
+            <Field label="Этап (область действия)">
+              {(id) => (
+                <SelectInput
+                  id={id}
+                  value={editor.scope}
+                  onChange={(e) => onChange({ ...editor, scope: e.target.value })}
+                >
+                  <option value="">Все этапы</option>
+                  {CANDIDATE_STAGE_ORDER.map((stage) => (
+                    <option key={stage} value={stage}>
+                      {STAGE_LABELS[stage]}
+                    </option>
+                  ))}
+                </SelectInput>
+              )}
+            </Field>
+          </>
         )}
-      </Field>
 
-      <div className="template-token-picker">
-        <span className="template-meta">Вставить плейсхолдер:</span>
-        {placeholders.map((item) => (
-          <button
-            key={item.token}
-            type="button"
-            title={item.description}
-            onClick={() => insertToken(item.token)}
-          >
-            {`{{ ${item.token} }}`}
-          </button>
-        ))}
-      </div>
+        <Field label="Заголовок документа" required>
+          {(id) => (
+            <TextInput
+              id={id}
+              required
+              maxLength={200}
+              value={editor.draft.title}
+              onChange={(e) =>
+                onChange({ ...editor, draft: { ...editor.draft, title: e.target.value } })
+              }
+            />
+          )}
+        </Field>
 
-      <div className="template-actions">
-        <Button type="submit" variant="primary" disabled={busy}>
-          Сохранить черновик
-        </Button>
-        <Button type="button" onClick={onCancel}>
-          Отмена
-        </Button>
-      </div>
-    </form>
+        <Field
+          label="Текст шаблона"
+          required
+          hint="Разрешены абзацы, список «- » и **полужирный**. Значения плейсхолдеров экранируются."
+        >
+          {(id) => (
+            <textarea
+              id={id}
+              required
+              rows={10}
+              maxLength={20000}
+              value={editor.draft.body}
+              onChange={(e) =>
+                onChange({ ...editor, draft: { ...editor.draft, body: e.target.value } })
+              }
+            />
+          )}
+        </Field>
+
+        <div className="template-token-picker">
+          <span className="template-meta">Вставить плейсхолдер:</span>
+          {placeholders.map((item) => (
+            <button
+              key={item.token}
+              type="button"
+              title={item.description}
+              onClick={() => insertToken(item.token)}
+            >
+              {`{{ ${item.token} }}`}
+            </button>
+          ))}
+        </div>
+
+        <div className="template-actions">
+          <Button type="submit" variant="primary" disabled={busy}>
+            Сохранить черновик
+          </Button>
+          <Button type="button" onClick={onCancel}>
+            Отмена
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
