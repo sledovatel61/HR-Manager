@@ -1,0 +1,83 @@
+/*
+ * Печать «Графика выхода»: на листе — только таблица графика.
+ *
+ * Меню, фильтры, кнопки и служебные действия скрываются, ориентация —
+ * альбомная, дневные блоки по возможности не разрываются между страницами,
+ * шапка колонок повторяется на каждой странице (это делает браузер по
+ * `thead` внутри каждой таблицы дня).
+ */
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+
+  /* Печатаем только область графика: всё остальное скрывается. */
+  body * {
+    visibility: hidden;
+  }
+
+  .schedule-print,
+  .schedule-print * {
+    visibility: visible;
+  }
+
+  .no-print,
+  .no-print * {
+    display: none !important;
+  }
+
+  .schedule-print {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    padding: 0;
+  }
+
+  /* Фон/тени на печати не нужны — оставляем читаемый текст и рамки. */
+  .schedule-day {
+    margin: 0 0 8px;
+    border: 1px solid #999;
+    border-radius: 0;
+    box-shadow: none;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .schedule-day-head {
+    background: #eee !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .schedule-row.is-service td {
+    background: #f4f4f4 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .schedule-table {
+    font-size: 10pt;
+  }
+
+  .schedule-table th,
+  .schedule-table td {
+    padding: 3px 6px;
+    border-bottom: 1px solid #ccc;
+  }
+
+  .schedule-table thead {
+    display: table-header-group;
+  }
+
+  .schedule-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .schedule-name-link {
+    color: inherit;
+    text-decoration: none;
+  }
+}

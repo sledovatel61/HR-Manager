@@ -19,6 +19,7 @@ with 409 and the matches; an explicit confirmation creates/updates anyway
 and records a dedicated audit event.
 """
 
+from datetime import date, datetime, time
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -68,6 +69,24 @@ from app.utils import (
     user_agent,
     utc_now,
 )
+from app.work_schedule import START_DATE_FIELDS, START_STAGES, START_TEXT_FIELDS
+
+
+# Значения блока «Выход на работу» в строке аудита: даты, время и короткие
+# строки места выхода; персональные данные кандидата сюда не попадают.
+def _schedule_value(value: object | None) -> str:
+    """Читаемое значение поля выхода для строки аудита («—» для пустого)."""
+
+    if value is None:
+        return "—"
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, time):
+        return value.strftime("%H:%M")
+    return str(value)
+
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
@@ -97,7 +116,7 @@ def _audit_candidate(
     """Record a candidate-scoped audit event.
 
     ``details`` receives only non-personal context (stage/source values,
-    ids). Phone/email/name are never passed here.
+    ids, start date/time). Phone/email/name are never passed here.
     """
     record_event(
         db,
@@ -439,6 +458,40 @@ def update_candidate(
         candidate.position = payload.position
         changes.append("position")
 
+    # --- Phase 18: «Выход на работу» -------------------------------------
+    # Дата/время и место выхода пишутся только если поле реально пришло в
+    # запросе: null очищает значение, отсутствие поля его не трогает.
+    provided = payload.model_fields_set
+    start_changes: list[str] = []
+    for field_name in (*START_DATE_FIELDS, *START_TEXT_FIELDS):
+        if field_name not in provided:
+            continue
+        old_value = getattr(candidate, field_name)
+        new_value = getattr(payload, field_name)
+        if old_value == new_value:
+            continue
+        setattr(candidate, field_name, new_value)
+        start_changes.append(
+            f"{field_name}: {_schedule_value(old_value)} -> {_schedule_value(new_value)}"
+        )
+
+    target_stage = payload.stage if payload.stage is not None else candidate.stage
+    date_on_wrong_stage = (
+        "start_date" in provided
+        and payload.start_date is not None
+        and target_stage not in START_STAGES
+    )
+    if date_on_wrong_stage:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=("Дату выхода можно указать на этапах «Оффер», «Оформлен» и «Вышел»."),
+        )
+    if "start_time" in provided and payload.start_time is not None and candidate.start_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Сначала укажите дату выхода, затем время.",
+        )
+
     stage_changed = False
     if payload.stage is not None and payload.stage != candidate.stage:
         old_stage = candidate.stage
@@ -446,7 +499,15 @@ def update_candidate(
         candidate.stage_position = CANDIDATE_STAGE_POSITION[payload.stage]
         stage_changed = True
 
-    if not changes and not stage_changed:
+    if candidate.stage == CandidateStage.STARTED and candidate.start_date is None:
+        # «Вышел» без даты выхода невозможен: HR обязана указать дату
+        # (сервер отвечает 422, UI открывает окно «Укажите дату выхода»).
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=("Укажите дату выхода: перевод в этап «Вышел» без даты невозможен."),
+        )
+
+    if not changes and not start_changes and not stage_changed:
         return CandidateOut.model_validate(candidate)
 
     candidate.updated_at = utc_now()
@@ -482,6 +543,18 @@ def update_candidate(
             actor=user,
             candidate=candidate,
             details="; ".join(changes),
+            commit=False,
+        )
+    if start_changes:
+        # Перенос даты/времени и правка места выхода аудируются отдельным
+        # событием с прежними и новыми значениями.
+        _audit_candidate(
+            db,
+            request,
+            AuditAction.CANDIDATE_START_SCHEDULE_CHANGED,
+            actor=user,
+            candidate=candidate,
+            details="; ".join(start_changes),
             commit=False,
         )
     db.commit()

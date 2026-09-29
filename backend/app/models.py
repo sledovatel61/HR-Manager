@@ -15,13 +15,14 @@ UUID columns via the Alembic migration.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from enum import StrEnum
 
 from sqlalchemy import (
     JSON,
     BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -29,6 +30,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    Time,
     UniqueConstraint,
     text,
 )
@@ -120,6 +122,14 @@ class AuditAction(StrEnum):
     CANDIDATE_INTERACTION_ADDED = "candidate_interaction_added"
     DUPLICATE_CANDIDATE_CREATED = "duplicate_candidate_created"
     CANDIDATE_TRANSFERRED = "candidate_transferred"
+    # Phase 18: work schedule («График выхода на работу»). The candidate's
+    # start date/time and the service rows without a candidate are audited
+    # with before/after values.
+    CANDIDATE_START_SCHEDULE_CHANGED = "candidate_start_schedule_changed"
+    WORK_SCHEDULE_ENTRY_CREATED = "work_schedule_entry_created"
+    WORK_SCHEDULE_ENTRY_UPDATED = "work_schedule_entry_updated"
+    WORK_SCHEDULE_ENTRY_DELETED = "work_schedule_entry_deleted"
+    WORK_SCHEDULE_EXPORTED = "work_schedule_exported"
     # Calendar events (roadmap phase: events and calendar).
     EVENT_CREATED = "event_created"
     EVENT_UPDATED = "event_updated"
@@ -485,6 +495,7 @@ class Candidate(Base):
         Index("ix_candidates_email_normalized", "email_normalized"),
         Index("ix_candidates_deleted_at", "deleted_at"),
         Index("ix_candidates_updated_at", "updated_at"),
+        Index("ix_candidates_start_date", "start_date"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
@@ -522,6 +533,20 @@ class Candidate(Base):
     # Funnel position of the stage: enables correct server-side sorting by
     # stage without a client-side dictionary.
     stage_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # --- Phase 18: «График выхода на работу» --------------------------------
+    # Плановая/фактическая дата выхода и реквизиты рабочего места. Все поля
+    # необязательные. Дату разрешено ставить на этапах offer/hired/started и
+    # обязательно указывать при переводе в «Вышел» — правила проверяет API
+    # (``app.work_schedule``), схема лишь хранит значения. Должность
+    # переиспользуется из существующего поля ``position`` и здесь не
+    # дублируется.
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    start_organization: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    start_department: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    shift: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    start_comment: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -2425,3 +2450,53 @@ class CandidateDocumentGeneration(Base):
         ForeignKey("users.id", name="fk_document_generations_author", ondelete="RESTRICT")
     )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)
+
+
+# Phase 18: «График выхода на работу». Служебная строка дня графика — событие
+# без кандидата («Увольнение 13:00–14:00», «перевод», «отработка грузчик»,
+# «медосмотр»). Такие строки создаёт, правит и удаляет пользователь с правами
+# на график; каждое изменение попадает в аудит (было → стало).
+class ScheduleEntry(Base):
+    """Одна служебная строка дневного блока графика выхода.
+
+    ``title`` — короткий текст строки (например «перевод»); ``time_from`` и
+    ``time_to`` необязательны и задают время или интервал. Организация, отдел
+    и комментарий необязательны. ``author_user_id`` — автор записи; при
+    деактивации пользователя строка сохраняется.
+    """
+
+    __tablename__ = "schedule_entries"
+    __table_args__ = (
+        CheckConstraint("length(title) >= 1", name="ck_schedule_entries_title_present"),
+        CheckConstraint(
+            "time_to IS NULL OR time_from IS NULL OR time_to >= time_from",
+            name="ck_schedule_entries_time_order",
+        ),
+        Index("ix_schedule_entries_entry_date", "entry_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    entry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    time_from: Mapped[time | None] = mapped_column(Time, nullable=True)
+    time_to: Mapped[time | None] = mapped_column(Time, nullable=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    organization: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    department: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    comment: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    author_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    author: Mapped[User | None] = relationship(foreign_keys=[author_user_id])
+
+    @property
+    def author_username(self) -> str:
+        """Username of the author (lazy relationship access)."""
+        return self.author.username if self.author is not None else ""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<ScheduleEntry id={self.id} entry_date={self.entry_date}>"

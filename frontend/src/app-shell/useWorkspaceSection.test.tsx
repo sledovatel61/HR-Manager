@@ -34,6 +34,11 @@ describe("useWorkspaceSection", () => {
     expect(license.result.current[0]).toBe("license");
   });
 
+  it("resolves the «График выхода» deep link", () => {
+    const { result } = renderRouter("#/schedule");
+    expect(result.current[0]).toBe("schedule");
+  });
+
   it("resolves the rules and documents deep links", () => {
     const rules = renderRouter("#/rules");
     expect(rules.result.current[0]).toBe("rules");

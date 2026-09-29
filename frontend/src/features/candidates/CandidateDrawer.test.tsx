@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../../design-system/components/Toast";
@@ -18,6 +18,7 @@ vi.mock("../../api", async (importOriginal) => {
     updateEvent: vi.fn(),
     listHrUsers: vi.fn(),
     listEventHistory: vi.fn(),
+    fetchWorkScheduleSuggestions: vi.fn(),
   };
 });
 
@@ -44,6 +45,12 @@ const CANDIDATE: Candidate = {
   owner_user_id: HR.id,
   owner_username: "hr1",
   stage: "new",
+  start_date: null,
+  start_time: null,
+  start_organization: null,
+  start_department: null,
+  shift: null,
+  start_comment: null,
   created_at: "2026-09-01T10:00:00Z",
   updated_at: "2026-09-02T10:00:00Z",
   deleted_at: null,
@@ -72,6 +79,11 @@ beforeEach(() => {
   vi.mocked(api.listCandidateTransfers).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
   vi.mocked(api.listEvents).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
   vi.mocked(api.listEventHistory).mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
+  vi.mocked(api.fetchWorkScheduleSuggestions).mockResolvedValue({
+    organizations: [],
+    departments: [],
+    shifts: [],
+  });
 });
 
 describe("CandidateDrawer", () => {
@@ -189,6 +201,56 @@ describe("CandidateDrawer", () => {
     await userEvent.click(await screen.findByRole("tab", { name: "Передачи" }));
     expect(await screen.findByText("hr_old → hr1")).toBeInTheDocument();
     expect(screen.getByText("Перераспределение")).toBeInTheDocument();
+  });
+});
+
+describe("CandidateDrawer — блок «Выход на работу»", () => {
+  it("saves the start date, place and shift with autocomplete hints", async () => {
+    const offer = { ...CANDIDATE, stage: "offer" as const };
+    vi.mocked(api.getCandidate).mockResolvedValue(offer);
+    vi.mocked(api.fetchWorkScheduleSuggestions).mockResolvedValue({
+      organizations: ["ООО Авион"],
+      departments: ["Производственный цех Сокол"],
+      shifts: ["1 смена"],
+    });
+    vi.mocked(api.updateCandidate).mockResolvedValue({
+      ...offer,
+      start_date: "2026-08-10",
+      start_organization: "ООО Авион",
+    });
+    renderDrawer();
+
+    await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+    const block = screen.getByRole("region", { name: "Выход на работу" });
+    await userEvent.click(within(block).getByRole("button", { name: "Изменить" }));
+
+    fireEvent.change(within(block).getByLabelText("Дата выхода"), {
+      target: { value: "2026-08-10" },
+    });
+    await userEvent.type(within(block).getByLabelText("Организация"), "ООО Авион");
+    await userEvent.click(within(block).getByRole("button", { name: "Сохранить" }));
+
+    await waitFor(() =>
+      expect(api.updateCandidate).toHaveBeenCalledWith(
+        CANDIDATE.id,
+        expect.objectContaining({
+          start_date: "2026-08-10",
+          start_organization: "ООО Авион",
+        })
+      )
+    );
+    // Подсказки подтягиваются из уже введённых значений, а не из справочника.
+    expect(api.fetchWorkScheduleSuggestions).toHaveBeenCalled();
+  });
+
+  it("hides the date editor on stages where the server forbids a start date", async () => {
+    renderDrawer();
+    const block = await screen.findByRole("region", { name: "Выход на работу" });
+
+    expect(within(block).getByRole("button", { name: "Изменить" })).toBeDisabled();
+    expect(
+      within(block).getByText(/Дату выхода можно указать на этапах «Оффер», «Оформлен» и «Вышел»/)
+    ).toBeInTheDocument();
   });
 });
 
