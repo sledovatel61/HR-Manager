@@ -324,8 +324,8 @@ Test-Case "обновление с падающей миграцией отка�
                 return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="0013 (head)"; Stderr="" }
             }
             if ($Arguments -contains "run" -and ($Arguments -join " ") -match "backup") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="ok"; Stderr="" } }
-            if ($Name -eq "docker.exe" -and $Arguments[0] -eq "image") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="sha256:old"; Stderr="" } }
-            if ($Name -eq "docker.exe" -and $Arguments[0] -eq "tag") { $global:HRM_MockWorld.TagCount++; return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout=""; Stderr="" } }
+            if (($Name -eq "docker.exe" -or $Name -eq "docker") -and $Arguments[0] -eq "image") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="sha256:old"; Stderr="" } }
+            if (($Name -eq "docker.exe" -or $Name -eq "docker") -and $Arguments[0] -eq "tag") { $global:HRM_MockWorld.TagCount++; return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout=""; Stderr="" } }
         }
         if ($Name -eq "icacls.exe") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout=""; Stderr="" } }
         if ($Name -eq "netsh.exe") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="Ok"; Stderr="" } }

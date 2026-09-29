@@ -36,11 +36,11 @@ function Get-HrmLanConfig {
                 # legacy: enabled true implies 0.0.0.0
                 if ($enabled -and $bind -eq "127.0.0.1") { $bind = "0.0.0.0" }
                 if (-not $enabled) { $bind = "127.0.0.1" }
-                return @{ enabled = $enabled; bind = $bind }
+                return [pscustomobject]@{ enabled = $enabled; bind = $bind }
             }
         } catch {}
     }
-    return @{ enabled = $false; bind = "127.0.0.1" }
+    return [pscustomobject]@{ enabled = $false; bind = "127.0.0.1" }
 }
 
 function Set-HrmLanConfig {
@@ -76,9 +76,9 @@ function Add-HrmFirewallRule {
     $ruleArgs = @("advfirewall", "firewall", "add", "rule", ("name=`"{0}`"" -f $script:FirewallRuleName), "dir=in", "action=allow", "protocol=TCP", ("localport={0}" -f $port), "profile=private,domain", "enable=yes")
     $result = Invoke-HrmExternal -Name "netsh.exe" -Arguments $ruleArgs -IgnoreExitCode
     if ($result.ExitCode -ne 0) {
-        Write-HrmLog "warn" "Правило Firewall не добавлено (требуются права администратора). Доступ по сети может быть заблокирован Firewall — запустите 'lan-access -Enable' из-под администратора."
+        $null = Write-HrmLog "warn" "Правило Firewall не добавлено (требуются права администратора). Доступ по сети может быть заблокирован Firewall — запустите 'lan-access -Enable' из-под администратора."
     } else {
-        Write-HrmLog "info" "Правило Firewall добавлено: $script:FirewallRuleName (порт $port, Private/Domain)."
+        $null = Write-HrmLog "info" "Правило Firewall добавлено: $script:FirewallRuleName (порт $port, Private/Domain)."
     }
 }
 
@@ -86,9 +86,9 @@ function Remove-HrmFirewallRule {
     $ruleArgs = @("advfirewall", "firewall", "delete", "rule", ("name=`"{0}`"" -f $script:FirewallRuleName))
     $result = Invoke-HrmExternal -Name "netsh.exe" -Arguments $ruleArgs -IgnoreExitCode
     if ($result.ExitCode -eq 0) {
-        Write-HrmLog "info" "Правило Firewall удалено: $script:FirewallRuleName."
+        $null = Write-HrmLog "info" "Правило Firewall удалено: $script:FirewallRuleName."
     } else {
-        Write-HrmLog "warn" "Правило Firewall не удалено (требуются права администратора)."
+        $null = Write-HrmLog "warn" "Правило Firewall не удалено (требуются права администратора)."
     }
 }
 
@@ -148,7 +148,7 @@ function Invoke-HrmLanAccess {
         return $current
     }
     if ($wantEnable -eq $current.enabled) {
-        Write-HrmLog "info" ("Доступ по сети уже {0}." -f $(if ($wantEnable) { "включён" } else { "выключен" }))
+        $null = Write-HrmLog "info" ("Доступ по сети уже {0}." -f $(if ($wantEnable) { "включён" } else { "выключен" }))
     } else {
         $null = Set-HrmLanConfig $StateDir $wantEnable
         # Перезаписать pilot.env с новым биндом и пересоздать контейнеры
@@ -157,16 +157,16 @@ function Invoke-HrmLanAccess {
         if ($wantEnable) { Add-HrmFirewallRule $StateDir } else { Remove-HrmFirewallRule }
         # Пересоздать frontend с новым биндом
         Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
-        Write-HrmLog "info" ("Доступ по сети {0}." -f $(if ($wantEnable) { "включён (LAN 0.0.0.0:$port)" } else { "выключен (только 127.0.0.1:$port)" }))
+        $null = Write-HrmLog "info" ("Доступ по сети {0}." -f $(if ($wantEnable) { "включён (LAN 0.0.0.0:$port)" } else { "выключен (только 127.0.0.1:$port)" }))
     }
-    # Показать адреса после изменения
+    # Показать адреса после изменения (Write-Host — не попадает в pipeline возврата)
     $addrs = Get-HrmLanAddresses -Port $port
     if ($wantEnable) {
-        Write-Output ("Теперь коллега может открыть: http://{0}:{1}" -f $addrs.hostname, $port)
-        foreach ($ip in $addrs.ips) { Write-Output ("  http://{0}:{1}" -f $ip, $port) }
-        Write-Output "Безопасность: /api/setup/* остаётся доступен только с этого ПК."
+        Write-Host ("Теперь коллега может открыть: http://{0}:{1}" -f $addrs.hostname, $port)
+        foreach ($ip in $addrs.ips) { Write-Host ("  http://{0}:{1}" -f $ip, $port) }
+        Write-Host "Безопасность: /api/setup/* остаётся доступен только с этого ПК."
     } else {
-        Write-Output "Доступ по сети выключен, порт снова только на 127.0.0.1."
+        Write-Host "Доступ по сети выключен, порт снова только на 127.0.0.1."
     }
     return (Get-HrmLanConfig $StateDir)
 }
