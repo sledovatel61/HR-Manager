@@ -61,7 +61,62 @@ HR Manager — многопользовательская внутренняя �
 - Запрещено передавать получателя, текст сообщения, email, Telegram ID или область доступа через клиентский запрос, если их можно определить на сервере.
 - Любая отправка кандидатам должна повторно проверять согласие, права, актуальность объекта и возможность отмены непосредственно перед отправкой.
 
+## Release 0.14.0: текущий статус и простые правила
+
+Подтверждённый baseline релиза:
+
+- exact SHA: `efb88d978440a0aae1940005fddffc7e465ad9ef`;
+- PR #33 merged;
+- CI run `35821729444` завершён успешно, все 6 jobs зелёные;
+- `main` у GitHub указывает на exact SHA;
+- тег `v0.14.0` отсутствует;
+- GitHub Releases отсутствуют;
+- production workflow `update-channel.yml` не запускался (`0` runs);
+- workflow на exact SHA проверяет CI до signing, использует `needs: ci-gate`, exact `head_sha` и fail-closed поведение;
+- в CI-подобном UTF-8 окружении release-тесты прошли: `107 passed`.
+
+Что агент уже сделал:
+
+- повторил read-only проверки GitHub API;
+- проверил PR, exact SHA, CI, jobs, отсутствие tag/Release и отсутствие production runs;
+- проверил exact-SHA workflow;
+- проверил release-тесты и UNC security fixture;
+- создал redacted evidence checklist в доступном окружении, если путь и файл действительно доступны;
+- не запускал production workflow, signing, tag/release и не менял secrets.
+
+Простые правила для дальнейшей работы:
+
+1. Агент сам выполняет все доступные read-only проверки и не просит владельца делать то, что можно проверить через API, git или тесты.
+2. Агент не выдумывает результаты. Если нужны реальные secret values, private keys, PFX, production machines или решение владельца, статус остаётся `MISSING` или `BLOCKED`.
+3. Не читать и не выводить secret values, private keys, PFX passwords или PEM contents.
+4. Не запускать `workflow_dispatch`, production signing, создание tag/release или destructive purge без отдельного письменного GO от владельца.
+5. Не считать тестовые ключи, fixtures и CI-тесты доказательством production signing или Windows acceptance.
+6. Перед каждым отчётом указать простыми словами: что проверено, что не проверено и что делать дальше.
+7. Пока хотя бы один обязательный пункт evidence имеет статус `MISSING`, `BLOCKED` или `FAIL`, решение только `NO-GO`.
+8. Если создаётся checklist, сохранить его в активном workspace, указать абсолютный путь, затем перечитать файл и проверить git status.
+9. Текущий доступный checkout `HR-Manager-current` находится на `4791203cb00b047d2f2ff735e920e668a19fb56a`, поэтому его локальные результаты нельзя выдавать за повтор exact baseline. Exact baseline проверять в отдельной detached-копии.
+
+Что делает владелец:
+
+- подтверждает в защищённом контуре наличие 9 secret names без раскрытия значений;
+- подтверждает Ed25519 key ceremony и redacted fingerprint;
+- выполняет Authenticode/TSA pre-flight с production PFX — **только для
+  коммерческого релиза**; пилот на ПК Марии это не блокирует (решение владельца
+  2026-09-29, см. `docs/handoff-release-0.14.0.md`);
+- назначает owner, operator, независимого reviewer и change window;
+- предоставляет Windows 10/11 test machines и redacted acceptance evidence;
+- подписывает письменное решение `GO` или `NO-GO`.
+
+До письменного `GO` владельца релиз не запускать. Текущий простой вывод: код и CI готовы, production evidence ещё не подтверждён, поэтому сейчас `NO-GO`.
+
 ## Текущий статус и handoff
+
+Главный стартовый документ для продолжения работы —
+`docs/handoff-release-0.14.0.md`; сводный release-чеклист находится в
+`docs/CURRENT_STATUS.md`. Сначала читать эти документы, затем `README.md`,
+`ROADMAP.md` и `docs/runbook-pilot-release.md`. Текущий checkout содержит
+реализацию Phase 15 (офлайн-лицензия) и Phase 16 (текстовый MVP шаблонов), но
+пилот остаётся `NO-GO` до закрытия production evidence.
 
 - Фазы 0–13 приняты. Phase 13 завершена в PR #23 на reviewed SHA
   `ac4e7ec302915e36ec614893ebd4559020cea903`; исполняемый release workflow
@@ -84,8 +139,12 @@ HR Manager — многопользовательская внутренняя �
 - Принятый baseline Phase 12 опубликован в ветке
   `phase12/windows-acceptance-final`. До её merge следующий агент начинает
   работу только от этой ветки, а не от устаревшего `main`.
-- Следующая работа — Phase 14, эксплуатационная готовность и ограниченная
-  приёмка первого Windows-пилота. Контракт: `prompts/PHASE_14_PROMPT.md`.
+- Следующая работа — release readiness и пилотная приёмка: динамическое
+  объяснение правил, размещение readiness в административной зоне, полный
+  backend/интеграционный/Windows CI, production signing и runbook evidence.
+- Не считать Phase 15–16 «не влитыми» только из-за старых формулировок в
+  исторических отчётах; источником актуального статуса являются два документа,
+  указанные выше, и фактический checkout.
 
 ## Definition of Done
 
