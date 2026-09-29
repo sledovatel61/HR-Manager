@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApiError, documentRequest } from "../../api";
+import { ToastProvider } from "../../design-system/components/Toast";
 import { DocumentListsPage } from "./DocumentListsPage";
 import { DocumentsTab } from "./DocumentsTab";
 import { MyRulesPage } from "./MyRulesPage";
@@ -251,15 +252,24 @@ describe("Документы кандидата", () => {
   });
 });
 
+function renderRules() {
+  return render(
+    <ToastProvider>
+      <MyRulesPage />
+    </ToastProvider>,
+  );
+}
+
 describe("Мои правила", () => {
   it("creates a closed stage-transition rule", async () => {
     const user = userEvent.setup();
-    render(<MyRulesPage />);
+    renderRules();
     await screen.findByText(rule.name);
     await user.click(screen.getByText("Создать правило"));
-    await user.type(screen.getByLabelText("Название правила"), "Оформление");
-    await user.selectOptions(screen.getByLabelText("Список"), "list-1");
-    expect(screen.queryByLabelText("Канал")).toBeNull();
+    await screen.findByRole("dialog");
+    await user.type(screen.getByLabelText(/Название правила/), "Оформление");
+    await user.selectOptions(screen.getByLabelText(/^Список/), "list-1");
+    expect(screen.queryByLabelText(/^Канал/)).toBeNull();
     await user.click(screen.getByText("Сохранить правило"));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
@@ -280,19 +290,20 @@ describe("Мои правила", () => {
   });
   it("edits a scheduled reminder with bounded days and channels", async () => {
     const user = userEvent.setup();
-    render(<MyRulesPage />);
+    renderRules();
     await screen.findByText(rule.name);
     await user.click(screen.getByText("Редактировать"));
+    await screen.findByRole("dialog");
     await user.selectOptions(
-      screen.getByLabelText("Триггер"),
+      screen.getByLabelText(/Триггер/),
       "scheduled_reminder",
     );
-    expect(screen.getByLabelText("Действие")).toHaveValue("document_reminder");
-    expect(screen.getByLabelText("Через сколько дней (1–30)")).toHaveAttribute(
+    expect(screen.getByLabelText(/^Действие/)).toHaveValue("document_reminder");
+    expect(screen.getByLabelText(/Через сколько дней/)).toHaveAttribute(
       "max",
       "30",
     );
-    await user.selectOptions(screen.getByLabelText("Канал"), "telegram");
+    await user.selectOptions(screen.getByLabelText(/^Канал/), "telegram");
     await user.click(screen.getByText("Сохранить правило"));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
@@ -307,11 +318,21 @@ describe("Мои правила", () => {
       ),
     );
   });
-  it("disables without deleting and loads immutable history", async () => {
+  it("disables only after an explicit confirmation, without deleting, and loads immutable history", async () => {
     const user = userEvent.setup();
-    render(<MyRulesPage />);
+    renderRules();
     await screen.findByText(rule.name);
-    await user.click(screen.getByText("Выключить"));
+    await user.click(screen.getByRole("button", { name: "Выключить" }));
+    // Выключение отменяет незавершённые задания версии — нужно подтверждение.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Выключить правило «Запрос после оффера»?");
+    expect(
+      api,
+    ).not.toHaveBeenCalledWith(
+      "/document-rules/rule-1",
+      expect.objectContaining({ method: "PUT" }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Выключить" }));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
         "/document-rules/rule-1",
@@ -331,12 +352,182 @@ describe("Мои правила", () => {
   });
   it("shows empty state and a retryable failure", async () => {
     api.mockRejectedValueOnce(new ApiError(500, "Ошибка"));
-    render(<MyRulesPage />);
-    await screen.findByText("Ошибка");
+    renderRules();
+    // Полноэкранный error state с retry — не пустая страница и не console-only.
+    await screen.findByText("Не удалось загрузить данные");
     api.mockImplementation(
       async (path) => (path === "/document-lists" ? lists : []) as never,
     );
-    await userEvent.click(screen.getByText("Повторить загрузку"));
+    await userEvent.click(screen.getByText("Повторить попытку"));
     expect(await screen.findByText("Правил пока нет.")).toBeInTheDocument();
+  });
+
+  it("renders the permission-denied state when the list answers 403", async () => {
+    api.mockRejectedValue(new ApiError(403, "Недостаточно прав."));
+    renderRules();
+    expect(await screen.findByText("Недостаточно прав")).toBeInTheDocument();
+    expect(screen.queryByText("Создать правило")).not.toBeInTheDocument();
+  });
+
+  it("shows a loading skeleton before the data arrives", async () => {
+    api.mockImplementation(() => new Promise(() => undefined as never));
+    renderRules();
+    expect(screen.getByText("Загрузка данных…")).toBeInTheDocument();
+    expect(screen.queryByText("Создать правило")).not.toBeInTheDocument();
+  });
+
+  it("shows creation and update dates with the rule version on the card", async () => {
+    renderRules();
+    await screen.findByText(rule.name);
+    const created = new Date("2026-09-08T12:00:00Z").toLocaleString("ru-RU");
+    expect(
+      screen.getByText(
+        `версия 1 · создано: ${created} · изменено: ${created}`,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("filters by search text and shows a filtered-empty state", async () => {
+    const user = userEvent.setup();
+    renderRules();
+    await screen.findByText(rule.name);
+
+    await user.type(screen.getByLabelText(/Поиск правила/), "несуществующее");
+    expect(await screen.findByText(/Показано 0 из 1/)).toBeInTheDocument();
+    expect(screen.getByText("Ничего не найдено")).toBeInTheDocument();
+    expect(screen.queryByText(rule.name)).not.toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText(/Поиск правила/));
+    await user.type(screen.getByLabelText(/Поиск правила/), "оффера");
+    expect(await screen.findByText(/Показано 1 из 1/)).toBeInTheDocument();
+    expect(screen.getByText(rule.name)).toBeInTheDocument();
+  });
+
+  it("filters rules by action kind", async () => {
+    const user = userEvent.setup();
+    renderRules();
+    await screen.findByText(rule.name);
+    await user.selectOptions(
+      screen.getByLabelText(/Тип действия/),
+      "document_reminder",
+    );
+    expect(await screen.findByText(/Показано 0 из 1/)).toBeInTheDocument();
+    expect(screen.queryByText(rule.name)).not.toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByLabelText(/Тип действия/),
+      "document_request",
+    );
+    expect(await screen.findByText(/Показано 1 из 1/)).toBeInTheDocument();
+    expect(screen.getByText(rule.name)).toBeInTheDocument();
+  });
+
+  it("filters rules by enabled status", async () => {
+    const user = userEvent.setup();
+    api.mockImplementation(async (path) => {
+      if (path === "/document-lists") return lists as never;
+      if (path === "/document-rules")
+        return [rule, { ...rule, id: "rule-2", name: "Выключенное", enabled: false }] as never;
+      return {} as never;
+    });
+    renderRules();
+    await screen.findByText(rule.name);
+    expect(screen.getByText("Выключенное")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText(/^Статус/), "enabled");
+    expect(await screen.findByText(/Показано 1 из 2/)).toBeInTheDocument();
+    expect(screen.queryByText("Выключенное")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText(/^Статус/), "disabled");
+    expect(await screen.findByText(/Показано 1 из 2/)).toBeInTheDocument();
+    expect(screen.getByText("Выключенное")).toBeInTheDocument();
+    expect(screen.queryByText(rule.name)).not.toBeInTheDocument();
+  });
+
+  it("resets all filters with a single action", async () => {
+    const user = userEvent.setup();
+    renderRules();
+    await screen.findByText(rule.name);
+    await user.type(screen.getByLabelText(/Поиск правила/), "нет-такого");
+    expect(await screen.findByText(/Показано 0 из 1/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Сбросить фильтры" }));
+    expect(await screen.findByText(rule.name)).toBeInTheDocument();
+    expect(screen.queryByText(/Показано/)).not.toBeInTheDocument();
+  });
+
+  it("explains a 409 conflict and keeps the data visible", async () => {
+    const user = userEvent.setup();
+    api.mockImplementation(async (path) => {
+      if (path === "/document-lists") return lists as never;
+      if (path === "/document-rules") return [rule] as never;
+      if (path === "/document-rules/rule-1")
+        throw new ApiError(409, "Правило изменилось. Обновите данные.");
+      return {} as never;
+    });
+    renderRules();
+    await screen.findByText(rule.name);
+    await user.click(screen.getByRole("button", { name: "Выключить" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "Выключить" }));
+
+    expect(await screen.findByText(/Конфликт версии/)).toBeInTheDocument();
+    expect(screen.getByText(rule.name)).toBeInTheDocument();
+  });
+
+  it("surfaces a backend 422 combination message in Russian", async () => {
+    const user = userEvent.setup();
+    api.mockImplementation(async (path) => {
+      if (path === "/document-lists") return lists as never;
+      if (path === "/document-rules") return [rule] as never;
+      if (path === "/document-rules/rule-1")
+        throw new ApiError(422, "Ошибка запроса (422).", [
+          { msg: "Value error, Срок 1–30 дней задаётся только для напоминания.", type: "value_error" },
+        ]);
+      return {} as never;
+    });
+    renderRules();
+    await screen.findByText(rule.name);
+    await user.click(screen.getByRole("button", { name: "Редактировать" }));
+    await screen.findByRole("dialog");
+    await user.click(screen.getByText("Сохранить правило"));
+
+    expect(
+      await screen.findByText("Срок 1–30 дней задаётся только для напоминания."),
+    ).toBeInTheDocument();
+    // Форма не закрыта молча: модалка с черновиком осталась открытой.
+    expect(screen.getByRole("heading", { name: "Редактирование правила" })).toBeInTheDocument();
+  });
+
+  it("renders history rows with action, outcome and candidate reference", async () => {
+    const user = userEvent.setup();
+    api.mockImplementation(async (path) => {
+      if (path === "/document-lists") return lists as never;
+      if (path === "/document-rules") return [rule] as never;
+      if (path.endsWith("/history"))
+        return [
+          {
+            id: "exec-1",
+            rule_version: 1,
+            trigger_id: "trigger-1",
+            trigger_version: 1,
+            candidate_id: "abcdef12-3333-4444-5555-666666666666",
+            action: "document_request",
+            outcome: "queued",
+            created_at: "2026-09-10T09:30:00Z",
+            outbox_id: "outbox-1",
+          },
+        ] as never;
+      return {} as never;
+    });
+    renderRules();
+    await screen.findByText(rule.name);
+    await user.click(screen.getByText("История срабатываний"));
+
+    const historyDialog = await screen.findByRole("dialog");
+    expect(historyDialog).toHaveTextContent("История: Запрос после оффера");
+    expect(within(historyDialog).getByText("Сообщение в очереди")).toBeInTheDocument();
+    expect(within(historyDialog).getByText("Поставить запрос документов")).toBeInTheDocument();
+    expect(within(historyDialog).getByText("abcdef12")).toBeInTheDocument();
   });
 });

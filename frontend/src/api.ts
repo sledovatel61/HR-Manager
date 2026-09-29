@@ -62,6 +62,7 @@ import type {
   Paginated,
   User,
   UserListItems,
+  UserUpdateInput,
 } from "./types";
 import type {
   DocumentRenderPreview,
@@ -268,6 +269,24 @@ export async function createUser(input: {
   password: string;
 }): Promise<User> {
   return request<User>("/admin/users", { method: "POST", body: input });
+}
+
+/** One user by id (admin only) — response never contains password data. */
+export async function getUser(userId: string): Promise<User> {
+  return request<User>(`/admin/users/${userId}`);
+}
+
+/** Update full name, role, active flag and/or reset password (admin only).
+ * The password travels only inside this PATCH body and is never stored by
+ * the caller: `User` responses contain no password fields. */
+export async function updateUser(userId: string, input: UserUpdateInput): Promise<User> {
+  return request<User>(`/admin/users/${userId}`, { method: "PATCH", body: input });
+}
+
+/** Clear a login lockout: resets the failed-login counter and locked_until
+ * (admin only). */
+export async function unlockUser(userId: string): Promise<User> {
+  return request<User>(`/admin/users/${userId}/unlock`, { method: "POST" });
 }
 
 // --- Admin: audit log -------------------------------------------------------

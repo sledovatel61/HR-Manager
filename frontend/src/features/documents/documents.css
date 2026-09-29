@@ -74,3 +74,115 @@
   outline: 3px solid #307cbe;
   outline-offset: 3px;
 }
+
+/* --- «Мои правила»: production-паттерны (design-system кнопки, фильтры) --- */
+
+/* Голые <button> соседних страниц стилизует legacy-селектор выше; кнопкам
+ * design-system (.btn) возвращаем их собственный вид. */
+.documents-page .btn,
+.document-panel .btn {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--surface-raised, #fff);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+}
+
+.documents-page .btn:disabled,
+.document-panel .btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.documents-page .btn-primary {
+  background: var(--accent-default);
+  border-color: var(--accent-default);
+  color: var(--text-on-accent);
+}
+
+.documents-page .btn-secondary {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.documents-page .btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.documents-page .btn-danger {
+  background: var(--status-danger-bg);
+  border-color: var(--status-danger-border);
+  color: var(--status-danger-fg);
+}
+
+.documents-intro {
+  margin: 0 0 4px;
+  color: var(--text-secondary, #5b6b73);
+  font-size: var(--text-size-sm, 13px);
+}
+
+.document-meta {
+  color: var(--text-tertiary, #8a97a0);
+  font-size: var(--text-size-xs, 12px);
+  margin: 2px 0;
+}
+
+.document-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.document-panel-head h2 {
+  margin: 0 0 2px;
+  font-size: var(--text-size-lg, 17px);
+}
+
+.documents-filters {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(180px, 240px) minmax(160px, 200px) minmax(160px, 200px);
+  gap: 12px;
+  align-items: end;
+  margin: 4px 0 8px;
+}
+
+@media (max-width: 900px) {
+  .documents-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .documents-filters {
+    grid-template-columns: 1fr;
+  }
+}
+
+.documents-filter-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 8px;
+  color: var(--text-secondary, #5b6b73);
+  font-size: var(--text-size-sm, 13px);
+  white-space: nowrap;
+}
+
+.documents-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-default);
+  cursor: pointer;
+}
+
+.documents-error {
+  border: 1px solid var(--status-danger-border);
+  background: var(--status-danger-bg);
+  color: var(--status-danger-fg);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
