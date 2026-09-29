@@ -219,8 +219,7 @@ function New-HrmSupportBundle {
 
         # Проверить что zip не пустой
         $zipInfo = Get-Item $zipPath
-        Write-HrmLog "info" ("Отчёт для разработчика создан: {0} ({1} байт)" -f $zipPath, $zipInfo.Length)
-        Write-Output $zipPath
+        $null = Write-HrmLog "info" ("Отчёт для разработчика создан: {0} ({1} байт)" -f $zipPath, $zipInfo.Length)
         return $zipPath
     }
     finally {

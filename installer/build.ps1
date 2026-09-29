@@ -164,11 +164,12 @@ if (-not $licensePublicKey) {
 }
 try {
     $decoded = [Convert]::FromBase64String($licensePublicKey)
+    # валидация base64 32 байта (44 символа) — fail-closed
     if ($decoded.Length -ne 32) {
-        throw "LICENSE_PUBLIC_KEY must decode to 32 bytes, got $($decoded.Length)"
+        throw "LICENSE_PUBLIC_KEY must decode to 32 bytes (32 байта), got $($decoded.Length)"
     }
 } catch {
-    throw "LICENSE_PUBLIC_KEY invalid (must be base64 32 bytes, 44 chars): $_"
+    throw "LICENSE_PUBLIC_KEY invalid (must be base64 32 bytes / 32 байта, 44 chars): $_"
 }
 $stagedLicenseDir = Join-Path $appStaging "infra\license"
 New-Item -ItemType Directory -Path $stagedLicenseDir -Force | Out-Null

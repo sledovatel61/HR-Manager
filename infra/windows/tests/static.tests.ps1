@@ -110,10 +110,11 @@ Test-Case "пилотный оверлей: стабильное имя прое
     $overlay = Get-Content -Path (Join-Path $RepoRoot "infra\compose.pilot.yml") -Raw -Encoding UTF8
     Assert-HrmContains $overlay "name: hr-manager-pilot" "нет стабильного имени проекта"
     # Все published-порты — только 127.0.0.1 по умолчанию (переменная HRM_PILOT_BIND с default 127.0.0.1).
-    $portLines = @($overlay -split "`n" | Where-Object { $_ -match '"(\d+\.\d+\.\d+\.\d+):\d+:\d+"' -or $_ -match 'HRM_PILOT_BIND' -or $_ -match '"127\.0\.0\.1:\$\{HRM_PILOT_PORT' })
+    $portLines = @($overlay -split "`n" | Where-Object { ($_ -match '"(\d+\.\d+\.\d+\.\d+):\d+:\d+"' -or $_ -match 'HRM_PILOT_BIND' -or $_ -match '"127\.0\.0\.1:\$\{HRM_PILOT_PORT') -and $_ -notmatch '^\s*#' })
     Assert-HrmTrue ($portLines.Count -ge 1) "не найдены published-порты"
     foreach ($line in $portLines) {
         $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
         if ($trimmed -match '^"\d+:\d+"') { continue }
         # Разрешена переменная HRM_PILOT_BIND с default 127.0.0.1, или явный 127.0.0.1
         if ($trimmed -match 'HRM_PILOT_BIND') {
