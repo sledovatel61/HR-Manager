@@ -117,10 +117,12 @@ function Clear-HrmExchangeToken {
 }
 
 function Get-HrmLicensePublicKey {
-    # Публичный ключ лицензии (не секрет) — читается из файла public_key.b64
-    # в каталоге релиза или из состояния. Возвращает base64 32 байта или пустую строку.
+    # Публичный ключ лицензии (не секрет) — читается ТОЛЬКО из внешнего
+    # локального файла StateDir/license_public_key.b64 (подготовлен
+    # установщиком из snapshot) или из env HRM_LICENSE_PUBLIC_KEY (тесты).
+    # Fallback из git checkout (infra/license/public_key.b64) запрещён —
+    # ключ должен приходить через runtime-конфигурацию.
     param([string]$StateDir)
-    # 1. Если уже сохранён в состоянии (owner установил вручную), используем его
     if ($StateDir) {
         try {
             $stateFile = Join-Path $StateDir "license_public_key.b64"
@@ -132,30 +134,6 @@ function Get-HrmLicensePublicKey {
             }
         } catch {}
     }
-    # 2. Ищем в релизе: infra/license/public_key.b64 относительно скрипта движка
-    $engineDir = $PSScriptRoot
-    $candidates = @()
-    if ($engineDir) {
-        try { $candidates += Join-Path $engineDir "..\..\license\public_key.b64" } catch {}
-        try { $candidates += Join-Path $engineDir "..\..\..\infra\license\public_key.b64" } catch {}
-    }
-    if ($StateDir) {
-        try { $candidates += Join-Path $StateDir "..\Program Files\HRManager\infra\license\public_key.b64" } catch {}
-    }
-    if ($env:HRM_SOURCE_DIR) {
-        try { $candidates += Join-Path $env:HRM_SOURCE_DIR "infra\license\public_key.b64" } catch {}
-    }
-    foreach ($p in $candidates) {
-        if (-not $p) { continue }
-        try {
-            $resolved = [System.IO.Path]::GetFullPath($p)
-            if (Test-Path $resolved) {
-                $content = (Get-Content -Path $resolved -Raw -Encoding UTF8).Trim()
-                if ($content) { return $content }
-            }
-        } catch {}
-    }
-    # 3. Env var override (для тестов)
     if ($env:HRM_LICENSE_PUBLIC_KEY) {
         return $env:HRM_LICENSE_PUBLIC_KEY.Trim()
     }
@@ -189,14 +167,19 @@ function Write-HrmPilotEnv {
     $channel = Get-HrmChannelConfig $StateDir
     $keysJson = ($channel.public_keys | ConvertTo-Json -Compress)
     $licensePub = Get-HrmLicensePublicKey $StateDir
-    # LAN bind: 127.0.0.1 by default, 0.0.0.0 when enabled (B5, persists via StateDir/lan.json)
+    # LAN bind: 127.0.0.1 by default, 0.0.0.0 only via explicit lan-access flow
+    # Arbitrary HRM_PILOT_BIND values are rejected — safe fallback to 127.0.0.1
     $pilotBind = "127.0.0.1"
     try {
         $lanFile = Join-Path $StateDir "lan.json"
         if (Test-Path $lanFile) {
             $lanData = Get-HrmJsonFile $lanFile
-            if ($null -ne $lanData -and $lanData.enabled -eq $true) { $pilotBind = "0.0.0.0" }
-            elseif ($null -ne $lanData -and $lanData.bind) { $pilotBind = [string]$lanData.bind }
+            if ($null -ne $lanData -and $lanData.enabled -eq $true) {
+                $rawBind = if ($lanData.PSObject.Properties["bind"] -and $lanData.bind) { [string]$lanData.bind } else { "0.0.0.0" }
+                if ($rawBind -eq "0.0.0.0") { $pilotBind = "0.0.0.0" } else { $pilotBind = "127.0.0.1" }
+            } else {
+                $pilotBind = "127.0.0.1"
+            }
         }
     } catch {}
     $lines = @(

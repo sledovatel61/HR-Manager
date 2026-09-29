@@ -102,7 +102,9 @@ def test_license_limit_one_vs_two(db_engine):
             is_active=True,
         )
         s.add_all([admin, hr1])
-        # License with limit 1 (includes admin) -> already 2 active, creation should fail even though DB has 2 >1? Actually server checks active_count >= max => fail
+        # License with limit 1 (includes admin) -> already 2 active,
+        # creation should fail even though DB has 2 >1?
+        # Actually server checks active_count >= max => fail
         lic1 = issue_license_dict(max_users=1, priv_hex=priv_hex)
         row1 = License(
             license_id=lic1["license_id"],
@@ -143,8 +145,11 @@ def test_license_limit_one_vs_two(db_engine):
     assert create_resp.status_code == 409, create_resp.text
     assert "лицензии" in create_resp.text.lower() or "1" in create_resp.text
 
-    # Now replace license with limit 2 (still 2 active, but new user would be 3 -> still blocked? Need limit 3 to allow 2->3)
-    # Actually test says limit 1 blocks second user, limit 2 allows. For that we need initial count 1 (only admin) -> limit1 blocks second, limit2 allows.
+    # Now replace license with limit 2 (still 2 active,
+    # but new user would be 3 -> still blocked? Need limit 3 to allow 2->3)
+    # Actually test says limit 1 blocks second user, limit 2 allows.
+    # For that we need initial count 1 (only admin)
+    # -> limit1 blocks second, limit2 allows.
     # Reset DB for second scenario
     with Session(db_engine) as s2:
         s2.execute(select(License).where(License.is_active.is_(True)).limit(1))
@@ -242,79 +247,134 @@ def test_license_limit_one_vs_two(db_engine):
 
 
 def test_x_real_ip_spoof_blocked(db_engine):
-    """B5: клиент из сети не может подделать X-Real-IP для доступа к loopback-only эндпоинтам."""
-    priv_hex, pub_b64 = gen_keypair()
-    settings = Settings.model_validate(
-        {
-            "APP_ENV": "test",
-            "SECRET_KEY": "test-secret-key-0123456789abcdef0123456789",
-            "DATABASE_URL": SQLITE_URL,
-            "LICENSE_PUBLIC_KEY": pub_b64,
-            "PILOT_BOOTSTRAP_EXCHANGE_TOKEN": "b" * 64,
-        }
-    )
-    from app.main import create_app
-
-    Base.metadata.create_all(db_engine)
-    app = create_app(settings, engine=db_engine)
-    client = TestClient(app)
-
-    # Попытка вызвать loopback-only /setup/owner/claim с поддельным заголовком X-Real-IP:127.0.0.1,
-    # но с реального IP сети (симулируем через client host 192.168.1.100).
-    # В TestClient host по умолчанию testclient считается loopback в test режиме,
-    # поэтому для проверки подделки используем прямой вызов loopback_client_ok.
-    from fastapi import Request
-
-    # Создадим фейковый Request с заголовком 127.0.0.1 но client.host = 192.168.1.50
-    # Если loopback_client_ok доверяет только заголовку без проверки peer, то подделка пройдёт.
-    # Наша реализация после фикса nginx должна быть защищена: nginx перезаписывает header,
-    # но прямой вызов backend с поддельным header от LAN должен быть отклонён, если backend
-    # проверяет не только header но и то что header не может быть подделан извне (т.к. backend не публикуется).
-    # Для теста проверим, что прямой вызов с LAN IP и поддельным header всё ещё считается loopback
-    # только если header loopback, но в реальности это не эксплуатируемо из-за отсутствия публикации backend.
-    # Здесь проверяем, что заголовок действительно влияет и что без него LAN IP не проходит.
-
-    class FakeClient:
-        host = "192.168.1.100"
-
-    class FakeHeaders(dict):
-        def get(self, key, default=None):
-            return super().get(key.lower(), default)
-
-    # С поддельным заголовком 127.0.0.1 с LAN IP — текущая реализация считает loopback (т.к. header priority).
-    # Это уязвимость если backend напрямую доступен. Но в пилоте backend не публикуется, поэтому риск принят.
-    # Тест должен зафиксировать, что nginx перезаписывает header, а не backend.
-    # Мы проверяем, что без заголовка LAN IP не проходит.
-    req_no_header = Request(
-        {
-            "type": "http",
-            "headers": [],
-            "client": ("192.168.1.100", 12345),
-            "method": "GET",
-            "path": "/",
-        }
-    )
-    # Но Request требует scope, упростим: вызов loopback_client_ok с реальным TestClient и заголовком
-    # Попытка вызвать /setup/owner/claim с LAN IP и без loopback header — должна отклониться (404 or 403).
-    # Сделаем запрос с X-Real-IP: 192.168.1.100 (LAN) — не loopback => 404 (first-run disabled or rejected)
-    resp = client.post(
-        "/setup/owner/claim",
-        json={"exchange_token": "b" * 64, "surname": "Тест", "working_mode": "hr"},
-        headers={"x-real-ip": "192.168.1.100"},
-    )
-    # В test режиме host testclient считается loopback, но с x-real-ip не loopback — должен отклониться
-    # loopback_client_ok вернёт False для 192.168.1.100 => endpoint ответит 404 (first-run недоступен)
-    assert resp.status_code in (403, 404, 422)
-
-    # С поддельным loopback header от LAN (если бы backend доверял header) — в test режиме это пройдёт,
-    # но в реальном развертывании nginx перезапишет header на реальный IP, так что подделка не дойдёт.
-    # Проверим, что nginx.conf действительно перезаписывает.
+    """B5: X-Real-IP spoof не обходит loopback — backend не публикуется, nginx перезаписывает."""
     import pathlib
 
     nginx_path = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "nginx.conf"
     nginx_text = nginx_path.read_text(encoding="utf-8")
     assert "proxy_set_header X-Real-IP $remote_addr;" in nginx_text
     assert "proxy_set_header X-Real-IP 127.0.0.1;" not in nginx_text
+
+    # Прямая проверка loopback через _is_loopback — без HTTP-костылей
+    from app.setup_owner import _is_loopback
+
+    # Позитивные: loopback
+    for ip in ("127.0.0.1", "127.10.20.30", "::1"):
+        assert _is_loopback(ip), f"{ip} должен быть loopback"
+    # Негативные: частные сети Docker/LAN — не loopback
+    for ip in (
+        "10.0.0.5",
+        "10.255.255.254",
+        "172.16.0.1",
+        "172.20.0.5",
+        "172.31.255.1",
+        "192.168.65.7",
+        "192.168.49.7",
+        "192.168.1.50",
+        "192.168.1.100",
+    ):
+        assert not _is_loopback(ip), f"{ip} не должен быть loopback"
+
+
+@pytest.mark.parametrize(
+    "ip",
+    [
+        "10.0.0.5",
+        "10.255.255.254",
+        "172.16.0.1",
+        "172.20.0.5",
+        "172.31.255.1",
+        "192.168.65.7",
+        "192.168.49.7",
+        "192.168.1.50",
+    ],
+)
+def test_loopback_rejects_private_network_ips(ip: str) -> None:
+    from app.setup_owner import _is_loopback
+
+    assert not _is_loopback(ip), f"{ip} должен быть отклонён как loopback"
+
+
+@pytest.mark.parametrize("ip", ["127.0.0.1", "127.10.20.30", "::1"])
+def test_loopback_accepts_loopback_ips(ip: str) -> None:
+    from app.setup_owner import _is_loopback
+
+    assert _is_loopback(ip), f"{ip} должен быть принят как loopback"
+
+
+def test_loopback_client_ok_rejects_private_via_header_and_client() -> None:
+    from fastapi import Request
+
+    from app.config import Settings
+    from app.setup_owner import loopback_client_ok
+
+    settings = Settings.model_validate(
+        {
+            "APP_ENV": "test",
+            "SECRET_KEY": "test-secret-key-0123456789abcdef0123456789",
+            "DATABASE_URL": SQLITE_URL,
+            "LICENSE_PUBLIC_KEY": gen_keypair()[1],
+            "PILOT_BOOTSTRAP_EXCHANGE_TOKEN": "b" * 64,
+        }
+    )
+    # Через X-Real-IP заголовок — каждый частный IP должен быть отклонён
+    for ip in (
+        "10.0.0.5",
+        "10.255.255.254",
+        "172.16.0.1",
+        "172.20.0.5",
+        "172.31.255.1",
+        "192.168.65.7",
+        "192.168.49.7",
+        "192.168.1.50",
+    ):
+        req = Request(
+            {
+                "type": "http",
+                "headers": [[b"x-real-ip", ip.encode()]],
+                "client": ("127.0.0.1", 12345),
+                "method": "GET",
+                "path": "/",
+                "app": settings,
+            }
+        )
+        # loopback_client_ok смотрит на заголовок, должен отклонить частный IP
+        assert not loopback_client_ok(req, settings), f"header {ip} должен быть отклонён"
+        # Также без заголовка, но с client IP частный — должен отклонить (кроме testclient)
+        req2 = Request(
+            {
+                "type": "http",
+                "headers": [],
+                "client": (ip, 12345),
+                "method": "GET",
+                "path": "/",
+            }
+        )
+        # В test окружении testclient считается loopback, но явный IP 10.x — нет
+        assert not loopback_client_ok(req2, settings), f"client {ip} должен быть отклонён"
+
+    # Позитивные через заголовок и client
+    for ip in ("127.0.0.1", "127.10.20.30", "::1"):
+        req = Request(
+            {
+                "type": "http",
+                "headers": [[b"x-real-ip", ip.encode()]],
+                "client": ("10.0.0.5", 12345),
+                "method": "GET",
+                "path": "/",
+            }
+        )
+        assert loopback_client_ok(req, settings), f"header {ip} должен быть принят"
+        req2 = Request(
+            {
+                "type": "http",
+                "headers": [],
+                "client": (ip, 12345),
+                "method": "GET",
+                "path": "/",
+            }
+        )
+        assert loopback_client_ok(req2, settings), f"client {ip} должен быть принят"
 
 
 def test_trace_id_on_unhandled_error(db_engine, caplog):
@@ -384,7 +444,5 @@ def test_trace_id_on_unhandled_error(db_engine, caplog):
     assert "79161234567" not in resp.text
     assert "Ivan" not in resp.text
     # Лог должен содержать trace_id и тип исключения, но не тело запроса/PII
-    log_text = caplog.text
-    # Если лог пуст (caplog не поймал due to TestClient), проверим через patch
-    # Но хотя бы заголовок trace_id должен быть в ответе
+    # caplog может быть пуст из-за TestClient, поэтому проверяем только заголовок
     assert len(trace_id) == 36  # uuid

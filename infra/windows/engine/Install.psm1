@@ -122,6 +122,64 @@ function Install-HrmApp {
     if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
     Copy-HrmSnapshot $SourceDir $InstallDir
 
+    # Лицензия: внешний локальный файл StateDir/license_public_key.b64
+    # Копируем из snapshot (SourceDir/infra/license/public_key.b64) в StateDir,
+    # если его там ещё нет. Fail-closed: пустой/невалидный ключ -> pilot.env
+    # будет с пустым HRM_LICENSE_PUBLIC_KEY и compose откажется стартовать.
+    $stateKeyFile = Join-Path $StateDir "license_public_key.b64"
+    if (-not (Test-Path $stateKeyFile)) {
+        $sourceKeyCandidates = @(
+            (Join-Path $SourceDir "infra/license/public_key.b64"),
+            (Join-Path $InstallDir "infra/license/public_key.b64")
+        )
+        if ($env:HRM_SOURCE_DIR) {
+            $sourceKeyCandidates += Join-Path $env:HRM_SOURCE_DIR "infra/license/public_key.b64"
+        }
+        $foundKey = $null
+        $foundPath = $null
+        foreach ($sk in $sourceKeyCandidates) {
+            if (-not $sk) { continue }
+            try {
+                if (Test-Path $sk) {
+                    $raw = (Get-Content -Path $sk -Raw -Encoding UTF8).Trim()
+                    if ($raw -match "^[A-Za-z0-9+/]{43}=$|^[A-Za-z0-9+/]{44}$|^[A-Za-z0-9_-]{43,44}$") {
+                        try {
+                            $norm = $raw -replace "-","+"
+                            $norm = $norm -replace "_","/"
+                            # Pad base64
+                            $pad = (4 - ($norm.Length % 4)) % 4
+                            if ($pad -gt 0) { $norm += "=" * $pad }
+                            $decoded = [Convert]::FromBase64String($norm)
+                            if ($decoded.Length -eq 32) {
+                                $foundKey = $raw
+                                $foundPath = $sk
+                                break
+                            }
+                        } catch {}
+                    }
+                }
+            } catch {}
+        }
+        if ($foundKey) {
+            Set-Content -Path $stateKeyFile -Value $foundKey -Encoding UTF8 -NoNewline
+            Protect-HrmFile $StateDir $stateKeyFile
+            $null = Write-HrmLog "info" "Лицензионный ключ скопирован из $foundPath в $stateKeyFile."
+        } else {
+            # Попытка из env (тесты)
+            if ($env:HRM_LICENSE_PUBLIC_KEY) {
+                $envKey = $env:HRM_LICENSE_PUBLIC_KEY.Trim()
+                if ($envKey -match "^[A-Za-z0-9+/]{43}=$|^[A-Za-z0-9+/]{44}$|^[A-Za-z0-9_-]{43,44}$") {
+                    Set-Content -Path $stateKeyFile -Value $envKey -Encoding UTF8 -NoNewline
+                    Protect-HrmFile $StateDir $stateKeyFile
+                    $null = Write-HrmLog "info" "Лицензионный ключ взят из HRM_LICENSE_PUBLIC_KEY (env)."
+                }
+            }
+        }
+        if (-not (Test-Path $stateKeyFile) -and -not $env:HRM_LICENSE_PUBLIC_KEY) {
+            $null = Write-HrmLog "warn" "LICENSE PUBLIC KEY отсутствует: pilot.env будет с пустым HRM_LICENSE_PUBLIC_KEY и compose откажется стартовать (fail-closed, требуется infra/license/public_key.b64 в snapshot)."
+        }
+    }
+
     $releaseSha = Get-HrmReleaseSha $InstallDir $StateDir
     Set-HrmInstallRecord $StateDir @{
         release_sha = $releaseSha

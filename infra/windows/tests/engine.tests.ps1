@@ -132,20 +132,14 @@ Test-Case "pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_
     Initialize-HrmStateDir $state | Out-Null
     Remove-Item Env:HRM_LICENSE_PUBLIC_KEY -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_SOURCE_DIR -ErrorAction SilentlyContinue
-    # Скрыть репозиторный ключ (B1: committed) на время проверки fail-closed — без файла должно быть пусто
-    $repoRootCalc = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
-    $repoKey = Join-Path $repoRootCalc "infra\license\public_key.b64"
-    $repoBackup = $null
-    if (Test-Path $repoKey) { $repoBackup = Get-Content $repoKey -Raw; Remove-Item $repoKey -Force }
-    try {
-        # 1. Без файла ключа движок пишет ПУСТОЕ значение: compose (${HRM_LICENSE_PUBLIC_KEY:?})
-        #    откажется стартовать — fail-closed, а не тихий запуск без лицензии.
-        $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080
-        $envText = Get-Content (Get-HrmEnvFile $state) -Raw
-        Assert-HrmTrue ([regex]::IsMatch($envText, '(?m)^HRM_LICENSE_PUBLIC_KEY=\s*$')) "без файла ключа строка HRM_LICENSE_PUBLIC_KEY должна быть пустой"
-    } finally {
-        if ($null -ne $repoBackup) { Set-Content -Path $repoKey -Value $repoBackup -Encoding UTF8 -NoNewline }
-    }
+    # Гарантируем отсутствие внешнего файла ключа — без него движок пишет пустое значение
+    $stateKey = Join-Path $state "license_public_key.b64"
+    if (Test-Path $stateKey) { Remove-Item $stateKey -Force }
+    # 1. Без файла ключа движок пишет ПУСТОЕ значение: compose (${HRM_LICENSE_PUBLIC_KEY:?})
+    #    откажется стартовать — fail-closed, а не тихий запуск без лицензии.
+    $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080
+    $envText = Get-Content (Get-HrmEnvFile $state) -Raw
+    Assert-HrmTrue ([regex]::IsMatch($envText, '(?m)^HRM_LICENSE_PUBLIC_KEY=\s*$')) "без файла ключа строка HRM_LICENSE_PUBLIC_KEY должна быть пустой"
     # 2. Эфемерный «открытый ключ» (32 случайных байта, base64 44 символа) — не настоящий ключ.
     $bytes = New-Object byte[] 32
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)

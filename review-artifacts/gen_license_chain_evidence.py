@@ -181,8 +181,8 @@ def compute_checks() -> dict[str, Any]:
         and "license" not in dockerfile.lower(),
         # backend
         "backend_config_validates_LICENSE_PUBLIC_KEY": "LICENSE_PUBLIC_KEY must be set in" in config_py,
-        "backend_config_has_file_fallback": 'Path(__file__).resolve().parents[2] / "infra" / "license"'
-        in config_py,
+        "backend_config_has_no_file_fallback": 'Path(__file__).resolve().parents[2] / "infra" / "license"'
+        not in config_py,
         "backend_guard_deny_by_default": "protected_roots" not in guard_py
         and "is_api_like" not in guard_py
         and "Deny by default" in guard_py,

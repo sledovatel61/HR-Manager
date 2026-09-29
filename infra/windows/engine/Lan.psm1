@@ -31,11 +31,20 @@ function Get-HrmLanConfig {
             if ($null -ne $data) {
                 $enabled = $false
                 if ($data.PSObject.Properties["enabled"]) { $enabled = [bool]$data.enabled }
+                $rawBind = if ($data.PSObject.Properties["bind"] -and $data.bind) { [string]$data.bind } else { $null }
                 $bind = "127.0.0.1"
-                if ($data.PSObject.Properties["bind"] -and $data.bind) { $bind = [string]$data.bind }
-                # legacy: enabled true implies 0.0.0.0
-                if ($enabled -and $bind -eq "127.0.0.1") { $bind = "0.0.0.0" }
-                if (-not $enabled) { $bind = "127.0.0.1" }
+                if ($enabled) {
+                    if ($null -eq $rawBind -or $rawBind -eq "0.0.0.0" -or $rawBind -eq "127.0.0.1") {
+                        # legacy 127.0.0.1 with enabled true -> 0.0.0.0
+                        $bind = "0.0.0.0"
+                    } else {
+                        # arbitrary/invalid -> safe fallback to loopback
+                        $enabled = $false
+                        $bind = "127.0.0.1"
+                    }
+                } else {
+                    $bind = "127.0.0.1"
+                }
                 return [pscustomobject]@{ enabled = $enabled; bind = $bind }
             }
         } catch {}

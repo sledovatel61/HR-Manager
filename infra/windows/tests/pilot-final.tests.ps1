@@ -261,6 +261,54 @@ Test-Case "nginx перезаписывает X-Real-IP на remote_addr (защ
     Assert-HrmNotContains $nginx 'proxy_set_header X-Real-IP 127.0.0.1;' "nginx всё ещё хардкодит 127.0.0.1"
 }
 
+Test-Case "HRM_PILOT_BIND: отсутствие -> 127.0.0.1, LAN flow -> 0.0.0.0, произвольное -> fallback 127.0.0.1" {
+    Initialize-HrmTestEngine
+    $world = New-HrmMockWorld
+    Set-HrmPreflightOverride @{ windows=$true; powershell=$true; docker=$true; daemon=$true; compose="v2.29.7 (mock)"; port=$true; state_dir=$true; space=$true; config=$true }
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Initialize-HrmStateDir $state | Out-Null
+    Set-HrmInstallRecord $state @{ release_sha="a"*40; install_dir=$install; state_dir=$state; port=8080; installed_at="2026-09-29T00:00:00Z"; pilot_created=$true }
+    (@{ release_sha="a"*40; version="0.14.0" } | ConvertTo-Json) | Set-Content -Path (Join-Path $install "release.json") -Encoding UTF8
+    # Подготовить валидный лицензионный ключ для pilot.env (чтобы не мешать проверке bind)
+    $pubBytes = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($pubBytes); $pubB64 = [Convert]::ToBase64String($pubBytes)
+    Set-Content -Path (Join-Path $state "license_public_key.b64") -Value $pubB64 -Encoding UTF8 -NoNewline
+    # 1. Без lan.json -> 127.0.0.1
+    $lanFile = Join-Path $state "lan.json"
+    if (Test-Path $lanFile) { Remove-Item $lanFile -Force }
+    $null = Write-HrmPilotEnv $state ("a"*40) 8080
+    $content = Get-Content (Get-HrmEnvFile $state) -Raw -Encoding UTF8
+    Assert-HrmContains $content "HRM_PILOT_BIND=127.0.0.1" "без lan.json должен быть 127.0.0.1"
+    Assert-HrmNotContains $content "HRM_PILOT_BIND=0.0.0.0" "без lan.json не должен быть 0.0.0.0"
+    # 2. Валидный LAN flow через lan-access Enable -> 0.0.0.0
+    Invoke-HrmLanAccess -InstallDir $install -StateDir $state -Enable | Out-Null
+    $content2 = Get-Content (Get-HrmEnvFile $state) -Raw -Encoding UTF8
+    Assert-HrmContains $content2 "HRM_PILOT_BIND=0.0.0.0" "после Enable должен быть 0.0.0.0"
+    $cfg = Get-HrmLanConfig $state
+    Assert-HrmTrue $cfg.enabled "после Enable enabled true"
+    Assert-HrmEqual "0.0.0.0" $cfg.bind "после Enable bind 0.0.0.0"
+    # 3. Произвольные/недопустимые значения -> отказ или безопасный fallback 127.0.0.1
+    $badCases = @("10.0.0.5", "192.168.1.100", "10.255.255.254", "172.16.0.1", "evil", "127.0.0.2", "0.0.0.0; rm -rf")
+    foreach ($bad in $badCases) {
+        Set-HrmJsonFile $state "lan.json" ([ordered]@{ enabled=$true; bind=$bad; updated_at=(Get-Date).ToString("o") })
+        $null = Write-HrmPilotEnv $state ("a"*40) 8080
+        $c = Get-Content (Get-HrmEnvFile $state) -Raw -Encoding UTF8
+        Assert-HrmNotContains $c $bad "произвольный HRM_PILOT_BIND '$bad' не должен попасть в pilot.env"
+        Assert-HrmContains $c "HRM_PILOT_BIND=127.0.0.1" "произвольный bind '$bad' должен fallback в 127.0.0.1"
+        $cfgBad = Get-HrmLanConfig $state
+        Assert-HrmFalse $cfgBad.enabled "арбитражный bind '$bad' должен сбросить enabled"
+        Assert-HrmEqual "127.0.0.1" $cfgBad.bind "арбитражный bind '$bad' должен быть 127.0.0.1"
+    }
+    # 4. После произвольных, валидный LAN flow снова работает
+    Invoke-HrmLanAccess -InstallDir $install -StateDir $state -Enable | Out-Null
+    $content3 = Get-Content (Get-HrmEnvFile $state) -Raw -Encoding UTF8
+    Assert-HrmContains $content3 "HRM_PILOT_BIND=0.0.0.0" "после повторного Enable должен быть 0.0.0.0"
+    # 5. Отключение -> 127.0.0.1
+    Invoke-HrmLanAccess -InstallDir $install -StateDir $state -Disable | Out-Null
+    $content4 = Get-Content (Get-HrmEnvFile $state) -Raw -Encoding UTF8
+    Assert-HrmContains $content4 "HRM_PILOT_BIND=127.0.0.1" "после Disable должен быть 127.0.0.1"
+}
+
 # --- B6: обновление поверх ---
 Test-Case "Install-HrmApp с новой версией ведёт через Update-HrmApp (бэкап → откат)" {
     Initialize-HrmTestEngine
