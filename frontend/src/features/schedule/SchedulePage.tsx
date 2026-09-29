@@ -80,6 +80,17 @@ function presetRange(preset: Exclude<PeriodPreset, "custom">): Period {
   return { from: toIsoDate(start), to: toIsoDate(addDays(start, 13)), preset: "two_weeks" };
 }
 
+/**
+ * Права на правку строки: кандидатов правит любой, кто видит график;
+ * служебную строку — автор (или тот, кто видит всех кандидатов: руководитель
+ * и администратор — сервер решает окончательно и отвечает 403).
+ */
+function rowIsEditable(row: WorkScheduleRow, user: User): boolean {
+  if (row.kind !== "entry") return true;
+  if (user.role !== "hr") return true;
+  return row.owner_user_id === user.id;
+}
+
 function groupByDay(items: WorkScheduleRow[]) {
   const days = new Map<string, WorkScheduleRow[]>();
   for (const item of items) {
@@ -204,6 +215,10 @@ export default function SchedulePage({ user, onOpenCandidate }: SchedulePageProp
   }, [canSeeAll]);
 
   const days = useMemo(() => groupByDay(data?.items ?? []), [data]);
+  const canEditRow = (row: WorkScheduleRow) => rowIsEditable(row, user);
+  // Эффективный флаг отказавшихся приходит с сервера: явный фильтр по этапу
+  // «Отказ» включает их даже при выключенном переключателе.
+  const rejectedShown = data?.include_rejected ?? includeRejected;
 
   const applyPreset = (preset: Exclude<PeriodPreset, "custom">) => setPeriod(presetRange(preset));
 
@@ -495,7 +510,7 @@ export default function SchedulePage({ user, onOpenCandidate }: SchedulePageProp
             <p className="schedule-print-sub">
               Период: {formatPeriodLabel(period.from, period.to)} · выходов:{" "}
               {data?.items.filter((row) => row.kind === "candidate").length ?? 0}
-              {includeRejected ? " · включая отказавшихся" : ""}
+              {rejectedShown ? " · включая отказавшихся" : ""}
             </p>
           </header>
 
@@ -610,12 +625,23 @@ export default function SchedulePage({ user, onOpenCandidate }: SchedulePageProp
                         <td>{row.comment ?? "—"}</td>
                         <td>{row.owner_username ?? "—"}</td>
                         <td className="no-print">
-                          <IconButton
-                            icon="edit"
-                            size="sm"
-                            label={`Изменить дату/время: ${row.display_name}`}
-                            onClick={() => startEditing(row)}
-                          />
+                          {canEditRow(row) ? (
+                            <IconButton
+                              icon="edit"
+                              size="sm"
+                              label={`Изменить дату/время: ${row.display_name}`}
+                              onClick={() => startEditing(row)}
+                            />
+                          ) : (
+                            // Чужую служебную строку сервер править не даёт
+                            // (403): не показываем кнопку, которая не сработает.
+                            <span
+                              className="schedule-readonly-flag"
+                              title="Служебную строку ведёт её автор или ответственный за всех кандидатов"
+                            >
+                              только чтение
+                            </span>
+                          )}
                           {row.kind === "entry" && (
                             <span className="schedule-service-flag" title="Служебная строка">
                               служебная

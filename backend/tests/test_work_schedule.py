@@ -8,7 +8,8 @@
   scope «все кандидаты» — все), фильтры, поиск, сортировка по дате и времени
   (без времени — в конце дня), нумерация внутри дня, служебные строки,
   исключение удалённых, `rejected` с пометкой «не вышел» и переключателем;
-* CRUD служебных строк и его аудит;
+* CRUD служебных строк и его аудит, а также права на чужую служебную строку
+  (автор / руководитель-администратор / HR с грантом «все кандидаты»);
 * Excel: файл открывается ``openpyxl.load_workbook``, содержит те же строки,
   что отдаёт API, шапку дня, альбомную печать и повтор шапки, а значения,
   начинающиеся с «=», остаются текстом.
@@ -40,6 +41,7 @@ from app.models import (
     AuditEvent,
     Candidate,
     CandidateStage,
+    ScheduleEntry,
     User,
     UserRole,
 )
@@ -377,6 +379,23 @@ def test_rejected_hidden_by_default_and_shown_with_flag(
     ).json()
     assert [item["full_name"] for item in by_stage["items"]] == ["Гончаров Глеб"]
     assert str(data.refused.id) == by_stage["items"][0]["candidate_id"]
+    # Явный фильтр по этапу «Отказ» — это эффективный include_rejected: тот же
+    # (а не исходный) флаг уходит в ответ, аудит и подзаголовок Excel.
+    assert by_stage["include_rejected"] is True
+
+    export = client.get(
+        f"/work-schedule/export.xlsx?from={_iso(MONDAY)}&to={_iso(MONDAY)}&stage=rejected"
+    )
+    assert export.status_code == 200
+    sheet = _sheet(load_workbook(io.BytesIO(export.content)))
+    assert "показаны отказавшиеся" in str(sheet.cell(row=2, column=1).value)
+    highlights = [
+        event.details or ""
+        for event in db_session.scalars(
+            select(AuditEvent).where(AuditEvent.action == AuditAction.WORK_SCHEDULE_EXPORTED)
+        ).all()
+    ]
+    assert any("include_rejected=True" in item for item in highlights)
 
 
 def test_hr_sees_only_own_and_manager_sees_all(client: TestClient, db_session: Session) -> None:
@@ -396,11 +415,25 @@ def test_hr_sees_only_own_and_manager_sees_all(client: TestClient, db_session: S
     ).json()
     assert {item["owner_username"] for item in filtered["items"]} == {"hr1"}
 
+    # HR без гранта: свой id допустим, чужой — явная 403 вместо молчаливого
+    # игнорирования фильтра.
     _login(client, "hr1")
-    scoped = client.get(
+    own_filter = client.get(
+        f"/work-schedule?from={_iso(MONDAY)}&to={_iso(TUESDAY)}&owner={data.hr1.id}"
+    )
+    assert own_filter.status_code == 200
+    assert {item["owner_username"] for item in own_filter.json()["items"]} == {"hr1"}
+
+    foreign_filter = client.get(
         f"/work-schedule?from={_iso(MONDAY)}&to={_iso(TUESDAY)}&owner={data.hr2.id}"
-    ).json()
-    assert {item["owner_username"] for item in scoped["items"]} == {"hr1"}
+    )
+    assert foreign_filter.status_code == 403
+    assert "всех кандидатов" in foreign_filter.json()["detail"]
+
+    foreign_export = client.get(
+        f"/work-schedule/export.xlsx?from={_iso(MONDAY)}&to={_iso(TUESDAY)}&owner={data.hr2.id}"
+    )
+    assert foreign_export.status_code == 403
 
 
 def test_hr_with_all_candidates_grant_sees_whole_base(
@@ -543,6 +576,131 @@ def test_schedule_entry_crud_and_audit(client: TestClient, db_session: Session) 
     assert deleted.status_code == 204
     assert client.get(f"/work-schedule?from={_iso(MONDAY)}&to={_iso(MONDAY)}").json()["items"] == []
     assert hr.role == UserRole.HR  # автор записи не изменяется
+
+
+def test_foreign_service_entry_is_editable_only_by_author_or_leadership(
+    client: TestClient, db_session: Session
+) -> None:
+    """Чужая служебная строка: HR без гранта — 403, руководитель — можно.
+
+    Служебная строка не «ничья»: править и удалять её может автор записи,
+    руководитель/администратор или HR с грантом «все кандидаты» /
+    ``pilot_full_access`` (та же модель прав, что у кандидатов).
+    """
+
+    hr1 = make_user(db_session, username="hr1", role=UserRole.HR)
+    make_user(db_session, username="hr2", role=UserRole.HR)
+    make_user(db_session, username="mgr", role=UserRole.MANAGER)
+
+    csrf = _csrf(_login(client, "hr1"))
+    entry = client.post(
+        "/work-schedule/entries",
+        json={"entry_date": _iso(MONDAY), "title": "Увольнение"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+
+    # Автор правит свою строку — это разрешено.
+    updated = client.patch(
+        f"/work-schedule/entries/{entry['id']}",
+        json={"title": "Увольнение 13:00"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert updated.status_code == 200
+
+    # Другой HR без гранта: и правка, и удаление отклоняются.
+    csrf_hr2 = _csrf(_login(client, "hr2"))
+    forbidden_patch = client.patch(
+        f"/work-schedule/entries/{entry['id']}",
+        json={"title": "подмена"},
+        headers={"X-CSRF-Token": csrf_hr2},
+    )
+    assert forbidden_patch.status_code == 403
+    assert "автор" in forbidden_patch.json()["detail"]
+    forbidden_delete = client.delete(
+        f"/work-schedule/entries/{entry['id']}", headers={"X-CSRF-Token": csrf_hr2}
+    )
+    assert forbidden_delete.status_code == 403
+
+    # Строка не изменилась и не исчезла.
+    listing = client.get(f"/work-schedule?from={_iso(MONDAY)}&to={_iso(MONDAY)}").json()
+    assert [item["display_name"] for item in listing["items"]] == ["Увольнение 13:00"]
+
+    # Руководитель управляет общими строками графика.
+    csrf_mgr = _csrf(_login(client, "mgr"))
+    edited = client.patch(
+        f"/work-schedule/entries/{entry['id']}",
+        json={"title": "Увольнение (обновлено)"},
+        headers={"X-CSRF-Token": csrf_mgr},
+    )
+    assert edited.status_code == 200
+    removed = client.delete(
+        f"/work-schedule/entries/{entry['id']}", headers={"X-CSRF-Token": csrf_mgr}
+    )
+    assert removed.status_code == 204
+    assert hr1.role == UserRole.HR
+
+
+def test_hr_with_all_candidates_grant_manages_foreign_service_entry(
+    client: TestClient, db_session: Session
+) -> None:
+    """HR с грантом «все кандидаты» ведёт общий график вместе с автором строки."""
+
+    hr1 = make_user(db_session, username="hr1", role=UserRole.HR)
+    hr2 = make_user(db_session, username="hr2", role=UserRole.HR)
+
+    csrf = _csrf(_login(client, "hr1"))
+    entry = client.post(
+        "/work-schedule/entries",
+        json={"entry_date": _iso(MONDAY), "title": "Перевод"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+
+    db_session.add(
+        AccessGrant(
+            user_id=hr2.id,
+            scope=AccessGrantScope.CANDIDATE_DOCUMENTS_ALL,
+            granted_by_user_id=hr1.id,
+        )
+    )
+    db_session.commit()
+
+    csrf_hr2 = _csrf(_login(client, "hr2"))
+    updated = client.patch(
+        f"/work-schedule/entries/{entry['id']}",
+        json={"title": "Перевод (общий график)"},
+        headers={"X-CSRF-Token": csrf_hr2},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["title"] == "Перевод (общий график)"
+
+
+def test_service_entry_without_author_requires_leadership(
+    client: TestClient, db_session: Session
+) -> None:
+    """Автор деактивирован (``author_user_id = NULL``): строка — только для
+    руководителя/администратора или HR с грантом."""
+
+    make_user(db_session, username="hr1", role=UserRole.HR)
+    make_user(db_session, username="mgr", role=UserRole.MANAGER)
+    orphan = ScheduleEntry(entry_date=MONDAY, title="Отработка грузчик", author_user_id=None)
+    db_session.add(orphan)
+    db_session.commit()
+
+    csrf = _csrf(_login(client, "hr1"))
+    rejected = client.patch(
+        f"/work-schedule/entries/{orphan.id}",
+        json={"title": "подмена"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert rejected.status_code == 403
+
+    csrf_mgr = _csrf(_login(client, "mgr"))
+    allowed = client.patch(
+        f"/work-schedule/entries/{orphan.id}",
+        json={"title": "Отработка грузчик (2 смена)"},
+        headers={"X-CSRF-Token": csrf_mgr},
+    )
+    assert allowed.status_code == 200
 
 
 def test_schedule_entry_validation(client: TestClient, db_session: Session) -> None:

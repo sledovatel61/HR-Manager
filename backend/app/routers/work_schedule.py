@@ -48,9 +48,11 @@ from app.utils import client_ip, user_agent, utc_now
 from app.work_schedule import (
     build_rows,
     build_xlsx,
+    can_manage_entry,
     day_label_short,
     entry_audit_details,
     entry_out,
+    hr_sees_all_candidates,
 )
 
 router = APIRouter(prefix="/work-schedule", tags=["work-schedule"])
@@ -84,6 +86,37 @@ def _entry_or_404(db: Session, entry_id: str) -> ScheduleEntry:
             status_code=status.HTTP_404_NOT_FOUND, detail="Служебная строка не найдена."
         )
     return entry
+
+
+def _check_owner_filter(db: Session, user: User, owner_id: UUID | None) -> None:
+    """Фильтр по ответственному — только для тех, кто видит всех кандидатов.
+
+    HR без гранта раньше получал свои строки и молча не понимал, почему
+    фильтр «не работает»: теперь чужой ``owner`` — явная ошибка (свой id
+    совпадает с обычной видимостью и допустим).
+    """
+
+    if owner_id is None or owner_id == user.id:
+        return
+    if not hr_sees_all_candidates(db, user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Фильтр по ответственному доступен только тем, кто видит всех кандидатов.",
+        )
+
+
+def _check_entry_manageable(db: Session, user: User, entry: ScheduleEntry) -> None:
+    """Правка/удаление служебной строки: автор, руководитель/администратор или
+    HR с грантом «все кандидаты» / ``pilot_full_access``."""
+
+    if can_manage_entry(db, user, entry):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "Служебную строку может изменить только её автор или ответственный за всех кандидатов."
+        ),
+    )
 
 
 def _audit(
@@ -127,6 +160,10 @@ def list_work_schedule(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Конец периода не может быть раньше начала.",
         )
+    _check_owner_filter(db, user, owner)
+    # Явный фильтр по этапу «Отказ» уже показывает отказавшихся: эффективный
+    # флаг уходит и в выборку, и в ответ (аудит/подзаголовок Excel — ниже).
+    effective_include_rejected = include_rejected or stage == CandidateStage.REJECTED
     rows = build_rows(
         db,
         user=user,
@@ -139,7 +176,7 @@ def list_work_schedule(
         owner_id=owner,
         stage=stage,
         query=q,
-        include_rejected=include_rejected or stage == CandidateStage.REJECTED,
+        include_rejected=effective_include_rejected,
     )
     return WorkScheduleList(
         items=rows,
@@ -147,7 +184,7 @@ def list_work_schedule(
         days=len({row.entry_date for row in rows}),
         period_from=date_from,
         period_to=date_to,
-        include_rejected=include_rejected,
+        include_rejected=effective_include_rejected,
     )
 
 
@@ -209,6 +246,8 @@ def export_work_schedule(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Конец периода не может быть раньше начала.",
         )
+    _check_owner_filter(db, user, owner)
+    effective_include_rejected = include_rejected or stage == CandidateStage.REJECTED
     rows = build_rows(
         db,
         user=user,
@@ -221,7 +260,7 @@ def export_work_schedule(
         owner_id=owner,
         stage=stage,
         query=q,
-        include_rejected=include_rejected or stage == CandidateStage.REJECTED,
+        include_rejected=effective_include_rejected,
     )
     generated_at = datetime.now(UTC)
     filters = {
@@ -238,7 +277,7 @@ def export_work_schedule(
         period_from=date_from,
         period_to=date_to,
         filters=filters,
-        include_rejected=include_rejected,
+        include_rejected=effective_include_rejected,
         generated_at_label=(
             f"{day_label_short(generated_at.date())} {generated_at.strftime('%H:%M')} UTC"
         ),
@@ -250,7 +289,7 @@ def export_work_schedule(
         actor=user,
         details=(
             f"rows={len(rows)} period_from={date_from or '-'} period_to={date_to or '-'} "
-            f"include_rejected={include_rejected}"
+            f"include_rejected={effective_include_rejected}"
         ),
     )
     db.commit()
@@ -316,6 +355,7 @@ def update_schedule_entry(
     user: User = Depends(get_current_user),
 ) -> ScheduleEntryOut:
     entry = _entry_or_404(db, entry_id)
+    _check_entry_manageable(db, user, entry)
     provided = payload.model_fields_set
     changes: list[str] = []
 
@@ -391,6 +431,7 @@ def delete_schedule_entry(
     user: User = Depends(get_current_user),
 ) -> Response:
     entry = _entry_or_404(db, entry_id)
+    _check_entry_manageable(db, user, entry)
     details = entry_audit_details(entry)
     db.delete(entry)
     _audit(

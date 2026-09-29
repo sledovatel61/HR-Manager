@@ -217,6 +217,25 @@ describe("SchedulePage — служебные строки", () => {
   });
 });
 
+describe("SchedulePage — права на служебные строки", () => {
+  it("не предлагает правку чужой служебной строки (сервер отвечает 403)", async () => {
+    vi.mocked(api.listWorkSchedule).mockResolvedValue(
+      listing([
+        candidateRow(),
+        // Служебная строка другого HR: HR без гранта её только читает.
+        serviceRow({ owner_user_id: "99999999-9999-4999-8999-999999999999", owner_username: "hr2" }),
+      ])
+    );
+    renderPage();
+
+    await screen.findByRole("heading", { name: "пн, 10 авг. 2026" });
+    expect(screen.getByText("только чтение")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Изменить дату/время: Увольнение" })
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("SchedulePage — фильтры, экспорт и печать", () => {
   it("передаёт фильтры и поиск на сервер", async () => {
     renderPage();
