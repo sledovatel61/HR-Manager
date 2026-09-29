@@ -369,6 +369,8 @@ powershell -File hr-manager.ps1 -Action diagnostics -Json > diagnostics.json
 предупреждениях решение принимает владелец письменно (дата, подпись,
 перечень принятых рисков).
 
+> **Пилот 0.14 (Мария):** строки 4–5 (Ed25519 канала, Authenticode) и часть строки 6 (7 активов) для пилота **не являются блокерами** — они отложены до коммерческого релиза (см. §12). Пилотный Go/No-Go — по чек-листу B1–B6 из `CURRENT_STATUS.md` / `handoff-release-0.14.0.md`: лицензия, ярлыки, отчёт, LAN, обновление поверх, сборка `pilot-release`. SmartScreen обходится «Подробнее → Выполнить», `Setup.exe` может быть неподписанным.
+
 ## 11. Офлайн-лицензия пилота (Phase 15)
 
 Закрытый пилот работает по **офлайн-лицензии на установку/сервер**, а не по
@@ -460,3 +462,13 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 | 17 | Лицензия загружена и статус `valid` | UI Лицензия / `GET /api/license/status` | — |
 | 18 | Лимит пользователей соблюдается (включая Марию) | попытка создать сверх лимита → 409 | — |
 | 19 | При истечении данные сохранены, админ может продлить | тест `test_data_preservation_on_expiry` | — |
+
+## 12. Отложено до коммерческого релиза — пилот без покупных сертификатов
+
+**Решение владельца (обязательно для пилота):** для пилота Марии покупные сертификаты **не требуются**. Неподписанный или test-подписанный `Setup.exe` допустим. Предупреждение SmartScreen обходится инструкцией «Подробнее → Выполнить в любом случае». Отсутствие production-сертификата **не блокирует пилот**.
+
+Отложено (не является блокером пилота, но сохраняется для коммерции):
+
+* **Authenticode/TSA:** покупной сертификат OV/EV, `UPDATE_CHANNEL_AUTHENTICODE_PFX_BASE64`, `UPDATE_CHANNEL_AUTHENTICODE_PFX_PASSWORD`, `UPDATE_CHANNEL_EXPECTED_PUBLISHER`, `UPDATE_CHANNEL_TIMESTAMP_URL`, `UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS` / `AUTHENTICODE_TIMESTAMP_ROOTS` (два разных PEM), `sign.ps1 -Mode production`, `publish_channel.py --release-mode production`, `authenticode.py verify --require-timestamp`, `trust-store.json` и `SHA256SUMS` по 7 активам, tag `v*` и GitHub Release. Production-пайплайн (`.github/workflows/update-channel.yml`) **не ломался и не удалялся** — в пилоте он просто не используется. Пилотный релиз — workflow `pilot-release` (unsigned, без tag/Release, с `SHA256SUMS.txt` только для `Setup.exe` + `license-issuer-dist.zip`).
+* **HTTPS для LAN:** в офисной сети пилот работает по plain HTTP (`0.0.0.0:8080` при `lan-access -Enable`). Отсутствие TLS — **принятый риск пилота**, трафик не покидает офис. Для коммерческого релиза потребуется TLS/reverse-proxy.
+* Остальные требования пилота (B1–B6) остаются блокерами Go/No-Go. При появлении покупного сертификата — вернуться к разделу 3 и таблице §10 без изменения кода.

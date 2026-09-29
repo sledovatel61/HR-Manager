@@ -108,7 +108,7 @@ def check_file(path: Path) -> None:
         # разрешаем упоминание имени в Common.psm1 и строках справки
         if re.search(r"Invoke-HrmExternal\s+-Name\s+\"docker", text) is None:
             fail(f"{path}: прямой вызов docker")
-    allowed = {"docker", "docker.exe", "icacls.exe", "git.exe"}
+    allowed = {"docker", "docker.exe", "icacls.exe", "git.exe", "netsh", "netsh.exe"}
     for name in re.findall(r'Invoke-HrmExternal\s+-Name\s+"([^"]+)"', text):
         if name not in allowed:
             fail(f"{path}: запрещённая внешняя команда '{name}'")
@@ -336,11 +336,15 @@ def main() -> int:
     overlay = (ROOT / "infra" / "compose.pilot.yml").read_text(encoding="utf-8")
     if "name: hr-manager-pilot" not in overlay:
         fail("compose.pilot.yml: нет стабильного имени проекта")
-    if '127.0.0.1:${HRM_PILOT_PORT:-8080}:8080' not in overlay:
-        fail("compose.pilot.yml: фронтенд не ограничен 127.0.0.1")
+    if '${HRM_PILOT_BIND:-127.0.0.1}:${HRM_PILOT_PORT:-8080}:8080' not in overlay and '127.0.0.1:${HRM_PILOT_PORT:-8080}:8080' not in overlay:
+        fail("compose.pilot.yml: фронтенд не ограничен 127.0.0.1 (ожидается HRM_PILOT_BIND)")
     for line in overlay.splitlines():
         stripped = line.strip()
-        if re.match(r'^"\d+\.\d+\.\d+\.\d+:\d+:\d+"', stripped) and not stripped.startswith('"127.0.0.1'):
+        # Allow ${HRM_PILOT_BIND:-127.0.0.1} variable; literal 127.0.0.1 only for static check
+        if re.match(r'^"(?:\$\{HRM_PILOT_BIND[^}]*\}:)?\d+\.\d+\.\d+\.\d+:\d+:\d+"', stripped):
+            if not (stripped.startswith('"127.0.0.1') or stripped.startswith('"${HRM_PILOT_BIND')):
+                fail(f"compose.pilot.yml: порт вне loopback: {stripped}")
+        elif re.match(r'^"\d+\.\d+\.\d+\.\d+:\d+:\d+"', stripped) and not stripped.startswith('"127.0.0.1'):
             fail(f"compose.pilot.yml: порт вне loopback: {stripped}")
     if 'APP_DEBUG: "true"' in overlay:
         fail("compose.pilot.yml: APP_DEBUG=true")

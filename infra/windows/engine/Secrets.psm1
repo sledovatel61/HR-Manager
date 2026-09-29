@@ -189,6 +189,16 @@ function Write-HrmPilotEnv {
     $channel = Get-HrmChannelConfig $StateDir
     $keysJson = ($channel.public_keys | ConvertTo-Json -Compress)
     $licensePub = Get-HrmLicensePublicKey $StateDir
+    # LAN bind: 127.0.0.1 by default, 0.0.0.0 when enabled (B5, persists via StateDir/lan.json)
+    $pilotBind = "127.0.0.1"
+    try {
+        $lanFile = Join-Path $StateDir "lan.json"
+        if (Test-Path $lanFile) {
+            $lanData = Get-HrmJsonFile $lanFile
+            if ($null -ne $lanData -and $lanData.enabled -eq $true) { $pilotBind = "0.0.0.0" }
+            elseif ($null -ne $lanData -and $lanData.bind) { $pilotBind = [string]$lanData.bind }
+        }
+    } catch {}
     $lines = @(
         ("HRM_POSTGRES_PASSWORD={0}" -f $secrets["HRM_POSTGRES_PASSWORD"]),
         ("HRM_SIGNING_KEY={0}" -f $secrets["HRM_SIGNING_KEY"]),
@@ -198,6 +208,7 @@ function Write-HrmPilotEnv {
         ("HRM_BACKUP_KEY_ID={0}" -f $secrets["HRM_BACKUP_KEY_ID"]),
         ("HRM_RELEASE_SHA={0}" -f $ReleaseSha),
         ("HRM_PILOT_PORT={0}" -f $port),
+        ("HRM_PILOT_BIND={0}" -f $pilotBind),
         ("HRM_UPDATE_ENGINE_TOKEN={0}" -f $engineToken),
         ("HRM_STAGING_DIR={0}" -f (Get-HrmStagingHostDir)),
         ("HRM_UPDATE_CHANNEL_URL={0}" -f $channel.url),

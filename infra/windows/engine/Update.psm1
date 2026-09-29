@@ -176,7 +176,17 @@ function Update-HrmApp {
 
         if ($phase -eq "switch") {
             Write-HrmLog "info" "Замена файлов снимка и пересоздание контейнеров…"
-            Copy-HrmSnapshot $ReleaseDir $InstallDir
+            $samePath = $false
+            try {
+                $fullRelease = [System.IO.Path]::GetFullPath($ReleaseDir).TrimEnd('\','/')
+                $fullInstall = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\','/')
+                $samePath = ($fullRelease -eq $fullInstall)
+            } catch {}
+            if (-not $samePath) {
+                Copy-HrmSnapshot $ReleaseDir $InstallDir
+            } else {
+                Write-HrmLog "info" "Каталог релиза совпадает с установкой — копирование пропущено."
+            }
             $null = Write-HrmPilotEnv $StateDir $releaseData.release_sha $port
             Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
             Set-HrmUpdateJournal $StateDir "migrate" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }

@@ -112,9 +112,14 @@ services:
 
   frontend:
     image: hr-manager-pilot-frontend:pilot
-    # The ONLY published port of the pilot: the application on loopback.
+    # Published port of the pilot: loopback by default (127.0.0.1), or LAN
+    # (0.0.0.0) when the owner enables «доступ по сети» via
+    # hr-manager.ps1 -Action lan-access -Enable. Engine writes
+    # HRM_PILOT_BIND accordingly (default 127.0.0.1, LAN 0.0.0.0). The setting
+    # survives updates (StateDir/lan.json). HTTPS is not used in office LAN
+    # (accepted pilot risk — see docs/runbook-pilot-release.md).
     ports:
-      - "127.0.0.1:${HRM_PILOT_PORT:-8080}:8080"
+      - "${HRM_PILOT_BIND:-127.0.0.1}:${HRM_PILOT_PORT:-8080}:8080"
 
   # Local SMTP sink is development-only: excluded from the pilot by the
   # profile (a service with a profile is not started by a plain `up`).
