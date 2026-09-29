@@ -186,3 +186,87 @@
   border-radius: var(--radius-md);
   padding: var(--space-3);
 }
+
+/* --- Живой блок «Что произойдёт» рядом с формой правила --- */
+
+.rule-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
+  gap: var(--space-4, 16px);
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .rule-editor {
+    grid-template-columns: 1fr;
+  }
+}
+
+.rule-editor .document-form {
+  max-width: none;
+}
+
+.rule-preview {
+  border: 1px solid var(--border-color, #dce1e5);
+  border-radius: 10px;
+  background: var(--surface-muted, #f4f8f6);
+  padding: 14px 16px;
+  display: grid;
+  gap: 8px;
+  font-size: var(--text-size-sm, 13px);
+}
+
+.rule-preview-title {
+  margin: 0;
+  font-size: var(--text-size-md, 15px);
+}
+
+.rule-preview-summary {
+  margin: 0;
+}
+
+.rule-preview-missing {
+  margin: 0;
+  color: var(--text-secondary, #5b6b73);
+  border-left: 3px solid var(--accent-default);
+  padding-left: 8px;
+}
+
+.rule-preview-warn {
+  margin: 0;
+  color: var(--status-danger-fg);
+}
+
+.rule-preview-timing {
+  margin: 0;
+  color: var(--text-secondary, #5b6b73);
+}
+
+.rule-preview-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border-color, #dce1e5);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: var(--text-size-xs, 12px);
+}
+
+.rule-howto {
+  border-top: 1px solid var(--border-color, #dce1e5);
+  padding-top: 8px;
+}
+
+.rule-howto summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.rule-howto ol {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  color: var(--text-secondary, #5b6b73);
+}
