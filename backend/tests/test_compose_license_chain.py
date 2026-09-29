@@ -287,16 +287,28 @@ def test_pilot_overlay_refuses_to_render_without_license_key(service: str) -> No
 
 def test_settings_reject_pilot_environment_without_license_key() -> None:
     """Even if Compose were bypassed, Settings itself is fail-closed."""
-    values = _ephemeral_values()
-    env = _resolved_service_environment("backend", _env_file_variables(values))
-    env.pop("LICENSE_PUBLIC_KEY")
-    proc = _run_probe(env)
-    assert proc.returncode != 0
-    assert "LICENSE_PUBLIC_KEY must be set in pilot" in proc.stderr
-    env["LICENSE_PUBLIC_KEY"] = "not-base64!"
-    proc = _run_probe(env)
-    assert proc.returncode != 0
-    assert "LICENSE_PUBLIC_KEY must be valid base64" in proc.stderr
+    # The repo may contain infra/license/public_key.b64 (committed pilot key)
+    # which would make Settings succeed via file fallback. To test fail-closed
+    # we must hide the file — the fallback is tested elsewhere as success.
+    key_path = REPO_ROOT / "infra" / "license" / "public_key.b64"
+    backup = None
+    if key_path.is_file():
+        backup = key_path.read_bytes()
+        key_path.unlink()
+    try:
+        values = _ephemeral_values()
+        env = _resolved_service_environment("backend", _env_file_variables(values))
+        env.pop("LICENSE_PUBLIC_KEY")
+        proc = _run_probe(env)
+        assert proc.returncode != 0
+        assert "LICENSE_PUBLIC_KEY must be set in pilot" in proc.stderr
+        env["LICENSE_PUBLIC_KEY"] = "not-base64!"
+        proc = _run_probe(env)
+        assert proc.returncode != 0
+        assert "LICENSE_PUBLIC_KEY must be valid base64" in proc.stderr
+    finally:
+        if backup is not None:
+            key_path.write_bytes(backup)
 
 
 def test_chain_script_static_steps_pass_without_docker(tmp_path: Path) -> None:

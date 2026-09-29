@@ -379,12 +379,13 @@ def test_transfer_is_atomic_when_audit_write_fails(
 
     monkeypatch.setattr(candidates_router, "record_event", failing_record_event)
 
-    with pytest.raises(RuntimeError, match="simulated audit write failure"):
-        client.post(
-            f"/candidates/{candidate.id}/transfer",
-            json={"new_owner_user_id": str(hr2.id), "reason": "Не должно сохраниться"},
-            headers={"X-CSRF-Token": csrf},
-        )
+    resp = client.post(
+        f"/candidates/{candidate.id}/transfer",
+        json={"new_owner_user_id": str(hr2.id), "reason": "Не должно сохраниться"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 500
+    assert "trace_id" in resp.json()
 
     db_session.expire_all()
     stored = db_session.get(Candidate, candidate.id)
