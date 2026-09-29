@@ -240,3 +240,42 @@
   font-size: var(--text-size-2xs);
   color: var(--text-tertiary);
 }
+
+/* ---------- Блок «Выход на работу» (Phase 18) ---------- */
+
+.start-schedule {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.start-schedule-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.start-schedule-title {
+  font-size: var(--text-size-md);
+}
+
+.start-schedule-hint {
+  color: var(--text-secondary);
+  font-size: var(--text-size-xs);
+}
+
+.start-schedule-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.start-schedule-form .form-actions,
+.start-schedule-form .field-error {
+  grid-column: 1 / -1;
+}

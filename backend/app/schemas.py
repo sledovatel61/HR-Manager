@@ -6,7 +6,7 @@ or a password hash.
 """
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from typing import Literal
 from uuid import UUID
 
@@ -203,6 +203,15 @@ class AuditList(BaseModel):
 PHONE_MAX_LENGTH = 32
 EMAIL_MAX_LENGTH = 254
 
+# Phase 18: «Выход на работу». Короткие строки с разумными лимитами; значения
+# вводятся в карточке кандидата и подсказываются автодополнением из уже
+# введённых (отдельного справочника нет).
+START_ORGANIZATION_MAX_LENGTH = 120
+START_DEPARTMENT_MAX_LENGTH = 120
+SHIFT_MAX_LENGTH = 32
+START_COMMENT_MAX_LENGTH = 300
+SCHEDULE_ENTRY_TITLE_MAX_LENGTH = 200
+
 
 class CandidateCreate(BaseModel):
     """Payload for ``POST /candidates``.
@@ -248,6 +257,11 @@ class CandidateUpdate(BaseModel):
     ``owner_user_id`` is intentionally absent: ownership transfer is a
     separate audited operation implemented in the next phase
     (``POST /candidates/{id}/transfer``), per the roadmap.
+
+    Phase 18: the ``start_*`` block («Выход на работу») may be *cleared*
+    explicitly by sending ``null`` — the API distinguishes "field absent"
+    (no change) from "field present with null" (clear). That is why the
+    handler inspects ``model_fields_set``.
     """
 
     full_name: str | None = Field(default=None, min_length=1, max_length=200)
@@ -256,12 +270,27 @@ class CandidateUpdate(BaseModel):
     source: CandidateSource | None = None
     position: str | None = Field(default=None, max_length=200)
     stage: CandidateStage | None = None
+    start_date: date | None = None
+    start_time: time | None = None
+    start_organization: str | None = Field(default=None, max_length=START_ORGANIZATION_MAX_LENGTH)
+    start_department: str | None = Field(default=None, max_length=START_DEPARTMENT_MAX_LENGTH)
+    shift: str | None = Field(default=None, max_length=SHIFT_MAX_LENGTH)
+    start_comment: str | None = Field(default=None, max_length=START_COMMENT_MAX_LENGTH)
     confirm_duplicate: bool = False
 
     @field_validator("full_name", "position")
     @classmethod
     def _strip_optional_text(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
+
+    @field_validator("start_organization", "start_department", "shift", "start_comment")
+    @classmethod
+    def _strip_optional_schedule_text(cls, value: str | None) -> str | None:
+        # An empty string means "no value" — never a blank autocomplete entry.
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
     @field_validator("phone")
     @classmethod
@@ -276,7 +305,8 @@ class CandidateOut(BaseModel):
 
     The normalized phone/email are internal duplicate-detection values and
     are never exposed. ``owner_username`` helps list screens avoid an extra
-    round-trip per row.
+    round-trip per row. The ``start_*`` block (phase 18) feeds the candidate
+    card's «Выход на работу» section and the work-schedule tab.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -290,6 +320,12 @@ class CandidateOut(BaseModel):
     stage: CandidateStage
     owner_user_id: UUID
     owner_username: str
+    start_date: date | None = None
+    start_time: time | None = None
+    start_organization: str | None = None
+    start_department: str | None = None
+    shift: str | None = None
+    start_comment: str | None = None
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
@@ -1650,3 +1686,150 @@ class PilotReadinessResponse(BaseModel):
     host_evidence_fresh: bool = False
     server_version: str
     checks: list[PilotReadinessCheck]
+
+
+# --- Phase 18: «График выхода на работу» ------------------------------------
+#
+# Контракт вкладки «График выхода»: сервер отдаёт уже отфильтрованные и
+# отсортированные строки (по дате, затем по времени; строки без времени — в
+# конце дня) и те же строки кладёт в Excel. Нумерация строк внутри дня
+# считается на сервере, поэтому экран, выгрузка и печать совпадают.
+
+ScheduleRowKind = Literal["candidate", "entry"]
+ScheduleRowStatus = Literal["planned", "started", "not_came", "dismissed"]
+
+
+class WorkScheduleRow(BaseModel):
+    """Одна строка дневного блока графика (кандидат или служебная запись)."""
+
+    kind: ScheduleRowKind
+    # ``id`` — идентификатор кандидата или служебной строки (для правки).
+    id: UUID
+    candidate_id: UUID | None = None
+    entry_date: date
+    # Номер строки внутри дня (1..N) — как в образце «№».
+    number: int
+    start_time: time | None = None
+    end_time: time | None = None
+    full_name: str | None = None
+    # ФИО с пометкой для строк, которые «не вышли»/«уволены»; используется
+    # интерфейсом и Excel, чтобы колонки совпадали.
+    display_name: str
+    organization: str | None = None
+    department: str | None = None
+    position: str = ""
+    shift: str | None = None
+    comment: str | None = None
+    owner_user_id: UUID | None = None
+    owner_username: str | None = None
+    stage: CandidateStage | None = None
+    status: ScheduleRowStatus = "planned"
+    status_label: str = ""
+
+
+class WorkScheduleList(BaseModel):
+    """Ответ ``GET /work-schedule``: плоский отсортированный список строк."""
+
+    items: list[WorkScheduleRow]
+    total: int
+    days: int
+    period_from: date | None = None
+    period_to: date | None = None
+    include_rejected: bool = False
+
+
+class WorkScheduleSuggestions(BaseModel):
+    """Подсказки автодополнения из уже введённых значений (без справочника)."""
+
+    organizations: list[str]
+    departments: list[str]
+    shifts: list[str]
+
+
+class ScheduleEntryCreate(BaseModel):
+    """Служебная строка графика без кандидата."""
+
+    entry_date: date
+    time_from: time | None = None
+    time_to: time | None = None
+    title: str = Field(min_length=1, max_length=SCHEDULE_ENTRY_TITLE_MAX_LENGTH)
+    organization: str | None = Field(default=None, max_length=START_ORGANIZATION_MAX_LENGTH)
+    department: str | None = Field(default=None, max_length=START_DEPARTMENT_MAX_LENGTH)
+    comment: str | None = Field(default=None, max_length=START_COMMENT_MAX_LENGTH)
+
+    @field_validator("title")
+    @classmethod
+    def _title_required(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Текст служебной строки обязателен.")
+        return cleaned
+
+    @field_validator("organization", "department", "comment")
+    @classmethod
+    def _strip_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def _interval_order(self) -> "ScheduleEntryCreate":
+        if (
+            self.time_from is not None
+            and self.time_to is not None
+            and self.time_to < self.time_from
+        ):
+            raise ValueError("Конец интервала не может быть раньше начала.")
+        return self
+
+
+class ScheduleEntryUpdate(BaseModel):
+    """Правка служебной строки. Отсутствующие поля не меняются."""
+
+    entry_date: date | None = None
+    time_from: time | None = None
+    time_to: time | None = None
+    title: str | None = Field(
+        default=None, min_length=1, max_length=SCHEDULE_ENTRY_TITLE_MAX_LENGTH
+    )
+    organization: str | None = Field(default=None, max_length=START_ORGANIZATION_MAX_LENGTH)
+    department: str | None = Field(default=None, max_length=START_DEPARTMENT_MAX_LENGTH)
+    comment: str | None = Field(default=None, max_length=START_COMMENT_MAX_LENGTH)
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Текст служебной строки обязателен.")
+        return cleaned
+
+    @field_validator("organization", "department", "comment")
+    @classmethod
+    def _strip_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+
+class ScheduleEntryOut(BaseModel):
+    """Служебная строка графика (ответ CRUD)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    entry_date: date
+    time_from: time | None = None
+    time_to: time | None = None
+    title: str
+    organization: str | None = None
+    department: str | None = None
+    comment: str | None = None
+    author_user_id: UUID | None = None
+    author_username: str | None = None
+    created_at: datetime
+    updated_at: datetime

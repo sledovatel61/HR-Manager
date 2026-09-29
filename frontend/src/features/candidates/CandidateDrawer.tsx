@@ -5,6 +5,7 @@ import {
   ApiError,
   createCandidateInteraction,
   deleteCandidate,
+  fetchWorkScheduleSuggestions,
   getCandidate,
   listCandidateInteractions,
   listCandidateTransfers,
@@ -25,6 +26,7 @@ import { useToast } from "../../design-system/components/ToastContext";
 import {
   CANDIDATE_STAGE_ORDER,
   EVENT_STATUS_LABELS,
+  START_STAGES,
   EVENT_TYPE_LABELS,
   SOURCE_LABELS,
   STAGE_LABELS,
@@ -36,7 +38,9 @@ import {
   type CandidateStage,
   type CandidateTransfer,
   type User,
+  type WorkScheduleSuggestions,
 } from "../../types";
+import { displayTime, formatShortDate } from "../schedule/scheduleDate";
 import { DuplicateResolveDialog } from "./DuplicateResolveDialog";
 import { MessagesTab } from "./MessagesTab";
 import { TransferDialog } from "./TransferDialog";
@@ -474,6 +478,8 @@ function InfoTab({ candidate, stageBusy, onChangeStage, onSaved, onOpenCandidate
         </form>
       )}
 
+      <StartScheduleBlock candidate={candidate} onSaved={onSaved} />
+
       {duplicate && (
         <DuplicateResolveDialog
           duplicates={duplicate.error.duplicates}
@@ -488,6 +494,249 @@ function InfoTab({ candidate, stageBusy, onChangeStage, onSaved, onOpenCandidate
         />
       )}
     </div>
+  );
+}
+
+interface StartScheduleBlockProps {
+  candidate: Candidate;
+  onSaved: (candidate: Candidate) => void;
+}
+
+function scheduleForm(candidate: Candidate) {
+  return {
+    start_date: candidate.start_date ?? "",
+    start_time: (candidate.start_time ?? "").slice(0, 5),
+    start_organization: candidate.start_organization ?? "",
+    start_department: candidate.start_department ?? "",
+    shift: candidate.shift ?? "",
+    start_comment: candidate.start_comment ?? "",
+  };
+}
+
+/**
+ * Блок карточки «Выход на работу»: дата (календарь), время, организация,
+ * отдел, смена и комментарий. Подсказки для организации/отдела/смены берутся
+ * из уже введённых значений (GET /work-schedule/suggestions) — отдельного
+ * справочника нет. Дату разрешено ставить на этапах «Оффер», «Оформлен» и
+ * «Вышел»; сервер повторно проверяет правило и отвечает 422.
+ */
+function StartScheduleBlock({ candidate, onSaved }: StartScheduleBlockProps) {
+  const { pushToast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [form, setForm] = useState(() => scheduleForm(candidate));
+  const [suggestions, setSuggestions] = useState<WorkScheduleSuggestions | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchWorkScheduleSuggestions()
+      .then((value) => {
+        if (!cancelled) setSuggestions(value);
+      })
+      .catch(() => {
+        // Подсказки не критичны: поля остаются обычными текстовыми.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const allowed = START_STAGES.includes(candidate.stage);
+
+  const startEditing = () => {
+    setForm(scheduleForm(candidate));
+    setError(null);
+    setEditing(true);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await updateCandidate(candidate.id, {
+        start_date: form.start_date || null,
+        start_time: form.start_time || null,
+        start_organization: form.start_organization.trim() || null,
+        start_department: form.start_department.trim() || null,
+        shift: form.shift.trim() || null,
+        start_comment: form.start_comment.trim() || null,
+      });
+      onSaved(updated);
+      setEditing(false);
+      pushToast("success", "Выход на работу сохранён.");
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError ? caught.message : "Не удалось сохранить выход на работу."
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="start-schedule" aria-label="Выход на работу">
+      <div className="start-schedule-head">
+        <h3 className="start-schedule-title">Выход на работу</h3>
+        {!editing && (
+          <Button
+            size="sm"
+            variant="secondary"
+            icon="edit"
+            onClick={startEditing}
+            disabled={!allowed}
+            title={
+              allowed
+                ? undefined
+                : "Дату выхода можно указать на этапах «Оффер», «Оформлен» и «Вышел»."
+            }
+          >
+            Изменить
+          </Button>
+        )}
+      </div>
+
+      {!allowed && (
+        <p className="start-schedule-hint">
+          Дату выхода можно указать на этапах «Оффер», «Оформлен» и «Вышел».
+        </p>
+      )}
+
+      {!editing ? (
+        <dl className="detail-list">
+          <div className="detail-row">
+            <dt>Дата выхода</dt>
+            <dd>{candidate.start_date ? formatShortDate(candidate.start_date) : "—"}</dd>
+          </div>
+          <div className="detail-row">
+            <dt>Время</dt>
+            <dd>{displayTime(candidate.start_time, null) || "—"}</dd>
+          </div>
+          <div className="detail-row">
+            <dt>Организация</dt>
+            <dd>{candidate.start_organization || "—"}</dd>
+          </div>
+          <div className="detail-row">
+            <dt>Отдел</dt>
+            <dd>{candidate.start_department || "—"}</dd>
+          </div>
+          <div className="detail-row">
+            <dt>Смена</dt>
+            <dd>{candidate.shift || "—"}</dd>
+          </div>
+          <div className="detail-row">
+            <dt>Комментарий</dt>
+            <dd>{candidate.start_comment || "—"}</dd>
+          </div>
+        </dl>
+      ) : (
+        <form
+          className="start-schedule-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
+          <Field label="Дата выхода">
+            {(id) => (
+              <TextInput
+                id={id}
+                type="date"
+                value={form.start_date}
+                onChange={(event) => setForm({ ...form, start_date: event.target.value })}
+              />
+            )}
+          </Field>
+          <Field label="Время" hint="Необязательно">
+            {(id) => (
+              <TextInput
+                id={id}
+                type="time"
+                value={form.start_time}
+                onChange={(event) => setForm({ ...form, start_time: event.target.value })}
+              />
+            )}
+          </Field>
+          <Field label="Организация">
+            {(id) => (
+              <TextInput
+                id={id}
+                list="start-organization-options"
+                value={form.start_organization}
+                onChange={(event) =>
+                  setForm({ ...form, start_organization: event.target.value })
+                }
+              />
+            )}
+          </Field>
+          <Field label="Отдел">
+            {(id) => (
+              <TextInput
+                id={id}
+                list="start-department-options"
+                value={form.start_department}
+                onChange={(event) => setForm({ ...form, start_department: event.target.value })}
+              />
+            )}
+          </Field>
+          <Field label="Смена">
+            {(id) => (
+              <TextInput
+                id={id}
+                list="start-shift-options"
+                value={form.shift}
+                onChange={(event) => setForm({ ...form, shift: event.target.value })}
+              />
+            )}
+          </Field>
+          <Field label="Комментарий">
+            {(id) => (
+              <TextInput
+                id={id}
+                value={form.start_comment}
+                onChange={(event) => setForm({ ...form, start_comment: event.target.value })}
+              />
+            )}
+          </Field>
+
+          {error && (
+            <p className="field-error" role="alert">
+              {error}
+            </p>
+          )}
+
+          <div className="form-actions">
+            <Button type="submit" loading={saving} disabled={saving}>
+              Сохранить
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={saving}
+              onClick={() => setEditing(false)}
+            >
+              Отмена
+            </Button>
+          </div>
+
+          <datalist id="start-organization-options">
+            {(suggestions?.organizations ?? []).map((value) => (
+              <option key={value} value={value} />
+            ))}
+          </datalist>
+          <datalist id="start-department-options">
+            {(suggestions?.departments ?? []).map((value) => (
+              <option key={value} value={value} />
+            ))}
+          </datalist>
+          <datalist id="start-shift-options">
+            {(suggestions?.shifts ?? []).map((value) => (
+              <option key={value} value={value} />
+            ))}
+          </datalist>
+        </form>
+      )}
+    </section>
   );
 }
 

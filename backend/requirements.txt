@@ -12,3 +12,5 @@ argon2-cffi==25.1.0
 email-validator==2.3.0
 cryptography==50.0.1
 python-multipart==0.0.20
+# Phase 18: настоящий .xlsx для выгрузки графика выхода (печать/Excel).
+openpyxl==3.1.5

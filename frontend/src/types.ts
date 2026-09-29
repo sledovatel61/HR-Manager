@@ -215,6 +215,13 @@ export interface Candidate {
   owner_user_id: string;
   owner_username: string;
   stage: CandidateStage;
+  /** Phase 18: «Выход на работу» — дата/время и место выхода (ISO date/time). */
+  start_date: string | null;
+  start_time: string | null;
+  start_organization: string | null;
+  start_department: string | null;
+  shift: string | null;
+  start_comment: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -258,10 +265,24 @@ export interface CandidateCreateInput {
   confirm_duplicate?: boolean;
 }
 
-/** PATCH /candidates/{id} payload — all fields optional. */
+/** PATCH /candidates/{id} payload — all fields optional.
+ *
+ * Phase 18: `null` в полях графика означает «очистить значение» (сервер
+ * различает отсутствующее поле и явный null). */
 export type CandidateUpdateInput = Partial<
   Omit<CandidateCreateInput, "full_name"> & { full_name?: string }
-> & { stage?: CandidateStage };
+> & {
+  stage?: CandidateStage;
+  start_date?: string | null;
+  start_time?: string | null;
+  start_organization?: string | null;
+  start_department?: string | null;
+  shift?: string | null;
+  start_comment?: string | null;
+};
+
+/** Этапы, на которых разрешено назначать дату выхода (правило сервера). */
+export const START_STAGES: readonly CandidateStage[] = ["offer", "hired", "started"];
 
 /** POST /candidates/{id}/interactions payload. */
 export interface CandidateInteractionCreateInput {
@@ -1078,3 +1099,90 @@ export interface DocumentRenderPreview {
 }
 
 export type GeneratedDocumentFormat = "html" | "txt";
+
+// --- Phase 18: «График выхода на работу» -------------------------------------
+
+export type ScheduleRowKind = "candidate" | "entry";
+export type ScheduleRowStatus = "planned" | "started" | "not_came" | "dismissed";
+
+/** Одна строка дневного блока графика (ответ GET /work-schedule). */
+export interface WorkScheduleRow {
+  kind: ScheduleRowKind;
+  /** Кандидат или служебная строка — используется для правки строки. */
+  id: string;
+  candidate_id: string | null;
+  entry_date: string;
+  /** Номер строки внутри дня (1..N) — как в колонке «№» образца. */
+  number: number;
+  start_time: string | null;
+  end_time: string | null;
+  full_name: string | null;
+  display_name: string;
+  organization: string | null;
+  department: string | null;
+  position: string;
+  shift: string | null;
+  comment: string | null;
+  owner_user_id: string | null;
+  owner_username: string | null;
+  stage: CandidateStage | null;
+  status: ScheduleRowStatus;
+  status_label: string;
+}
+
+export interface WorkScheduleList {
+  items: WorkScheduleRow[];
+  total: number;
+  days: number;
+  period_from: string | null;
+  period_to: string | null;
+  include_rejected: boolean;
+}
+
+/** GET /work-schedule query parameters (те же фильтры у export.xlsx). */
+export interface WorkScheduleQuery {
+  from?: string;
+  to?: string;
+  organization?: string;
+  department?: string;
+  position?: string;
+  shift?: string;
+  owner?: string;
+  stage?: CandidateStage;
+  q?: string;
+  include_rejected?: boolean;
+}
+
+export interface WorkScheduleSuggestions {
+  organizations: string[];
+  departments: string[];
+  shifts: string[];
+}
+
+/** Служебная строка графика без кандидата. */
+export interface ScheduleEntry {
+  id: string;
+  entry_date: string;
+  time_from: string | null;
+  time_to: string | null;
+  title: string;
+  organization: string | null;
+  department: string | null;
+  comment: string | null;
+  author_user_id: string | null;
+  author_username: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScheduleEntryCreateInput {
+  entry_date: string;
+  time_from?: string | null;
+  time_to?: string | null;
+  title: string;
+  organization?: string | null;
+  department?: string | null;
+  comment?: string | null;
+}
+
+export type ScheduleEntryUpdateInput = Partial<ScheduleEntryCreateInput>;

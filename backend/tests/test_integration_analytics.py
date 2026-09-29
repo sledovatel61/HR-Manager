@@ -43,6 +43,7 @@ from app.models import (
     CandidateTransfer,
     EventStatus,
     EventType,
+    User,
     UserRole,
 )
 from app.routers.auth import reset_login_limiter
@@ -82,6 +83,39 @@ def _run_alembic(*args: str, url: str) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def _legacy_candidate(db: Session, owner: User, source: CandidateSource) -> Any:
+    """Insert a candidate with raw SQL matching the pre-0016 row shape.
+
+    Phase 18 (migration 0016) adds the ``start_*``/``shift`` columns; the
+    backfill test plants history against the 0005 schema, which predates
+    them, so the ORM model cannot be used for the INSERT. A transient
+    ``Candidate`` carrying only the primary key is returned — the test below
+    only reads ``.id``.
+    """
+    from app.models import Candidate
+
+    candidate_id = db.execute(
+        text(
+            "INSERT INTO candidates (id, full_name, full_name_normalized,"
+            " phone, phone_normalized, email, email_normalized, source,"
+            " position, owner_user_id, stage, stage_position, created_at,"
+            " updated_at, deleted_at, deleted_by_user_id)"
+            " VALUES (gen_random_uuid(), :full_name, :full_name_normalized,"
+            " NULL, NULL, NULL, NULL, :source, '', :owner_id, 'new', 0,"
+            " now(), now(), NULL, NULL)"
+            " RETURNING id"
+        ),
+        {
+            "full_name": "Иванов Иван Иванович",
+            "full_name_normalized": "иванов иван иванович",
+            "source": source.value,
+            "owner_id": owner.id,
+        },
+    ).scalar_one()
+    db.commit()
+    return Candidate(id=candidate_id, full_name="Иван", owner_user_id=owner.id)
 
 
 def _legacy_user(db: Session, username: str, role: UserRole) -> Any:
@@ -274,7 +308,9 @@ def test_migration_backfills_facts_from_history(
         hr2 = _legacy_user(pg_db, "bob", UserRole.HR)
         manager = _legacy_user(pg_db, "mgr", UserRole.MANAGER)
 
-        candidate = make_candidate(pg_db, owner=hr1, source=CandidateSource.REFERRAL)
+        # Planted on the 0005 schema (no phase-18 start-schedule columns yet):
+        # raw SQL, consistent with the events/user inserts below.
+        candidate = _legacy_candidate(pg_db, owner=hr1, source=CandidateSource.REFERRAL)
         pg_db.execute(
             text("UPDATE candidates SET created_at = :t WHERE id = :id"),
             {"t": t0, "id": candidate.id},
