@@ -257,7 +257,9 @@ def test_stage_validation_uses_shared_vocabulary(client: TestClient, db_session:
     )
     assert invalid.status_code == 422
 
-    # All eleven PRODUCT_SPEC §5 stages are accepted.
+    # All eleven PRODUCT_SPEC §5 stages are accepted. Phase 18 adds one
+    # business rule on top of the vocabulary: «Вышел» requires a start date
+    # (covered in test_work_schedule.py), so that single stage carries it.
     for stage in (
         "new",
         "contacted",
@@ -271,10 +273,13 @@ def test_stage_validation_uses_shared_vocabulary(client: TestClient, db_session:
         "fired",
         "rejected",
     ):
+        payload: dict = {"stage": stage}
+        if stage == "started":
+            payload["start_date"] = "2026-08-10"
         assert (
             client.patch(
                 f"/candidates/{candidate.id}",
-                json={"stage": stage},
+                json=payload,
                 headers={"X-CSRF-Token": csrf},
             ).status_code
             == 200

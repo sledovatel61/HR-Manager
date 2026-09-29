@@ -60,9 +60,15 @@ import type {
   EventUpdateInput,
   HealthResponse,
   Paginated,
+  ScheduleEntry,
+  ScheduleEntryCreateInput,
+  ScheduleEntryUpdateInput,
   User,
   UserListItems,
   UserUpdateInput,
+  WorkScheduleList,
+  WorkScheduleQuery,
+  WorkScheduleSuggestions,
 } from "./types";
 import type {
   DocumentRenderPreview,
@@ -1092,4 +1098,101 @@ export async function downloadGeneratedDocument(
     blob: await response.blob(),
     filename: match?.[1] ?? "document.html",
   };
+}
+
+// --- Phase 18: «График выхода на работу» ------------------------------------
+
+/** Общий query-строка для списка и выгрузки: фильтры на экране = фильтры в
+ * Excel и на печати (сервер фильтрует и сортирует один раз). */
+function workScheduleSearch(query: WorkScheduleQuery): string {
+  const params = new URLSearchParams();
+  if (query.from) params.set("from", query.from);
+  if (query.to) params.set("to", query.to);
+  if (query.organization) params.set("organization", query.organization);
+  if (query.department) params.set("department", query.department);
+  if (query.position) params.set("position", query.position);
+  if (query.shift) params.set("shift", query.shift);
+  if (query.owner) params.set("owner", query.owner);
+  if (query.stage) params.set("stage", query.stage);
+  if (query.q) params.set("q", query.q);
+  if (query.include_rejected) params.set("include_rejected", "true");
+  return params.toString();
+}
+
+/** Дневной график выходов: строки уже отфильтрованы и отсортированы сервером. */
+export async function listWorkSchedule(
+  query: WorkScheduleQuery = {}
+): Promise<WorkScheduleList> {
+  const search = workScheduleSearch(query);
+  return request<WorkScheduleList>(`/work-schedule${search ? `?${search}` : ""}`);
+}
+
+/** Подсказки автодополнения (организация/отдел/смена) из уже введённых значений. */
+export async function fetchWorkScheduleSuggestions(): Promise<WorkScheduleSuggestions> {
+  return request<WorkScheduleSuggestions>("/work-schedule/suggestions");
+}
+
+export interface WorkScheduleExport {
+  blob: Blob;
+  /** Имя файла от сервера (Content-Disposition). */
+  filename: string;
+}
+
+/**
+ * Скачать .xlsx с текущими фильтрами. Экспорт успешен только после 2xx —
+ * ошибка (401/403/422/5xx) поднимает ApiError с текстом сервера.
+ */
+export async function exportWorkScheduleXlsx(
+  query: WorkScheduleQuery = {}
+): Promise<WorkScheduleExport> {
+  const search = workScheduleSearch(query);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/work-schedule/export.xlsx${search ? `?${search}` : ""}`, {
+      method: "GET",
+      headers: {
+        Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      },
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError(0, "Сеть недоступна: не удалось связаться с сервером.");
+  }
+  if (response.status === 401) emitUnauthorized();
+  if (!response.ok) {
+    let rawDetail: unknown = null;
+    try {
+      const data: unknown = await response.json();
+      if (data && typeof data === "object" && "detail" in data) {
+        rawDetail = (data as { detail: unknown }).detail;
+      }
+    } catch {
+      // non-JSON error body — keep the generic message
+    }
+    const detail =
+      typeof rawDetail === "string" ? rawDetail : `Ошибка выгрузки (${response.status}).`;
+    throw new ApiError(response.status, detail, rawDetail);
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+  return { blob: await response.blob(), filename: match?.[1] ?? "work-schedule.xlsx" };
+}
+
+/** Создать служебную строку графика («Увольнение 13:00–14:00», «перевод»). */
+export async function createScheduleEntry(input: ScheduleEntryCreateInput): Promise<ScheduleEntry> {
+  return request<ScheduleEntry>("/work-schedule/entries", { method: "POST", body: input });
+}
+
+export async function updateScheduleEntry(
+  entryId: string,
+  input: ScheduleEntryUpdateInput
+): Promise<ScheduleEntry> {
+  return request<ScheduleEntry>(`/work-schedule/entries/${entryId}`, {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+export async function deleteScheduleEntry(entryId: string): Promise<void> {
+  await request<void>(`/work-schedule/entries/${entryId}`, { method: "DELETE" });
 }

@@ -19,6 +19,7 @@ import {
   type UserListItem,
 } from "../../types";
 import { CandidateDrawer } from "./CandidateDrawer";
+import { StartDateModal } from "../schedule/StartDateModal";
 import { CandidateFormModal } from "./CandidateFormModal";
 import "./kanban.css";
 
@@ -60,6 +61,12 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   const [drawerCandidateId, setDrawerCandidateId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  /** Кандидат, для которого окно «Укажите дату выхода» открыто. */
+  const [startDateFor, setStartDateFor] = useState<{
+    candidate: Candidate;
+    from: CandidateStage;
+  } | null>(null);
+  const [startDateError, setStartDateError] = useState<string | null>(null);
   const draggingRef = useRef<{ id: string; from: CandidateStage } | null>(null);
 
   const loadColumn = useCallback(
@@ -121,9 +128,19 @@ export default function KanbanPage({ user }: KanbanPageProps) {
     };
   }, [canSeeAll]);
 
-  const moveCandidate = useCallback(
-    async (candidate: Candidate, from: CandidateStage, to: CandidateStage) => {
-      if (from === to || busy) return;
+  /**
+   * Перевод карточки: оптимистично двигаем между колонками, затем сохраняем.
+   * Для этапа «Вышел» сервер требует дату (422) — она передаётся в `extra`
+   * из окна «Укажите дату выхода». Возвращает текст ошибки или null.
+   */
+  const performMove = useCallback(
+    async (
+      candidate: Candidate,
+      from: CandidateStage,
+      to: CandidateStage,
+      extra: { start_date?: string; start_time?: string | null } = {}
+    ): Promise<string | null> => {
+      if (from === to || busy) return null;
       setBusy(true);
 
       // Optimistic move between columns (guarded by `busy` against repeats).
@@ -136,15 +153,16 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         },
         [to]: {
           ...current[to],
-          items: [{ ...candidate, stage: to }, ...current[to].items],
+          items: [{ ...candidate, stage: to, ...extra }, ...current[to].items],
           total: current[to].total + 1,
         },
       }));
 
       try {
-        await updateCandidate(candidate.id, { stage: to });
+        await updateCandidate(candidate.id, { stage: to, ...extra });
         pushToast("success", `Этап изменён: ${STAGE_LABELS[to]}`);
         setReloadTick((tick) => tick + 1);
+        return null;
       } catch (caught) {
         // Hard rollback to the pre-move state.
         setColumns((current) => ({
@@ -160,16 +178,44 @@ export default function KanbanPage({ user }: KanbanPageProps) {
             total: Math.max(0, current[to].total - 1),
           },
         }));
-        pushToast(
-          "danger",
-          caught instanceof ApiError ? caught.message : "Не удалось изменить этап."
-        );
+        const message =
+          caught instanceof ApiError ? caught.message : "Не удалось изменить этап.";
+        pushToast("danger", message);
+        return message;
       } finally {
         setBusy(false);
       }
     },
     [busy, pushToast]
   );
+
+  const moveCandidate = useCallback(
+    (candidate: Candidate, from: CandidateStage, to: CandidateStage) => {
+      if (from === to || busy) return;
+      if (to === "started" && !candidate.start_date) {
+        // «Вышел» без даты сервер не примет: спрашиваем дату заранее.
+        setStartDateError(null);
+        setStartDateFor({ candidate, from });
+        return;
+      }
+      void performMove(candidate, from, to);
+    },
+    [busy, performMove]
+  );
+
+  const confirmStartDate = async (date: string, time: string | null) => {
+    if (!startDateFor) return;
+    const message = await performMove(startDateFor.candidate, startDateFor.from, "started", {
+      start_date: date,
+      start_time: time,
+    });
+    if (message) {
+      setStartDateError(message);
+    } else {
+      setStartDateFor(null);
+      setStartDateError(null);
+    }
+  };
 
   const anyLoading = CANDIDATE_STAGE_ORDER.some((stage) => columns[stage].loading);
   const anyError = CANDIDATE_STAGE_ORDER.find((stage) => columns[stage].error);
@@ -178,8 +224,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   const openCandidate = (id: string) => setDrawerCandidateId(id);
 
   const handleStageSelect = (candidate: Candidate, from: CandidateStage, to: CandidateStage) => {
-    if (from === to) return;
-    void moveCandidate(candidate, from, to);
+    moveCandidate(candidate, from, to);
   };
 
   const handleDrop = (event: React.DragEvent, to: CandidateStage) => {
@@ -189,7 +234,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
     if (!dragging) return;
     const from = dragging.from;
     const card = columns[from].items.find((item) => item.id === dragging.id);
-    if (card) void moveCandidate(card, from, to);
+    if (card) moveCandidate(card, from, to);
   };
 
   return (
@@ -342,6 +387,19 @@ export default function KanbanPage({ user }: KanbanPageProps) {
           onOpenCandidate={(id) => setDrawerCandidateId(id)}
         />
       )}
+
+      <StartDateModal
+        open={startDateFor !== null}
+        candidateName={startDateFor?.candidate.full_name ?? ""}
+        initialDate={startDateFor?.candidate.start_date ?? null}
+        busy={busy}
+        error={startDateError}
+        onCancel={() => {
+          setStartDateFor(null);
+          setStartDateError(null);
+        }}
+        onConfirm={(date, time) => void confirmStartDate(date, time)}
+      />
 
       <CandidateFormModal
         open={createOpen}

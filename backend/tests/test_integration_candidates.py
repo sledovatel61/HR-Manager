@@ -321,9 +321,14 @@ def test_stage_vocabulary_on_postgres(pg_client: TestClient, pg_db: Session) -> 
         "fired",
         "rejected",
     ):
+        # Phase 18: «Вышел» requires a start date (see test_work_schedule tests);
+        # the funnel vocabulary itself stays unchanged.
+        payload: dict = {"stage": stage}
+        if stage == "started":
+            payload["start_date"] = "2026-08-10"
         assert (
             pg_client.patch(
-                f"/candidates/{candidate.id}", json={"stage": stage}, headers={"X-CSRF-Token": csrf}
+                f"/candidates/{candidate.id}", json=payload, headers={"X-CSRF-Token": csrf}
             ).status_code
             == 200
         )

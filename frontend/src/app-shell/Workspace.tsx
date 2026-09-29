@@ -7,6 +7,7 @@ import { Icon, type IconName } from "../design-system/icons/Icon";
 import { ROLE_LABELS, WORKING_MODE_LABELS, type CurrentUser, type UserRole } from "../types";
 import CandidatesListPage from "../features/candidates/CandidatesListPage";
 import KanbanPage from "../features/candidates/KanbanPage";
+import SchedulePage from "../features/schedule/SchedulePage";
 import CalendarPage from "../features/calendar/CalendarPage";
 import AnalyticsPage from "../features/analytics/AnalyticsPage";
 import { NotificationBell } from "../features/notifications/NotificationBell";
@@ -32,6 +33,7 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   candidates: { label: "Кандидаты", icon: "table" },
   calendar: { label: "Календарь", icon: "calendar" },
   kanban: { label: "Kanban", icon: "kanban" },
+  schedule: { label: "График выхода", icon: "calendar-check" },
   deleted: { label: "Удалённые", icon: "trash" },
   analytics: { label: "Аналитика", icon: "bar-chart" },
   notifications: { label: "Уведомления", icon: "bell" },
@@ -55,7 +57,7 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   // re-checks every right regardless of the navigation.
   const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations", "documents", "templates", "rules"];
   if (role === "hr") {
-    return ["queue", "calendar", "kanban", "deleted", ...personal];
+    return ["queue", "calendar", "kanban", "schedule", "deleted", ...personal];
   }
   if (role === "admin") {
     // Диагностика запуска и обновлений — вкладка внутри «Администрирование»
@@ -64,9 +66,9 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
     // Лицензия — только admin (загрузка/замена).
     // «Пользователи» — управление учётными записями, строго admin-only
     // (и в навигации, и повторно внутри самой страницы).
-    return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "license", "admin", "users"];
+    return ["candidates", "calendar", "kanban", "schedule", "deleted", "analytics", ...personal, "updates", "license", "admin", "users"];
   }
-  return ["candidates", "calendar", "kanban", "deleted", "analytics", ...personal, "updates", "admin"];
+  return ["candidates", "calendar", "kanban", "schedule", "deleted", "analytics", ...personal, "updates", "admin"];
 }
 
 function initialsOf(fullName: string, username: string): string {
@@ -170,6 +172,9 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             <CalendarPage user={user} onOpenCandidate={openCandidate} />
           )}
           {activeSection === "kanban" && <KanbanPage user={user} />}
+          {activeSection === "schedule" && (
+            <SchedulePage user={user} onOpenCandidate={openCandidate} />
+          )}
           {activeSection === "analytics" && <AnalyticsPage user={user} />}
           {activeSection === "notifications" && (
             <NotificationCenterPage onOpenCandidate={openCandidate} />
@@ -188,6 +193,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           {activeSection === "users" && <UsersPage currentUser={user} />}
           {activeSection !== "calendar" &&
             activeSection !== "kanban" &&
+            activeSection !== "schedule" &&
             activeSection !== "analytics" &&
             activeSection !== "notifications" &&
             activeSection !== "reminders" &&
