@@ -916,6 +916,14 @@ jobs:
           if (Test-Path $h) { Write-Host "::warning::could not remove $h"; exit 1 }
           Write-Host "handoff directory removed"
 
+      - name: Upload license-issuer bundle for owner (B2, no private keys)
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: license-issuer-owner
+          path: tools/license-issuer/dist/license-issuer-dist.zip
+          if-no-files-found: error
+
   channel-release-policy:
     name: Release pipeline fail-closed policy (ephemeral test signature)
     runs-on: ubuntu-latest

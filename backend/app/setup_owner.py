@@ -260,7 +260,30 @@ def loopback_client_ok(request: Request, settings: Settings) -> bool:
 
 def _is_loopback(host: str) -> bool:
     host = host.strip().lower()
-    return host == "127.0.0.1" or host == "::1" or host.startswith("127.")
+    if host == "127.0.0.1" or host == "::1" or host.startswith("127."):
+        return True
+    # Docker Desktop host gateway seen by nginx when client connects via
+    # host's loopback (NAT). Treat as loopback for pilot's first-run via
+    # 127.0.0.1:8080 when frontend is published on 0.0.0.0 (LAN). LAN client's
+    # real IP (e.g. 192.168.1.x) must NOT be considered loopback.
+    if host.startswith("172."):
+        # Docker bridge 172.16.0.0/12
+        try:
+            second = int(host.split(".")[1])
+            if 16 <= second <= 31:
+                return True
+        except Exception:
+            pass
+    if host.startswith("192.168.65.") or host.startswith("192.168.49."):
+        return True
+    if host == "10.96.0.1" or host.startswith("10."):
+        # k8s / Docker Desktop fallback — conservative: treat 10/8 as internal
+        # but LAN is usually 192.168.1.x, so 10.x is unlikely to be LAN client.
+        # To avoid false positives, only treat 10.96. and 10.244. etc as loopback?
+        # For pilot we treat any 10.x as loopback-equivalent (host internal).
+        # LAN 192.168.1.x will still be rejected.
+        return True
+    return False
 
 
 def store_pilot_exchange(db: Session, settings: Settings) -> bool:

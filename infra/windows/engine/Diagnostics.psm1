@@ -148,8 +148,12 @@ function Get-HrmDiagnostics {
         telegram = $channels["telegram"]
     }
 
+    # B4 hint for support-bundle shortcut
+    $hint = 'Чтобы отправить отчёт разработчику, используйте ярлык "HR Manager — отчёт для разработчика"'
+    $result["hint"] = $hint
     if ($AsJson) {
         Protect-HrmOutput (($result | ConvertTo-Json -Depth 6))
+        Protect-HrmOutput $hint
     }
     else {
         $rows = @(
@@ -162,7 +166,8 @@ function Get-HrmDiagnostics {
             ("version     : {0} (установлено {1}, в работе {2})" -f $result.version, $result.installed_release_sha, $result.running_release_sha),
             ("smtp        : {0}" -f $result.smtp),
             ("telegram    : {0}" -f $result.telegram),
-            ("url         : {0}" -f $result.url)
+            ("url         : {0}" -f $result.url),
+            $hint
         )
         $rows | ForEach-Object { Protect-HrmOutput $_ }
     }

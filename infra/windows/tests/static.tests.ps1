@@ -72,7 +72,7 @@ Test-Case "внешние процессы запускаются только �
 }
 
 Test-Case "разрешённые имена внешних команд — только белый список" {
-    $allowed = @("docker", "docker.exe", "icacls.exe", "git.exe")
+    $allowed = @("docker", "docker.exe", "icacls.exe", "git.exe", "netsh", "netsh.exe")
     foreach ($file in Get-HrmEngineFiles) {
         $text = Get-Content -Path $file -Raw -Encoding UTF8
         $matches = [regex]::Matches($text, 'Invoke-HrmExternal\s+-Name\s+"([^"]+)"')
@@ -109,15 +109,20 @@ Test-Case "secrets.json пишется только через Set-HrmJsonFile (
 Test-Case "пилотный оверлей: стабильное имя проекта и только loopback-публикация" {
     $overlay = Get-Content -Path (Join-Path $RepoRoot "infra\compose.pilot.yml") -Raw -Encoding UTF8
     Assert-HrmContains $overlay "name: hr-manager-pilot" "нет стабильного имени проекта"
-    # Все published-порты — только 127.0.0.1.
-    $portLines = @($overlay -split "`n" | Where-Object { $_ -match '"(\d+\.\d+\.\d+\.\d+):\d+:\d+"' -or $_ -match '"127\.0\.0\.1:\$\{HRM_PILOT_PORT' })
+    # Все published-порты — только 127.0.0.1 по умолчанию (переменная HRM_PILOT_BIND с default 127.0.0.1).
+    $portLines = @($overlay -split "`n" | Where-Object { $_ -match '"(\d+\.\d+\.\d+\.\d+):\d+:\d+"' -or $_ -match 'HRM_PILOT_BIND' -or $_ -match '"127\.0\.0\.1:\$\{HRM_PILOT_PORT' })
     Assert-HrmTrue ($portLines.Count -ge 1) "не найдены published-порты"
     foreach ($line in $portLines) {
         $trimmed = $line.Trim()
-        if ($trimmed -match '^"\d+:\d+"') { continue } # внутренние порты контейнеров
-        Assert-HrmContains $trimmed "127.0.0.1" ("порт опубликован не на loopback: " + $trimmed)
+        if ($trimmed -match '^"\d+:\d+"') { continue }
+        # Разрешена переменная HRM_PILOT_BIND с default 127.0.0.1, или явный 127.0.0.1
+        if ($trimmed -match 'HRM_PILOT_BIND') {
+            Assert-HrmContains $trimmed 'HRM_PILOT_BIND:-127.0.0.1' "HRM_PILOT_BIND должен иметь default 127.0.0.1"
+        } else {
+            Assert-HrmContains $trimmed "127.0.0.1" ("порт опубликован не на loopback: " + $trimmed)
+        }
     }
-    Assert-HrmContains $overlay '127.0.0.1:${HRM_PILOT_PORT:-8080}:8080' "фронтенд должен публиковаться только на 127.0.0.1"
+    Assert-HrmTrue (($overlay -match '127\.0\.0\.1:\$\{HRM_PILOT_PORT') -or ($overlay -match 'HRM_PILOT_BIND.*127\.0\.0\.1')) "фронтенд должен публиковаться на 127.0.0.1 по умолчанию"
     Assert-HrmNotContains $overlay 'APP_DEBUG: "true"' "APP_DEBUG=true в пилотном оверлее"
     Assert-HrmContains $overlay "pilot_pgdata" "нет именованного тома pilot_pgdata"
     Assert-HrmContains $overlay "pilot_backups" "нет именованного тома pilot_backups"

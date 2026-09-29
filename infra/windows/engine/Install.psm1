@@ -60,6 +60,42 @@ function Install-HrmApp {
 
     $existing = Get-HrmInstallRecord $StateDir
     if ($null -ne $existing -and $existing.release_sha) {
+        # B6: повторный запуск новой версии Setup.exe = обновление поверх
+        # Существующая установка: проверяем, отличается ли версия в SourceDir
+        $sourceReleaseSha = ""
+        try {
+            $srcReleaseFile = Join-Path $SourceDir "release.json"
+            if (Test-Path $srcReleaseFile) {
+                $srcData = Get-HrmJsonFile $srcReleaseFile
+                if ($null -ne $srcData -and $srcData.release_sha) { $sourceReleaseSha = [string]$srcData.release_sha }
+            }
+        } catch {}
+        $installedSha = [string]$existing.release_sha
+        if ($sourceReleaseSha -and $installedSha -and $sourceReleaseSha -ne $installedSha) {
+            Write-HrmLog "info" ("Существующая установка найдена: {0}" -f $installedSha)
+            Write-HrmLog "info" ("Обнаружена новая версия {0} — запускаю обновление с бэкапом и откатом..." -f $sourceReleaseSha)
+            $releaseDirForUpdate = $SourceDir
+            $tempRelease = ""
+            try {
+                $fullSource = [System.IO.Path]::GetFullPath($SourceDir).TrimEnd('\','/')
+                $fullInstall = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\','/')
+                $isSame = ($fullSource -eq $fullInstall)
+            } catch { $isSame = $false }
+            if ($isSame) {
+                # Installer уже перезаписал InstallDir новой версией; делаем временную копию для Update потока
+                $tempRelease = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-update-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
+                New-Item -ItemType Directory -Path $tempRelease -Force | Out-Null
+                Copy-HrmSnapshot $InstallDir $tempRelease
+                $releaseDirForUpdate = $tempRelease
+            }
+            try {
+                Update-HrmApp -ReleaseDir $releaseDirForUpdate -InstallDir $InstallDir -StateDir $StateDir
+            } finally {
+                if ($tempRelease -and (Test-Path $tempRelease)) { Remove-Item $tempRelease -Recurse -Force -ErrorAction SilentlyContinue }
+            }
+            Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $port
+            return
+        }
         Write-HrmLog "info" ("Существующая установка найдена: {0}" -f $existing.release_sha)
         Write-HrmLog "info" "Повторный запуск установки не меняет данные и секреты."
         if (Test-HrmComposeRunning $InstallDir $StateDir) {
