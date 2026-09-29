@@ -158,6 +158,22 @@ def visible_candidate_conditions(db: Session, user: User) -> list[Any]:
     return [Candidate.owner_user_id == user.id]
 
 
+def can_manage_entry(db: Session, user: User, entry: ScheduleEntry) -> bool:
+    """Может ли пользователь править/удалять конкретную служебную строку.
+
+    Служебная строка — общий элемент графика, но не «ничей»: её меняет автор
+    записи, а также те, кто и так видит всех кандидатов (руководитель,
+    администратор, HR с активным грантом «все кандидаты» /
+    ``pilot_full_access``). Новой модели прав не вводится — переиспользуется
+    ``hr_sees_all_candidates``; строка без автора (автор деактивирован,
+    ``ON DELETE SET NULL``) остаётся доступной только этим ролям и грантам.
+    """
+
+    if entry.author_user_id is not None and entry.author_user_id == user.id:
+        return True
+    return hr_sees_all_candidates(db, user)
+
+
 def _cleaned(value: str | None) -> str:
     return (value or "").strip().casefold()
 
@@ -508,11 +524,10 @@ def build_xlsx(
                     for item in rows
                     if item.entry_date == current_day and item.kind == "candidate"
                 )
-                day_cell = sheet.cell(
-                    row=row_index,
-                    column=1,
-                    value=f"{day_label(current_day)} — выходов: {day_candidates}",
-                )
+                day_cell = sheet.cell(row=row_index, column=1)
+                # Строка дня формируется кодом, но пишется тем же санитайзером:
+                # defence-in-depth против будущих правок формата/custom-полей.
+                _write_text(day_cell, f"{day_label(current_day)} — выходов: {day_candidates}")
                 day_cell.font = day_font
                 day_cell.fill = day_fill
                 day_cell.alignment = Alignment(horizontal="left")
@@ -551,7 +566,7 @@ def build_xlsx(
 
     if not rows:
         empty = sheet.cell(row=row_index, column=1)
-        empty.value = "На выбранный период выходов нет."
+        _write_text(empty, "На выбранный период выходов нет.")
         empty.font = Font(italic=True)
         sheet.merge_cells(
             start_row=row_index, start_column=1, end_row=row_index, end_column=last_column
@@ -560,11 +575,8 @@ def build_xlsx(
     else:
         row_index += 1
         total_candidates = sum(1 for item in rows if item.kind == "candidate")
-        totals = sheet.cell(
-            row=row_index,
-            column=1,
-            value=f"Итого выходов за период: {total_candidates}",
-        )
+        totals = sheet.cell(row=row_index, column=1)
+        _write_text(totals, f"Итого выходов за период: {total_candidates}")
         totals.font = day_font
 
     # Печать: альбомная ориентация, шапка таблицы повторяется на каждой

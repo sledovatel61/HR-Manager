@@ -197,6 +197,11 @@
   color: var(--status-warning-fg);
 }
 
+.schedule-readonly-flag {
+  color: var(--text-tertiary);
+  font-size: var(--text-size-2xs);
+}
+
 .schedule-service-flag {
   margin-left: var(--space-2);
   color: var(--text-tertiary);
