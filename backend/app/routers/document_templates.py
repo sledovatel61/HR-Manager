@@ -3,12 +3,25 @@
 Textual MVP of roadmap stage 6: administrators (or `document_lists_manage`)
 manage versions of textual templates through the interface; employees see the
 published version and can render a document for a candidate they may access.
-No files, no PDF/DOCX conversion and no delivery to candidates.
+No PDF/DOCX conversion and no delivery to candidates. Plain-text files may be
+imported as a draft (:mod:`app.template_import`); the file itself is never
+stored, only the validated text that was read out of it.
 """
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from app.audit import record_event
@@ -30,8 +43,9 @@ from app.document_templates import (
     rename_template,
     require_manage,
 )
-from app.models import AuditAction, User
-from app.template_render import placeholder_catalog
+from app.models import AuditAction, CandidateStage, User
+from app.template_import import read_template_file, read_upload_limited
+from app.template_render import TemplateContentError, placeholder_catalog
 from app.template_schemas import (
     GenerateRequest,
     GenerationOut,
@@ -74,6 +88,46 @@ def create(
 ) -> TemplateOut:
     require_manage(db, user)
     return create_template(db, user, payload)
+
+
+@router.post("/document-templates/import", response_model=TemplateOut, status_code=201)
+async def import_template(
+    kind: str = Form(...),
+    name: str = Form(""),
+    scope: str = Form(""),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TemplateOut:
+    """Create a template draft from an uploaded plain-text file.
+
+    The upload is never written to disk: it is read once, size-capped,
+    extension-checked and decoded, and only the validated text becomes the
+    body. ``read_template_file`` raises a message that is safe to show, which
+    becomes a 422 here.
+    """
+    require_manage(db, user)
+    try:
+        payload_bytes = await read_upload_limited(file)
+        imported = read_template_file(payload_bytes, file.filename, title_hint=name)
+    except TemplateContentError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    try:
+        created = TemplateCreate(
+            kind=kind,
+            scope=CandidateStage(scope) if scope else None,
+            name=name.strip() or imported.title,
+            title=imported.title,
+            body=imported.body,
+        )
+    except (TemplateContentError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return create_template(
+        db,
+        user,
+        created,
+        origin=f"import={imported.extension} source={imported.original_name[:60]}",
+    )
 
 
 @router.patch("/document-templates/{template_id}", response_model=TemplateOut)

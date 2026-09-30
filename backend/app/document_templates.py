@@ -295,7 +295,15 @@ def _parent(db: Session, template_id: UUID, expected: int) -> DocumentTemplate:
     return row
 
 
-def create_template(db: Session, user: User, payload: TemplateCreate) -> TemplateOut:
+def create_template(
+    db: Session, user: User, payload: TemplateCreate, *, origin: str = ""
+) -> TemplateOut:
+    """Create a template and its first draft version.
+
+    ``origin`` is an optional, caller-supplied provenance fragment for the
+    audit row — set by the file import to record the format and the safe
+    display name of the source file. It never contains file *contents*.
+    """
     template = DocumentTemplate(
         kind=payload.kind,
         scope=payload.scope.value if payload.scope else "",
@@ -319,7 +327,10 @@ def create_template(db: Session, user: User, payload: TemplateCreate) -> Templat
         db,
         AuditAction.DOCUMENT_TEMPLATE_CREATED,
         actor=user,
-        details=f"template={template.id} version={version.id} kind={template.kind}",
+        details=(
+            f"template={template.id} version={version.id} kind={template.kind}"
+            + (f" {origin}" if origin else "")
+        ),
         commit=False,
     )
     db.commit()
