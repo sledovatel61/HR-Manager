@@ -10,12 +10,19 @@ import type {
 } from "../../types";
 import { GeneratedDocumentsTab } from "./GeneratedDocumentsTab";
 import { TemplatesPage } from "./TemplatesPage";
+import {
+  TEMPLATE_IMPORT_MAX_BYTES,
+  describeImportFile,
+  friendlyPlaceholderName,
+  kindLabel,
+} from "./vocabulary";
 
 vi.mock("../../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api")>()),
   listDocumentTemplates: vi.fn(),
   listTemplatePlaceholders: vi.fn(),
   createDocumentTemplate: vi.fn(),
+  importDocumentTemplate: vi.fn(),
   renameDocumentTemplate: vi.fn(),
   addDocumentTemplateVersion: vi.fn(),
   activateDocumentTemplateVersion: vi.fn(),
@@ -178,7 +185,10 @@ describe("Шаблоны документов", () => {
     await user.click(screen.getByRole("button", { name: "Новая версия" }));
     const body = screen.getByLabelText(/Текст шаблона/) as HTMLTextAreaElement;
     expect(body.value).toBe("Здравствуйте, {{ candidate.full_name }}!");
-    await user.click(screen.getByRole("button", { name: "{{ system.date }}" }));
+    // The button shows the field a person recognises; the token is in the tooltip.
+    const chip = screen.getByRole("button", { name: "Текущая дата" });
+    expect(chip).toHaveAttribute("title", expect.stringContaining("{{ system.date }}"));
+    await user.click(chip);
     expect(body.value).toContain("{{ system.date }}");
   });
 
@@ -477,6 +487,125 @@ describe("Документы по шаблону", () => {
     renderTab();
     expect(
       await screen.findByText(/Нет опубликованных шаблонов/),
+    ).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Block E — methodical base vocabulary (UX feedback 2026-09-29)
+// ---------------------------------------------------------------------------
+
+describe("vocabulary of the methodical base", () => {
+  it("labels every kind a person would use, keeping the stored keys", () => {
+    expect(kindLabel("document")).toBe("Документ");
+    expect(kindLabel("checklist")).toBe("Чек-лист");
+    expect(kindLabel("interview")).toBe("Вопросник для интервью");
+    expect(kindLabel("memo")).toBe("Памятка HR");
+    expect(kindLabel("script")).toBe("Скрипт");
+    // Pre-existing rows keep rendering under their own name.
+    expect(kindLabel("offer")).toBe("Оффер");
+    expect(kindLabel("unknown_key")).toBe("unknown_key");
+  });
+
+  it("shows the field a person recognises, not the stored token", () => {
+    expect(
+      friendlyPlaceholderName({ token: "candidate.full_name", description: "ФИО кандидата" }),
+    ).toBe("ФИО кандидата");
+    // A token without a description still renders as something readable.
+    expect(friendlyPlaceholderName({ token: "system.date", description: "" })).toBe("date");
+  });
+
+  it("flags an unsupported or oversized file before uploading", () => {
+    expect(describeImportFile(null)).toMatch(/Выберите файл/);
+    const pdf = new File(["x"], "offer.pdf", { type: "application/pdf" });
+    expect(describeImportFile(pdf)).toMatch(/не поддерживается/);
+    const empty = new File([], "script.md");
+    expect(describeImportFile(empty)).toMatch(/пуст/);
+    const big = {
+      name: "big.md",
+      size: TEMPLATE_IMPORT_MAX_BYTES + 1,
+    } as File;
+    expect(describeImportFile(big)).toMatch(/КБ/);
+    expect(describeImportFile(new File(["текст"], "script.md"))).toBeNull();
+  });
+});
+
+describe("importing methodical material", () => {
+  it("warns that a legal form has to be re-checked by a person", async () => {
+    const user = userEvent.setup();
+    renderTemplates();
+    expect(await screen.findByText(/Правовая форма/)).toBeInTheDocument();
+
+    // A non-legal kind gets no such banner. The filters are on one screen, so
+    // drive the real UI instead of re-rendering over it.
+    vi.mocked(api.listDocumentTemplates).mockResolvedValue({
+      items: [{ ...template, kind: "checklist", name: "Чек-лист интервью" }],
+      can_manage: true,
+    });
+    await user.type(screen.getByLabelText(/^Поиск шаблона/), "Чек-лист");
+    expect(screen.queryByText(/Правовая форма/)).not.toBeInTheDocument();
+  });
+
+  it("imports a chosen file as a draft", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.importDocumentTemplate).mockResolvedValue(template);
+    renderTemplates();
+    await user.click(await screen.findByRole("button", { name: /Загрузить из файла/ }));
+
+    const fileInput = await screen.findByLabelText(/^Файл/);
+    const file = new File(["# Скрипт\n\nТекст"], "Скрипт звонка.md", {
+      type: "text/markdown",
+    });
+    await user.upload(fileInput, file);
+    await user.click(screen.getByRole("button", { name: /Загрузить как черновик/ }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.importDocumentTemplate)).toHaveBeenCalledWith({
+        kind: "checklist",
+        scope: "",
+        name: "",
+        file: expect.any(File),
+      });
+    });
+    expect(
+      await screen.findByText(/Шаблон загружен из файла/),
+    ).toBeInTheDocument();
+  });
+
+  it("states the accepted formats and blocks submitting without a file", async () => {
+    const user = userEvent.setup();
+    renderTemplates();
+    await user.click(await screen.findByRole("button", { name: /Загрузить из файла/ }));
+    const fileInput = await screen.findByLabelText(/^Файл/);
+
+    // The hint is the contract with the user: which formats, how big, UTF-8.
+    const hintId = fileInput.getAttribute("aria-describedby") ?? "";
+    expect(document.getElementById(hintId)).toHaveTextContent(
+      ".txt, .md, .markdown, .csv, до 512 КБ, UTF-8",
+    );
+    // The picker itself is limited to those formats, and nothing is sent yet.
+    expect(fileInput).toHaveAttribute("accept", ".txt,.md,.markdown,.csv");
+    expect(screen.getByRole("button", { name: /Загрузить как черновик/ })).toBeDisabled();
+
+    await user.upload(fileInput, new File(["# Скрипт"], "script.md"));
+    expect(screen.getByRole("button", { name: /Загрузить как черновик/ })).toBeEnabled();
+  });
+
+  it("surfaces the server refusal instead of pretending the import worked", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.importDocumentTemplate).mockRejectedValue(
+      new api.ApiError(422, "Файл не похож на текст: внутри обнаружены двоичные данные."),
+    );
+    renderTemplates();
+    await user.click(await screen.findByRole("button", { name: /Загрузить из файла/ }));
+    await user.upload(
+      await screen.findByLabelText(/^Файл/),
+      new File(["текст"], "note.md"),
+    );
+    await user.click(screen.getByRole("button", { name: /Загрузить как черновик/ }));
+
+    expect(
+      await screen.findByText(/внутри обнаружены двоичные данные/),
     ).toBeInTheDocument();
   });
 });

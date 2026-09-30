@@ -5,6 +5,7 @@ import {
   addDocumentTemplateVersion,
   archiveDocumentTemplateVersion,
   createDocumentTemplate,
+  importDocumentTemplate,
   listDocumentTemplates,
   listTemplatePlaceholders,
   renameDocumentTemplate,
@@ -32,6 +33,15 @@ import {
   type TemplateVersionState,
 } from "../../types";
 import { errorText } from "../documents/hooks";
+import {
+  KIND_OPTIONS,
+  REVIEW_KINDS,
+  TEMPLATE_IMPORT_EXTENSIONS,
+  TEMPLATE_IMPORT_MAX_BYTES,
+  describeImportFile,
+  friendlyPlaceholderName,
+  kindLabel as kindLabelOf,
+} from "./vocabulary";
 import "./documentTemplates.css";
 
 const STATE_LABELS: Record<TemplateVersionState, string> = {
@@ -46,14 +56,12 @@ const STATE_TONE: Record<TemplateVersionState, StageTone> = {
   archived: "neutral",
 };
 
-/** Kinds stay a controlled key list: a free-text kind would break reports. */
-const KIND_OPTIONS: { value: string; label: string }[] = [
-  { value: "offer", label: "Оффер" },
-  { value: "anketa", label: "Анкета" },
-  { value: "dogovor", label: "Договор" },
-  { value: "script", label: "Скрипт" },
-  { value: "form", label: "Форма" },
-];
+interface ImportState {
+  kind: string;
+  scope: string;
+  name: string;
+  file: File | null;
+}
 
 const STATUS_FILTER_OPTIONS = [
   { value: "all", label: "Все шаблоны" },
@@ -125,6 +133,7 @@ export function TemplatesPage() {
   const [pendingAction, setPendingAction] = useState<PendingVersionAction | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [importer, setImporter] = useState<ImportState | null>(null);
 
   const load = useCallback(async () => {
     setLoadError("");
@@ -165,9 +174,6 @@ export function TemplatesPage() {
     }
   };
 
-  const kindLabel = (kind: string) =>
-    KIND_OPTIONS.find((option) => option.value === kind)?.label ?? kind;
-
   const visible = useMemo(() => {
     if (!templates) return [];
     const query = search.trim().toLowerCase();
@@ -181,7 +187,7 @@ export function TemplatesPage() {
       const haystack = [
         template.name,
         template.kind,
-        kindLabel(template.kind),
+        kindLabelOf(template.kind),
         scopeLabel,
         ...template.versions.map((version) => version.title),
       ]
@@ -208,8 +214,10 @@ export function TemplatesPage() {
   return (
     <section className="templates-page">
       <p className="templates-intro">
-        Текстовые шаблоны с версиями. Опубликованная версия неизменяема: правка — это
-        новая версия. Файлы не загружаются, документы кандидату не отправляются.
+        Методическая база: чек-листы, вопросники, памятки и скрипты. Опубликованная
+        версия неизменяема — правка это новая версия. Материал можно загрузить из
+        текстового файла: на сервер уйдёт только проверенный текст черновика.
+        Документы кандидату не отправляются.
       </p>
 
       <div className="templates-toolbar">
@@ -228,6 +236,16 @@ export function TemplatesPage() {
           }
         >
           Новый шаблон
+        </Button>
+        <Button
+          variant="secondary"
+          icon="file-text"
+          disabled={!canManage || busy}
+          onClick={() =>
+            setImporter({ kind: "checklist", scope: "", name: "", file: null })
+          }
+        >
+          Загрузить из файла
         </Button>
         <Button
           variant="ghost"
@@ -287,7 +305,7 @@ export function TemplatesPage() {
         <EmptyState
           icon="file-text"
           title="Шаблонов пока нет"
-          description="Создайте первый текстовый шаблон: черновик, публикация версии — и шаблон станет доступен в карточках кандидатов."
+          description="Создайте шаблон вручную или загрузите готовый материал из файла — после публикации версии шаблон станет доступен в карточках кандидатов."
           action={
             canManage && (
               <Button
@@ -327,12 +345,19 @@ export function TemplatesPage() {
               <div>
                 <h2>{template.name}</h2>
                 <p className="template-meta">
-                  {kindLabel(template.kind)} ·{" "}
+                  {kindLabelOf(template.kind)} ·{" "}
                   {template.scope
                     ? (STAGE_LABELS[template.scope as CandidateStage] ?? template.scope)
                     : "Все этапы"}{" "}
                   · ревизия {template.revision} · версий {template.versions.length}
                 </p>
+                {REVIEW_KINDS.has(template.kind) && (
+                  <p className="template-review-note" role="note">
+                    Правовая форма: перед использованием проверьте, что текст
+                    актуален. Ответственность за содержание несёт HR — программа
+                    не проверяет юридическую свежесть документа.
+                  </p>
+                )}
                 <p className="template-meta template-dates">
                   Создан: {formatDateTime(template.created_at)} · Изменён:{" "}
                   {formatDateTime(template.updated_at)}
@@ -426,6 +451,30 @@ export function TemplatesPage() {
             ))}
           </ul>
         </details>
+      )}
+
+      {importer && (
+        <TemplateImporter
+          state={importer}
+          busy={busy}
+          onChange={setImporter}
+          onCancel={() => setImporter(null)}
+          onSubmit={() => {
+            const file = importer.file;
+            if (!file) return;
+            void run(
+              () =>
+                importDocumentTemplate({
+                  kind: importer.kind,
+                  scope: importer.scope,
+                  name: importer.name,
+                  file,
+                }),
+              "Шаблон загружен из файла (черновик) — проверьте текст и опубликуйте",
+            );
+            setImporter(null);
+          }}
+        />
       )}
 
       {editor && (
@@ -602,6 +651,119 @@ function VersionRow({
   );
 }
 
+function TemplateImporter({
+  state,
+  busy,
+  onChange,
+  onCancel,
+  onSubmit,
+}: {
+  state: ImportState;
+  busy: boolean;
+  onChange: (next: ImportState) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  const problem = describeImportFile(state.file);
+  const canSubmit = state.file !== null && problem === null && !busy;
+
+  return (
+    <Modal
+      open
+      onClose={onCancel}
+      title="Загрузить шаблон из файла"
+      description="Из файла создаётся черновик: сначала проверьте текст, потом опубликуйте версию."
+    >
+      <form
+        className="template-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <Field label="Файл" required hint={`${TEMPLATE_IMPORT_EXTENSIONS.join(", ")}, до ${TEMPLATE_IMPORT_MAX_BYTES / 1024} КБ, UTF-8`}>
+          {(id, describedBy) => (
+            <input
+              id={id}
+              aria-describedby={describedBy}
+              className="template-file-input"
+              type="file"
+              accept={TEMPLATE_IMPORT_EXTENSIONS.join(",")}
+              onChange={(event) =>
+                onChange({
+                  ...state,
+                  file: event.target.files?.[0] ?? null,
+                })
+              }
+            />
+          )}
+        </Field>
+        {state.file && problem && (
+          <p className="template-form-error" role="alert">
+            {problem}
+          </p>
+        )}
+        <Field label="Тип документа" required>
+          {(id) => (
+            <SelectInput
+              id={id}
+              value={state.kind}
+              onChange={(event) => onChange({ ...state, kind: event.target.value })}
+            >
+              {KIND_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </SelectInput>
+          )}
+        </Field>
+        <Field label="Название" hint="Если оставить пустым, возьмём первую строку файла.">
+          {(id, describedBy) => (
+            <TextInput
+              id={id}
+              aria-describedby={describedBy}
+              maxLength={120}
+              value={state.name}
+              onChange={(event) => onChange({ ...state, name: event.target.value })}
+            />
+          )}
+        </Field>
+        <Field label="Этап (область действия)">
+          {(id) => (
+            <SelectInput
+              id={id}
+              value={state.scope}
+              onChange={(event) => onChange({ ...state, scope: event.target.value })}
+            >
+              <option value="">Все этапы</option>
+              {CANDIDATE_STAGE_ORDER.map((stage) => (
+                <option key={stage} value={stage}>
+                  {STAGE_LABELS[stage]}
+                </option>
+              ))}
+            </SelectInput>
+          )}
+        </Field>
+        <p className="template-meta">
+          Файл остаётся на вашем компьютере: на сервер уходит только текст, проверенный
+          на размер, кодировку и безопасность. Персональные данные кандидатов из
+          методички в шаблон не попадут — вставляйте их через поля «ФИО кандидата»
+          и другие подстановки.
+        </p>
+        <div className="template-actions">
+          <Button type="submit" variant="primary" disabled={!canSubmit}>
+            Загрузить как черновик
+          </Button>
+          <Button type="button" onClick={onCancel}>
+            Отмена
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function TemplateEditor({
   editor,
   busy,
@@ -723,18 +885,28 @@ function TemplateEditor({
         </Field>
 
         <div className="template-token-picker">
-          <span className="template-meta">Вставить плейсхолдер:</span>
+          <span className="template-meta">Нажмите, чтобы вставить значение поля:</span>
           {placeholders.map((item) => (
             <button
               key={item.token}
               type="button"
-              title={item.description}
+              title={`${item.description} — вставляется как {{ ${item.token} }}`}
               onClick={() => insertToken(item.token)}
             >
-              {`{{ ${item.token} }}`}
+              {friendlyPlaceholderName(item)}
             </button>
           ))}
         </div>
+        <details className="template-token-syntax">
+          <summary>Как это выглядит в тексте шаблона</summary>
+          <p className="template-meta">
+            Подстановки в тексте записываются в двойных фигурных скобках:{" "}
+            <code>{"{{ candidate.full_name }}"}</code>, <code>{"{{ system.date }}"}</code>.
+            Обычный текст, списки через «- » и выделение через **жирный** тоже
+            поддерживаются. HTML и произвольные выражения — нет: это защищает
+            персональные данные.
+          </p>
+        </details>
 
         <div className="template-actions">
           <Button type="submit" variant="primary" disabled={busy}>
