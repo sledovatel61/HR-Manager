@@ -95,6 +95,7 @@ SOURCE_LABELS: dict[CandidateSource, str] = {
     CandidateSource.EVENT: "Карьерное мероприятие",
     CandidateSource.AGENCY: "Кадровое агентство",
     CandidateSource.INBOUND_CALL: "Входящий звонок",
+    CandidateSource.EXCEL_IMPORT: "Импорт графика из Excel",
 }
 
 DOWNLOAD_FORMATS = ("html", "txt")

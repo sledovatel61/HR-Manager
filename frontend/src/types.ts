@@ -184,7 +184,8 @@ export type CandidateSource =
   | "university"
   | "event"
   | "agency"
-  | "inbound_call";
+  | "inbound_call"
+  | "excel_import";
 
 export const SOURCE_LABELS: Record<CandidateSource, string> = {
   site: "Сайт компании",
@@ -194,6 +195,7 @@ export const SOURCE_LABELS: Record<CandidateSource, string> = {
   event: "Карьерное мероприятие",
   agency: "Кадровое агентство",
   inbound_call: "Входящий звонок",
+  excel_import: "Импорт графика из Excel",
 };
 
 /** Interaction history entry types (transfer arrives in a later phase). */
@@ -1191,3 +1193,101 @@ export interface ScheduleEntryCreateInput {
 }
 
 export type ScheduleEntryUpdateInput = Partial<ScheduleEntryCreateInput>;
+
+// --- Импорт графика выхода из Excel ------------------------------------------
+
+export type ImportRowKind = "candidate" | "service" | "skip";
+export type ImportSuggestedAction = "create" | "match" | "service" | "skip";
+export type ImportDecisionAction = "create" | "match" | "service" | "skip";
+
+/** Кандидат из картотеки, найденный сервером для строки импорта. */
+export interface ImportMatchInfo {
+  candidate_id: string;
+  full_name: string;
+  stage: CandidateStage;
+  /** exact_name | phone | partial — причина совпадения. */
+  reason: string;
+  /** Совпадение по телефону надёжнее, чем только по ФИО. */
+  confident: boolean;
+}
+
+/** Одна строка в превью импорта. */
+export interface ImportRowPreview {
+  row_index: number;
+  sheet_row: number;
+  entry_date: string;
+  full_name: string | null;
+  time_display: string;
+  time_from: string | null;
+  time_to: string | null;
+  organization: string | null;
+  department: string | null;
+  position: string | null;
+  shift: string | null;
+  comment: string | null;
+  /** Маскированный телефон («+7 ••• •••-••-29») — только для сверки. */
+  phone_masked: string | null;
+  kind: ImportRowKind;
+  name_confidence: "full" | "partial" | null;
+  suggested_action: ImportSuggestedAction;
+  match: ImportMatchInfo | null;
+  match_options: ImportMatchInfo[];
+  already_imported: boolean;
+  warnings: string[];
+  parse_error: string | null;
+}
+
+export interface ImportPreviewSummary {
+  rows_total: number;
+  days_total: number;
+  candidate_rows: number;
+  service_rows: number;
+  skipped_rows: number;
+  error_rows: number;
+  new_count: number;
+  match_count: number;
+  ambiguous_count: number;
+}
+
+/** Ответ «проверить без сохранения» (превью). */
+export interface WorkScheduleImportPreview {
+  file_name: string;
+  file_sha256: string;
+  sheet_title: string;
+  days: string[];
+  warnings: string[];
+  rows: ImportRowPreview[];
+  summary: ImportPreviewSummary;
+}
+
+/** Явное действие пользователя по одной строке (подтверждение). */
+export interface ImportRowDecision {
+  row_index: number;
+  action: ImportDecisionAction;
+  candidate_id?: string | null;
+}
+
+export interface ImportRowResult {
+  row_index: number;
+  sheet_row: number;
+  entry_date: string | null;
+  time_display: string;
+  action_label: string;
+  result: "created" | "matched" | "updated" | "service" | "skipped" | "error";
+  candidate_id: string | null;
+  entry_id: string | null;
+  reason: string | null;
+}
+
+/** Итог подтверждённого импорта + санитизированный CSV-отчёт. */
+export interface WorkScheduleImportResult {
+  import_id: string;
+  created: number;
+  matched: number;
+  updated: number;
+  service_created: number;
+  skipped: number;
+  errors: number;
+  rows: ImportRowResult[];
+  report_csv: string;
+}
