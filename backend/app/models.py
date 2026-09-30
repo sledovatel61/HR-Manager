@@ -1388,6 +1388,14 @@ class Reminder(Base):
             name="ck_reminders_completed_at_consistent",
         ),
         Index("ix_reminders_assignee_due", "assignee_user_id", "due_at"),
+        # Block B (2026-09-29): at most one linked reminder per calendar event.
+        # Partial (event_id IS NOT NULL) so personal reminders keep working.
+        Index(
+            "uq_reminders_event_id",
+            "event_id",
+            unique=True,
+            postgresql_where=text("event_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
@@ -1459,6 +1467,16 @@ class Reminder(Base):
     @property
     def assignee_username(self) -> str:
         return self.assignee.username if self.assignee is not None else ""
+
+    @property
+    def candidate_full_name(self) -> str | None:
+        """Display name of the linked candidate (None when unlinked).
+
+        Block B: a convenience snapshot for the UI. It never replaces an
+        access check — the reminder itself is already scoped to its owner and
+        assignee.
+        """
+        return self.candidate.full_name if self.candidate is not None else None
 
 
 class NotificationOutbox(Base):

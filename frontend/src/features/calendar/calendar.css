@@ -280,6 +280,17 @@
   color: var(--status-warning-fg);
 }
 
+/* Read-only fact instead of a silently disabled control (block A). */
+.event-form-readonly {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-muted, rgba(0, 0, 0, 0.03));
+  color: var(--text-primary);
+  font-size: var(--text-size-sm);
+}
+
 .candidate-picker {
   display: flex;
   flex-direction: column;
