@@ -15,8 +15,10 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.deps import get_current_user
+from app.event_reminders import can_see_event, linked_reminder
 from app.models import (
     Candidate,
+    Event,
     Reminder,
     ReminderImportance,
     ReminderRecurrence,
@@ -93,11 +95,43 @@ def _resolve_candidate(db: Session, user: User, candidate_id: UUID | None) -> Ca
     return candidate
 
 
+def _resolve_event_link(
+    db: Session, user: User, event_id: UUID | None, *, current: Reminder | None = None
+) -> Event | None:
+    """Validate the optional event link of a reminder.
+
+    The event must exist, be visible to the user and not be taken by another
+    reminder (the UNIQUE link is the shared event↔reminder domain contract:
+    at most one «Моё напоминание» per calendar event).
+    """
+    if event_id is None:
+        return None
+    event = db.get(Event, event_id)
+    if event is None or not can_see_event(user, event):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Событие не найдено.",
+        )
+    if event.candidate is not None and event.candidate.deleted_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Событие не найдено.",
+        )
+    linked = linked_reminder(db, event_id)
+    if linked is not None and (current is None or linked.id != current.id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="К этому событию уже привязано напоминание.",
+        )
+    return event
+
+
 @router.get("", response_model=ReminderList, summary="List my reminders")
 def list_reminders(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     status_filter: str | None = Query(default=None, alias="status"),
+    candidate_id: UUID | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> ReminderList:
@@ -106,9 +140,12 @@ def list_reminders(
     A reminder is visible to its owner AND its assignee: the owner keeps
     seeing a reminder they created even when it was delegated to another
     user, and the assignee sees reminders handed to them. Everyone else
-    gets an empty page (existence never leaks).
+    gets an empty page (existence never leaks). ``candidate_id`` filters
+    the linked-candidate reminders for the candidate card.
     """
     filters = [or_(Reminder.assignee_user_id == user.id, Reminder.owner_user_id == user.id)]
+    if candidate_id is not None:
+        filters.append(Reminder.candidate_id == candidate_id)
     if status_filter is not None:
         if status_filter not in ("active", "completed", "cancelled"):
             raise HTTPException(
@@ -145,6 +182,14 @@ def create_reminder(
     """Create a reminder for myself (or delegate to an eligible assignee)."""
     _valid_timezone(payload.timezone)
     candidate = _resolve_candidate(db, user, payload.candidate_id)
+    # The event link is validated up front: visible event + no duplicate
+    # reminder (the shared event↔reminder domain contract).
+    event = _resolve_event_link(db, user, payload.event_id)
+    if event is not None and candidate is not None and event.candidate_id != candidate.id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Кандидат не соответствует связанному событию.",
+        )
     assignee = _resolve_assignee(db, user, candidate, payload.assignee_user_id)
     reminder = Reminder(
         owner_user_id=user.id,
@@ -152,7 +197,7 @@ def create_reminder(
         title=payload.title.strip(),
         note=payload.note,
         candidate_id=candidate.id if candidate is not None else None,
-        event_id=payload.event_id,
+        event_id=event.id if event is not None else None,
         due_at=payload.due_at,
         timezone=payload.timezone,
         importance=payload.importance,
@@ -229,6 +274,20 @@ def update_reminder(
         locked.candidate_id = candidate.id if candidate is not None else None
         if candidate is not None:
             _resolve_assignee(db, user, candidate, locked.assignee_user_id)
+    if "event_id" in fields_set:
+        event = _resolve_event_link(db, user, payload.event_id, current=locked)
+        if event is not None:
+            if (
+                locked.candidate_id is not None
+                and event.candidate_id != locked.candidate_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Кандидат не соответствует связанному событию.",
+                )
+            if event.candidate_id is not None:
+                locked.candidate_id = event.candidate_id
+        locked.event_id = event.id if event is not None else None
     if "assignee_user_id" in fields_set:
         candidate = locked.candidate
         locked.assignee_user_id = _resolve_assignee(

@@ -542,6 +542,52 @@ describe("Мои правила", () => {
     expect(within(historyDialog).getByText("Поставить запрос документов")).toBeInTheDocument();
     expect(within(historyDialog).getByText("abcdef12")).toBeInTheDocument();
   });
+
+  it("shows a recovery empty state instead of an empty required select (UX 2026-09-29)", async () => {
+    const user = userEvent.setup();
+    api.mockImplementation(async (path) => {
+      if (path === "/document-lists") return { items: [], can_manage: true } as never;
+      if (path === "/document-rules") return [rule] as never;
+      return {} as never;
+    });
+    renderRules();
+    await screen.findByText(rule.name);
+    await user.click(screen.getByText("Создать правило"));
+    await screen.findByRole("dialog");
+
+    // Вместо пустого select — понятное состояние и действие восстановления.
+    expect(await screen.findByText("Нет опубликованных списков документов.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Перейти к спискам" })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Список/)).toBeNull();
+
+    // Сохранение без списка блокируется с объяснением, а не молча.
+    await user.type(screen.getByLabelText(/Название правила/), "Оформление");
+    await user.click(screen.getByText("Сохранить правило"));
+    expect(
+      await screen.findByText(/Выберите опубликованный список документов/),
+    ).toBeInTheDocument();
+    expect(api).not.toHaveBeenCalledWith(
+      "/document-rules",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("shows the lists load error with retry in the form, rules stay visible", async () => {
+    const user = userEvent.setup();
+    api.mockImplementation(async (path) => {
+      if (path === "/document-lists") throw new ApiError(500, "Сбой сервера");
+      if (path === "/document-rules") return [rule] as never;
+      return {} as never;
+    });
+    renderRules();
+    // Правила видны, несмотря на сбой загрузки списков.
+    await screen.findByText(rule.name);
+    await user.click(screen.getByText("Создать правило"));
+    await screen.findByRole("dialog");
+    expect(
+      await screen.findByText("Не удалось загрузить списки документов."),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("Блок «Что произойдёт» в форме правила", () => {

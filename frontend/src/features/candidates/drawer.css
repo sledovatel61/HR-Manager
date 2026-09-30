@@ -241,6 +241,25 @@
   color: var(--text-tertiary);
 }
 
+.events-item-main.is-static {
+  cursor: default;
+}
+
+/* Связанные «Мои напоминания» в карточке кандидата. */
+.events-reminders {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.events-reminders-title {
+  margin: 0;
+  font-size: var(--text-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+}
+
 /* ---------- Блок «Выход на работу» (Phase 18) ---------- */
 
 .start-schedule {

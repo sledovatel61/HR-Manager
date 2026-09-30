@@ -111,6 +111,120 @@ def test_exact_snapshot_conflict_and_missing(channels_app: TestClient, db_sessio
     )
 
 
+def test_rule_server_revalidates_publication_stage_and_grant(
+    channels_app: TestClient, db_session: Session
+) -> None:
+    """UX feedback 2026-09-29 («Мои правила»): сервер повторно проверяет
+    публикацию списка, соответствие этапу и право — клиентский select не
+    является защитой."""
+    admin = make_user(db_session, username="rules-admin", role=UserRole.ADMIN)
+    db_session.add(
+        AccessGrant(user_id=admin.id, scope=AccessGrantScope.CANDIDATE_DOCUMENTS_ALL)
+    )
+    db_session.commit()
+    headers = {"X-CSRF-Token": _login(channels_app, admin.username)}
+
+    def rule_payload(list_id: str, stage: str = "new") -> dict:
+        return {
+            "name": "Запрос документов",
+            "enabled": True,
+            "params": {
+                "trigger": "stage_transition",
+                "action": "apply_list",
+                "stage": stage,
+                "list_id": list_id,
+                "list_version_id": None,
+                "missing_required": True,
+                "channel": None,
+                "days": None,
+            },
+        }
+
+    # Черновик (не опубликован) — правило создать нельзя.
+    created = channels_app.post(
+        "/document-lists", json={**CONTENT, "stage": "new"}, headers=headers
+    )
+    assert created.status_code == 201, created.text
+    parent = created.json()
+    rejected = channels_app.post(
+        "/document-rules", json=rule_payload(parent["id"]), headers=headers
+    )
+    assert rejected.status_code == 422
+    assert "не опубликован" in rejected.json()["detail"]
+
+    # Публикация → правило сохраняется (happy path).
+    version = parent["versions"][0]
+    published = channels_app.post(
+        f"/document-lists/{parent['id']}/versions/{version['id']}/publish",
+        json={"expected_version": parent["version"]},
+        headers=headers,
+    )
+    assert published.status_code == 200, published.text
+    ok = channels_app.post(
+        "/document-rules", json=rule_payload(parent["id"]), headers=headers
+    )
+    assert ok.status_code == 201, ok.text
+
+    # Опубликованный список другого этапа — тоже отклоняется.
+    other = channels_app.post(
+        "/document-lists",
+        json={**CONTENT, "name": "Оффер", "stage": "offer"},
+        headers=headers,
+    ).json()
+    other_version = other["versions"][0]
+    assert (
+        channels_app.post(
+            f"/document-lists/{other['id']}/versions/{other_version['id']}/publish",
+            json={"expected_version": other["version"]},
+            headers=headers,
+        ).status_code
+        == 200
+    )
+    wrong_stage = channels_app.post(
+        "/document-rules", json=rule_payload(other["id"], stage="new"), headers=headers
+    )
+    assert wrong_stage.status_code == 422
+    assert "не соответствует этапу" in wrong_stage.json()["detail"]
+
+    # Старая (не текущая) версия списка не подходит.
+    changed = channels_app.post(
+        f"/document-lists/{parent['id']}/versions",
+        json={**CONTENT, "name": "Версия 2", "expected_version": published.json()["version"]},
+        headers=headers,
+    )
+    assert changed.status_code == 201, changed.text
+    changed_parent = changed.json()
+    new_version = changed_parent["versions"][0]
+    assert (
+        channels_app.post(
+            f"/document-lists/{parent['id']}/versions/{new_version['id']}/publish",
+            json={"expected_version": changed_parent["version"]},
+            headers=headers,
+        ).status_code
+        == 200
+    )
+    stale = channels_app.post(
+        "/document-rules",
+        json={
+            **rule_payload(parent["id"]),
+            "params": {
+                **rule_payload(parent["id"])["params"],
+                "list_version_id": version["id"],
+            },
+        },
+        headers=headers,
+    )
+    assert stale.status_code == 422
+
+    # Администратор без профильного права правила не создаёт.
+    plain = make_user(db_session, username="rules-admin2", role=UserRole.ADMIN)
+    plain_headers = {"X-CSRF-Token": _login(channels_app, plain.username)}
+    denied = channels_app.post(
+        "/document-rules", json=rule_payload(parent["id"]), headers=plain_headers
+    )
+    assert denied.status_code == 403
+
+
 def test_access_grants_idor_deleted_and_list_admin(
     channels_app: TestClient, db_session: Session
 ) -> None:

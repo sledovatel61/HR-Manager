@@ -25,7 +25,7 @@ HR-Manager/
 │   ├── src/
 │   │   ├── design-system/    # токены + общие UI-примитивы (из дизайн-трека)
 │   │   ├── app-shell/        # Workspace: навигация, пользователь, выход
-│   │   ├── features/candidates/  # таблица, Kanban, карточка, передача, дубли
+│   │   ├── features/candidates/  # таблица, воронка кандидатов, карточка, передача, дубли
 │   │   ├── api.ts / types.ts # API-клиент и общие контракты
 │   │   └── App.tsx           # вход/сессия + гейт на workspace
 │   ├── nginx.conf            # SPA fallback + прокси /api → backend
@@ -214,15 +214,15 @@ frontend/src/
     components/         # Button, Field, Modal, Drawer, ConfirmDialog, Tabs,
                         # StatusChip, StateViews, Toast (+Context), useFocusTrap
   app-shell/            # Workspace (sidebar/topbar/выход) + hash-навигация
-  features/candidates/  # таблица, Kanban, drawer карточки, форма создания,
+  features/candidates/  # таблица, воронка кандидатов (KanbanPage), drawer карточки, форма создания,
                         # диалог передачи, дубль-подтверждение, deleted-экран
 ```
 
 - Навигация — лёгкий hash-роутер (`useWorkspaceSection`), без React Router;
   глобальное состояние — локальные хуки (React state), без внешних
-  state-библиотек; DnD в Kanban — нативный HTML5 + обязательная
+  state-библиотек; DnD в воронке кандидатов — нативный HTML5 + обязательная
   keyboard-альтернатива (select этапа на каждой карточке).
-- Kanban-стратегия загрузки (задокументированное решение): каждая из 11
+- Стратегия загрузки воронки кандидатов (задокументированное решение): каждая из 11
   колонок постранично запрашивает свою ленту
   `GET /candidates?stage=…&limit=20&offset=…` и растёт кнопкой «Показать
   ещё»; доска никогда не запрашивает всю базу разом.

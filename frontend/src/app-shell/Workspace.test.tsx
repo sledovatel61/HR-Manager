@@ -103,13 +103,21 @@ afterEach(async () => {
 });
 
 describe("Диагностика в администрировании", () => {
-  it("отдельный пункт меню «Готовность пилота» убран, раздел «Администрирование» остался", async () => {
+  it("«Готовность пилота» убрана из меню, «Администрирование» живёт в «Настройках» (UX 2026-09-29)", async () => {
     renderWorkspace("admin");
     const nav = screen.getByRole("navigation", { name: "Разделы" });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Администрирование" })).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: "Настройки" })).toBeInTheDocument(),
     );
     expect(nav).not.toHaveTextContent("Готовность пилота");
+    // Рабочий контур + «Настройки»; подразделы открываются по прежним ссылкам.
+    expect(nav).toHaveTextContent("Воронка кандидатов");
+    expect(nav).toHaveTextContent("Настройки");
+    expect(nav).not.toHaveTextContent("Администрирование");
+    expect(
+      screen.getByRole("heading", { name: "Администрирование" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Все настройки" })).toBeInTheDocument();
   });
 
   it("в администрировании две вкладки, диагностика показывает отчёт и пояснение", async () => {
@@ -149,7 +157,7 @@ describe("Диагностика в администрировании", () => {
   it("руководитель видит администрирование, но без вкладки диагностики", async () => {
     window.location.hash = "#/readiness";
     renderWorkspace("manager");
-    await screen.findByRole("button", { name: "Администрирование" });
+    await screen.findByRole("heading", { name: "Администрирование" });
     expect(
       screen.queryByRole("tab", { name: "Диагностика запуска и обновлений" }),
     ).toBeNull();
@@ -158,14 +166,22 @@ describe("Диагностика в администрировании", () => {
     expect(await screen.findByText(/Состояние очереди и worker/)).toBeInTheDocument();
   });
 
-  it("обычный HR не видит ни пункта меню, ни администрирования", async () => {
+  it("обычный HR не видит администрирования ни в меню, ни в «Настройках»", async () => {
     window.location.hash = "#/preferences";
     renderWorkspace("hr");
     const nav = screen.getByRole("navigation", { name: "Разделы" });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Настройки уведомлений" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("heading", { name: "Настройки уведомлений" }),
+      ).toBeInTheDocument(),
     );
     expect(nav).not.toHaveTextContent("Администрирование");
     expect(nav).not.toHaveTextContent("Готовность пилота");
+    // Обзор «Настройки» без административных групп.
+    await userEvent.click(screen.getByRole("button", { name: "Все настройки" }));
+    expect(await screen.findByRole("button", { name: /Мои правила/ })).toBeInTheDocument();
+    expect(screen.queryByText("Администрирование")).toBeNull();
+    expect(screen.queryByText("Лицензия")).toBeNull();
+    expect(screen.queryByText("Пользователи")).toBeNull();
   });
 });

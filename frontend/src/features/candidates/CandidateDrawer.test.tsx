@@ -15,6 +15,7 @@ vi.mock("../../api", async (importOriginal) => {
     createCandidateInteraction: vi.fn(),
     listCandidateTransfers: vi.fn(),
     listEvents: vi.fn(),
+    listReminders: vi.fn(),
     updateEvent: vi.fn(),
     listHrUsers: vi.fn(),
     listEventHistory: vi.fn(),
@@ -78,6 +79,7 @@ beforeEach(() => {
   vi.mocked(api.listCandidateInteractions).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
   vi.mocked(api.listCandidateTransfers).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
   vi.mocked(api.listEvents).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+  vi.mocked(api.listReminders).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
   vi.mocked(api.listEventHistory).mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
   vi.mocked(api.fetchWorkScheduleSuggestions).mockResolvedValue({
     organizations: [],
@@ -286,7 +288,7 @@ describe("CandidateDrawer events tab", () => {
     vi.mocked(api.updateEvent).mockResolvedValue({} as never);
     renderDrawer();
 
-    await userEvent.click(await screen.findByRole("tab", { name: "События" }));
+    await userEvent.click(await screen.findByRole("tab", { name: /События/ }));
     expect(await screen.findByText("Собеседование: Собеседование")).toBeInTheDocument();
     expect(api.listEvents).toHaveBeenCalledWith(
       expect.objectContaining({ candidate_id: CANDIDATE.id })
@@ -340,7 +342,7 @@ describe("CandidateDrawer events tab — «Показать ещё» accumulates
       });
     renderDrawer();
 
-    await userEvent.click(await screen.findByRole("tab", { name: "События" }));
+    await userEvent.click(await screen.findByRole("tab", { name: /События/ }));
     expect(await screen.findByText(/Первое событие/)).toBeInTheDocument();
     expect(screen.queryByText(/Второе событие/)).not.toBeInTheDocument();
 

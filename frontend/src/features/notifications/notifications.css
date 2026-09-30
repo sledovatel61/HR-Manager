@@ -220,6 +220,54 @@
   grid-column: span 2;
 }
 
+/* --- Candidate search picker (UX feedback 2026-09-29) ---------------------- */
+
+.reminder-candidate-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reminder-candidate-selected {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.reminder-candidate-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.reminder-candidate-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.reminder-candidate-list button:hover {
+  background: rgba(147, 163, 189, 0.12);
+}
+
+.reminder-candidate-contact {
+  opacity: 0.7;
+  font-size: 12px;
+}
+
 /* --- Preferences ------------------------------------------------------------- */
 
 .pref-card {

@@ -10,7 +10,7 @@
 
 - Фундамент продукта: FastAPI, SQLAlchemy 2, Alembic, PostgreSQL, React,
   TypeScript, сессии/CSRF, RBAC, аудит, CI и Docker Compose.
-- Кандидаты, передача ответственности, Kanban и карточка, события и календарь,
+- Кандидаты, передача ответственности, воронка кандидатов и карточка, события и календарь,
   воспроизводимая аналитика и CSV.
 - Эксплуатационный контур: шифрованные backup, restore drill, health/metrics,
   production overlay, HTTPS proxy, deploy/rollback.

@@ -588,11 +588,14 @@ export async function notificationDelivery(id: string): Promise<DeliveryInfo> {
 
 export async function listReminders(query: {
   status?: ReminderStatus;
+  /** Only reminders linked to this candidate (candidate card). */
+  candidate_id?: string;
   limit?: number;
   offset?: number;
 }): Promise<ReminderListPayload> {
   const params = new URLSearchParams();
   if (query.status) params.set("status", query.status);
+  if (query.candidate_id) params.set("candidate_id", query.candidate_id);
   params.set("limit", String(query.limit ?? 20));
   params.set("offset", String(query.offset ?? 0));
   return request<ReminderListPayload>(`/reminders?${params}`);
@@ -602,6 +605,8 @@ export async function createReminder(input: {
   title: string;
   note?: string | null;
   candidate_id?: string | null;
+  /** Optional link to a calendar event (one reminder per event). */
+  event_id?: string | null;
   due_at: string;
   timezone: string;
   importance?: ReminderImportance;
@@ -621,6 +626,7 @@ export async function updateReminder(
     importance: ReminderImportance;
     recurrence: ReminderRecurrence;
     candidate_id: string | null;
+    event_id: string | null;
   }>,
 ): Promise<Reminder> {
   return request<Reminder>(`/reminders/${id}`, { method: "PATCH", body: input });

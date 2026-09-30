@@ -376,10 +376,11 @@ export const EVENT_HISTORY_KIND_LABELS: Record<EventHistoryKind, string> = {
   assignee_changed: "Смена исполнителя",
 };
 
-/** A calendar event (backend EventOut). All timestamps are UTC ISO 8601. */
+/** A calendar event (backend EventOut). All timestamps are UTC ISO 8601.
+ * ``candidate_id`` is null for personal events without a candidate link. */
 export interface CalendarEvent {
   id: string;
-  candidate_id: string;
+  candidate_id: string | null;
   candidate_full_name: string;
   type: CalendarEventType;
   title: string;
@@ -438,9 +439,9 @@ export interface EventListQuery {
   offset?: number;
 }
 
-/** POST /events payload. */
+/** POST /events payload. ``candidate_id`` may be null (personal event). */
 export interface EventCreateInput {
-  candidate_id: string;
+  candidate_id: string | null;
   type: CalendarEventType;
   title: string;
   note?: string | null;
@@ -665,6 +666,7 @@ export interface Reminder {
   title: string;
   note: string | null;
   candidate_id: string | null;
+  candidate_full_name: string;
   event_id: string | null;
   due_at: string;
   timezone: string;

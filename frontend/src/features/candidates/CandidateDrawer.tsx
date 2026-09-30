@@ -10,6 +10,7 @@ import {
   listCandidateInteractions,
   listCandidateTransfers,
   listEvents,
+  listReminders,
   updateCandidate,
   updateEvent,
   type DuplicateCandidateError,
@@ -37,6 +38,7 @@ import {
   type CandidateSource,
   type CandidateStage,
   type CandidateTransfer,
+  type Reminder,
   type User,
   type WorkScheduleSuggestions,
 } from "../../types";
@@ -162,7 +164,7 @@ export function CandidateDrawer({
   const tabs = [
     { id: "info" as const, label: "Сведения" },
     { id: "interactions" as const, label: "Взаимодействия" },
-    { id: "events" as const, label: "События" },
+    { id: "events" as const, label: "События и напоминания" },
     { id: "messages" as const, label: "Сообщения" },
     { id: "documents" as const, label: "Документы" },
     { id: "generated" as const, label: "По шаблону" },
@@ -976,12 +978,14 @@ interface EventsTabProps {
 }
 
 /** Events of the candidate: server-filtered list, create/edit dialog and
- * quick complete/postpone actions. */
+ * quick complete/postpone actions. Also shows the linked «Мои напоминания»
+ * rows (the shared event↔reminder link, UX feedback 2026-09-29). */
 function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
   const { pushToast } = useToast();
   const [items, setItems] = useState<CalendarEvent[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -1012,6 +1016,12 @@ function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
       setError(caught instanceof ApiError ? caught.message : "Не удалось загрузить события.");
     } finally {
       setLoading(false);
+    }
+    try {
+      const page = await listReminders({ candidate_id: candidate.id, limit: 20 });
+      setReminders(page.items);
+    } catch {
+      setReminders([]);
     }
   }, [candidate.id, offset]);
 
@@ -1088,6 +1098,34 @@ function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
           )}
         </>
       )}
+
+      <section className="events-reminders" aria-label="Связанные напоминания">
+        <h3 className="events-reminders-title">Напоминания</h3>
+        {loading && <SkeletonRows rows={2} columns={2} />}
+        {!loading && reminders.length === 0 && (
+          <p className="muted-text">Напоминаний по кандидату нет.</p>
+        )}
+        {!loading && reminders.length > 0 && (
+          <ul className="events-list">
+            {reminders.map((reminder) => (
+              <li key={reminder.id} className="events-item">
+                <div className="events-item-main is-static">
+                  <span className="events-item-title">{reminder.title}</span>
+                  <span className="events-item-meta">
+                    {formatDateTime(reminder.due_at)} ·{" "}
+                    {reminder.status === "active"
+                      ? "активно"
+                      : reminder.status === "completed"
+                        ? "выполнено"
+                        : "отменено"}
+                    {reminder.event_id ? " · из события" : ""}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       <EventFormModal
         open={createOpen}
