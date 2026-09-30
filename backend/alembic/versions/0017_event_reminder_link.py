@@ -32,7 +32,13 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     bind = op.get_bind()
-    # Keep the oldest reminder linked to each event; detach the rest.
+    # Keep the OLDEST reminder linked to each event; detach the rest.
+    #
+    # `DISTINCT ON` is used rather than `MIN(id)`: `min(uuid)`/`max(uuid)` were
+    # only added in PostgreSQL 20, and CI runs PostgreSQL 16, where the
+    # aggregate simply does not exist and the whole migration aborts. Ordering
+    # by ``created_at, id`` also makes «oldest» mean what the comment says —
+    # with random v4 UUIDs, ``MIN(id)`` picked an arbitrary row.
     bind.execute(
         sa.text(
             """
@@ -40,9 +46,13 @@ def upgrade() -> None:
                SET event_id = NULL
              WHERE event_id IS NOT NULL
                AND id NOT IN (
-                   SELECT MIN(id) FROM reminders
-                    WHERE event_id IS NOT NULL
-                    GROUP BY event_id
+                   SELECT id
+                     FROM (
+                         SELECT DISTINCT ON (event_id) id, created_at
+                           FROM reminders
+                          WHERE event_id IS NOT NULL
+                          ORDER BY event_id, created_at, id
+                     ) AS keep_one_per_event
                )
             """
         )
@@ -53,6 +63,7 @@ def upgrade() -> None:
         ["event_id"],
         unique=True,
         postgresql_where=sa.text("event_id IS NOT NULL"),
+        sqlite_where=sa.text("event_id IS NOT NULL"),
     )
 
 
