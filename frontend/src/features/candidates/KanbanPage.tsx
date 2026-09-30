@@ -21,6 +21,7 @@ import {
 import { CandidateDrawer } from "./CandidateDrawer";
 import { StartDateModal } from "../schedule/StartDateModal";
 import { CandidateFormModal } from "./CandidateFormModal";
+import { EDGE_SPEED_PX, edgeScrollDirection } from "./boardScroll";
 import "./kanban.css";
 
 /**
@@ -68,6 +69,41 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   } | null>(null);
   const [startDateError, setStartDateError] = useState<string | null>(null);
   const draggingRef = useRef<{ id: string; from: CandidateStage } | null>(null);
+  /** Board element for DnD auto-scroll. */
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  /** Direction currently requested by the pointer (-1 left, 1 right, 0 none). */
+  const autoScrollRef = useRef(0);
+  const autoScrollTimerRef = useRef<number | null>(null);
+
+  const stopAutoScroll = useCallback(() => {
+    autoScrollRef.current = 0;
+    if (autoScrollTimerRef.current !== null) {
+      window.clearInterval(autoScrollTimerRef.current);
+      autoScrollTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopAutoScroll, [stopAutoScroll]);
+
+  /** Recompute the scroll direction from the pointer position. */
+  const updateAutoScroll = useCallback((clientX: number) => {
+    const board = boardRef.current;
+    if (!board) return;
+    const direction = edgeScrollDirection(clientX, board.getBoundingClientRect());
+
+    if (direction === autoScrollRef.current) return;
+    autoScrollRef.current = direction;
+    if (autoScrollTimerRef.current !== null) {
+      window.clearInterval(autoScrollTimerRef.current);
+      autoScrollTimerRef.current = null;
+    }
+    if (direction === 0) return;
+    autoScrollTimerRef.current = window.setInterval(() => {
+      const target = boardRef.current;
+      if (!target || autoScrollRef.current === 0) return;
+      target.scrollLeft += EDGE_SPEED_PX * autoScrollRef.current;
+    }, 16);
+  }, []);
 
   const loadColumn = useCallback(
     async (stage: CandidateStage, offset: number) => {
@@ -229,6 +265,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
 
   const handleDrop = (event: React.DragEvent, to: CandidateStage) => {
     event.preventDefault();
+    stopAutoScroll();
     const dragging = draggingRef.current;
     draggingRef.current = null;
     if (!dragging) return;
@@ -262,7 +299,9 @@ export default function KanbanPage({ user }: KanbanPageProps) {
           </Field>
         )}
         <span className="kanban-hint">
-          Перетащите карточку между колонками или используйте выбор этапа на карточке.
+          Перетащите карточку между колонками (у краёв доски список прокручивается
+          сам) или выберите этап прямо на карточке — так можно перевести кандидата
+          в любой этап за одно действие.
         </span>
         <Button icon="plus" onClick={() => setCreateOpen(true)}>
           Добавить кандидата
@@ -282,7 +321,23 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         />
       )}
 
-      <div className="kanban-board" role="list" aria-label="Канбан-доска по этапам воронки">
+      <div
+        className="kanban-board"
+        role="list"
+        aria-label="Воронка кандидатов по этапам"
+        ref={boardRef}
+        onDragOver={(event) => {
+          event.preventDefault();
+          updateAutoScroll(event.clientX);
+        }}
+        onDragLeave={(event) => {
+          // Only stop when the pointer actually leaves the board, not when it
+          // crosses into a child column.
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          stopAutoScroll();
+        }}
+        onDrop={stopAutoScroll}
+      >
         {CANDIDATE_STAGE_ORDER.map((stage) => {
           const column = columns[stage];
           return (
@@ -340,8 +395,13 @@ export default function KanbanPage({ user }: KanbanPageProps) {
                         {canSeeAll && (
                           <span className="kanban-card-owner">{candidate.owner_username}</span>
                         )}
+                        <label className="kanban-move-label" htmlFor={`move-${candidate.id}`}>
+                          Перенести в этап
+                        </label>
                         <SelectInput
+                          id={`move-${candidate.id}`}
                           aria-label={`Изменить этап: ${candidate.full_name}`}
+                          className="kanban-move-select"
                           value={candidate.stage}
                           disabled={busy}
                           onChange={(event) =>
