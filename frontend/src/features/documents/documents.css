@@ -253,6 +253,22 @@
   font-size: var(--text-size-xs, 12px);
 }
 
+/* Пустое состояние списка вместо незаполняемого select (UX 2026-09-29). */
+.rule-empty-lists {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px dashed var(--border-color, #dce1e5);
+  border-radius: 8px;
+}
+
+.rule-empty-lists-title {
+  margin: 0;
+  font-weight: 500;
+}
+
 .rule-howto {
   border-top: 1px solid var(--border-color, #dce1e5);
   padding-top: 8px;

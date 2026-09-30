@@ -172,11 +172,17 @@ export function MyRulesPage() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const [rules, lists] = await Promise.all([
-      request<DocumentRule[]>("/document-rules"),
-      request<DocumentLists>("/document-lists"),
-    ]);
-    return { rules, lists };
+    // Правила и списки грузятся раздельно: сбой/пустота списков не должна
+    // прятать сами правила за общей ошибкой страницы (UX 2026-09-29).
+    const rules = await request<DocumentRule[]>("/document-rules");
+    let lists: DocumentLists = { items: [], can_manage: false };
+    let listsError = "";
+    try {
+      lists = await request<DocumentLists>("/document-lists");
+    } catch (e) {
+      listsError = errorText(e);
+    }
+    return { rules, lists, listsError };
   }, []);
   const resource = useResource(load);
 
@@ -288,6 +294,9 @@ export function MyRulesPage() {
       ) ?? [],
     [resource.data],
   );
+
+  const listsError = resource.data?.listsError ?? "";
+  const canManageLists = resource.data?.lists.can_manage ?? false;
 
   /** Имя списка для карточки: по опубликованной версии из /document-lists. */
   const listNameOf = (rule: DocumentRule): string => {
@@ -578,6 +587,13 @@ export function MyRulesPage() {
             className="document-form"
             onSubmit={(e) => {
               e.preventDefault();
+              if (!editor.input.params.list_id) {
+                pushToast(
+                  "info",
+                  "Выберите опубликованный список документов. Если списков нет — создайте его в разделе «Списки документов».",
+                );
+                return;
+              }
               const payload = {
                 ...editor.input,
                 ...(editor.id ? { expected_version: editor.version } : {}),
@@ -708,28 +724,78 @@ export function MyRulesPage() {
               )}
             </Field>
             <Field label="Список" required>
-              {(id, describedBy) => (
-                <SelectInput
-                  id={id}
-                  aria-describedby={describedBy}
-                  required
-                  value={editor.input.params.list_id}
-                  onChange={(e) =>
-                    params({ list_id: e.target.value, list_version_id: null })
-                  }
-                >
-                  <option value="">Выберите опубликованный список</option>
-                  {published
-                    .filter(
-                      (v) => !v.stage || v.stage === editor.input.params.stage,
-                    )
-                    .map((v) => (
-                      <option key={v.id} value={v.list_id}>
-                        {v.name}
-                      </option>
-                    ))}
-                </SelectInput>
-              )}
+              {(id, describedBy) =>
+                published.length === 0 ? (
+                  <div className="rule-empty-lists" role="status">
+                    <p className="rule-empty-lists-title">
+                      {listsError
+                        ? "Не удалось загрузить списки документов."
+                        : "Нет опубликованных списков документов."}
+                    </p>
+                    <p className="document-meta">
+                      {listsError
+                        ? listsError
+                        : "Правило работает только с опубликованным списком. Создайте список в разделе «Списки документов» и опубликуйте его."}
+                    </p>
+                    <div className="document-actions">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          window.location.hash = "#/documents";
+                        }}
+                      >
+                        {canManageLists ? "Перейти к спискам" : "Открыть списки документов"}
+                      </Button>
+                      {resource.loading ? null : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => void resource.reload()}
+                        >
+                          Обновить
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <SelectInput
+                      id={id}
+                      aria-describedby={describedBy}
+                      required
+                      value={editor.input.params.list_id}
+                      onChange={(e) =>
+                        params({ list_id: e.target.value, list_version_id: null })
+                      }
+                    >
+                      <option value="">Выберите опубликованный список</option>
+                      {published
+                        .filter(
+                          (v) => !v.stage || v.stage === editor.input.params.stage,
+                        )
+                        .map((v) => (
+                          <option key={v.id} value={v.list_id}>
+                            {v.name}
+                          </option>
+                        ))}
+                    </SelectInput>
+                    {published.every(
+                      (v) => v.stage && v.stage !== editor.input.params.stage,
+                    ) && (
+                      <p className="rule-preview-missing">
+                        Для этапа «{STAGE_LABELS[editor.input.params.stage]}» нет
+                        опубликованных списков. Доступные:{" "}
+                        {published
+                          .map((v) => `«${v.name}» — этап «${v.stage ? v.stage : "любой"}»`)
+                          .join("; ")}
+                        . Измените этап или опубликуйте список для этого этапа.
+                      </p>
+                    )}
+                  </>
+                )
+              }
             </Field>
             {editor.input.params.action !== "apply_list" && (
               <>
@@ -777,7 +843,7 @@ export function MyRulesPage() {
               </>
             )}
             {editor.input.params.action === "document_reminder" && (
-              <Field label="Через сколько дней (1–30)" required>
+              <Field label="Через сколько дней создать напоминание (1–30)" required>
                 {(id, describedBy) => (
                   <TextInput
                     id={id}
