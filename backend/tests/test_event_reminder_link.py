@@ -15,14 +15,17 @@ back to its event. These tests pin the single-transaction contract:
 * a rolled-back event creation leaves no orphan reminder.
 """
 
+import re
 from collections.abc import Iterator
 from datetime import datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import Table, func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import quoted_name
 
 from app.models import Event, Reminder, ReminderStatus, UserRole
 from app.routers.auth import reset_login_limiter
@@ -305,15 +308,100 @@ def test_migration_0017_links_one_reminder_per_event() -> None:
     source = getsource(module)
     assert "uq_reminders_event_id" in source
     assert "postgresql_where" in source
-    # The normalisation must keep the newest... no: the OLDEST link, so the
-    # most recently created reminder is not the one silently dropped.
-    assert "MIN(id)" in source
+    # The normalisation must keep the OLDEST link, so the most recently
+    # created reminder is not the one silently dropped.
+    assert "ORDER BY event_id, created_at, id" in source
+    # Regression: `min(uuid)`/`max(uuid)` only arrived in PostgreSQL 20 and CI
+    # runs 16, where the aggregate does not exist and `alembic upgrade head`
+    # aborts. Inspect the SQL that is actually handed to the database, not the
+    # prose around it, so a comment cannot satisfy or break this check.
+    sql = "\n".join(
+        literal for literal in re.findall(r'sa\.text\(\s*"""(.*?)"""', source, re.DOTALL)
+    )
+    assert "UPDATE reminders" in sql
+    assert "DISTINCT ON" in sql
+    assert "MIN(" not in sql.upper()
+    # «Oldest wins» is only true if created_at drives the ordering.
+    assert "ORDER BY event_id, created_at, id" in sql
 
 
 def test_orm_declares_the_same_unique_index() -> None:
     """The model and the migration must not drift apart."""
     from app.models import Reminder
 
-    indexes = {index.name: index for index in Reminder.__table__.indexes}
-    assert "uq_reminders_event_id" in indexes
-    assert indexes["uq_reminders_event_id"].unique is True
+    # `__table__` is typed FromClause, which has no `.indexes`; assert the
+    # real type so mypy sees a `Table` and the intent stays explicit.
+    table = cast(Table, Reminder.__table__)
+    # `Index.name` is typed `quoted_name | None`; compare against a
+    # `quoted_name` so the lookup type-checks instead of relying on a cast.
+    target = next(
+        (
+            index
+            for index in table.indexes
+            if index.name == quoted_name("uq_reminders_event_id", None)
+        ),
+        None,
+    )
+    assert target is not None, "ORM does not declare uq_reminders_event_id"
+    assert target.unique is True
+
+
+def test_reminders_can_be_filtered_by_candidate_for_the_card(
+    client: TestClient, db_session: Session
+) -> None:
+    """The candidate card needs «its» reminders, not a page of everyone's."""
+    make_user(db_session, username="mgr", role=UserRole.MANAGER)
+    hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    mine = make_candidate(db_session, owner=hr, full_name="Первый Кандидат")
+    other = make_candidate(db_session, owner=hr, full_name="Второй Кандидат")
+    csrf = _login(client, "mgr")
+
+    mine_event = _create_event(client, csrf, str(mine.id), assignee=str(hr.id), remind_at=_in(60))
+    other_event = _create_event(
+        client, csrf, str(other.id), assignee=str(hr.id), remind_at=_in(120)
+    )
+    mine_row = _linked(db_session, mine_event["id"])[0]
+    other_row = _linked(db_session, other_event["id"])[0]
+
+    hr_csrf = _login(client, "hr1")
+    filtered = client.get(
+        "/reminders", params={"candidate_id": str(mine.id)}, headers={"X-CSRF-Token": hr_csrf}
+    )
+    assert filtered.status_code == 200, filtered.text
+    body = filtered.json()
+    ids = [item["id"] for item in body["items"]]
+    assert ids == [str(mine_row.id)]
+    assert str(other_row.id) not in ids
+    # The count must describe the filtered page, not the unfiltered one.
+    assert body["total"] == 1
+
+    # An unknown candidate id yields an empty page, not an error.
+    assert (
+        client.get(
+            "/reminders",
+            params={"candidate_id": "00000000-0000-0000-0000-000000000000"},
+            headers={"X-CSRF-Token": hr_csrf},
+        ).json()["items"]
+        == []
+    )
+
+
+def test_the_candidate_filter_does_not_widen_access(
+    client: TestClient, db_session: Session
+) -> None:
+    """Filtering must not become a way to learn that a reminder exists."""
+    owner_hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    make_user(db_session, username="hr2", role=UserRole.HR)
+    candidate = make_candidate(db_session, owner=owner_hr)
+    csrf = _login(client, "hr1")
+    event = _create_event(client, csrf, str(candidate.id), remind_at=_in(60))
+    row = _linked(db_session, event["id"])[0]
+
+    # hr2 has no access to this reminder; naming the candidate must not help.
+    hr2_csrf = _login(client, "hr2")
+    response = client.get(
+        "/reminders", params={"candidate_id": str(candidate.id)}, headers={"X-CSRF-Token": hr2_csrf}
+    )
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert str(row.id) not in [item["id"] for item in response.json()["items"]]

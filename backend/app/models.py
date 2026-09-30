@@ -1395,6 +1395,7 @@ class Reminder(Base):
             "event_id",
             unique=True,
             postgresql_where=text("event_id IS NOT NULL"),
+            sqlite_where=text("event_id IS NOT NULL"),
         ),
     )
 
