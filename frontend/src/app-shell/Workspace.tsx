@@ -32,7 +32,7 @@ const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> 
   queue: { label: "Моя очередь", icon: "inbox" },
   candidates: { label: "Кандидаты", icon: "table" },
   calendar: { label: "Календарь", icon: "calendar" },
-  kanban: { label: "Kanban", icon: "kanban" },
+  kanban: { label: "Воронка кандидатов", icon: "kanban" },
   schedule: { label: "График выхода", icon: "calendar-check" },
   deleted: { label: "Удалённые", icon: "trash" },
   analytics: { label: "Аналитика", icon: "bar-chart" },

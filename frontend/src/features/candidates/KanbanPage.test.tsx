@@ -104,6 +104,53 @@ describe("KanbanPage", () => {
     );
   });
 
+  it.each([
+    ["первую", "offer", "new"],
+    ["среднюю", "new", "hired"],
+    ["последнюю", "new", "rejected"],
+  ] as const)(
+    "moves the card to the %s column in one action (UX 2026-09-29)",
+    async (_label, from, to) => {
+      // Источник данных «помнит» перенос: карточка живёт в текущем этапе.
+      let currentStage: CandidateStage = from;
+      const card = { ...candidate(from), full_name: "Переносимый кандидат" };
+      vi.mocked(api.listCandidates).mockImplementation(async (query) => {
+        const items = query?.stage === currentStage ? [{ ...card, stage: currentStage }] : [];
+        return { items, total: items.length, limit: 20, offset: 0 };
+      });
+      vi.mocked(api.updateCandidate).mockImplementation(async (_id, input) => {
+        currentStage = (input.stage ?? currentStage) as CandidateStage;
+        return { ...card, stage: currentStage };
+      });
+      renderKanban();
+
+      await screen.findByText("Переносимый кандидат");
+      const fromColumn = screen.getByRole("listitem", {
+        name: `Колонка: ${STAGE_LABELS[from]}`,
+      });
+      const toColumn = screen.getByRole("listitem", {
+        name: `Колонка: ${STAGE_LABELS[to]}`,
+      });
+      await userEvent.selectOptions(
+        within(fromColumn).getByLabelText("Изменить этап: Переносимый кандидат"),
+        to
+      );
+
+      // Одно действие: PATCH с целевым этапом и карточка в целевой колонке
+      // (оптимистичный перенос + подтверждение после перезагрузки).
+      await waitFor(() =>
+        expect(api.updateCandidate).toHaveBeenCalledWith(
+          "44444444-4444-4444-4444-444444444444",
+          { stage: to }
+        )
+      );
+      await waitFor(() =>
+        expect(within(toColumn).getByText("Переносимый кандидат")).toBeInTheDocument()
+      );
+      expect(within(fromColumn).queryByText("Переносимый кандидат")).not.toBeInTheDocument();
+    }
+  );
+
   it("rolls back the optimistic move when PATCH fails", async () => {
     vi.mocked(api.updateCandidate).mockRejectedValue(new api.ApiError(500, "Сбой"));
     renderKanban();

@@ -68,6 +68,23 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   } | null>(null);
   const [startDateError, setStartDateError] = useState<string | null>(null);
   const draggingRef = useRef<{ id: string; from: CandidateStage } | null>(null);
+  const boardRef = useRef<HTMLDivElement | null>(null);
+
+  /** Автопрокрутка доски у краёв при перетаскивании: длинная воронка не
+   * требует ручного последовательного скролла (UX 2026-09-29). */
+  const handleBoardDragOver = (event: React.DragEvent) => {
+    if (!draggingRef.current) return;
+    const board = boardRef.current;
+    if (!board || typeof board.scrollBy !== "function") return;
+    const rect = board.getBoundingClientRect();
+    if (rect.width === 0) return; // jsdom / скрытая доска
+    const edge = 72;
+    if (event.clientX - rect.left < edge) {
+      board.scrollBy({ left: -24, behavior: "auto" });
+    } else if (rect.right - event.clientX < edge) {
+      board.scrollBy({ left: 24, behavior: "auto" });
+    }
+  };
 
   const loadColumn = useCallback(
     async (stage: CandidateStage, offset: number) => {
@@ -262,7 +279,9 @@ export default function KanbanPage({ user }: KanbanPageProps) {
           </Field>
         )}
         <span className="kanban-hint">
-          Перетащите карточку между колонками или используйте выбор этапа на карточке.
+          Перенесите карточку в любую колонку одним действием — выберите этап
+          на карточке (работает с клавиатуры, без прокрутки доски). Или
+          перетащите карточку мышью: у краёв доска прокручивается сама.
         </span>
         <Button icon="plus" onClick={() => setCreateOpen(true)}>
           Добавить кандидата
@@ -282,7 +301,13 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         />
       )}
 
-      <div className="kanban-board" role="list" aria-label="Канбан-доска по этапам воронки">
+      <div
+        className="kanban-board"
+        role="list"
+        aria-label="Доска воронки кандидатов по этапам"
+        ref={boardRef}
+        onDragOver={handleBoardDragOver}
+      >
         {CANDIDATE_STAGE_ORDER.map((stage) => {
           const column = columns[stage];
           return (
