@@ -280,6 +280,43 @@
   color: var(--status-warning-fg);
 }
 
+/* Пояснение вместо заблокированного контрола и пустые состояния списка
+   исполнителей (UX-замечания 2026-09-29: никаких «мёртвых» полей). */
+.event-form-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--accent-default);
+  background: var(--surface-sunken);
+  color: var(--text-secondary);
+  font-size: var(--text-size-sm);
+  border-radius: var(--radius-sm);
+}
+
+.event-form-remind-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.event-form-remind-row .text-input {
+  flex: 1;
+}
+
+.event-form-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-3);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.event-form-empty-title {
+  margin: 0;
+  font-weight: var(--font-weight-medium);
+}
+
 .candidate-picker {
   display: flex;
   flex-direction: column;

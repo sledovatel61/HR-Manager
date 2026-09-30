@@ -75,6 +75,9 @@ function validate(draft: Draft): string | null {
   return null;
 }
 
+/** Loading state of the HR assignee directory (no silent empty selects). */
+type DirectoryState = "loading" | "ready" | "error";
+
 /** Create/edit event dialog with complete/postpone actions and history. */
 export function EventFormModal({
   open,
@@ -94,6 +97,8 @@ export function EventFormModal({
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [directory, setDirectory] = useState<UserListItem[]>([]);
+  const [directoryState, setDirectoryState] = useState<DirectoryState>("loading");
+  const [directoryTick, setDirectoryTick] = useState(0);
   const [history, setHistory] = useState<EventHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -115,21 +120,31 @@ export function EventFormModal({
     setCandidateQuery("");
     setSuggestions([]);
     setHistory([]);
+    setDirectory([]);
+    setDirectoryState("loading");
   }, [open, event]);
 
-  // HR directory for manager/admin assignee pickers.
+  // HR directory for manager/admin assignee pickers. Failures are shown with
+  // a retry action — never a silently empty select (UX feedback 2026-09-29).
   useEffect(() => {
     if (!open || !canAssign) return;
     let cancelled = false;
+    setDirectoryState("loading");
     void listHrUsers()
       .then((page) => {
-        if (!cancelled) setDirectory(page.items);
+        if (cancelled) return;
+        setDirectory(page.items);
+        setDirectoryState("ready");
       })
-      .catch(() => {});
+      .catch(() => {
+        if (cancelled) return;
+        setDirectory([]);
+        setDirectoryState("error");
+      });
     return () => {
       cancelled = true;
     };
-  }, [open, canAssign]);
+  }, [open, canAssign, directoryTick]);
 
   // History of the event (edit mode).
   useEffect(() => {
@@ -183,19 +198,19 @@ export function EventFormModal({
       setError(validation);
       return;
     }
-    if (!fixedCandidate) {
-      setError("Выберите кандидата.");
-      return;
-    }
     if (canAssign && !assigneeId) {
-      setError("Выберите исполнителя — активного пользователя с ролью HR.");
+      setError(
+        directoryState === "ready" && directory.length === 0
+          ? "Нет доступных исполнителей — создайте или активируйте пользователя с ролью HR."
+          : "Выберите исполнителя — активного пользователя с ролью HR.",
+      );
       return;
     }
     setSending(true);
     setError(null);
     try {
       const created = await createEvent({
-        candidate_id: fixedCandidate.id,
+        candidate_id: fixedCandidate ? fixedCandidate.id : null,
         type: draft.type,
         title: draft.title.trim(),
         note: draft.note.trim() || null,
@@ -348,7 +363,10 @@ export function EventFormModal({
         )}
 
         {!editing && !candidate && (
-          <Field label="Кандидат" required>
+          <Field
+            label="Кандидат"
+            hint="Необязательно. Событие можно создать без кандидата — личное."
+          >
             {(id, describedBy) => (
               <div className="candidate-picker">
                 {pickedCandidate ? (
@@ -446,23 +464,81 @@ export function EventFormModal({
           )}
         </Field>
 
-        <Field
-          label="Напоминание"
-          hint={draft.type === "reminder" ? "Момент напоминания — это дата начала" : "Необязательно, не позже начала"}
-        >
-          {(id) => (
-            <TextInput
-              id={id}
-              type="datetime-local"
-              value={draft.remindAt}
-              disabled={draft.type === "reminder"}
-              onChange={(event) => setDraft({ ...draft, remindAt: event.target.value })}
-            />
-          )}
-        </Field>
+        {draft.type === "reminder" ? (
+          <p className="event-form-note" role="note">
+            Момент напоминания — это значение поля «Начало»: отдельное поле
+            даты и времени не требуется.
+          </p>
+        ) : (
+          <Field
+            label="Напоминание"
+            hint="Необязательно, не позже начала события"
+          >
+            {(id) => (
+              <div className="event-form-remind-row">
+                <TextInput
+                  id={id}
+                  type="datetime-local"
+                  value={draft.remindAt}
+                  onChange={(event) => setDraft({ ...draft, remindAt: event.target.value })}
+                />
+                {draft.remindAt && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDraft({ ...draft, remindAt: "" })}
+                  >
+                    Очистить
+                  </Button>
+                )}
+              </div>
+            )}
+          </Field>
+        )}
 
-        {canAssign && (
-          <Field label="Исполнитель" required hint="Активный HR">
+        {canAssign && directoryState === "loading" && (
+          <p className="muted-text">Загрузка списка исполнителей…</p>
+        )}
+        {canAssign && directoryState === "error" && (
+          <div className="event-form-empty" role="alert">
+            <p>Не удалось загрузить список исполнителей.</p>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setDirectoryTick((tick) => tick + 1)}
+            >
+              Повторить
+            </Button>
+          </div>
+        )}
+        {canAssign && directoryState === "ready" && directory.length === 0 && (
+          <div className="event-form-empty" role="status">
+            <p className="event-form-empty-title">Нет доступных исполнителей.</p>
+            <p className="muted-text">
+              Нужен активный пользователь с ролью «HR» — создайте его или
+              активируйте существующего.
+            </p>
+            {user.role === "admin" ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="users"
+                onClick={() => {
+                  window.location.hash = "#/users";
+                }}
+              >
+                Открыть «Пользователи»
+              </Button>
+            ) : (
+              <p className="muted-text">
+                Обратитесь к администратору: создать или активировать
+                пользователя может только он.
+              </p>
+            )}
+          </div>
+        )}
+        {canAssign && directoryState === "ready" && directory.length > 0 && (
+          <Field label="Исполнитель" required hint="Активный пользователь с ролью HR">
             {(id) => (
               <SelectInput
                 id={id}
@@ -478,6 +554,11 @@ export function EventFormModal({
               </SelectInput>
             )}
           </Field>
+        )}
+        {!canAssign && (
+          <p className="event-form-note" role="note">
+            Исполнителем будете вы: HR может назначать исполнителем только себя.
+          </p>
         )}
 
         <Field label="Заметка" hint="Необязательно">
@@ -528,12 +609,12 @@ export function EventFormModal({
           </section>
         )}
 
-        {editing && event && onOpenCandidate && (
+        {editing && event && event.candidate_id && onOpenCandidate && (
           <Button
             variant="secondary"
             size="sm"
             icon="users"
-            onClick={() => onOpenCandidate(event.candidate_id)}
+            onClick={() => event.candidate_id && onOpenCandidate(event.candidate_id)}
           >
             Открыть карточку кандидата
           </Button>

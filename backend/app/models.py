@@ -736,12 +736,18 @@ class EventHistoryKind(StrEnum):
 
 
 class Event(Base):
-    """A calendar event bound to a candidate (call, interview, reminder).
+    """A calendar event (call, interview, reminder) with an optional
+    candidate link.
 
     All timestamps are timezone-aware UTC. ``version`` is the optimistic
     concurrency counter: every mutation must carry the current
     ``expected_version`` and bumps it. Deletion is physical only through
     the candidate FK cascade; there is no event delete endpoint.
+
+    ``candidate_id`` is optional (UX feedback 2026-09-29, «единая связь
+    событие ↔ напоминание ↔ кандидат»): an event without a candidate is
+    visible to its author and assignee (and to manager/admin), while a
+    candidate-linked event keeps the candidate-ownership visibility rules.
     """
 
     __tablename__ = "events"
@@ -783,8 +789,8 @@ class Event(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
-    candidate_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=True
     )
     author_user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
@@ -826,7 +832,7 @@ class Event(Base):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
     )
 
-    candidate: Mapped[Candidate] = relationship(foreign_keys=[candidate_id])
+    candidate: Mapped[Candidate | None] = relationship(foreign_keys=[candidate_id])
     author: Mapped[User] = relationship(foreign_keys=[author_user_id])
     assignee: Mapped[User] = relationship(foreign_keys=[assignee_user_id])
     history: Mapped[list["EventHistory"]] = relationship(
@@ -1387,6 +1393,10 @@ class Reminder(Base):
             "OR (status <> 'completed' AND completed_at IS NULL)",
             name="ck_reminders_completed_at_consistent",
         ),
+        # At most one reminder per calendar event: the shared event↔reminder
+        # domain link is idempotent across every creation entry point
+        # (calendar, candidate card, «Мои напоминания»).
+        UniqueConstraint("event_id", name="uq_reminders_event_id"),
         Index("ix_reminders_assignee_due", "assignee_user_id", "due_at"),
     )
 
@@ -1455,6 +1465,11 @@ class Reminder(Base):
     @property
     def owner_username(self) -> str:
         return self.owner.username if self.owner is not None else ""
+
+    @property
+    def candidate_full_name(self) -> str:
+        """Candidate name for list rendering (lazy relationship access)."""
+        return self.candidate.full_name if self.candidate is not None else ""
 
     @property
     def assignee_username(self) -> str:

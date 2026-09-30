@@ -30,6 +30,7 @@ const REMINDER: Reminder = {
   title: "Позвонить кандидату",
   note: null,
   candidate_id: null,
+  candidate_full_name: "",
   event_id: null,
   due_at: "2026-09-08T09:00:00Z",
   timezone: "Europe/Moscow",
@@ -127,6 +128,58 @@ describe("RemindersPage", () => {
     await waitFor(() => screen.getByRole("button", { name: "Создать напоминание" }));
     await userEvent.click(screen.getByRole("button", { name: "Создать напоминание" }));
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it("searches candidates server-side and links one («Без кандидата» stays)", async () => {
+    vi.mocked(api.listReminders).mockResolvedValue(list([]));
+    const create = vi.mocked(api.createReminder).mockResolvedValue({
+      ...REMINDER,
+      candidate_id: CANDIDATE.id,
+      candidate_full_name: CANDIDATE.full_name,
+    });
+    render(
+      <ToastProvider>
+        <RemindersPage user={{ id: "33333333-3333-4333-8333-333333333333", role: "hr" }} />
+      </ToastProvider>,
+    );
+    await waitFor(() => screen.getByLabelText(/Кандидат/));
+
+    await userEvent.type(screen.getByLabelText(/Кандидат/), "Тестовый");
+    await waitFor(() => {
+      expect(api.listCandidates).toHaveBeenCalledWith(
+        expect.objectContaining({ query: "Тестовый" })
+      );
+    });
+    await userEvent.click(await screen.findByRole("option", { name: /Тестовый кандидат/ }));
+    expect(screen.getByText("Тестовый кандидат")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText(/Название/), "Напомнить");
+    await userEvent.type(screen.getByLabelText(/Когда/), "2026-09-08T12:00");
+    await userEvent.click(screen.getByRole("button", { name: "Создать напоминание" }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ candidate_id: CANDIDATE.id })
+      );
+    });
+  });
+
+  it("keeps «Без кандидата» and offers the candidate card link", async () => {
+    vi.mocked(api.listReminders).mockResolvedValue(
+      list([{ ...REMINDER, candidate_id: CANDIDATE.id, candidate_full_name: CANDIDATE.full_name }]),
+    );
+    const onOpenCandidate = vi.fn();
+    render(
+      <ToastProvider>
+        <RemindersPage
+          user={{ id: "33333333-3333-4333-8333-333333333333", role: "hr" }}
+          onOpenCandidate={onOpenCandidate}
+        />
+      </ToastProvider>,
+    );
+    await waitFor(() => screen.getByText("кандидат: Тестовый кандидат"));
+    await userEvent.click(screen.getByRole("button", { name: "Карточка кандидата" }));
+    expect(onOpenCandidate).toHaveBeenCalledWith(CANDIDATE.id);
   });
 
   it("completes a reminder", async () => {

@@ -36,6 +36,7 @@ from app.candidate_messages import (
 )
 from app.db import get_db
 from app.deps import get_current_user
+from app.event_reminders import can_see_event, sync_event_reminder
 from app.models import (
     AnalyticsFactType,
     AuditAction,
@@ -84,16 +85,26 @@ _SAFE_FIELD_NAMES = {
 
 
 def _can_see_event(user: User, event: Event) -> bool:
-    """HRs see events of their own candidates only; managers/admins all."""
-    if user.role != UserRole.HR:
-        return True
-    return event.candidate is not None and event.candidate.owner_user_id == user.id
+    """HRs see events of their own candidates (plus candidate-less events
+    they authored or are assigned); managers/admins see all."""
+    return can_see_event(user, event)
 
 
 def _event_visibility_condition(user: User) -> list:
-    """Visibility predicate for list queries via the candidate join."""
+    """Visibility predicate for list queries via the outer candidate join."""
     if user.role == UserRole.HR:
-        return [Candidate.owner_user_id == user.id]
+        return [
+            or_(
+                Candidate.owner_user_id == user.id,
+                and_(
+                    Event.candidate_id.is_(None),
+                    or_(
+                        Event.author_user_id == user.id,
+                        Event.assignee_user_id == user.id,
+                    ),
+                ),
+            )
+        ]
     return []
 
 
@@ -252,8 +263,9 @@ def list_events(
         )
 
     conditions = [*_event_visibility_condition(user)]
-    # Soft-deleted candidates are always excluded from the calendar.
-    conditions.append(Candidate.deleted_at.is_(None))
+    # Soft-deleted candidates are always excluded from the calendar;
+    # candidate-less events have no candidate to delete.
+    conditions.append(or_(Event.candidate_id.is_(None), Candidate.deleted_at.is_(None)))
 
     if to is not None:
         conditions.append(Event.starts_at < to)
@@ -291,7 +303,7 @@ def list_events(
         "updated_at": Event.updated_at,
     }[sort]
     order = sort_column.asc() if direction == "asc" else sort_column.desc()
-    stmt = select(Event).join(Candidate, Event.candidate_id == Candidate.id).where(*conditions)
+    stmt = select(Event).outerjoin(Candidate, Event.candidate_id == Candidate.id).where(*conditions)
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     events = db.scalars(stmt.order_by(order, Event.id.asc()).limit(limit).offset(offset)).all()
     return EventList(
@@ -314,17 +326,21 @@ def create_event(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> EventOut:
-    """Create a scheduled event for an accessible, non-deleted candidate.
+    """Create a scheduled event, optionally linked to an accessible candidate.
 
-    One transaction: event + business-history row + audit event, a single
-    ``db.commit()``.
+    One transaction: event + linked «Моё напоминание» + business-history row
+    + audit event, a single ``db.commit()``.
     """
-    candidate = _get_visible_candidate_for_event(db, payload.candidate_id, user)
+    candidate = (
+        _get_visible_candidate_for_event(db, payload.candidate_id, user)
+        if payload.candidate_id is not None
+        else None
+    )
     assignee = _resolve_assignee(db, user, payload.assignee_user_id)
     _validate_event_fields(payload.type, payload.starts_at, payload.ends_at, payload.remind_at)
 
     event = Event(
-        candidate_id=candidate.id,
+        candidate_id=candidate.id if candidate is not None else None,
         author_user_id=user.id,
         assignee_user_id=assignee.id,
         type=payload.type,
@@ -340,18 +356,20 @@ def create_event(
     db.add(event)
     db.flush()  # event.id for history/audit
 
-    # The scheduled event is an analytics fact; the responsible HR at fact
-    # time is the candidate owner (the assignee is a manager/admin).
-    record_fact(
-        db,
-        fact_type=AnalyticsFactType.EVENT_CREATED,
-        candidate_id=event.candidate_id,
-        owner_user_id=candidate.owner_user_id,
-        fact_at=event.created_at,
-        fact_subtype=event.type.value,
-        source=candidate.source.value,
-        event_id=event.id,
-    )
+    if candidate is not None:
+        # The scheduled event is an analytics fact; the responsible HR at fact
+        # time is the candidate owner (the assignee is a manager/admin).
+        # Candidate-less events are personal work items — no analytics fact.
+        record_fact(
+            db,
+            fact_type=AnalyticsFactType.EVENT_CREATED,
+            candidate_id=candidate.id,
+            owner_user_id=candidate.owner_user_id,
+            fact_at=event.created_at,
+            fact_subtype=event.type.value,
+            source=candidate.source.value,
+            event_id=event.id,
+        )
 
     history = EventHistory(
         event_id=event.id,
@@ -372,11 +390,19 @@ def create_event(
     # Phase 10: the candidate's one-way messages (interview scheduled +
     # reminder) join the same transaction; without a recorded channel
     # consent nothing is queued (fail-closed, never silent).
-    plan_candidate_interview_messages(
+    if candidate is not None:
+        plan_candidate_interview_messages(
+            db,
+            event=event,
+            candidate=candidate,
+            settings=request.app.state.settings,
+        )
+    # Block B (UX feedback 2026-09-29): the event's reminder moment becomes
+    # a real row in «Мои напоминания» — same transaction, idempotent link.
+    sync_event_reminder(
         db,
-        event=event,
-        candidate=candidate,
-        settings=request.app.state.settings,
+        event,
+        fallback_timezone=request.app.state.settings.notification_default_timezone,
     )
     _audit_event(
         db,
@@ -598,12 +624,13 @@ def update_event(
             )
             # Phase 10: tell the candidate the interview is off (the stale
             # plan above already cancelled the old reminder).
-            plan_candidate_interview_cancelled(
-                db,
-                event=locked,
-                candidate=locked.candidate,
-                settings=request.app.state.settings,
-            )
+            if locked.candidate is not None:
+                plan_candidate_interview_cancelled(
+                    db,
+                    event=locked,
+                    candidate=locked.candidate,
+                    settings=request.app.state.settings,
+                )
         elif new_status == EventStatus.COMPLETED:
             pass  # nothing to plan — completion cancels the stale plan only
         else:
@@ -617,13 +644,14 @@ def update_event(
                     settings=request.app.state.settings,
                 )
                 # Phase 10: «собеседование перенесено» + a fresh reminder.
-                plan_candidate_interview_messages(
-                    db,
-                    event=locked,
-                    candidate=locked.candidate,
-                    settings=request.app.state.settings,
-                    previous_starts_at=history.starts_at_old,
-                )
+                if locked.candidate is not None:
+                    plan_candidate_interview_messages(
+                        db,
+                        event=locked,
+                        candidate=locked.candidate,
+                        settings=request.app.state.settings,
+                        previous_starts_at=history.starts_at_old,
+                    )
             if new_status == EventStatus.SCHEDULED:
                 # (Re)plan approaching/overdue/assigned for the new schedule.
                 plan_event_notifications(
@@ -635,17 +663,27 @@ def update_event(
                 )
 
     # Completing an event is an analytics fact (same single transaction).
-    if new_status == EventStatus.COMPLETED:
+    # Candidate-less events are personal work items — no analytics fact.
+    if new_status == EventStatus.COMPLETED and locked.candidate is not None:
         record_fact(
             db,
             fact_type=AnalyticsFactType.EVENT_COMPLETED,
-            candidate_id=locked.candidate_id,
+            candidate_id=locked.candidate.id,
             owner_user_id=locked.candidate.owner_user_id,
             fact_at=locked.completed_at,
             fact_subtype=locked.type.value,
             source=locked.candidate.source.value,
             event_id=locked.id,
         )
+
+    # Block B: keep the linked «Моё напоминание» in step with the event
+    # (moved moment, cleared reminder, completion/cancellation) — same
+    # transaction, idempotent, at most one linked reminder.
+    sync_event_reminder(
+        db,
+        locked,
+        fallback_timezone=request.app.state.settings.notification_default_timezone,
+    )
 
     db.add(history)
     _audit_event(

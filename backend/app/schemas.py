@@ -469,9 +469,12 @@ class EventCreate(BaseModel):
 
     ``status`` always starts as ``scheduled`` — transitions happen through
     PATCH. ``assignee_user_id`` defaults per role rules server-side.
+    ``candidate_id`` is OPTIONAL (UX feedback 2026-09-29): a personal event
+    without a candidate is allowed; when set, the candidate must be
+    accessible and not soft-deleted.
     """
 
-    candidate_id: UUID
+    candidate_id: UUID | None = None
     type: EventType
     title: str = Field(min_length=1, max_length=200)
     note: str | None = Field(default=None, max_length=2000)
@@ -554,12 +557,13 @@ class EventUpdate(BaseModel):
 
 
 class EventOut(BaseModel):
-    """Public event representation."""
+    """Public event representation. ``candidate_id`` is null for personal
+    events without a candidate link."""
 
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    candidate_id: UUID
+    candidate_id: UUID | None = None
     candidate_full_name: str
     type: EventType
     title: str
@@ -1000,6 +1004,7 @@ class ReminderOut(BaseModel):
     title: str
     note: str | None = None
     candidate_id: UUID | None = None
+    candidate_full_name: str = ""
     event_id: UUID | None = None
     due_at: datetime
     timezone: str

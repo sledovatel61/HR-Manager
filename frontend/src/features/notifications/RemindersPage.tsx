@@ -2,11 +2,13 @@
 
  * The form is one compact scenario (no cron knowledge): title, note,
  * due date/time, timezone, importance, recurrence and an optional
- * candidate link. All times are sent as ISO strings; the backend
+ * candidate link. The candidate is picked through server-side search by
+ * name/phone/email (UX feedback 2026-09-29: «Без кандидата» stays, поиск
+ * вместо неподъёмного списка). All times are sent as ISO strings; the backend
  * normalizes them to UTC.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   cancelReminder,
   completeReminder,
@@ -70,17 +72,31 @@ const EMPTY_FORM = {
   candidate_id: "",
 };
 
-export function RemindersPage({ user }: { user: { id: string; role: string } }) {
+export function RemindersPage({
+  user,
+  onOpenCandidate,
+}: {
+  user: { id: string; role: string };
+  /** Cross-section navigation to the candidate card. */
+  onOpenCandidate?: (id: string) => void;
+}) {
   const { pushToast } = useToast();
   const [status, setStatus] = useState<ReminderStatus>("active");
   const [items, setItems] = useState<Reminder[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [timezones, setTimezones] = useState<string[]>([]);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editing, setEditing] = useState<Reminder | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Server-side candidate search (name/phone/email) with «Без кандидата».
+  const [candidateQuery, setCandidateQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<Candidate[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [selectedCandidate, setSelectedCandidate] = useState<{ id: string; full_name: string } | null>(
+    null
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -103,14 +119,42 @@ export function RemindersPage({ user }: { user: { id: string; role: string } }) 
     void listTimezones()
       .then((data) => setTimezones(data.timezones))
       .catch(() => setTimezones(["Europe/Moscow"]));
-    void listCandidates({ limit: 200 })
-      .then((data) => setCandidates(data.items))
-      .catch(() => setCandidates([]));
   }, []);
+
+  // Debounced server-side candidate search (name/phone/email) — права
+  // фильтруются на сервере, UI показывает только доступное.
+  useEffect(() => {
+    const query = candidateQuery.trim();
+    if (!query) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setSearching(true);
+      void listCandidates({ query, limit: 8, sort: "updated_at", direction: "desc" })
+        .then((page) => {
+          if (!cancelled) setSuggestions(page.items);
+        })
+        .catch(() => {
+          if (!cancelled) setSuggestions([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [candidateQuery]);
 
   const resetForm = useCallback(() => {
     setForm(EMPTY_FORM);
     setEditing(null);
+    setSelectedCandidate(null);
+    setCandidateQuery("");
+    setSuggestions([]);
   }, []);
 
   const submit = useCallback(async () => {
@@ -165,6 +209,13 @@ export function RemindersPage({ user }: { user: { id: string; role: string } }) 
       recurrence: reminder.recurrence,
       candidate_id: reminder.candidate_id ?? "",
     });
+    setSelectedCandidate(
+      reminder.candidate_id
+        ? { id: reminder.candidate_id, full_name: reminder.candidate_full_name || "Кандидат" }
+        : null
+    );
+    setCandidateQuery("");
+    setSuggestions([]);
   }, []);
 
   const complete = useCallback(
@@ -193,15 +244,19 @@ export function RemindersPage({ user }: { user: { id: string; role: string } }) 
     [load, pushToast],
   );
 
-  const candidateOptions = useMemo(
-    () =>
-      candidates.map((candidate) => (
-        <option key={candidate.id} value={candidate.id}>
-          {candidate.full_name}
-        </option>
-      )),
-    [candidates],
-  );
+  const pickCandidate = useCallback((candidate: Candidate) => {
+    setSelectedCandidate({ id: candidate.id, full_name: candidate.full_name });
+    setForm((current) => ({ ...current, candidate_id: candidate.id }));
+    setCandidateQuery("");
+    setSuggestions([]);
+  }, []);
+
+  const clearCandidate = useCallback(() => {
+    setSelectedCandidate(null);
+    setForm((current) => ({ ...current, candidate_id: "" }));
+    setCandidateQuery("");
+    setSuggestions([]);
+  }, []);
 
   return (
     <div className="notif-page">
@@ -281,16 +336,49 @@ export function RemindersPage({ user }: { user: { id: string; role: string } }) 
             </SelectInput>
           )}
         </Field>
-        <Field label="Кандидат (необязательно)">
-          {(id) => (
-            <SelectInput
-              id={id}
-              value={form.candidate_id}
-              onChange={(event) => setForm({ ...form, candidate_id: event.target.value })}
-            >
-              <option value="">— без кандидата —</option>
-              {candidateOptions}
-            </SelectInput>
+        <Field
+          label="Кандидат"
+          hint="Необязательно. Поиск по ФИО, телефону или email; можно оставить «Без кандидата»"
+        >
+          {(id, describedBy) => (
+            <div className="reminder-candidate-picker">
+              {selectedCandidate ? (
+                <div className="reminder-candidate-selected">
+                  <span>{selectedCandidate.full_name}</span>
+                  <Button variant="ghost" size="sm" onClick={clearCandidate}>
+                    Без кандидата
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <TextInput
+                    id={id}
+                    aria-describedby={describedBy}
+                    value={candidateQuery}
+                    onChange={(event) => setCandidateQuery(event.target.value)}
+                    placeholder="Поиск по ФИО, телефону или email…"
+                  />
+                  {searching && <p className="muted-text">Поиск…</p>}
+                  {!searching && suggestions.length > 0 && (
+                    <ul className="reminder-candidate-list" role="listbox">
+                      {suggestions.map((item) => (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={false}
+                            onClick={() => pickCandidate(item)}
+                          >
+                            <span>{item.full_name}</span>
+                            {item.phone && <span className="reminder-candidate-contact">{item.phone}</span>}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
+            </div>
           )}
         </Field>
         <Field label="Заметка">
@@ -354,12 +442,25 @@ export function RemindersPage({ user }: { user: { id: string; role: string } }) 
                     <span>{formatDue(reminder.due_at)}</span>
                     <span>{RECURRENCE_LABELS[reminder.recurrence]}</span>
                     <span>{IMPORTANCE_LABELS[reminder.importance]}</span>
+                    {reminder.candidate_id && (
+                      <span>кандидат: {reminder.candidate_full_name || "связанный кандидат"}</span>
+                    )}
                     {reminder.assignee_user_id !== user.id && (
                       <span>исполнитель: {reminder.assignee_username}</span>
                     )}
                   </div>
                 </div>
                 <div className="notif-card-actions">
+                  {reminder.candidate_id && onOpenCandidate && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon="users"
+                      onClick={() => reminder.candidate_id && onOpenCandidate(reminder.candidate_id)}
+                    >
+                      Карточка кандидата
+                    </Button>
+                  )}
                   {reminder.status === "active" && (
                     <>
                       <Button variant="secondary" size="sm" onClick={() => startEdit(reminder)}>

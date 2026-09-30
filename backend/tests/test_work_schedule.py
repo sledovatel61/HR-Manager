@@ -861,8 +861,8 @@ def test_export_requires_authentication(client: TestClient, db_session: Session)
 # --- Миграция ----------------------------------------------------------------
 
 
-def test_migration_0016_is_the_head_and_adds_schedule_objects() -> None:
-    """Ревизия 0016 — head цепочки и создаёт объекты графика.
+def test_migration_0016_adds_schedule_objects() -> None:
+    """Ревизия 0016 создаёт объекты графика.
 
     Само применение (upgrade/downgrade на PostgreSQL) проверяет integration
     job; здесь — структурная проверка, доступная и на SQLite-only прогоне.
@@ -886,7 +886,11 @@ def test_migration_0016_is_the_head_and_adds_schedule_objects() -> None:
 
     config = Config("alembic.ini")
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0016"
+    # Head moves forward with new phases (now 0017, см. test_migrations.py);
+    # 0016 must still be a link of the single chain.
+    assert script.get_current_head() == "0017"
+    chain = {rev.revision for rev in script.walk_revisions()}
+    assert {"0016", "0017"} <= chain
 
     from inspect import getsource
 
