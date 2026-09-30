@@ -148,10 +148,35 @@ describe("EventFormModal (create)", () => {
     expect(api.createEvent).not.toHaveBeenCalled();
   });
 
-  it("disables remind_at for reminder-type events", async () => {
+  // UX feedback 2026-09-29, block A: the reminder control used to be rendered
+  // `disabled` for reminder-type events, which the reporter read as a broken
+  // form. The moment is now shown as a readable fact instead of a blocked input.
+  it("shows the reminder moment as a readable fact for reminder-type events", async () => {
     renderCreate(CANDIDATE);
+    await userEvent.type(screen.getByLabelText(/Начало/), "2026-09-07T09:00");
     await userEvent.selectOptions(screen.getByLabelText("Тип события"), "reminder");
-    expect(screen.getByLabelText(/Напоминание/)).toBeDisabled();
+
+    expect(screen.queryByLabelText(/Напоминание/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Момент напоминания")).toHaveTextContent(/2026/);
+  });
+
+  it("offers an explicit clear action for the reminder moment", async () => {
+    vi.mocked(api.createEvent).mockResolvedValue({ ...EVENT });
+    renderCreate(CANDIDATE);
+    await userEvent.type(screen.getByLabelText(/Начало/), "2026-09-07T09:00");
+    const remind = screen.getByLabelText(/Напоминание/) as HTMLInputElement;
+    expect(remind).toBeEnabled();
+
+    await userEvent.type(remind, "2026-09-06T18:00");
+    await userEvent.click(screen.getByRole("button", { name: "Очистить напоминание" }));
+    expect((screen.getByLabelText(/Напоминание/) as HTMLInputElement).value).toBe("");
+
+    // ...and the cleared value is what reaches the API.
+    await userEvent.type(screen.getByLabelText(/Название/), "Созвон");
+    await userEvent.click(screen.getByRole("button", { name: "Создать" }));
+    await waitFor(() =>
+      expect(api.createEvent).toHaveBeenCalledWith(expect.objectContaining({ remind_at: null }))
+    );
   });
 });
 
@@ -283,7 +308,9 @@ describe("EventFormModal (orchestrator review regressions)", () => {
     await userEvent.type(screen.getByLabelText(/Начало/), "2026-09-07T09:00");
     await userEvent.click(screen.getByRole("button", { name: "Создать" }));
     expect(
-      await screen.findByText("Выберите исполнителя — активного пользователя с ролью HR.")
+      await screen.findByText(
+        "Выберите исполнителя — активного пользователя с ролью HR или учётную запись пилота с полным доступом."
+      )
     ).toBeInTheDocument();
     expect(api.createEvent).not.toHaveBeenCalled();
 
@@ -337,5 +364,93 @@ describe("EventFormModal (orchestrator review regressions)", () => {
       )
     );
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+});
+
+/**
+ * UX feedback 2026-09-29, block A: the assignee picker was an empty <select>
+ * with no explanation whenever the directory request returned nothing, so the
+ * form was impossible to submit and the user had no way forward.
+ */
+describe("EventFormModal (assignee directory recovery)", () => {
+  const ADMIN: User = {
+    id: "55555555-5555-5555-5555-555555555555",
+    username: "pilot",
+    full_name: "Перепечать Мария Павловна",
+    role: "admin",
+    is_active: true,
+    locked_until: null,
+    last_login_at: null,
+    created_at: "2026-09-01T10:00:00Z",
+  };
+
+  const PILOT_ITEM = {
+    id: ADMIN.id,
+    username: "pilot",
+    full_name: "Перепечать Мария Павловна",
+    role: "admin" as const,
+    is_active: true,
+  };
+
+  const renderForAdmin = () =>
+    render(
+      <ToastProvider>
+        <EventFormModal open user={ADMIN} candidate={CANDIDATE} onClose={vi.fn()} onSaved={vi.fn()} />
+      </ToastProvider>
+    );
+
+  it("offers the pilot account, so the event can actually be saved", async () => {
+    vi.mocked(api.listHrUsers).mockResolvedValue({ items: [PILOT_ITEM], total: 1 });
+    const onSaved = vi.fn();
+    render(
+      <ToastProvider>
+        <EventFormModal
+          open
+          user={ADMIN}
+          candidate={CANDIDATE}
+          onClose={vi.fn()}
+          onSaved={onSaved}
+        />
+      </ToastProvider>
+    );
+
+    const select = (await screen.findByLabelText(/Исполнитель/)) as HTMLSelectElement;
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toContain(
+      "Перепечать Мария Павловна"
+    );
+
+    vi.mocked(api.createEvent).mockResolvedValue({ ...EVENT });
+    await userEvent.type(screen.getByLabelText(/Название/), "Созвон");
+    await userEvent.type(screen.getByLabelText(/Начало/), "2026-09-07T09:00");
+    await userEvent.selectOptions(select, ADMIN.id);
+    await userEvent.click(screen.getByRole("button", { name: "Создать" }));
+
+    await waitFor(() =>
+      expect(api.createEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ assignee_user_id: ADMIN.id })
+      )
+    );
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+
+  it("explains an empty directory instead of showing a bare empty select", async () => {
+    vi.mocked(api.listHrUsers).mockResolvedValue({ items: [], total: 0 });
+    renderForAdmin();
+
+    expect(
+      await screen.findByText(
+        /Активных пользователей, которым можно назначить событие, нет/
+      )
+    ).toBeInTheDocument();
+    // The picker still exists and is usable, it just has nothing to offer.
+    expect((await screen.findByLabelText(/Исполнитель/)) as HTMLSelectElement).toBeEnabled();
+  });
+
+  it("reports a failed directory request instead of failing silently", async () => {
+    vi.mocked(api.listHrUsers).mockRejectedValue(new Error("network down"));
+    renderForAdmin();
+
+    expect(await screen.findByText(/Не удалось загрузить список исполнителей/)).toBeInTheDocument();
   });
 });

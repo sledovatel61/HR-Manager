@@ -380,3 +380,49 @@
   height: 16px;
   flex-shrink: 0;
 }
+
+/* Block B: server-side candidate picker for a reminder. */
+.reminder-candidate-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.reminder-candidate-selected {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 6px);
+  font-weight: var(--font-weight-medium);
+}
+
+.reminder-candidate-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.reminder-candidate-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.reminder-candidate-list button:hover,
+.reminder-candidate-list button:focus-visible {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
+}
