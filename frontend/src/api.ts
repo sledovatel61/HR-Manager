@@ -632,11 +632,14 @@ export async function notificationDelivery(id: string): Promise<DeliveryInfo> {
 
 export async function listReminders(query: {
   status?: ReminderStatus;
+  /** Narrows to one candidate, for the candidate card's «События» tab. */
+  candidate_id?: string;
   limit?: number;
   offset?: number;
 }): Promise<ReminderListPayload> {
   const params = new URLSearchParams();
   if (query.status) params.set("status", query.status);
+  if (query.candidate_id) params.set("candidate_id", query.candidate_id);
   params.set("limit", String(query.limit ?? 20));
   params.set("offset", String(query.offset ?? 0));
   return request<ReminderListPayload>(`/reminders?${params}`);

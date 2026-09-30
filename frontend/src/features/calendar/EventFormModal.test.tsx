@@ -373,6 +373,20 @@ describe("EventFormModal (orchestrator review regressions)", () => {
  * form was impossible to submit and the user had no way forward.
  */
 describe("EventFormModal (assignee directory recovery)", () => {
+  const RECOVERY_MANAGER: User = {
+    ...HR,
+    id: "33333333-3333-3333-3333-333333333333",
+    username: "mgr",
+    role: "manager",
+  };
+  const RECOVERY_HR_ITEM = {
+    id: HR.id,
+    username: "hr1",
+    full_name: "HR Один",
+    role: "hr" as const,
+    is_active: true,
+  };
+
   const ADMIN: User = {
     id: "55555555-5555-5555-5555-555555555555",
     username: "pilot",
@@ -396,6 +410,19 @@ describe("EventFormModal (assignee directory recovery)", () => {
     render(
       <ToastProvider>
         <EventFormModal open user={ADMIN} candidate={CANDIDATE} onClose={vi.fn()} onSaved={vi.fn()} />
+      </ToastProvider>
+    );
+
+  const renderForManager = () =>
+    render(
+      <ToastProvider>
+        <EventFormModal
+          open
+          user={RECOVERY_MANAGER}
+          candidate={CANDIDATE}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />
       </ToastProvider>
     );
 
@@ -434,23 +461,81 @@ describe("EventFormModal (assignee directory recovery)", () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
   });
 
-  it("explains an empty directory instead of showing a bare empty select", async () => {
+  it("explains an empty directory and gives the admin a way out", async () => {
     vi.mocked(api.listHrUsers).mockResolvedValue({ items: [], total: 0 });
     renderForAdmin();
 
+    // The real cause: the predicate is "active user with role HR, or an active
+    // pilot_full_access account" — on a single-user install no such account
+    // exists at all, which is why the list was empty by construction.
     expect(
-      await screen.findByText(
-        /Активных пользователей, которым можно назначить событие, нет/
-      )
+      await screen.findByText(/Нет ни одного активного пользователя с ролью HR/)
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Открыть «Пользователи»/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Обновить" })).toBeInTheDocument();
     // The picker still exists and is usable, it just has nothing to offer.
     expect((await screen.findByLabelText(/Исполнитель/)) as HTMLSelectElement).toBeEnabled();
+  });
+
+  it("tells a non-admin to ask the administrator, and still offers a refresh", async () => {
+    vi.mocked(api.listHrUsers).mockResolvedValue({ items: [], total: 0 });
+    renderForManager();
+
+    expect(
+      await screen.findByText(/Обратитесь к администратору/)
+    ).toBeInTheDocument();
+    // A manager has no «Пользователи» access, so no link to a page that 403s.
+    expect(screen.queryByRole("button", { name: /Открыть «Пользователи»/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Обновить" })).toBeInTheDocument();
+  });
+
+  it("recovers from a failed directory load when «Повторить» is pressed", async () => {
+    vi.mocked(api.listHrUsers).mockRejectedValueOnce(new Error("network down"));
+    renderForAdmin();
+
+    expect(
+      await screen.findByText(/Не удалось загрузить список исполнителей/)
+    ).toBeInTheDocument();
+
+    // The retry must actually re-request, not just clear the message.
+    vi.mocked(api.listHrUsers).mockResolvedValue({
+      items: [RECOVERY_HR_ITEM],
+      total: 1,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Повторить" }));
+
+    await waitFor(() =>
+      expect(api.listHrUsers).toHaveBeenCalledTimes(2)
+    );
+    expect(
+      await screen.findByRole("option", { name: RECOVERY_HR_ITEM.full_name })
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Не удалось загрузить/)).not.toBeInTheDocument();
+  });
+
+  it("re-requests the directory when «Обновить» is pressed in the empty state", async () => {
+    vi.mocked(api.listHrUsers).mockResolvedValueOnce({ items: [], total: 0 });
+    renderForAdmin();
+    await screen.findByText(/Нет ни одного активного пользователя/);
+
+    vi.mocked(api.listHrUsers).mockResolvedValue({
+      items: [RECOVERY_HR_ITEM],
+      total: 1,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Обновить" }));
+
+    await waitFor(() => expect(api.listHrUsers).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByRole("option", { name: RECOVERY_HR_ITEM.full_name })
+    ).toBeInTheDocument();
   });
 
   it("reports a failed directory request instead of failing silently", async () => {
     vi.mocked(api.listHrUsers).mockRejectedValue(new Error("network down"));
     renderForAdmin();
 
-    expect(await screen.findByText(/Не удалось загрузить список исполнителей/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Не удалось загрузить список исполнителей/)
+    ).toBeInTheDocument();
   });
 });
