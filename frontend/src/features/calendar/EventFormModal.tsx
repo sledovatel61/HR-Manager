@@ -75,6 +75,15 @@ function validate(draft: Draft): string | null {
   return null;
 }
 
+/**
+ * Сообщение обязательного поля «Исполнитель». Раньше оно предлагалось
+ * выбрать «активного пользователя с ролью HR», но на пилотном стенде таких
+ * учётных записей нет вовсе — вместо подсказки это выглядело как
+ * неисправимая ошибка (UX feedback 2026-09-29, блок A).
+ */
+const assigneeRequiredMessage =
+  "Выберите исполнителя — активного пользователя с ролью HR или учётную запись пилота с полным доступом.";
+
 /** Create/edit event dialog with complete/postpone actions and history. */
 export function EventFormModal({
   open,
@@ -94,8 +103,15 @@ export function EventFormModal({
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [directory, setDirectory] = useState<UserListItem[]>([]);
+  const [directoryState, setDirectoryState] = useState<"idle" | "loading" | "ready" | "error">(
+    "idle"
+  );
   const [history, setHistory] = useState<EventHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // Bumped by «Повторить»/«Обновить» to re-run the directory load. Without a
+  // recovery action a failed or empty load left the user stuck in the modal
+  // (UX feedback 2026-09-29, PR #45 rework 4.1/4.2).
+  const [directoryTick, setDirectoryTick] = useState(0);
 
   // Candidate picker (create-from-calendar flow without a fixed candidate).
   const [pickedCandidate, setPickedCandidate] = useState<Candidate | null>(null);
@@ -118,18 +134,29 @@ export function EventFormModal({
   }, [open, event]);
 
   // HR directory for manager/admin assignee pickers.
+  //
+  // A failed or empty load is shown as a recovery state with an action
+  // instead of leaving an unexplained empty <select> (UX feedback
+  // 2026-09-29, block A).
   useEffect(() => {
     if (!open || !canAssign) return;
     let cancelled = false;
+    setDirectoryState("loading");
     void listHrUsers()
       .then((page) => {
-        if (!cancelled) setDirectory(page.items);
+        if (cancelled) return;
+        setDirectory(page.items);
+        setDirectoryState("ready");
       })
-      .catch(() => {});
+      .catch(() => {
+        if (cancelled) return;
+        setDirectory([]);
+        setDirectoryState("error");
+      });
     return () => {
       cancelled = true;
     };
-  }, [open, canAssign]);
+  }, [open, canAssign, directoryTick]);
 
   // History of the event (edit mode).
   useEffect(() => {
@@ -188,7 +215,7 @@ export function EventFormModal({
       return;
     }
     if (canAssign && !assigneeId) {
-      setError("Выберите исполнителя — активного пользователя с ролью HR.");
+      setError(assigneeRequiredMessage);
       return;
     }
     setSending(true);
@@ -253,7 +280,7 @@ export function EventFormModal({
     }
     if (!event) return;
     if (canAssign && !assigneeId) {
-      setError("Выберите исполнителя — активного пользователя с ролью HR.");
+      setError(assigneeRequiredMessage);
       return;
     }
     void submitUpdate({
@@ -446,38 +473,130 @@ export function EventFormModal({
           )}
         </Field>
 
-        <Field
-          label="Напоминание"
-          hint={draft.type === "reminder" ? "Момент напоминания — это дата начала" : "Необязательно, не позже начала"}
-        >
-          {(id) => (
-            <TextInput
-              id={id}
-              type="datetime-local"
-              value={draft.remindAt}
-              disabled={draft.type === "reminder"}
-              onChange={(event) => setDraft({ ...draft, remindAt: event.target.value })}
-            />
-          )}
-        </Field>
-
-        {canAssign && (
-          <Field label="Исполнитель" required hint="Активный HR">
+        {draft.type === "reminder" ? (
+          // The reminder moment of a «Напоминание» event IS its start, so the
+          // server rejects a separate remind_at. Instead of a silently
+          // disabled control (reported as broken in UX feedback 2026-09-29,
+          // block A) the value is shown as a readable fact.
+          <Field label="Момент напоминания" hint="Для события-напоминания это его дата начала">
             {(id) => (
-              <SelectInput
-                id={id}
-                value={assigneeId}
-                onChange={(event) => setAssigneeId(event.target.value)}
-              >
-                <option value="">Выберите исполнителя</option>
-                {directory.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.full_name || item.username}
-                  </option>
-                ))}
-              </SelectInput>
+              <output id={id} className="event-form-readonly">
+                {formatDateTime(fromLocalInput(draft.startsAt))}
+              </output>
             )}
           </Field>
+        ) : (
+          <Field label="Напоминание" hint="Необязательно, не позже начала события">
+            {(id, describedBy) => (
+              <>
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  type="datetime-local"
+                  value={draft.remindAt}
+                  onChange={(event) => setDraft({ ...draft, remindAt: event.target.value })}
+                />
+                {draft.remindAt && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDraft({ ...draft, remindAt: "" })}
+                  >
+                    Очистить напоминание
+                  </Button>
+                )}
+              </>
+            )}
+          </Field>
+        )}
+
+        {canAssign && (
+          <>
+            <Field
+              label="Исполнитель"
+              required
+              hint="Активный HR или учётная запись пилота с полным доступом"
+              // No inline error here: the empty directory renders its own
+              // recovery block below with the actions that actually help.
+            >
+              {(id, describedBy) => (
+                <SelectInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  value={assigneeId}
+                  disabled={directoryState === "loading"}
+                  onChange={(event) => setAssigneeId(event.target.value)}
+                >
+                  <option value="">
+                    {directoryState === "loading"
+                      ? "Загрузка исполнителей…"
+                      : "Выберите исполнителя"}
+                  </option>
+                  {directory.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.full_name || item.username}
+                    </option>
+                  ))}
+                </SelectInput>
+              )}
+            </Field>
+            {directoryState === "error" && (
+              <div className="field-error" role="alert">
+                <p>
+                  Не удалось загрузить список исполнителей — это не значит, что
+                  их нет. Проверьте соединение и повторите попытку.
+                </p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setDirectoryTick((tick) => tick + 1)}
+                >
+                  Повторить
+                </Button>
+              </div>
+            )}
+            {directoryState === "ready" && directory.length === 0 && (
+              <div className="directory-empty">
+                {user.role === "admin" ? (
+                  <>
+                    <p>
+                      Нет ни одного активного пользователя с ролью HR и ни одной
+                      учётной записи пилота с полным доступом, поэтому назначить
+                      событие пока некому. Создайте или активируйте такого
+                      пользователя.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        window.location.hash = "#/users";
+                      }}
+                    >
+                      Открыть «Пользователи»
+                    </Button>
+                  </>
+                ) : (
+                  <p>
+                    Нет ни одного активного пользователя с ролью HR и ни одной
+                    учётной записи пилота с полным доступом. Обратитесь к
+                    администратору: создать или активировать пользователя может
+                    только он.
+                  </p>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDirectoryTick((tick) => tick + 1)}
+                >
+                  Обновить
+                </Button>
+              </div>
+            )}
+          </>
         )}
 
         <Field label="Заметка" hint="Необязательно">

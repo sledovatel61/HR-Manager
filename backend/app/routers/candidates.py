@@ -27,6 +27,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.analytics_ledger import record_fact
+from app.assignees import resolve_assignee
 from app.audit import record_event
 from app.db import get_db
 from app.deps import get_current_user
@@ -709,19 +710,28 @@ def add_interaction(
 
 
 def _resolve_new_owner(db: Session, candidate: Candidate, requested_id: UUID) -> User:
-    """The new owner must be a different, active HR user."""
+    """The new owner must be a different, active assignable HR user.
+
+    «Assignable» reuses ``app.assignees`` (an active account with role ``hr``
+    or the audited pilot account that PRODUCT_SPEC §2 defines as combining HR
+    + manager + administrator powers) — the same set the owner picker offers,
+    so a visible option is never rejected by the server
+    (UX feedback 2026-09-29, block A).
+    """
     if requested_id == candidate.owner_user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Передача тому же ответственному невозможна.",
         )
-    new_owner = db.get(User, requested_id)
-    if new_owner is None or not new_owner.is_active or new_owner.role != UserRole.HR:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Новый ответственный должен быть активным пользователем с ролью HR.",
-        )
-    return new_owner
+    return resolve_assignee(
+        db,
+        requested_id,
+        missing_detail=("Новый ответственный должен быть активным пользователем с ролью HR."),
+        invalid_detail=(
+            "Новый ответственный должен быть активным пользователем с ролью HR "
+            "либо учётной записью пилота с полным доступом."
+        ),
+    )
 
 
 @router.post(

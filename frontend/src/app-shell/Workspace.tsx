@@ -3,8 +3,8 @@ import { TemplatesPage } from "../features/document-templates/TemplatesPage";
 import { MyRulesPage } from "../features/documents/MyRulesPage";
 import { useEffect, useState } from "react";
 import { logout, onUnauthorized } from "../api";
-import { Icon, type IconName } from "../design-system/icons/Icon";
-import { ROLE_LABELS, WORKING_MODE_LABELS, type CurrentUser, type UserRole } from "../types";
+import { Icon } from "../design-system/icons/Icon";
+import { ROLE_LABELS, WORKING_MODE_LABELS, type CurrentUser } from "../types";
 import CandidatesListPage from "../features/candidates/CandidatesListPage";
 import KanbanPage from "../features/candidates/KanbanPage";
 import SchedulePage from "../features/schedule/SchedulePage";
@@ -20,55 +20,15 @@ import { UpdateChannelPage } from "../features/updates/UpdateChannelPage";
 import { AdminPage } from "../features/admin/AdminPage";
 import { LicensePage } from "../features/license/LicensePage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
-import { useWorkspaceSection, type WorkspaceSection } from "./useWorkspaceSection";
+import { SettingsHub } from "./SettingsHub";
+import { SETTINGS_SECTIONS } from "./settingsGroups";
+import { SECTION_META, sectionsForRole } from "./workspaceSections";
+import { useWorkspaceSection } from "./useWorkspaceSection";
 import "./workspace.css";
 
 interface WorkspaceProps {
   current: CurrentUser;
   onLoggedOut: () => void;
-}
-
-const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconName }> = {
-  queue: { label: "Моя очередь", icon: "inbox" },
-  candidates: { label: "Кандидаты", icon: "table" },
-  calendar: { label: "Календарь", icon: "calendar" },
-  kanban: { label: "Kanban", icon: "kanban" },
-  schedule: { label: "График выхода", icon: "calendar-check" },
-  deleted: { label: "Удалённые", icon: "trash" },
-  analytics: { label: "Аналитика", icon: "bar-chart" },
-  notifications: { label: "Уведомления", icon: "bell" },
-  reminders: { label: "Напоминания", icon: "clock" },
-  documents: { label: "Списки документов", icon: "table" },
-  templates: { label: "Шаблоны документов", icon: "file-text" },
-  rules: { label: "Мои правила", icon: "settings" },
-  preferences: { label: "Настройки уведомлений", icon: "settings" },
-  integrations: { label: "Интеграции", icon: "arrow-right-left" },
-  updates: { label: "Обновления", icon: "loader" },
-  license: { label: "Лицензия", icon: "shield" },
-  admin: { label: "Администрирование", icon: "shield" },
-  users: { label: "Пользователи", icon: "users" },
-};
-
-function sectionsForRole(role: UserRole): WorkspaceSection[] {
-  // Analytics is a team-level report: manager/admin only (HR gets 403 from
-  // the API and never sees the navigation item). The notification center,
-  // reminders and preferences are available to every role; the admin
-  // screen (queue diagnostics + pilot setup) is admin-only. The backend
-  // re-checks every right regardless of the navigation.
-  const personal: WorkspaceSection[] = ["notifications", "reminders", "preferences", "integrations", "documents", "templates", "rules"];
-  if (role === "hr") {
-    return ["queue", "calendar", "kanban", "schedule", "deleted", ...personal];
-  }
-  if (role === "admin") {
-    // Диагностика запуска и обновлений — вкладка внутри «Администрирование»
-    // (бывший отдельный пункт «Готовность пилота»): права прежние,
-    // admin + update_channel_manage; backend перепроверяет и отвечает 403.
-    // Лицензия — только admin (загрузка/замена).
-    // «Пользователи» — управление учётными записями, строго admin-only
-    // (и в навигации, и повторно внутри самой страницы).
-    return ["candidates", "calendar", "kanban", "schedule", "deleted", "analytics", ...personal, "updates", "license", "admin", "users"];
-  }
-  return ["candidates", "calendar", "kanban", "schedule", "deleted", "analytics", ...personal, "updates", "admin"];
 }
 
 function initialsOf(fullName: string, username: string): string {
@@ -83,6 +43,12 @@ function initialsOf(fullName: string, username: string): string {
 export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
   const { user } = current;
   const sections = sectionsForRole(user.role);
+  // Ежедневные разделы — то, что осталось в меню; остальное живёт в
+  // «Настройках». Фильтр по общему с `sectionsForRole`, поэтому права и
+  // видимость не могут разойтись.
+  const dailySections = sections.filter(
+    (item) => item !== "settings" && !SETTINGS_SECTIONS.includes(item),
+  );
   const [section, navigate, adminTab, navigateAdminTab] =
     useWorkspaceSection(sections[0]);
   // Deep-link на раздел, недоступный роли (например, #/admin у HR или старый
@@ -126,7 +92,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           <span>HR Manager</span>
         </div>
         <nav className="sidebar-nav" aria-label="Разделы">
-          {sections.map((item) => (
+          {dailySections.map((item) => (
             <button
               key={item}
               type="button"
@@ -139,12 +105,36 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             </button>
           ))}
         </nav>
+        <nav className="sidebar-nav sidebar-nav-secondary" aria-label="Настройки">
+          {sections
+            .filter((item) => item === "settings")
+            .map((item) => (
+              <button
+                key={item}
+                type="button"
+                className={`sidebar-link sidebar-link-settings ${item === activeSection ? "is-active" : ""}`}
+                aria-current={item === activeSection ? "page" : undefined}
+                onClick={() => navigate(item)}
+              >
+                <Icon name={SECTION_META[item].icon} size={16} />
+                <span>{SECTION_META[item].label}</span>
+              </button>
+            ))}
+        </nav>
       </aside>
 
       <div className="workspace-main">
         <header className="topbar">
           <h1 className="topbar-title">{SECTION_META[activeSection].label}</h1>
           <div className="topbar-right">
+            <button
+              type="button"
+              className={`topbar-settings ${activeSection === "settings" ? "is-active" : ""}`}
+              onClick={() => navigate("settings")}
+            >
+              <Icon name="settings" size={16} />
+              Настройки
+            </button>
             <NotificationBell onOpenCandidate={openCandidate} />
             <div className="topbar-user">
             <span className="topbar-avatar" aria-hidden="true">
@@ -179,7 +169,9 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           {activeSection === "notifications" && (
             <NotificationCenterPage onOpenCandidate={openCandidate} />
           )}
-          {activeSection === "reminders" && <RemindersPage user={user} />}
+          {activeSection === "reminders" && (
+            <RemindersPage user={user} onOpenCandidate={openCandidate} />
+          )}
           {activeSection === "preferences" && <PreferencesPage />}
           {activeSection === "documents" && <DocumentListsPage />}
           {activeSection === "templates" && <TemplatesPage />}
@@ -191,6 +183,13 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             <AdminPage role={user.role} tab={adminTab} onTabChange={navigateAdminTab} />
           )}
           {activeSection === "users" && <UsersPage currentUser={user} />}
+          {activeSection === "settings" && (
+            <SettingsHub
+              allowed={sections}
+              activeSection={activeSection}
+              onOpen={navigate}
+            />
+          )}
           {activeSection !== "calendar" &&
             activeSection !== "kanban" &&
             activeSection !== "schedule" &&
@@ -205,7 +204,8 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
             activeSection !== "updates" &&
             activeSection !== "license" &&
             activeSection !== "admin" &&
-            activeSection !== "users" && (
+            activeSection !== "users" &&
+            activeSection !== "settings" && (
             <CandidatesListPage
               key={activeSection}
               user={user}

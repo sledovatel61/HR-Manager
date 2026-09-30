@@ -113,6 +113,22 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* Block C: the move control is the primary way to cross the long funnel in
+   one action, so it carries a visible label instead of a bare select. */
+.kanban-move-label {
+  flex: 1 0 100%;
+  color: var(--text-tertiary);
+  font-size: var(--text-size-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kanban-move-select {
+  flex: 1 1 100%;
+  min-width: 0;
 }
 
 .kanban-card-owner {

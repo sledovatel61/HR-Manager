@@ -676,6 +676,11 @@ export interface Reminder {
   version: number;
   created_at: string;
   updated_at: string;
+  /**
+   * Display name of the linked candidate (block B). Convenience only — the
+   * server still enforces every access check.
+   */
+  candidate_full_name: string | null;
 }
 
 export interface ReminderListPayload {

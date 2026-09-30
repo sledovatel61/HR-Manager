@@ -41,6 +41,7 @@ const REMINDER: Reminder = {
   version: 1,
   created_at: "2026-09-07T08:00:00Z",
   updated_at: "2026-09-07T08:00:00Z",
+  candidate_full_name: null,
 };
 
 const CANDIDATE: Candidate = {
@@ -146,5 +147,91 @@ describe("RemindersPage", () => {
     await waitFor(() => {
       expect(complete).toHaveBeenCalledWith(REMINDER.id);
     });
+  });
+});
+
+/**
+ * UX feedback 2026-09-29, block B: the candidate picker preloaded 200
+ * candidates into a <select> with no search, so anything beyond the first
+ * page was unreachable and the field could not be filtered. It must now be a
+ * server-side search over ФИО / телефон / email, keeping «без кандидата».
+ */
+describe("RemindersPage — candidate search (block B)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listTimezones).mockResolvedValue({ timezones: ["Europe/Moscow"] });
+    vi.mocked(api.listReminders).mockResolvedValue(list([]));
+  });
+
+  const renderPage = () =>
+    render(
+      <ToastProvider>
+        <RemindersPage user={{ id: "33333333-3333-4333-8333-333333333333", role: "hr" }} />
+      </ToastProvider>,
+    );
+
+  it("searches candidates on the server instead of preloading a page", async () => {
+    const search = vi
+      .mocked(api.listCandidates)
+      .mockResolvedValue({ items: [CANDIDATE], total: 1, limit: 8, offset: 0 });
+    renderPage();
+    await screen.findByLabelText(/Кандидат/);
+
+    // Nothing is fetched up front any more.
+    expect(search).not.toHaveBeenCalled();
+
+    await userEvent.type(screen.getByPlaceholderText(/Поиск по ФИО/), "Тест");
+
+    await waitFor(() => expect(search).toHaveBeenCalled());
+    expect(search.mock.calls[0][0]).toMatchObject({ query: "Тест", limit: 8 });
+    expect(await screen.findByText("Тестовый кандидат")).toBeTruthy();
+
+    await userEvent.click(screen.getByText("Тестовый кандидат"));
+    const create = vi.mocked(api.createReminder).mockResolvedValue(REMINDER);
+    await userEvent.type(screen.getByLabelText(/Название/), "Позвонить");
+    await userEvent.type(screen.getByLabelText(/Когда/), "2026-09-08T12:00");
+    await userEvent.click(screen.getByRole("button", { name: "Создать напоминание" }));
+
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ candidate_id: CANDIDATE.id }))
+    );
+  });
+
+  it("keeps the «без кандидата» option and says so when nothing matches", async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue({ items: [], total: 0, limit: 8, offset: 0 });
+    renderPage();
+    await userEvent.type(screen.getByPlaceholderText(/Поиск по ФИО/), "несуществующий");
+
+    expect(await screen.findByText(/Ничего не найдено/)).toBeTruthy();
+    expect(screen.getByText(/может остаться и без кандидата/)).toBeTruthy();
+  });
+
+  it("opens the linked candidate card from a reminder row", async () => {
+    const onOpenCandidate = vi.fn();
+    vi.mocked(api.listReminders).mockResolvedValue(
+      list([
+        {
+          ...REMINDER,
+          candidate_id: CANDIDATE.id,
+          candidate_full_name: "Тестовый кандидат",
+          event_id: "44444444-4444-4444-8444-444444444444",
+        },
+      ]),
+    );
+    render(
+      <ToastProvider>
+        <RemindersPage
+          user={{ id: "33333333-3333-4333-8333-333333333333", role: "hr" }}
+          onOpenCandidate={onOpenCandidate}
+        />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText("Позвонить кандидату")).toBeTruthy());
+    // The row says it came from the calendar, so the two views are linked.
+    expect(screen.getByText("из события календаря")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Тестовый кандидат" }));
+    expect(onOpenCandidate).toHaveBeenCalledWith(CANDIDATE.id);
   });
 });

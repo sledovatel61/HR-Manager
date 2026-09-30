@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../../design-system/components/Toast";
-import type { Candidate, User } from "../../types";
+import type { Candidate, Reminder, User } from "../../types";
 import { CandidateDrawer } from "./CandidateDrawer";
 
 vi.mock("../../api", async (importOriginal) => {
@@ -15,6 +15,7 @@ vi.mock("../../api", async (importOriginal) => {
     createCandidateInteraction: vi.fn(),
     listCandidateTransfers: vi.fn(),
     listEvents: vi.fn(),
+    listReminders: vi.fn(),
     updateEvent: vi.fn(),
     listHrUsers: vi.fn(),
     listEventHistory: vi.fn(),
@@ -78,6 +79,12 @@ beforeEach(() => {
   vi.mocked(api.listCandidateInteractions).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
   vi.mocked(api.listCandidateTransfers).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
   vi.mocked(api.listEvents).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+  vi.mocked(api.listReminders).mockResolvedValue({
+    items: [],
+    total: 0,
+    limit: 20,
+    offset: 0,
+  });
   vi.mocked(api.listEventHistory).mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
   vi.mocked(api.fetchWorkScheduleSuggestions).mockResolvedValue({
     organizations: [],
@@ -354,5 +361,125 @@ describe("CandidateDrawer events tab — «Показать ещё» accumulates
     );
     // Nothing left to load.
     expect(screen.queryByRole("button", { name: /Показать ещё/ })).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Напоминания кандидата в карточке (UX 2026-09-29, PR #45 rework 4.3)
+// ---------------------------------------------------------------------------
+
+describe("CandidateDrawer events tab — related reminders", () => {
+  const makeReminder = (over: Partial<Reminder> = {}): Reminder => ({
+    // `candidate_full_name` is optional on the wire but non-optional on the
+    // type, so the fixture sets it explicitly instead of spreading a partial.
+    candidate_full_name: CANDIDATE.full_name,
+    id: "rem-1",
+    owner_user_id: HR.id,
+    owner_username: "hr1",
+    assignee_user_id: HR.id,
+    assignee_username: "hr1",
+    title: "Перезвонить по офферу",
+    note: null,
+    candidate_id: CANDIDATE.id,
+    event_id: null,
+    due_at: "2026-09-08T09:00:00Z",
+    timezone: "Europe/Moscow",
+    importance: "normal",
+    recurrence: "none",
+    status: "active",
+    completed_at: null,
+    occurrence: 1,
+    version: 1,
+    created_at: "2026-09-07T09:00:00Z",
+    updated_at: "2026-09-07T09:00:00Z",
+    ...over,
+  });
+
+  it("shows the candidate's reminders, marking the ones that came from an event", async () => {
+    vi.mocked(api.listReminders).mockResolvedValue({
+      items: [
+        makeReminder(),
+        makeReminder({
+          id: "rem-2",
+          title: "Напомнить о документах",
+          event_id: "55555555-5555-5555-5555-555555555555",
+          status: "completed",
+        }),
+      ],
+      total: 2,
+      limit: 50,
+      offset: 0,
+    });
+    renderDrawer();
+
+    await userEvent.click(await screen.findByRole("tab", { name: "События" }));
+    const section = await screen.findByRole("region", { name: "Напоминания кандидата" });
+    expect(within(section).getByText("Перезвонить по офферу")).toBeInTheDocument();
+    expect(within(section).getByText(/из события/)).toBeInTheDocument();
+    // A standalone reminder is not mislabelled as coming from an event.
+    expect(within(section).getAllByText(/из события/)).toHaveLength(1);
+    // The status is shown, so «done» and «still due» are distinguishable.
+    expect(within(section).getByText(/Выполнено/)).toBeInTheDocument();
+  });
+
+  it("asks the server for this candidate's reminders only", async () => {
+    renderDrawer();
+    await userEvent.click(await screen.findByRole("tab", { name: "События" }));
+
+    await waitFor(() =>
+      expect(api.listReminders).toHaveBeenCalledWith(
+        expect.objectContaining({ candidate_id: CANDIDATE.id })
+      )
+    );
+  });
+
+  it("says so when the candidate has no reminders", async () => {
+    renderDrawer();
+    await userEvent.click(await screen.findByRole("tab", { name: "События" }));
+
+    expect(
+      await screen.findByText("Напоминаний по этому кандидату нет.")
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the events visible when the reminder request fails", async () => {
+    vi.mocked(api.listEvents).mockResolvedValue({
+      items: [
+        {
+          ...({
+            id: "ev-1",
+            candidate_id: CANDIDATE.id,
+            candidate_full_name: CANDIDATE.full_name,
+            type: "call",
+            title: "Собеседование",
+            note: null,
+            status: "scheduled",
+            starts_at: "2026-09-07T09:00:00Z",
+            ends_at: null,
+            remind_at: null,
+            completed_at: null,
+            author_user_id: HR.id,
+            author_username: "hr1",
+            assignee_user_id: HR.id,
+            assignee_username: "hr1",
+            version: 1,
+            created_at: "2026-09-06T09:00:00Z",
+            updated_at: "2026-09-06T09:00:00Z",
+          } as const),
+        },
+      ],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+    vi.mocked(api.listReminders).mockRejectedValue(new api.ApiError(500, "boom"));
+    renderDrawer();
+
+    await userEvent.click(await screen.findByRole("tab", { name: "События" }));
+    // A broken reminders call must not take the whole tab down with it.
+    expect(await screen.findByText(/Собеседование/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("Не удалось загрузить напоминания кандидата.")
+    ).toBeInTheDocument();
   });
 });

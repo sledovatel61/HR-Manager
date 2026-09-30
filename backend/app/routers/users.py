@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.assignees import list_assignable_users
 from app.audit import record_event
 from app.config import Settings
 from app.db import get_db
@@ -160,17 +161,25 @@ def create_user(
 @router.get(
     "/hr",
     response_model=UserListItems,
-    summary="List active HR users (directory for owner pickers)",
+    summary="List active users that can be an assignee (owner/assignee pickers)",
 )
 def list_hr_users(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ) -> UserListItems:
-    users = db.scalars(
-        select(User)
-        .where(User.role == UserRole.HR, User.is_active.is_(True))
-        .order_by(User.username)
-    ).all()
+    """Assignable directory for the event/transfer/owner pickers.
+
+    Open to every authenticated role on purpose: the picker is a lookup of
+    *who may be assigned work*, not a user-administration screen (it exposes
+    only id/login/full name — see ``UserListItem``), and hiding it behind
+    ``admin`` is exactly what left the «Исполнитель» select empty for the
+    pilot account (UX feedback 2026-09-29, block A).
+
+    The returned set is the same predicate the event/transfer validation
+    uses (``app.assignees``), so a visible option can never be rejected by
+    the server as «не активный пользователь с ролью HR».
+    """
+    users = list_assignable_users(db)
     return UserListItems(
         items=[UserListItem.model_validate(user) for user in users],
         total=len(users),

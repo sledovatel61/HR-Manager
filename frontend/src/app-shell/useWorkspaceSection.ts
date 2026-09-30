@@ -18,7 +18,8 @@ export type WorkspaceSection =
   | "updates"
   | "license"
   | "admin"
-  | "users";
+  | "users"
+  | "settings";
 
 /** Вкладки внутри «Администрирование»: очередь/пилот и диагностика запуска. */
 export type AdminTab = "queue" | "diagnostics";
@@ -42,6 +43,7 @@ const SECTION_HASHES: Record<WorkspaceSection, string> = {
   license: "#/license",
   admin: "#/admin",
   users: "#/users",
+  settings: "#/settings",
 };
 
 export const ADMIN_TAB_HASHES: Record<AdminTab, string> = {
