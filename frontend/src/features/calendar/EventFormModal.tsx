@@ -108,6 +108,10 @@ export function EventFormModal({
   );
   const [history, setHistory] = useState<EventHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // Bumped by «Повторить»/«Обновить» to re-run the directory load. Without a
+  // recovery action a failed or empty load left the user stuck in the modal
+  // (UX feedback 2026-09-29, PR #45 rework 4.1/4.2).
+  const [directoryTick, setDirectoryTick] = useState(0);
 
   // Candidate picker (create-from-calendar flow without a fixed candidate).
   const [pickedCandidate, setPickedCandidate] = useState<Candidate | null>(null);
@@ -152,7 +156,7 @@ export function EventFormModal({
     return () => {
       cancelled = true;
     };
-  }, [open, canAssign]);
+  }, [open, canAssign, directoryTick]);
 
   // History of the event (edit mode).
   useEffect(() => {
@@ -513,11 +517,8 @@ export function EventFormModal({
               label="Исполнитель"
               required
               hint="Активный HR или учётная запись пилота с полным доступом"
-              error={
-                directoryState === "ready" && directory.length === 0
-                  ? "Активных пользователей, которым можно назначить событие, нет. Создайте HR-пользователя в разделе «Пользователи»."
-                  : undefined
-              }
+              // No inline error here: the empty directory renders its own
+              // recovery block below with the actions that actually help.
             >
               {(id, describedBy) => (
                 <SelectInput
@@ -541,10 +542,59 @@ export function EventFormModal({
               )}
             </Field>
             {directoryState === "error" && (
-              <p className="field-error" role="alert">
-                Не удалось загрузить список исполнителей. Проверьте соединение и
-                повторите попытку.
-              </p>
+              <div className="field-error" role="alert">
+                <p>
+                  Не удалось загрузить список исполнителей — это не значит, что
+                  их нет. Проверьте соединение и повторите попытку.
+                </p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setDirectoryTick((tick) => tick + 1)}
+                >
+                  Повторить
+                </Button>
+              </div>
+            )}
+            {directoryState === "ready" && directory.length === 0 && (
+              <div className="directory-empty">
+                {user.role === "admin" ? (
+                  <>
+                    <p>
+                      Нет ни одного активного пользователя с ролью HR и ни одной
+                      учётной записи пилота с полным доступом, поэтому назначить
+                      событие пока некому. Создайте или активируйте такого
+                      пользователя.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        window.location.hash = "#/users";
+                      }}
+                    >
+                      Открыть «Пользователи»
+                    </Button>
+                  </>
+                ) : (
+                  <p>
+                    Нет ни одного активного пользователя с ролью HR и ни одной
+                    учётной записи пилота с полным доступом. Обратитесь к
+                    администратору: создать или активировать пользователя может
+                    только он.
+                  </p>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDirectoryTick((tick) => tick + 1)}
+                >
+                  Обновить
+                </Button>
+              </div>
             )}
           </>
         )}

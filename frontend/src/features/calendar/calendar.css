@@ -398,3 +398,26 @@
     min-width: 240px;
   }
 }
+
+/* Восстановление в каталоге исполнителей (UX 2026-09-29, PR #45 rework) */
+
+.field-error p,
+.directory-empty p {
+  margin: 0 0 8px;
+  line-height: 1.45;
+}
+
+.field-error button,
+.directory-empty button {
+  margin-right: 6px;
+}
+
+.directory-empty {
+  margin-top: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #5a6472;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}

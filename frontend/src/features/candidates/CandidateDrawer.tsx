@@ -10,6 +10,7 @@ import {
   listCandidateInteractions,
   listCandidateTransfers,
   listEvents,
+  listReminders,
   updateCandidate,
   updateEvent,
   type DuplicateCandidateError,
@@ -37,10 +38,12 @@ import {
   type CandidateSource,
   type CandidateStage,
   type CandidateTransfer,
+  type Reminder,
   type User,
   type WorkScheduleSuggestions,
 } from "../../types";
 import { displayTime, formatShortDate } from "../schedule/scheduleDate";
+import { REMINDER_STATUS_LABELS } from "../notifications/reminderLabels";
 import { DuplicateResolveDialog } from "./DuplicateResolveDialog";
 import { MessagesTab } from "./MessagesTab";
 import { TransferDialog } from "./TransferDialog";
@@ -977,6 +980,77 @@ interface EventsTabProps {
 
 /** Events of the candidate: server-filtered list, create/edit dialog and
  * quick complete/postpone actions. */
+/**
+ * Напоминания кандидата inside the «События» tab (UX 2026-09-29, rework 4.3).
+ *
+ * A reminder created from an event lands in «Напоминания», but without this
+ * the candidate card showed no trace of it — the owner asked that every
+ * reminder «падает» into the card too, and the link has to be visible from
+ * both sides. Read-only here: the actions live in «Напоминания», and this
+ * section exists to answer «does this person have something due?».
+ */
+function CandidateReminders({
+  candidate,
+  reloadTick,
+}: {
+  candidate: Candidate;
+  reloadTick: number;
+}) {
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setFailed(false);
+    void listReminders({ candidate_id: candidate.id, limit: 50 })
+      .then((page) => {
+        if (cancelled) return;
+        setReminders(page.items);
+      })
+      .catch(() => {
+        // A failure here must not hide the events above it.
+        if (cancelled) return;
+        setReminders([]);
+        setFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [candidate.id, reloadTick]);
+
+  return (
+    <section className="candidate-reminders" aria-label="Напоминания кандидата">
+      <h3 className="events-section-title">Напоминания</h3>
+      {loading && <SkeletonRows rows={2} columns={2} />}
+      {!loading && failed && (
+        <p className="muted-text">Не удалось загрузить напоминания кандидата.</p>
+      )}
+      {!loading && !failed && reminders.length === 0 && (
+        <p className="muted-text">Напоминаний по этому кандидату нет.</p>
+      )}
+      {!loading && !failed && reminders.length > 0 && (
+        <ul className="candidate-reminder-list">
+          {reminders.map((reminder) => (
+            <li key={reminder.id} className="candidate-reminder-item">
+              <span className="candidate-reminder-title">{reminder.title}</span>
+              <span className="candidate-reminder-meta">
+                {formatDateTime(reminder.due_at)} ·{" "}
+                {REMINDER_STATUS_LABELS[reminder.status]}
+                {reminder.event_id && " · из события"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
   const { pushToast } = useToast();
   const [items, setItems] = useState<CalendarEvent[]>([]);
@@ -1088,6 +1162,8 @@ function EventsTab({ candidate, user, onChanged }: EventsTabProps) {
           )}
         </>
       )}
+
+      <CandidateReminders candidate={candidate} reloadTick={reloadTick} />
 
       <EventFormModal
         open={createOpen}

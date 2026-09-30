@@ -98,6 +98,7 @@ def list_reminders(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     status_filter: str | None = Query(default=None, alias="status"),
+    candidate_id: UUID | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> ReminderList:
@@ -107,8 +108,16 @@ def list_reminders(
     seeing a reminder they created even when it was delegated to another
     user, and the assignee sees reminders handed to them. Everyone else
     gets an empty page (existence never leaks).
+
+    ``candidate_id`` narrows the page to one candidate, so the candidate card
+    can show the reminders that belong to it. It is applied *after* the
+    owner/assignee scope, which is what keeps it safe: a caller who does not
+    own the candidate's reminders still gets an empty page rather than a
+    signal that some exist.
     """
     filters = [or_(Reminder.assignee_user_id == user.id, Reminder.owner_user_id == user.id)]
+    if candidate_id is not None:
+        filters.append(Reminder.candidate_id == candidate_id)
     if status_filter is not None:
         if status_filter not in ("active", "completed", "cancelled"):
             raise HTTPException(
