@@ -3,9 +3,10 @@
 Textual MVP of roadmap stage 6: administrators (or `document_lists_manage`)
 manage versions of textual templates through the interface; employees see the
 published version and can render a document for a candidate they may access.
-No PDF/DOCX conversion and no delivery to candidates. Plain-text files may be
-imported as a draft (:mod:`app.template_import`); the file itself is never
-stored, only the validated text that was read out of it.
+No delivery to candidates. Plain-text and ``.docx`` files may be imported as
+a draft (:mod:`app.template_import`); the file itself is never stored, only
+the validated text that was read out of it. PDF is refused — it describes a
+page, not text — and the refusal says what to do instead.
 """
 
 from uuid import UUID
@@ -99,7 +100,7 @@ async def import_template(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> TemplateOut:
-    """Create a template draft from an uploaded plain-text file.
+    """Create a template draft from an uploaded text or ``.docx`` file.
 
     The upload is never written to disk: it is read once, size-capped,
     extension-checked and decoded, and only the validated text becomes the

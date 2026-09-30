@@ -38,6 +38,7 @@ import {
   REVIEW_KINDS,
   TEMPLATE_IMPORT_EXTENSIONS,
   TEMPLATE_IMPORT_MAX_BYTES,
+  TEMPLATE_IMPORT_PDF_NOTE,
   describeImportFile,
   friendlyPlaceholderName,
   kindLabel as kindLabelOf,
@@ -751,6 +752,7 @@ function TemplateImporter({
           методички в шаблон не попадут — вставляйте их через поля «ФИО кандидата»
           и другие подстановки.
         </p>
+        <p className="template-meta">{TEMPLATE_IMPORT_PDF_NOTE}</p>
         <div className="template-actions">
           <Button type="submit" variant="primary" disabled={!canSubmit}>
             Загрузить как черновик
