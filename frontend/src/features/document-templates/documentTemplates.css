@@ -174,3 +174,82 @@
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
 }
+
+/* --- Block E: friendly variables, import form, legal-form note (UX 2026-09-29) */
+
+.template-token-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.template-token-picker .template-meta {
+  flex-basis: 100%;
+}
+
+.template-token-picker button {
+  max-width: 100%;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text-strong, inherit);
+  background: #f3f5f8;
+  border: 1px solid #d8dee7;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.template-token-picker button:hover {
+  background: #e8edf4;
+}
+
+.template-token-picker button:focus-visible {
+  outline: 2px solid #2f6fed;
+  outline-offset: 2px;
+}
+
+.template-token-syntax {
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.template-token-syntax summary {
+  cursor: pointer;
+  color: #4a5567;
+}
+
+.template-token-syntax code {
+  padding: 1px 4px;
+  font-size: 12px;
+  background: #f3f5f8;
+  border-radius: 4px;
+}
+
+.template-file-input {
+  width: 100%;
+  padding: 8px;
+  font: inherit;
+  border: 1px dashed #b6c0cf;
+  border-radius: 8px;
+  background: #fafbfd;
+}
+
+.template-form-error {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #b42318;
+}
+
+.template-review-note {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #7a4a06;
+  background: #fff7e6;
+  border-left: 3px solid #f0a020;
+  border-radius: 4px;
+}

@@ -17,7 +17,11 @@ from sqlalchemy import create_engine, text
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
-HEAD_REVISION = "0016"
+# The head of the migration chain. Must equal `alembic heads`; a dedicated
+# non-integration test below fails the moment a migration is added without
+# bumping this, so the drift is caught in the fast job rather than only in
+# «Backend integration tests (PostgreSQL)».
+HEAD_REVISION = "0017"
 EXPECTED_TABLES = {
     "users",
     "user_sessions",
@@ -136,3 +140,31 @@ def test_migrations_are_idempotent() -> None:
             assert version == HEAD_REVISION
     finally:
         engine.dispose()
+
+
+def test_head_revision_matches_the_migration_chain() -> None:
+    """``HEAD_REVISION`` must equal ``alembic heads`` — in the *fast* job too.
+
+    Without this, adding a migration without bumping the constant only fails
+    in «Backend integration tests (PostgreSQL)», which most contributors never
+    run locally; the chain and the test then disagree silently until release.
+    Reading the chain directly needs no database, so this runs everywhere.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "heads"],
+        cwd=BACKEND_DIR,
+        env={**os.environ, "DATABASE_URL": "sqlite://", "APP_ENV": "test"},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    heads = {
+        line.split()[0]
+        for line in result.stdout.splitlines()
+        if line.strip() and not line.startswith(" ")
+    }
+    # Exactly one head: a branched chain would make «upgrade head» ambiguous.
+    assert heads == {HEAD_REVISION}, (
+        f"HEAD_REVISION={HEAD_REVISION!r} does not match `alembic heads`={sorted(heads)}. "
+        "Bump HEAD_REVISION in tests/test_migrations.py."
+    )

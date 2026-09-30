@@ -270,3 +270,83 @@
   gap: 4px;
   color: var(--text-secondary, #5b6b73);
 }
+
+/* UX feedback 2026-09-29, block F: recovery hint under an empty list picker. */
+.rule-list-empty {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-sm, 6px);
+}
+
+/* --- Block D: мастер списка документов --- */
+.wizard-steps {
+  display: flex;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  flex-wrap: wrap;
+}
+
+.wizard-steps button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 6px);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.wizard-steps button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.wizard-steps .is-current button {
+  border-color: var(--accent-default);
+  font-weight: var(--font-weight-medium);
+}
+
+.wizard-steps-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--surface-sunken);
+  font-size: var(--text-size-xs);
+}
+
+.wizard-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.wizard-nav {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.document-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 6px);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.list-preview {
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-sunken);
+}

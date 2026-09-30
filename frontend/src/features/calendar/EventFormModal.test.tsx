@@ -148,10 +148,35 @@ describe("EventFormModal (create)", () => {
     expect(api.createEvent).not.toHaveBeenCalled();
   });
 
-  it("disables remind_at for reminder-type events", async () => {
+  // UX feedback 2026-09-29, block A: the reminder control used to be rendered
+  // `disabled` for reminder-type events, which the reporter read as a broken
+  // form. The moment is now shown as a readable fact instead of a blocked input.
+  it("shows the reminder moment as a readable fact for reminder-type events", async () => {
     renderCreate(CANDIDATE);
+    await userEvent.type(screen.getByLabelText(/Начало/), "2026-09-07T09:00");
     await userEvent.selectOptions(screen.getByLabelText("Тип события"), "reminder");
-    expect(screen.getByLabelText(/Напоминание/)).toBeDisabled();
+
+    expect(screen.queryByLabelText(/Напоминание/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Момент напоминания")).toHaveTextContent(/2026/);
+  });
+
+  it("offers an explicit clear action for the reminder moment", async () => {
+    vi.mocked(api.createEvent).mockResolvedValue({ ...EVENT });
+    renderCreate(CANDIDATE);
+    await userEvent.type(screen.getByLabelText(/Начало/), "2026-09-07T09:00");
+    const remind = screen.getByLabelText(/Напоминание/) as HTMLInputElement;
+    expect(remind).toBeEnabled();
+
+    await userEvent.type(remind, "2026-09-06T18:00");
+    await userEvent.click(screen.getByRole("button", { name: "Очистить напоминание" }));
+    expect((screen.getByLabelText(/Напоминание/) as HTMLInputElement).value).toBe("");
+
+    // ...and the cleared value is what reaches the API.
+    await userEvent.type(screen.getByLabelText(/Название/), "Созвон");
+    await userEvent.click(screen.getByRole("button", { name: "Создать" }));
+    await waitFor(() =>
+      expect(api.createEvent).toHaveBeenCalledWith(expect.objectContaining({ remind_at: null }))
+    );
   });
 });
 
@@ -283,7 +308,9 @@ describe("EventFormModal (orchestrator review regressions)", () => {
     await userEvent.type(screen.getByLabelText(/Начало/), "2026-09-07T09:00");
     await userEvent.click(screen.getByRole("button", { name: "Создать" }));
     expect(
-      await screen.findByText("Выберите исполнителя — активного пользователя с ролью HR.")
+      await screen.findByText(
+        "Выберите исполнителя — активного пользователя с ролью HR или учётную запись пилота с полным доступом."
+      )
     ).toBeInTheDocument();
     expect(api.createEvent).not.toHaveBeenCalled();
 
@@ -337,5 +364,178 @@ describe("EventFormModal (orchestrator review regressions)", () => {
       )
     );
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+});
+
+/**
+ * UX feedback 2026-09-29, block A: the assignee picker was an empty <select>
+ * with no explanation whenever the directory request returned nothing, so the
+ * form was impossible to submit and the user had no way forward.
+ */
+describe("EventFormModal (assignee directory recovery)", () => {
+  const RECOVERY_MANAGER: User = {
+    ...HR,
+    id: "33333333-3333-3333-3333-333333333333",
+    username: "mgr",
+    role: "manager",
+  };
+  const RECOVERY_HR_ITEM = {
+    id: HR.id,
+    username: "hr1",
+    full_name: "HR Один",
+    role: "hr" as const,
+    is_active: true,
+  };
+
+  const ADMIN: User = {
+    id: "55555555-5555-5555-5555-555555555555",
+    username: "pilot",
+    full_name: "Перепечать Мария Павловна",
+    role: "admin",
+    is_active: true,
+    locked_until: null,
+    last_login_at: null,
+    created_at: "2026-09-01T10:00:00Z",
+  };
+
+  const PILOT_ITEM = {
+    id: ADMIN.id,
+    username: "pilot",
+    full_name: "Перепечать Мария Павловна",
+    role: "admin" as const,
+    is_active: true,
+  };
+
+  const renderForAdmin = () =>
+    render(
+      <ToastProvider>
+        <EventFormModal open user={ADMIN} candidate={CANDIDATE} onClose={vi.fn()} onSaved={vi.fn()} />
+      </ToastProvider>
+    );
+
+  const renderForManager = () =>
+    render(
+      <ToastProvider>
+        <EventFormModal
+          open
+          user={RECOVERY_MANAGER}
+          candidate={CANDIDATE}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      </ToastProvider>
+    );
+
+  it("offers the pilot account, so the event can actually be saved", async () => {
+    vi.mocked(api.listHrUsers).mockResolvedValue({ items: [PILOT_ITEM], total: 1 });
+    const onSaved = vi.fn();
+    render(
+      <ToastProvider>
+        <EventFormModal
+          open
+          user={ADMIN}
+          candidate={CANDIDATE}
+          onClose={vi.fn()}
+          onSaved={onSaved}
+        />
+      </ToastProvider>
+    );
+
+    const select = (await screen.findByLabelText(/Исполнитель/)) as HTMLSelectElement;
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toContain(
+      "Перепечать Мария Павловна"
+    );
+
+    vi.mocked(api.createEvent).mockResolvedValue({ ...EVENT });
+    await userEvent.type(screen.getByLabelText(/Название/), "Созвон");
+    await userEvent.type(screen.getByLabelText(/Начало/), "2026-09-07T09:00");
+    await userEvent.selectOptions(select, ADMIN.id);
+    await userEvent.click(screen.getByRole("button", { name: "Создать" }));
+
+    await waitFor(() =>
+      expect(api.createEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ assignee_user_id: ADMIN.id })
+      )
+    );
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+
+  it("explains an empty directory and gives the admin a way out", async () => {
+    vi.mocked(api.listHrUsers).mockResolvedValue({ items: [], total: 0 });
+    renderForAdmin();
+
+    // The real cause: the predicate is "active user with role HR, or an active
+    // pilot_full_access account" — on a single-user install no such account
+    // exists at all, which is why the list was empty by construction.
+    expect(
+      await screen.findByText(/Нет ни одного активного пользователя с ролью HR/)
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Открыть «Пользователи»/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Обновить" })).toBeInTheDocument();
+    // The picker still exists and is usable, it just has nothing to offer.
+    expect((await screen.findByLabelText(/Исполнитель/)) as HTMLSelectElement).toBeEnabled();
+  });
+
+  it("tells a non-admin to ask the administrator, and still offers a refresh", async () => {
+    vi.mocked(api.listHrUsers).mockResolvedValue({ items: [], total: 0 });
+    renderForManager();
+
+    expect(
+      await screen.findByText(/Обратитесь к администратору/)
+    ).toBeInTheDocument();
+    // A manager has no «Пользователи» access, so no link to a page that 403s.
+    expect(screen.queryByRole("button", { name: /Открыть «Пользователи»/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Обновить" })).toBeInTheDocument();
+  });
+
+  it("recovers from a failed directory load when «Повторить» is pressed", async () => {
+    vi.mocked(api.listHrUsers).mockRejectedValueOnce(new Error("network down"));
+    renderForAdmin();
+
+    expect(
+      await screen.findByText(/Не удалось загрузить список исполнителей/)
+    ).toBeInTheDocument();
+
+    // The retry must actually re-request, not just clear the message.
+    vi.mocked(api.listHrUsers).mockResolvedValue({
+      items: [RECOVERY_HR_ITEM],
+      total: 1,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Повторить" }));
+
+    await waitFor(() =>
+      expect(api.listHrUsers).toHaveBeenCalledTimes(2)
+    );
+    expect(
+      await screen.findByRole("option", { name: RECOVERY_HR_ITEM.full_name })
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Не удалось загрузить/)).not.toBeInTheDocument();
+  });
+
+  it("re-requests the directory when «Обновить» is pressed in the empty state", async () => {
+    vi.mocked(api.listHrUsers).mockResolvedValueOnce({ items: [], total: 0 });
+    renderForAdmin();
+    await screen.findByText(/Нет ни одного активного пользователя/);
+
+    vi.mocked(api.listHrUsers).mockResolvedValue({
+      items: [RECOVERY_HR_ITEM],
+      total: 1,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Обновить" }));
+
+    await waitFor(() => expect(api.listHrUsers).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByRole("option", { name: RECOVERY_HR_ITEM.full_name })
+    ).toBeInTheDocument();
+  });
+
+  it("reports a failed directory request instead of failing silently", async () => {
+    vi.mocked(api.listHrUsers).mockRejectedValue(new Error("network down"));
+    renderForAdmin();
+
+    expect(
+      await screen.findByText(/Не удалось загрузить список исполнителей/)
+    ).toBeInTheDocument();
   });
 });

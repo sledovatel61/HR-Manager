@@ -1011,6 +1011,10 @@ class ReminderOut(BaseModel):
     version: int
     created_at: datetime
     updated_at: datetime
+    # Block B: a display-only snapshot of the linked candidate so «Напоминания»
+    # can name it and open its card without a second request per row. It is a
+    # convenience field only — every access check still happens on the server.
+    candidate_full_name: str | None = None
 
 
 class ReminderList(BaseModel):

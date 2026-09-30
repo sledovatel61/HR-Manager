@@ -205,6 +205,50 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return data as T;
 }
 
+/**
+ * Multipart upload. The browser must set the `Content-Type` boundary itself,
+ * so `Content-Type` is deliberately NOT set here (unlike `request`).
+ */
+async function requestForm<T>(path: string, form: FormData): Promise<T> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const token = readCsrfCookie();
+  if (token) {
+    headers["X-CSRF-Token"] = token;
+  }
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers,
+      body: form,
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError(0, "Сеть недоступна: файл не отправлен.");
+  }
+  if (response.status === 401) {
+    emitUnauthorized();
+  }
+  let data: unknown = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (!response.ok) {
+    const rawDetail =
+      data && typeof data === "object" && "detail" in data
+        ? (data as { detail: unknown }).detail
+        : null;
+    const detail =
+      typeof rawDetail === "string"
+        ? rawDetail
+        : `Не удалось загрузить файл (${response.status}).`;
+    throw new ApiError(response.status, detail, rawDetail);
+  }
+  return data as T;
+}
+
 /** Phase 13: update channel status (state machine + versions, no secrets). */
 export async function fetchUpdateStatus(): Promise<UpdateStatus> {
   return request<UpdateStatus>("/updates/status");
@@ -588,11 +632,14 @@ export async function notificationDelivery(id: string): Promise<DeliveryInfo> {
 
 export async function listReminders(query: {
   status?: ReminderStatus;
+  /** Narrows to one candidate, for the candidate card's «События» tab. */
+  candidate_id?: string;
   limit?: number;
   offset?: number;
 }): Promise<ReminderListPayload> {
   const params = new URLSearchParams();
   if (query.status) params.set("status", query.status);
+  if (query.candidate_id) params.set("candidate_id", query.candidate_id);
   params.set("limit", String(query.limit ?? 20));
   params.set("offset", String(query.offset ?? 0));
   return request<ReminderListPayload>(`/reminders?${params}`);
@@ -963,6 +1010,28 @@ export async function createDocumentTemplate(input: {
   body: string;
 }): Promise<DocumentTemplate> {
   return request<DocumentTemplate>("/document-templates", { method: "POST", body: input });
+}
+
+/**
+ * Create a draft template from a local plain-text file. The server caps the
+ * size, checks the extension, decodes UTF-8 and validates the text — the
+ * client only refuses obviously wrong files early, to save a round trip.
+ */
+export const TEMPLATE_IMPORT_EXTENSIONS = [".txt", ".md", ".markdown", ".csv"];
+export const TEMPLATE_IMPORT_MAX_BYTES = 512 * 1024;
+
+export async function importDocumentTemplate(input: {
+  kind: string;
+  scope: string;
+  name: string;
+  file: File;
+}): Promise<DocumentTemplate> {
+  const form = new FormData();
+  form.append("kind", input.kind);
+  form.append("name", input.name);
+  form.append("scope", input.scope);
+  form.append("file", input.file, input.file.name);
+  return requestForm<DocumentTemplate>("/document-templates/import", form);
 }
 
 export async function renameDocumentTemplate(

@@ -280,6 +280,17 @@
   color: var(--status-warning-fg);
 }
 
+/* Read-only fact instead of a silently disabled control (block A). */
+.event-form-readonly {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-muted, rgba(0, 0, 0, 0.03));
+  color: var(--text-primary);
+  font-size: var(--text-size-sm);
+}
+
 .candidate-picker {
   display: flex;
   flex-direction: column;
@@ -386,4 +397,27 @@
     flex: 1;
     min-width: 240px;
   }
+}
+
+/* Восстановление в каталоге исполнителей (UX 2026-09-29, PR #45 rework) */
+
+.field-error p,
+.directory-empty p {
+  margin: 0 0 8px;
+  line-height: 1.45;
+}
+
+.field-error button,
+.directory-empty button {
+  margin-right: 6px;
+}
+
+.directory-empty {
+  margin-top: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #5a6472;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
 }

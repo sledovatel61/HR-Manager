@@ -29,6 +29,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.analytics_ledger import record_fact
+from app.assignees import resolve_assignee
 from app.audit import record_event
 from app.candidate_messages import (
     plan_candidate_interview_cancelled,
@@ -36,6 +37,7 @@ from app.candidate_messages import (
 )
 from app.db import get_db
 from app.deps import get_current_user
+from app.event_reminders import sync_event_reminder
 from app.models import (
     AnalyticsFactType,
     AuditAction,
@@ -62,7 +64,7 @@ from app.schemas import (
     EventOut,
     EventUpdate,
 )
-from app.utils import client_ip, user_agent, utc_now
+from app.utils import client_ip, ensure_aware, user_agent, utc_now
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -131,8 +133,14 @@ def _get_visible_candidate_for_event(db: Session, candidate_id: UUID, user: User
 
 def _resolve_assignee(db: Session, user: User, requested_assignee_id: UUID | None) -> User:
     """Assignee rules: an HR schedules events only for themselves;
-    managers/admins must explicitly pick an active HR — there is no valid
-    «self» default for a non-HR role."""
+    managers/admins must explicitly pick an active assignee.
+
+    «Active assignee» is the shared predicate of ``app.assignees``: an active
+    account with role ``hr`` or the audited pilot account that PRODUCT_SPEC §2
+    defines as combining HR + manager + administrator powers.  Before this
+    rule existed the picker was empty on a single-seat pilot stand and event
+    creation was impossible (UX feedback 2026-09-29, block A).
+    """
     if user.role == UserRole.HR:
         if requested_assignee_id not in (None, user.id):
             raise HTTPException(
@@ -140,21 +148,7 @@ def _resolve_assignee(db: Session, user: User, requested_assignee_id: UUID | Non
                 detail="HR может назначать исполнителем только себя.",
             )
         return user
-    if requested_assignee_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "Руководитель и администратор должны явно указать исполнителя — "
-                "активного пользователя с ролью HR."
-            ),
-        )
-    assignee = db.get(User, requested_assignee_id)
-    if assignee is None or not assignee.is_active or assignee.role != UserRole.HR:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Исполнитель должен быть активным пользователем с ролью HR.",
-        )
-    return assignee
+    return resolve_assignee(db, requested_assignee_id)
 
 
 # --- Field validation --------------------------------------------------------
@@ -166,12 +160,19 @@ def _validate_event_fields(
     ends_at: datetime | None,
     remind_at: datetime | None,
 ) -> None:
-    if ends_at is not None and ends_at <= starts_at:
+    # ``starts_at`` arrives from the request (always aware), but ``ends_at``/
+    # ``remind_at`` may be carried over from the stored row, which is naive on
+    # SQLite. Comparing the two kinds raises TypeError and turned every
+    # reschedule of an event that HAS a reminder into a 500 (found while
+    # implementing the event↔reminder link, 2026-09-29). Normalize once here
+    # so every comparison below is between two aware values.
+    starts_at = ensure_aware(starts_at)
+    if ends_at is not None and ensure_aware(ends_at) <= starts_at:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Окончание должно быть позже начала.",
         )
-    if remind_at is not None and remind_at > starts_at:
+    if remind_at is not None and ensure_aware(remind_at) > starts_at:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Напоминание должно быть не позже начала события.",
@@ -369,6 +370,16 @@ def create_event(
         assignee=assignee,
         settings=request.app.state.settings,
     )
+    # Block B: the event and its reminder are one domain object. The linked
+    # reminder is written in the SAME transaction, so the calendar and
+    # «Напоминания» can never disagree about a fresh event.
+    sync_event_reminder(
+        db,
+        event=event,
+        author=user,
+        assignee=assignee,
+        settings=request.app.state.settings,
+    )
     # Phase 10: the candidate's one-way messages (interview scheduled +
     # reminder) join the same transaction; without a recorded channel
     # consent nothing is queued (fail-closed, never silent).
@@ -482,17 +493,24 @@ def update_event(
         )
     if "note" in fields_set and payload.note != locked.note:
         changed_fields.append("note")
-    if "starts_at" in fields_set and payload.starts_at != locked.starts_at:
+    # Stored timestamps may be naive (SQLite returns naive values for
+    # timezone-aware columns). Compare against normalized values, otherwise an
+    # unchanged aware payload looks «changed» against a naive stored row and the
+    # history records a phantom reschedule (2026-09-29).
+    stored_starts = ensure_aware(locked.starts_at)
+    stored_ends = ensure_aware(locked.ends_at) if locked.ends_at is not None else None
+    stored_remind = ensure_aware(locked.remind_at) if locked.remind_at is not None else None
+    if "starts_at" in fields_set and payload.starts_at != stored_starts:
         changed_fields.append("starts_at")
-    if "ends_at" in fields_set and payload.ends_at != locked.ends_at:
+    if "ends_at" in fields_set and payload.ends_at != stored_ends:
         changed_fields.append("ends_at")
-    if "remind_at" in fields_set and payload.remind_at != locked.remind_at:
+    if "remind_at" in fields_set and payload.remind_at != stored_remind:
         changed_fields.append("remind_at")
 
-    new_starts = payload.starts_at if "starts_at" in fields_set else locked.starts_at
+    new_starts = payload.starts_at if "starts_at" in fields_set else stored_starts
     assert new_starts is not None  # explicit null was rejected above
-    new_ends = payload.ends_at if "ends_at" in fields_set else locked.ends_at
-    new_remind = payload.remind_at if "remind_at" in fields_set else locked.remind_at
+    new_ends = payload.ends_at if "ends_at" in fields_set else stored_ends
+    new_remind = payload.remind_at if "remind_at" in fields_set else stored_remind
     if new_status == EventStatus.COMPLETED:
         # Done events no longer remind; an implicit clear is recorded too.
         if locked.remind_at is not None and "remind_at" not in changed_fields:
@@ -500,7 +518,7 @@ def update_event(
         new_remind = None
     new_note = payload.note if "note" in fields_set else locked.note
 
-    # Assignee change (validated against the role model).
+    # Assignee change (validated against the shared assignee rules).
     new_assignee = locked.assignee
     if payload.assignee_user_id is not None and payload.assignee_user_id != locked.assignee_user_id:
         if user.role == UserRole.HR:
@@ -508,13 +526,7 @@ def update_event(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="HR может назначать исполнителем только себя.",
             )
-        assignee = db.get(User, payload.assignee_user_id)
-        if assignee is None or not assignee.is_active or assignee.role != UserRole.HR:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Исполнитель должен быть активным пользователем с ролью HR.",
-            )
-        new_assignee = assignee
+        new_assignee = resolve_assignee(db, payload.assignee_user_id)
         changed_fields.append("assignee_user_id")
 
     _validate_event_fields(locked.type, new_starts, new_ends, new_remind)
@@ -656,6 +668,16 @@ def update_event(
         event=locked,
         changed_fields=changed_fields,
         commit=False,
+    )
+    # Block B: a reschedule/completion/cancellation re-points or closes the
+    # linked reminder in the same transaction, so «Напоминания» never keeps
+    # showing a moment the calendar has moved away from.
+    sync_event_reminder(
+        db,
+        event=locked,
+        author=locked.author if locked.author is not None else user,
+        assignee=new_assignee,
+        settings=request.app.state.settings,
     )
     db.commit()
     db.refresh(locked)
