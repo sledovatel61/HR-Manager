@@ -201,3 +201,113 @@
     padding: var(--space-4);
   }
 }
+
+/* ---------- «Настройки» (UX 2026-09-29) ---------- */
+
+.sidebar-nav-secondary {
+  margin-top: auto;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--surface-sidebar-hover);
+}
+
+.sidebar-link-settings {
+  font-weight: 600;
+}
+
+.topbar-settings {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-muted, #4a5567);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.topbar-settings:hover,
+.topbar-settings.is-active {
+  background: #eef2f8;
+  color: var(--text-strong, #1a1a1a);
+}
+
+.topbar-settings:focus-visible {
+  outline: 2px solid #2f6fed;
+  outline-offset: 2px;
+}
+
+.settings-intro {
+  max-width: 68ch;
+  margin: 0 0 var(--space-5);
+  color: #4a5567;
+  line-height: 1.5;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  padding: var(--space-4);
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.settings-card.is-active {
+  border-color: #2f6fed;
+  box-shadow: 0 0 0 1px #2f6fed inset;
+}
+
+.settings-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  color: #2f6fed;
+  background: #eef2f8;
+  border-radius: 8px;
+}
+
+.settings-card-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-card-description {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #5a6472;
+}
+
+.settings-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+@media (max-width: 1024px) {
+  /* На узком экране подпись «Настройки» не помещается — остаётся иконка,
+     но кнопка остаётся доступной по подсказке. */
+  .topbar-settings {
+    font-size: 0;
+    padding: 6px;
+  }
+}
