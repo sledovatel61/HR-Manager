@@ -289,6 +289,29 @@ export function MyRulesPage() {
     [resource.data],
   );
 
+  /** Опубликованные версии, применимые к выбранному этапу. */
+  const selectableVersions = useMemo(
+    () => published.filter((v) => !v.stage || v.stage === editor?.input.params.stage),
+    [editor, published],
+  );
+
+  /**
+   * Сервер отвечает 422 «Список не опубликован или не соответствует этапу»,
+   * когда выбранный список не подходит выбранному этапу. Форма обязана
+   * объяснять это сама, иначе пользователь упирается в «валидация заблокировала
+   * сохранение» без пути к исправлению (UX feedback 2026-09-29, блок F).
+   */
+  const listSelectError = useMemo(() => {
+    if (!editor) return undefined;
+    if (published.length === 0) {
+      return "Нет ни одного опубликованного списка документов — создайте и опубликуйте его в разделе «Списки документов».";
+    }
+    if (selectableVersions.length === 0) {
+      return `Опубликованных списков для этапа «${STAGE_LABELS[editor.input.params.stage]}» нет. Выберите другой этап или опубликуйте список для этого этапа.`;
+    }
+    return undefined;
+  }, [editor, published.length, selectableVersions.length]);
+
   /** Имя списка для карточки: по опубликованной версии из /document-lists. */
   const listNameOf = (rule: DocumentRule): string => {
     const match =
@@ -707,28 +730,54 @@ export function MyRulesPage() {
                 </SelectInput>
               )}
             </Field>
-            <Field label="Список" required>
+            <Field
+              label="Список"
+              required
+              hint="Только опубликованные списки, доступные вам"
+              error={listSelectError}
+            >
               {(id, describedBy) => (
-                <SelectInput
-                  id={id}
-                  aria-describedby={describedBy}
-                  required
-                  value={editor.input.params.list_id}
-                  onChange={(e) =>
-                    params({ list_id: e.target.value, list_version_id: null })
-                  }
-                >
-                  <option value="">Выберите опубликованный список</option>
-                  {published
-                    .filter(
-                      (v) => !v.stage || v.stage === editor.input.params.stage,
-                    )
-                    .map((v) => (
+                <>
+                  <SelectInput
+                    id={id}
+                    aria-describedby={describedBy}
+                    required
+                    value={editor.input.params.list_id}
+                    onChange={(e) =>
+                      params({ list_id: e.target.value, list_version_id: null })
+                    }
+                  >
+                    <option value="">Выберите опубликованный список</option>
+                    {selectableVersions.map((v) => (
                       <option key={v.id} value={v.list_id}>
                         {v.name}
                       </option>
                     ))}
-                </SelectInput>
+                  </SelectInput>
+                  {published.length === 0 && (
+                    // UX feedback 2026-09-29, block F: an empty required
+                    // <select> with no explanation blocked rule creation
+                    // entirely. Offer the way out instead.
+                    <div className="rule-list-empty" role="note">
+                      <p className="document-meta">
+                        Опубликованных списков документов пока нет. Создайте и
+                        опубликуйте список — после этого его можно будет выбрать
+                        здесь.
+                      </p>
+                      <div className="document-actions">
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            setEditor(null);
+                            window.location.hash = "#/documents";
+                          }}
+                        >
+                          Перейти к спискам документов
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </Field>
             {editor.input.params.action !== "apply_list" && (
@@ -798,7 +847,17 @@ export function MyRulesPage() {
               Редактирование отменяет ожидающие задания предыдущей версии.
             </p>
             <div className="document-actions">
-              <Button type="submit" variant="primary" loading={busy}>
+              <Button
+                type="submit"
+                variant="primary"
+                loading={busy}
+                disabled={Boolean(listSelectError)}
+                title={
+                  listSelectError
+                    ? "Сначала опубликуйте список документов для выбранного этапа"
+                    : undefined
+                }
+              >
                 Сохранить правило
               </Button>
               <Button type="button" onClick={() => setEditor(null)}>

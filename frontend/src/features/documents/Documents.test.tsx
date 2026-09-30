@@ -6,6 +6,7 @@ import { ToastProvider } from "../../design-system/components/Toast";
 import { DocumentListsPage } from "./DocumentListsPage";
 import { DocumentsTab } from "./DocumentsTab";
 import { MyRulesPage } from "./MyRulesPage";
+import { autoKey } from "./itemKey";
 import type {
   CandidateDocuments,
   DocumentLists,
@@ -98,7 +99,7 @@ describe("Списки документов", () => {
     api.mockResolvedValue({ items: [], can_manage: true });
     render(<DocumentListsPage />);
     expect(screen.getByRole("status")).toHaveTextContent("Загрузка");
-    expect(await screen.findByText("Списков пока нет.")).toBeInTheDocument();
+    expect(await screen.findByText(/Списков пока нет/)).toBeInTheDocument();
   });
   it("shows errors and retries", async () => {
     api.mockRejectedValueOnce(new ApiError(403, "forbidden"));
@@ -116,16 +117,42 @@ describe("Списки документов", () => {
     expect(screen.queryByText("Новый список")).toBeNull();
     expect(screen.queryByText("Создать новую версию")).toBeNull();
   });
-  it("creates a draft through the API with ordered typed items", async () => {
+  /**
+   * Block D: the editor is a wizard now, and the technical «Стабильный ключ»
+   * is no longer a required field — the key is derived from the document
+   * name and only shown under «Расширенные сведения».
+   */
+  it("creates a draft through the wizard without typing a technical key", async () => {
     const user = userEvent.setup();
     render(<DocumentListsPage />);
     await screen.findByText("Оформление");
-    await user.click(screen.getByRole("button", { name: "Новый список" }));
-    await user.type(screen.getByLabelText(/^Название$/), "Трудоустройство");
-    await user.type(screen.getByLabelText("Русское название"), "Паспорт");
-    await user.click(
-      screen.getByRole("button", { name: "Сохранить черновик" }),
-    );
+    await user.click(screen.getByRole("button", { name: /Новый список/ }));
+
+    // Step 1 — purpose.
+    await user.type(screen.getByLabelText(/^Название списка/), "Трудоустройство");
+    expect(screen.queryByLabelText("Стабильный ключ")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+
+    // Step 2 — documents, in order.
+    let rows = screen.getAllByRole("group", { name: /^Документ \d/ });
+    await user.type(within(rows[0]).getByLabelText(/^Название/), "Паспорт");
+    await user.type(within(rows[0]).getByLabelText(/^Пояснение/), "Копия с печатью");
+    await user.click(screen.getByRole("button", { name: /Добавить документ/ }));
+    rows = screen.getAllByRole("group", { name: /^Документ \d/ });
+    expect(rows).toHaveLength(2);
+    await user.type(within(rows[1]).getByLabelText(/^Название/), "Трудовая книжка");
+    // Reordering is a visible action, not a drag-only affordance: the second
+    // row moves up, so it becomes the first requested document.
+    await user.click(within(rows[1]).getByRole("button", { name: "Выше" }));
+    expect(
+      within(screen.getAllByRole("group", { name: /^Документ 1/ })[0]).getByLabelText(/^Название/)
+    ).toHaveValue("Трудовая книжка");
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+
+    // Step 3 — preview, then save.
+    expect(screen.getByText("Трудоустройство")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Сохранить черновик/ }));
+
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
         "/document-lists",
@@ -135,26 +162,47 @@ describe("Списки документов", () => {
             name: "Трудоустройство",
             stage: null,
             items: [
-              {
-                key: "document_1",
-                name: "Паспорт",
-                explanation: "",
-                required: true,
-              },
+              expect.objectContaining({ name: "Трудовая книжка", explanation: "", required: true }),
+              expect.objectContaining({ name: "Паспорт", explanation: "Копия с печатью", required: true }),
             ],
           }),
         }),
       ),
     );
+    // Keys are generated, unique and non-empty — never asked of the user.
+    const post = vi
+      .mocked(api)
+      .mock.calls.filter((call) => call[0] === "/document-lists" && call[1]?.method === "POST")
+      .at(-1);
+    const body = post?.[1]?.body as { items: { key: string }[] };
+    expect(body.items.every((item) => item.key.length > 0)).toBe(true);
+    expect(new Set(body.items.map((item) => item.key)).size).toBe(body.items.length);
   });
+
+  it("generates unique, stable keys for documents", () => {
+    // A Russian name yields a readable, non-empty, ASCII key.
+    const first = autoKey("Паспорт", []);
+    expect(first).toMatch(/^[\x20-\x7E]+$/);
+    expect(first.length).toBeGreaterThan(0);
+    // The same name twice in one list must not collide.
+    expect(autoKey("Паспорт", [first])).toBe(`${first}_2`);
+    // Latin names keep their own words.
+    expect(autoKey("passport scan", [])).toBe("passport_scan");
+    // An empty name still gets a usable key.
+    expect(autoKey("", [])).toBe("document");
+  });
+
   it("clones a published version instead of editing it in place and surfaces conflicts", async () => {
     const user = userEvent.setup();
     render(<DocumentListsPage />);
     await screen.findByText("Оформление");
     await user.click(screen.getByText("Версия 1 — Опубликована"));
     await user.click(screen.getByText("Создать новую версию"));
+    // The wizard starts on the purpose step; walk it to the save button.
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await user.click(screen.getByRole("button", { name: "Далее" }));
     api.mockRejectedValueOnce(new ApiError(409, "Версия изменилась"));
-    await user.click(screen.getByText("Сохранить черновик"));
+    await user.click(screen.getByRole("button", { name: /Сохранить черновик/ }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Конфликт версии",
     );
@@ -273,6 +321,65 @@ function renderRules() {
 }
 
 describe("Мои правила", () => {
+  /**
+   * UX feedback 2026-09-29, block F: with no published document list the rule
+   * form showed an empty required <select>. Validation silently blocked saving
+   * and nothing told the user how to fix it. The form must now explain the
+   * situation and offer the way out instead of a dead end.
+   */
+  it("explains an empty published-lists state and offers a way forward", async () => {
+    api.mockImplementation(async (path) => {
+      if (path === "/document-lists") return { can_manage: true, items: [] } as never;
+      if (path === "/document-rules") return [] as never;
+      if (path === "/notification-preferences") return prefs as never;
+      return null as never;
+    });
+    const user = userEvent.setup();
+    renderRules();
+    await user.click((await screen.findAllByText("Создать правило"))[0]);
+    const dialog = await screen.findByRole("dialog");
+
+    expect(
+      await within(dialog).findByText(/Нет ни одного опубликованного списка документов/)
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/Опубликованных списков документов пока нет/)
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "Перейти к спискам документов" })
+    ).toBeInTheDocument();
+    // The save button states the reason instead of failing on submit.
+    expect(within(dialog).getByText("Сохранить правило").closest("button")).toBeDisabled();
+    // ...and nothing was posted behind the user's back.
+    expect(api).not.toHaveBeenCalledWith("/document-rules", expect.anything());
+  });
+
+  it("explains when no published list matches the chosen stage", async () => {
+    // A list published for one stage only: switching the rule to another stage
+    // must explain the dead end instead of 422-ing on save.
+    const stageBound: DocumentLists = {
+      can_manage: true,
+      items: [{ id: "list-1", stage: "offer", version: 2, versions: [{ ...version, stage: "offer" }] }],
+    };
+    api.mockImplementation(async (path) => {
+      if (path === "/document-lists") return stageBound as never;
+      if (path === "/document-rules") return [] as never;
+      if (path === "/notification-preferences") return prefs as never;
+      return null as never;
+    });
+    const user = userEvent.setup();
+    renderRules();
+    await user.click((await screen.findAllByText("Создать правило"))[0]);
+    const dialog = await screen.findByRole("dialog");
+    // The page has its own «Этап» filter — target the one inside the dialog.
+    await user.selectOptions(within(dialog).getByLabelText(/^Этап/), "started");
+    expect(
+      await within(dialog).findByText(/Опубликованных списков для этапа/)
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText("Сохранить правило").closest("button")).toBeDisabled();
+    expect(api).not.toHaveBeenCalledWith("/document-rules", expect.anything());
+  });
+
   it("creates a closed stage-transition rule", async () => {
     const user = userEvent.setup();
     renderRules();
