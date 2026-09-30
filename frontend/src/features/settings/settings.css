@@ -1,0 +1,100 @@
+/* Раздел «Настройки» (UX-замечания 2026-09-29, блок G). */
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5, 20px);
+}
+
+.settings-intro {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-size-sm);
+  max-width: 68ch;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+}
+
+.settings-group-title {
+  margin: 0;
+  font-size: var(--text-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-3, 12px);
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  align-items: flex-start;
+  padding: var(--space-4, 16px);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-app);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.settings-card:hover {
+  border-color: var(--accent-default);
+  background: var(--surface-hover);
+}
+
+.settings-card.is-active {
+  border-color: var(--accent-default);
+  background: var(--surface-selected);
+}
+
+.settings-card-head {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.settings-card-label {
+  font-size: var(--text-size-md, 14px);
+}
+
+.settings-card-description {
+  color: var(--text-secondary);
+  font-size: var(--text-size-sm);
+  line-height: 1.4;
+}
+
+/* Шапка подраздела настроек с возвратом к обзору. */
+.settings-subheader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin-bottom: var(--space-4, 16px);
+  color: var(--text-tertiary);
+  font-size: var(--text-size-sm);
+}
+
+.settings-subheader button {
+  border: 0;
+  background: none;
+  color: var(--text-link);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.settings-subheader button:hover {
+  text-decoration: underline;
+}
