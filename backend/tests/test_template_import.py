@@ -9,7 +9,9 @@ holder of ``document_lists_manage``.
 from __future__ import annotations
 
 import io
+import zipfile
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -19,6 +21,7 @@ from app.models import AccessGrant, AccessGrantScope, AuditEvent, User, UserRole
 from app.template_import import (
     MAX_UPLOAD_BYTES,
     SUPPORTED_EXTENSIONS,
+    SUPPORTED_HINT,
     extension_of,
     read_template_file,
     safe_display_name,
@@ -52,7 +55,7 @@ def _upload(
     kind: str = "checklist",
     name: str = "",
     scope: str = "",
-):
+) -> httpx.Response:
     return client.post(
         "/document-templates/import",
         data={"kind": kind, "name": name, "scope": scope},
@@ -106,13 +109,13 @@ def test_read_template_file_derives_title_from_a_csv_header() -> None:
     assert imported.title.startswith("Вопрос")
 
 
-@pytest.mark.parametrize("extension", SUPPORTED_EXTENSIONS)
-def test_every_supported_extension_is_accepted(extension: str) -> None:
+@pytest.mark.parametrize("extension", [e for e in SUPPORTED_EXTENSIONS if e != ".docx"])
+def test_every_plain_text_extension_is_accepted(extension: str) -> None:
     imported = read_template_file("текст".encode(), f"note{extension}")
     assert imported.body == "текст"
 
 
-@pytest.mark.parametrize("filename", ["offer.docx", "scan.pdf", "photo.png", "script.php", "noext"])
+@pytest.mark.parametrize("filename", ["photo.png", "script.php", "noext", "page.odt", "sheet.xls"])
 def test_unsupported_extension_is_refused_by_name(filename: str) -> None:
     with pytest.raises(TemplateContentError) as excinfo:
         read_template_file("текст".encode(), filename)
@@ -200,7 +203,7 @@ def test_import_of_a_bad_file_is_422_and_creates_nothing(
     headers = _auth(client, admin.username)
     before = len(client.get("/document-templates", headers=headers).json()["items"])
     response = _upload(
-        client, headers, content=b"%PDF\x00binary", filename="offer.pdf", kind="script"
+        client, headers, content=b"PNG\x89binary", filename="offer.png", kind="script"
     )
     assert response.status_code == 422
     assert "не поддерживается" in response.json()["detail"]
@@ -248,6 +251,243 @@ def test_import_is_audited_without_the_file_contents(
     rows = db_session.query(AuditEvent).filter(AuditEvent.actor_user_id == admin.id).all()
     entry = next(row for row in rows if template_id in (row.details or ""))
     assert entry.action == "document_template_created"
+    assert entry.details is not None
     assert "import=.md" in entry.details
     # The material itself never lands in the audit trail.
     assert "Паспорт кандидата" not in entry.details
+
+
+# --------------------------------------------------------------------------
+# .docx (block E rework) and the .pdf refusal
+# --------------------------------------------------------------------------
+
+_W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+
+def _docx(inner: str, extra: dict[str, bytes] | None = None) -> bytes:
+    """Build a minimal but real .docx (a ZIP with word/document.xml)."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr(
+            "word/document.xml",
+            f"<w:document {_W_NS}><w:body>{inner}</w:body></w:document>",
+        )
+        for name, data in (extra or {}).items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+def _zip_with(name: str, data: bytes) -> bytes:
+    info = zipfile.ZipInfo(name)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        archive.writestr(info, data)
+    return buffer.getvalue()
+
+
+def _para(*runs: str) -> str:
+    return "<w:p>" + "".join(f"<w:r>{run}</w:r>" for run in runs) + "</w:p>"
+
+
+def test_docx_text_is_extracted_with_paragraphs_and_placeholders() -> None:
+    imported = read_template_file(
+        _docx(
+            _para("<w:t>Скрипт звонка</w:t>")
+            + _para(
+                "<w:t>Здравствуйте, </w:t>",
+                "<w:t>{{ candidate.full_name }}</w:t>",
+                "<w:tab/><w:t>!</w:t>",
+            )
+            + _para("<w:t>Новый</w:t><w:br/><w:t>абзац</w:t>"),
+        ),
+        "Скрипт звонка.docx",
+    )
+    assert imported.title == "Скрипт звонка"
+    assert imported.extension == ".docx"
+    # Paragraphs become line breaks, a tab becomes a space, and the allowlisted
+    # variable survives into the template body.
+    assert imported.body.splitlines() == [
+        "Скрипт звонка",
+        "Здравствуйте, {{ candidate.full_name }} !",
+        "Новый",
+        "абзац",
+    ]
+
+
+def test_docx_markup_never_leaks_into_the_body() -> None:
+    """Only <w:t> text is read: no tags, attributes, comments or fields."""
+    imported = read_template_file(
+        _docx(
+            _para(
+                "<w:t>Проверка</w:t>",
+                '<w:t xml:space="preserve"> </w:t>',
+                "<w:t><!-- комментарий --></w:t>",
+            )
+        ),
+        "check.docx",
+    )
+    assert imported.body.strip() == "Проверка"
+    assert "<" not in imported.body and "<!--" not in imported.body
+
+
+def test_docx_placeholders_are_still_validated() -> None:
+    with pytest.raises(TemplateContentError):
+        read_template_file(_docx(_para("<w:t>{{ candidate.ssn }}</w:t>")), "bad.docx")
+
+
+def test_docx_without_the_document_part_is_refused() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/styles.xml", "<x/>")
+    with pytest.raises(TemplateContentError) as excinfo:
+        read_template_file(buffer.getvalue(), "a.docx")
+    assert "word/document.xml" in str(excinfo.value)
+
+
+def test_docx_that_is_not_a_zip_is_refused() -> None:
+    with pytest.raises(TemplateContentError) as excinfo:
+        read_template_file("просто текст, переименованный в .docx".encode(), "fake.docx")
+    assert "ZIP" in str(excinfo.value)
+
+
+def test_docx_oversized_entry_is_refused_before_inflating() -> None:
+    """100 MB of 'A' compresses to ~100 KB: the bomb must be refused."""
+    payload = _zip_with("word/document.xml", b"A" * (100 * 1024 * 1024))
+    assert len(payload) < MAX_UPLOAD_BYTES, "the bomb must be small on the wire"
+    with pytest.raises(TemplateContentError) as excinfo:
+        read_template_file(payload, "bomb.docx")
+    assert "повреждённым" in str(excinfo.value)
+
+
+def test_docx_with_an_extreme_compression_ratio_is_refused() -> None:
+    """A 3 MB entry in 3 KB: below the per-entry cap, caught by the ratio cap."""
+    payload = _zip_with("word/document.xml", b"A" * (3 * 1024 * 1024))
+    assert len(payload) < MAX_UPLOAD_BYTES
+    with pytest.raises(TemplateContentError) as excinfo:
+        read_template_file(payload, "ratio.docx")
+    assert "сжатие" in str(excinfo.value)
+
+
+def test_docx_with_too_many_entries_is_refused() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for index in range(3000):
+            archive.writestr(f"word/part{index}.xml", b"x")
+        archive.writestr(
+            "word/document.xml",
+            f"<w:document {_W_NS}><w:body>{_para('<w:t>ok</w:t>')}</w:body></w:document>",
+        )
+    with pytest.raises(TemplateContentError) as excinfo:
+        read_template_file(buffer.getvalue(), "many.docx")
+    assert "слишком много частей" in str(excinfo.value)
+
+
+def test_docx_with_a_doctype_is_refused() -> None:
+    """A DTD is the shape of an XXE payload; ElementTree must never see it."""
+    payload = _docx(
+        "<!DOCTYPE r [<!ENTITY x SYSTEM 'file:///etc/passwd'>]>" + _para("<w:t>&x;</w:t>")
+    )
+    with pytest.raises(TemplateContentError) as excinfo:
+        read_template_file(payload, "xxe.docx")
+    assert "сущности" in str(excinfo.value)
+
+
+def test_docx_whose_member_names_look_like_paths_are_never_followed() -> None:
+    """Nothing is written to disk, so a traversal name is simply ignored."""
+    imported = read_template_file(
+        _docx(_para("<w:t>ok</w:t>"), extra={"../../../../etc/passwd": b"x"}),
+        "../../evil.docx",
+    )
+    assert imported.body.strip() == "ok"
+    assert "root:" not in imported.body
+
+
+def test_docx_without_text_is_refused() -> None:
+    with pytest.raises(TemplateContentError) as excinfo:
+        read_template_file(_docx("<w:p/>"), "empty.docx")
+    assert "нет текста" in str(excinfo.value)
+
+
+def test_docx_oversized_upload_is_refused_by_the_unchanged_cap() -> None:
+    """MAX_UPLOAD_BYTES was not raised to make room for .docx."""
+    assert MAX_UPLOAD_BYTES == 512 * 1024
+    with pytest.raises(TemplateContentError) as excinfo:
+        read_template_file(b"A" * (MAX_UPLOAD_BYTES + 1), "big.docx")
+    assert "КБ" in str(excinfo.value)
+
+
+def test_pdf_is_refused_with_an_actionable_instruction() -> None:
+    with pytest.raises(TemplateContentError) as excinfo:
+        read_template_file(b"%PDF-1.7\n\x0c binary", "offer.pdf")
+    message = str(excinfo.value)
+    assert ".docx" in message and ".txt" in message
+    assert "сохраните" in message
+
+
+def test_docx_is_listed_in_the_supported_formats() -> None:
+    assert ".docx" in SUPPORTED_EXTENSIONS
+    # The hint the UI shows must name the formats the server accepts.
+    assert ".docx" in SUPPORTED_HINT
+
+
+def test_docx_import_creates_a_draft_over_http(client: TestClient, db_session: Session) -> None:
+    admin = make_user(db_session, username="imp-docx", role=UserRole.ADMIN)
+    response = _upload(
+        client,
+        _auth(client, admin.username),
+        content=_docx(_para("<w:t>Памятка HR</w:t>") + _para("<w:t>Пункт один</w:t>")),
+        filename="Памятка HR.docx",
+        kind="memo",
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["name"] == "Памятка HR"
+    assert body["versions"][0]["state"] == "draft"
+    assert body["versions"][0]["body"].splitlines() == ["Памятка HR", "Пункт один"]
+
+
+def test_pdf_upload_over_http_is_422_and_says_what_to_do(
+    client: TestClient, db_session: Session
+) -> None:
+    admin = make_user(db_session, username="imp-pdf", role=UserRole.ADMIN)
+    headers = _auth(client, admin.username)
+    response = _upload(
+        client, headers, content=b"%PDF-1.7 binary", filename="offer.pdf", kind="offer"
+    )
+    assert response.status_code == 422
+    assert ".docx" in response.json()["detail"]
+
+
+def test_docx_import_still_audits_format_and_never_content(
+    client: TestClient, db_session: Session
+) -> None:
+    admin = make_user(db_session, username="imp-docx-audit", role=UserRole.ADMIN)
+    response = _upload(
+        client,
+        _auth(client, admin.username),
+        content=_docx(_para("<w:t>СЕКРЕТНЫЙ ТЕКСТ КАНДИДАТА</w:t>")),
+        filename="Скрипт.docx",
+        kind="script",
+    )
+    template_id = response.json()["id"]
+    rows = db_session.query(AuditEvent).filter(AuditEvent.actor_user_id == admin.id).all()
+    entry = next(row for row in rows if template_id in (row.details or ""))
+    assert "import=.docx" in (entry.details or "")
+    assert "СЕКРЕТНЫЙ" not in (entry.details or "")
+
+
+def test_docx_import_requires_the_manage_right(client: TestClient, db_session: Session) -> None:
+    make_user(db_session, username="imp-docx-hr", role=UserRole.HR)
+    assert (
+        _upload(
+            client,
+            _auth(client, "imp-docx-hr"),
+            content=_docx(_para("<w:t>text</w:t>")),
+            filename="a.docx",
+            kind="script",
+        ).status_code
+        == 403
+    )

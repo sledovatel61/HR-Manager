@@ -40,8 +40,17 @@ export function kindLabel(kind: string): string {
  */
 export const REVIEW_KINDS: ReadonlySet<string> = new Set(["offer", "dogovor"]);
 
-export const TEMPLATE_IMPORT_EXTENSIONS = [".txt", ".md", ".markdown", ".csv"];
+export const TEMPLATE_IMPORT_EXTENSIONS = [".txt", ".md", ".markdown", ".csv", ".docx"];
 export const TEMPLATE_IMPORT_MAX_BYTES = 512 * 1024;
+
+/**
+ * `.pdf` is refused on purpose: a PDF describes a page, not text, so any
+ * extraction without a rendering engine produces garbled output. The server
+ * says this in its own words; the form mentions it before the upload so the
+ * HR is not surprised by a rejection.
+ */
+export const TEMPLATE_IMPORT_PDF_NOTE =
+  "PDF не читается — сохраните файл как .docx или скопируйте текст в .txt.";
 
 /**
  * Buttons in the editor show the field a person recognises, not the token the

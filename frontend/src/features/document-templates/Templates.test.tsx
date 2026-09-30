@@ -527,6 +527,9 @@ describe("vocabulary of the methodical base", () => {
     } as File;
     expect(describeImportFile(big)).toMatch(/КБ/);
     expect(describeImportFile(new File(["текст"], "script.md"))).toBeNull();
+    // .docx is accepted; .pdf is not, and says why.
+    expect(describeImportFile(new File(["x"], "checklist.docx"))).toBeNull();
+    expect(describeImportFile(new File(["x"], "offer.pdf"))).toMatch(/не поддерживается/);
   });
 });
 
@@ -581,10 +584,12 @@ describe("importing methodical material", () => {
     // The hint is the contract with the user: which formats, how big, UTF-8.
     const hintId = fileInput.getAttribute("aria-describedby") ?? "";
     expect(document.getElementById(hintId)).toHaveTextContent(
-      ".txt, .md, .markdown, .csv, до 512 КБ, UTF-8",
+      ".txt, .md, .markdown, .csv, .docx, до 512 КБ, UTF-8",
     );
     // The picker itself is limited to those formats, and nothing is sent yet.
-    expect(fileInput).toHaveAttribute("accept", ".txt,.md,.markdown,.csv");
+    expect(fileInput).toHaveAttribute("accept", ".txt,.md,.markdown,.csv,.docx");
+    // PDF is refused on purpose, and the form says so before the upload.
+    expect(screen.getByText(/PDF не читается/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Загрузить как черновик/ })).toBeDisabled();
 
     await user.upload(fileInput, new File(["# Скрипт"], "script.md"));
