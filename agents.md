@@ -125,17 +125,23 @@ HR Manager — многопользовательская внутренняя �
 Проверено на финальном дереве: backend `999 passed`, mypy `0 errors`,
 ruff clean; frontend `301 passed`, typecheck/lint/build clean.
 
-**Главное, что осталось непроверенным.** Миграция `0017` *ни разу*
-не применялась к реальному PostgreSQL: в среде агента нет ни `docker`, ни
-локального сервера. Именно поэтому `alembic upgrade head` и был красным —
-строка `MIN(id)` по UUID-колонке не существует до PostgreSQL 20, а CI
-гоняет 16. Исправление (`DISTINCT ON ... ORDER BY created_at`) написано по
-документации PostgreSQL, а не выполнено. **Первым делом на копии:**
-`alembic upgrade head`, затем `downgrade -1` и снова `upgrade head`.
+**Красные job закрыты.** `Backend checks` и
+`Backend integration tests (PostgreSQL)` — **success** на head `017c36d`.
+Причина была не в `HEAD_REVISION`, а в строке `MIN(id)` миграции `0017`:
+`reminders.id` это UUID, а `min(uuid)` появился только в PostgreSQL 20, а CI
+гоняет 16 — `alembic upgrade head` падал, и интеграционные тесты не
+запускались вовсе. Заменено на `DISTINCT ON ... ORDER BY created_at`, и это
+ещё и корректнее: для случайных v4 UUID `MIN(id)` выбирал произвольную
+строку. Теперь в CI проходит и `upgrade → downgrade base → upgrade`, и
+`downgrade -1 → upgrade`.
 
-Также не поднят Compose-стек (нет `docker`), не инвентаризированы материалы
-`LLM\23.09.2026`, нет production evidence и письменного `GO`. Решение по
-релизу остаётся `NO-GO`. Подробности: `docs/ux-feedback-2026-09-29-handoff.md`.
+**Что осталось непроверенным.** Compose-стек в среде агента не поднимался
+(нет `docker`), поэтому живой P0-сценарий на стенде не пройден; материалы
+`LLM\23.09.2026` не инвентаризировались; production evidence и письменного
+`GO` нет. Решение по релизу остаётся `NO-GO`. Перед пилотом стоит руками
+на копии проверить, что частичный индекс `uq_reminders_event_id` на месте и
+что нормализация дублей ведёт себя на базе, где у одного события уже есть
+несколько напоминаний. Подробности: `docs/ux-feedback-2026-09-29-handoff.md`.
 
 Отдельно: «Frontend checks» красный на шаге `npm audit` (`undici`,
 `brace-expansion`). Это **предсуществующее** на `main` — `package.json` и

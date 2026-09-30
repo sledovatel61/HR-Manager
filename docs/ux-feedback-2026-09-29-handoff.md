@@ -226,6 +226,27 @@ The 114 deselected are the PostgreSQL-backed tests; see the limitations
 below. Before the rework the same commands gave 978 and 294, so the rework
 added 21 backend and 7 frontend tests without losing any.
 
+### CI on head `017c36d`
+
+GitHub Actions runs the PostgreSQL job, so it closes what the local
+environment could not:
+
+| Job | Before | Now |
+| --- | --- | --- |
+| Backend checks | failure | **success** |
+| Backend integration tests (PostgreSQL) | failure | **success** |
+| Frontend checks | failure | failure — `npm audit` only, see above |
+| Windows engine tests + installer smoke | success | success |
+| Release pipeline fail-closed policy | success | success |
+| License issuer bundle (PS 5.1) | success | success |
+| Compose stack smoke test | skipped | skipped |
+
+Inside the PostgreSQL job every step is green, including
+`alembic upgrade head`, the migration pipeline tests
+(`upgrade → downgrade base → upgrade` and `upgrade → upgrade → downgrade -1 →
+upgrade`) and the encrypted backup/restore drill. So `0017` does apply and
+round-trip on a real PostgreSQL 16 — the thing this sandbox could not check.
+
 ## A note on the branch history
 
 The five block commits are the ones under review, unchanged. During the
@@ -251,14 +272,19 @@ reflog.
    calendar, the funnel and «Мои правила» against a real PostgreSQL — is
    therefore **unverified end-to-end**. The unit and integration tests use
    SQLite and a mocked API.
-2. **Migration `0017` has never been applied to a real PostgreSQL.** The SQL
-   was written *because* the PostgreSQL-only failure could not be reproduced
-   here — there is no `docker` and no local PostgreSQL, so the fix rests on
-   reading the PostgreSQL release history, not on executing it. The
-   `DISTINCT ON` form is ordinary, well-established PostgreSQL and needs only
-   the btree ordering `uuid` has had since 8.3, but *someone must run*
-   `alembic upgrade head` against a real server and confirm. Do this first,
-   on a copy. This is the single highest-risk item in the handoff.
+2. ~~**Migration `0017` has never been applied to a real PostgreSQL.**~~ —
+   **resolved by CI.** This was the highest-risk item when the rework was
+   written, because the fix had been derived from the PostgreSQL release
+   history rather than executed: there is no `docker` and no local server in
+   the agent environment. GitHub Actions runs the real thing, and on head
+   `017c36d` «Backend integration tests (PostgreSQL)» is **success**, with
+   every step green — `alembic upgrade head`, the migration pipeline tests
+   (`upgrade → downgrade base → upgrade`, and `upgrade → upgrade →
+   downgrade -1 → upgrade`), and the encrypted backup/restore drill. The
+   114 previously-skipped tests are no longer skipped there.
+   *Still worth doing by hand on a copy before the pilot: confirm the partial
+   index is present and the duplicate-normalisation behaves on a database
+   that already holds several reminders for one event.*
 3. **The methodical material in `LLM\23.09.2026` was not inventoried.** It
    is on the user's Windows machine and was not reachable from here, so no
    file format, size or personal-data check was possible. The import endpoint
