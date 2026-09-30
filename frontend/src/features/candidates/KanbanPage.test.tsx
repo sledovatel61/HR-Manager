@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../../design-system/components/Toast";
 import { STAGE_LABELS, type Candidate, type CandidateStage, type User } from "../../types";
 import KanbanPage from "./KanbanPage";
+import { edgeScrollDirection } from "./boardScroll";
 
 vi.mock("../../api", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../api")>();
@@ -218,5 +219,113 @@ describe("KanbanPage", () => {
       await within(dialog).findByText(/перевод в этап «Вышел» без даты невозможен/)
     ).toBeInTheDocument();
     expect(within(newColumn).getByText("Кандидат new")).toBeInTheDocument();
+  });
+});
+
+/**
+ * UX feedback 2026-09-29, block C: the funnel has 11 columns, only a few fit
+ * on screen, and moving a card from the first stage to the last meant
+ * scrolling to each column in turn. The card-level stage picker and the
+ * board auto-scroll must make that a single action.
+ */
+describe("KanbanPage — длинная воронка (block C)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listHrUsers).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(api.fetchWorkScheduleSuggestions).mockResolvedValue({
+      organizations: [],
+      departments: [],
+      shifts: [],
+    });
+    vi.mocked(api.listCandidates).mockImplementation(async (query) => {
+      const items = query?.stage === "new" ? [candidate("new")] : [];
+      return { items, total: items.length, limit: 20, offset: 0 };
+    });
+  });
+
+  it("moves a card from the first stage to the last one in a single action", async () => {
+    // A request that never settles keeps the optimistic placement on screen
+    // (the column reload that follows a success would otherwise race it).
+    vi.mocked(api.updateCandidate).mockReturnValue(new Promise(() => {}));
+    renderKanban();
+
+    await screen.findByText("Кандидат new");
+    const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    // «Отказ» is the far end of the funnel and is nowhere near the visible
+    // area — the picker reaches it without any scrolling at all.
+    await userEvent.selectOptions(
+      within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
+      "rejected"
+    );
+
+    await waitFor(() =>
+      expect(api.updateCandidate).toHaveBeenCalledWith("44444444-4444-4444-4444-444444444444", {
+        stage: "rejected",
+      })
+    );
+    // Optimistic move: the card left the first column and landed in the last.
+    await waitFor(() =>
+      expect(within(newColumn).queryByText("Кандидат new")).not.toBeInTheDocument()
+    );
+    expect(
+      within(screen.getByRole("listitem", { name: /Отказ/ })).getByText("Кандидат new")
+    ).toBeInTheDocument();
+  });
+
+  it("labels the move control so the action is obvious", async () => {
+    renderKanban();
+    await screen.findByText("Кандидат new");
+    const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    expect(within(newColumn).getByText("Перенести в этап")).toBeInTheDocument();
+    // ...and it stays keyboard operable through the same labelled control.
+    expect(within(newColumn).getByLabelText("Изменить этап: Кандидат new")).toBeInTheDocument();
+  });
+
+  it("computes the scroll direction from the pointer position", () => {
+    const rect = { left: 0, right: 1000 };
+    expect(edgeScrollDirection(20, rect)).toBe(-1);
+    expect(edgeScrollDirection(980, rect)).toBe(1);
+    expect(edgeScrollDirection(500, rect)).toBe(0);
+    // A board that already fits on screen has no edge to scroll to.
+    expect(edgeScrollDirection(500, { left: 0, right: 100 })).toBe(0);
+  });
+
+  it("auto-scrolls the board while a drag hovers an edge", async () => {
+    renderKanban();
+    await screen.findByText("Кандидат new");
+
+    const board = screen.getByRole("list", { name: "Воронка кандидатов по этапам" });
+    // jsdom performs no layout: give the board a position and a scroll width.
+    board.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        right: 1000,
+        top: 0,
+        bottom: 600,
+        width: 1000,
+        height: 600,
+        x: 0,
+        y: 0,
+      }) as DOMRect;
+    Object.defineProperty(board, "scrollLeft", { value: 0, writable: true });
+
+    // jsdom does not implement DragEvent, so dispatch a MouseEvent carrying
+    // clientX — React routes it to the very same onDragOver handler.
+    const dragTo = (clientX: number) =>
+      board.dispatchEvent(
+        new MouseEvent("dragover", { clientX, bubbles: true, cancelable: true })
+      );
+
+    dragTo(960); // pointer near the right edge
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(board.scrollLeft).toBeGreaterThan(0);
+
+    const scrolled = board.scrollLeft;
+    // Leaving the board stops the scroll instead of letting it run away.
+    board.dispatchEvent(
+      new MouseEvent("dragleave", { bubbles: true, relatedTarget: document.body })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(board.scrollLeft).toBe(scrolled);
   });
 });
