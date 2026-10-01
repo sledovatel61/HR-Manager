@@ -22,7 +22,7 @@ export const SECTION_META: Record<WorkspaceSection, { label: string; icon: IconN
   notifications: { label: "Уведомления", icon: "bell" },
   reminders: { label: "Напоминания", icon: "clock" },
   documents: { label: "Списки документов", icon: "table" },
-  templates: { label: "Шаблоны документов", icon: "file-text" },
+  templates: { label: "Шаблоны и материалы", icon: "book" },
   rules: { label: "Мои правила", icon: "settings" },
   preferences: { label: "Настройки уведомлений", icon: "settings" },
   integrations: { label: "Интеграции", icon: "arrow-right-left" },
@@ -47,12 +47,15 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
   // re-checks every right regardless of the navigation.
   // Ежедневная работа: то, чем HR пользуется постоянно.
   const daily: WorkspaceSection[] = ["notifications", "reminders"];
+  // «Шаблоны и материалы» (библиотека) — ежедневный раздел: он вынесен
+  // из «Настроек» в основное меню (ветка «Библиотека HR»), сразу после
+  // уведомлений. Права прежние: сервер перепроверяет каждый вызов.
   const personal: WorkspaceSection[] = [
     ...daily,
+    "templates",
     "preferences",
     "integrations",
     "documents",
-    "templates",
     "rules",
   ];
   if (role === "hr") {
