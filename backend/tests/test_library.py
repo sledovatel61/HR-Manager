@@ -416,6 +416,53 @@ def test_reimport_asks_about_duplicate_instead_of_creating_it(
     assert separate.json()["id"] != existing_id
 
 
+def test_reimport_same_name_with_other_scope_is_not_a_duplicate(
+    client: TestClient, db_session: Session
+) -> None:
+    """Scope is part of a material's identity, so it must gate the duplicate.
+
+    «Анкета» for the whole base and «Анкета» scoped to one funnel stage are
+    two different materials: the import of the second must create it plainly,
+    never offer a new version of the first (whose versions would then leak to
+    a different audience). The 409 for a genuine hit carries the scope of the
+    existing material so the choice in the dialog is meaningful.
+    """
+    admin = make_user(db_session, username="lib-admin10", role=UserRole.ADMIN)
+    headers = _headers(client, admin.username)
+    _make_material(client, headers, name="Анкета", kind="anketa", category="candidate_docs")
+
+    # Same kind + name, DIFFERENT scope: no duplicate question, plain creation.
+    other_scope = _import_file(
+        client,
+        headers,
+        filename="anketa.txt",
+        content="Анкета соискателя\n- ФИО".encode(),
+        kind="anketa",
+        name="Анкета",
+        category="candidate_docs",
+        scope="interview_scheduled",
+    )
+    assert other_scope.status_code == 201, other_scope.text
+    assert other_scope.json()["scope"] == "interview_scheduled"
+    templates = client.get("/document-templates", headers=headers).json()["items"]
+    assert len([t for t in templates if t["name"] == "Анкета"]) == 2
+
+    # Same kind + name + scope: the duplicate question, with the scope shown.
+    same_scope = _import_file(
+        client,
+        headers,
+        filename="anketa2.txt",
+        content="Анкета соискателя\n- другой текст".encode(),
+        kind="anketa",
+        name="Анкета",
+        category="candidate_docs",
+    )
+    assert same_scope.status_code == 409, same_scope.text
+    detail = same_scope.json()["detail"]
+    assert detail["existing"]["scope"] == ""
+    assert "уже существует" in detail["message"]
+
+
 def test_import_version_without_manage_grant_is_refused(
     client: TestClient, db_session: Session
 ) -> None:

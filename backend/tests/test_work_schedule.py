@@ -886,7 +886,7 @@ def test_migration_0016_is_the_head_and_adds_schedule_objects() -> None:
 
     config = Config("alembic.ini")
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0018"
+    assert script.get_current_head() == "0019"
 
     from inspect import getsource
 

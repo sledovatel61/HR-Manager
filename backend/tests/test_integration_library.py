@@ -6,11 +6,14 @@ category CHECK constraint, and the phase 16 immutability triggers interacting
 with the seed inserts. These tests never fall back to SQLite.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -26,14 +29,42 @@ def _headers(client: TestClient, username: str) -> dict[str, str]:
     return {"X-CSRF-Token": _login(client, username)}
 
 
-def test_pg_seed_idempotent_and_concurrent_safe(pg_client: TestClient, pg_db: Session) -> None:
+def test_pg_seed_idempotent_and_concurrent_safe(
+    pg_client: TestClient, pg_engine: Engine, pg_db: Session
+) -> None:
+    """Idempotency plus a real two-session race, not a pretend one.
+
+    Two sessions run ``seed_library()`` simultaneously over an empty table.
+    Depending on interleaving, the loser either blocks on the partial unique
+    index on ``seed_key`` and rolls back with IntegrityError (startup logs
+    this and retries on the next start), or sees the winner's committed keys
+    and skips them. Either way the table must end up with exactly the built-in
+    catalog — never duplicates — and a follow-up run must be a no-op.
+    """
     admin = make_user(pg_db, username="pg-lib-admin", role=UserRole.ADMIN)
-    created = seed_library(pg_db)
-    assert created == len(seed_materials())
+    barrier = Barrier(2)
+
+    def run_seed() -> tuple[str, int]:
+        barrier.wait()  # maximize the overlap of the two transactions
+        with Session(pg_engine) as session:
+            try:
+                return ("created", seed_library(session))
+            except IntegrityError:
+                session.rollback()
+                return ("raced", 0)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: run_seed(), range(2)))
+
+    # Whatever the interleaving, exactly one run provisions the catalog and
+    # the other either raced away or became a no-op — the index is the hard
+    # guarantee.
+    assert len(outcomes) == 2
+    assert sum(1 for kind, created in outcomes if created == len(seed_materials())) == 1
     assert seed_count_missing(pg_db) == 0
 
-    # A second run — including a racing one — must not duplicate anything:
-    # the partial unique index on seed_key is the hard guarantee.
+    # A second run — and a manual collision with an existing seed key — must
+    # not duplicate anything either.
     assert seed_library(pg_db) == 0
     with pytest.raises(IntegrityError):
         pg_db.execute(

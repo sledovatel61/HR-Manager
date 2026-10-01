@@ -1070,6 +1070,8 @@ export interface ImportDuplicateDetail {
     id: string;
     name: string;
     kind: string;
+    /** Raw funnel stage key ("" = вся база) — part of the material identity. */
+    scope: string;
     revision: number;
   };
 }

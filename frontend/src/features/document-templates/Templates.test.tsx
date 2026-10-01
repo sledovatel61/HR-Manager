@@ -654,6 +654,7 @@ describe("importing methodical material", () => {
             id: "template-9",
             name: "Скрипт звонка",
             kind: "script",
+            scope: "interview_scheduled",
             revision: 4,
           },
         },
@@ -672,9 +673,12 @@ describe("importing methodical material", () => {
     );
     await user.click(screen.getByRole("button", { name: /Загрузить как черновик/ }));
 
-    // Вопрос о дубле вместо молчаливого создания копии.
+    // Вопрос о дубле вместо молчаливого создания копии; в вопросе видна
+    // область применения существующего материала — часть его идентичности.
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent(/уже существует/);
+    expect(dialog).toHaveTextContent(/область применения существующего материала/i);
+    expect(dialog).toHaveTextContent(/Собеседование/);
     await user.click(
       within(dialog).getByRole("button", { name: "Новая версия существующего" }),
     );

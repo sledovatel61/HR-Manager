@@ -597,7 +597,12 @@ export function ManageMaterialsPanel({ onBack }: { onBack: () => void }) {
           open
           onClose={() => setDuplicate(null)}
           title={`Материал «${duplicate.existing.existing.name}» уже существует`}
-          description={`${duplicate.existing.message} Файл можно добавить новой версией существующего материала — прежние версии останутся в истории.`}
+          // Scope — часть идентичности материала: без него «Анкета» на все
+          // этапы и «Анкета» для одного этапа выглядели бы одинаково, и версию
+          // легко добавить не к тому материалу.
+          description={`${duplicate.existing.message} Область применения существующего материала: ${scopeLabelOf(
+            duplicate.existing.existing.scope,
+          )}. Файл можно добавить новой версией существующего материала — прежние версии останутся в истории.`}
         >
           <div className="template-actions">
             <Button
@@ -788,6 +793,12 @@ export function ManageMaterialsPanel({ onBack }: { onBack: () => void }) {
 function libraryCategoryLabelSafe(key: string): string {
   if (!key) return "Без категории";
   return LIBRARY_CATEGORY_ORDER.find((option) => option.value === key)?.label ?? key;
+}
+
+/** Human words for the identity scope of the duplicate-dialog material. */
+function scopeLabelOf(scope: string): string {
+  if (!scope) return "все этапы воронки";
+  return STAGE_LABELS[scope as CandidateStage] ?? scope;
 }
 
 function VersionRow({
