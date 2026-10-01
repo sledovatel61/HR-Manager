@@ -396,6 +396,30 @@ def test_pdf_forbidden_name_inside_flate_stream_rejected(
     assert response.status_code == 415
 
 
+def test_forbidden_name_inside_a_text_literal_is_still_rejected(
+    client: TestClient, db_session: Session
+) -> None:
+    """Известное ложное срабатывание зафиксировано как поведение, а не случайность.
+
+    Шаблон не привязан к границе name-токена, поэтому строка ``/Java Script``
+    внутри текста документа тоже отклоняется (fail-closed). Практически такого
+    текста в анкете не бывает; тест нужен, чтобы поведение было осознанным и
+    его изменение было видно.
+    """
+    hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(db_session, owner=hr)
+
+    response = _upload(
+        client,
+        candidate,
+        filename="text-with-slash.pdf",
+        payload=build_pdf(text="see /Java Script for details"),
+        content_type=PDF_MIME,
+        headers=_auth(client, "hr1"),
+    )
+    assert response.status_code == 415
+
+
 def test_plain_pdf_still_accepted_after_name_normalisation(
     client: TestClient, db_session: Session
 ) -> None:
