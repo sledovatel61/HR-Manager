@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import io
 import tempfile
@@ -500,11 +501,15 @@ def test_filename_is_sanitized_and_cannot_set_a_path(
 def test_download_does_not_leak_internal_storage(client: TestClient, db_session: Session) -> None:
     hr = make_user(db_session, username="hr1", role=UserRole.HR)
     candidate = make_candidate(db_session, owner=hr)
+    # Payload строится один раз: build_docx() недетерминированна — zipfile
+    # пишет в локальный заголовок DOS-время с разрешением 2 секунды, поэтому
+    # два вызова через границу секунды дают разные байты.
+    payload = build_docx()
     created = _upload(
         client,
         candidate,
         filename="Анкета.docx",
-        payload=build_docx(),
+        payload=payload,
         headers=_auth(client, "hr1"),
     )
     attachment_id = created.json()["id"]
@@ -516,7 +521,7 @@ def test_download_does_not_leak_internal_storage(client: TestClient, db_session:
         assert secret not in response.text
         assert secret not in disposition
     # Тело — это ровно байты документа, без обёрток и префиксов.
-    assert response.content == build_docx()
+    assert response.content == payload
 
 
 # --- Лимиты и квоты ----------------------------------------------------------
@@ -836,11 +841,14 @@ def test_upload_never_writes_to_the_filesystem(
 
     hr = make_user(db_session, username="hr1", role=UserRole.HR)
     candidate = make_candidate(db_session, owner=hr)
+    # Один вызов фикстуры на тест: см. комментарий в
+    # test_download_does_not_leak_internal_storage.
+    payload = build_docx()
     created = _upload(
         client,
         candidate,
         filename="Анкета.docx",
-        payload=build_docx(),
+        payload=payload,
         headers=_auth(client, "hr1"),
     )
     assert created.status_code == 201
@@ -848,7 +856,7 @@ def test_upload_never_writes_to_the_filesystem(
     assert list(tmp_path.iterdir()) == []
     row = db_session.get(CandidateAttachment, UUID(created.json()["id"]))
     assert row is not None
-    assert bytes(row.content) == build_docx()
+    assert bytes(row.content) == payload
 
 
 def test_read_upload_limited_stops_reading_at_the_limit(
@@ -892,3 +900,53 @@ def test_config_limits_are_validated() -> None:
             ATTACHMENTS_MAX_FILE_BYTES=str(1024 * 1024),
             ATTACHMENTS_MAX_TOTAL_BYTES=str(1024),
         )
+
+
+# --- Страж недетерминированной фикстуры --------------------------------------
+
+#: Фикстуры, которые собирают контейнер заново при каждом вызове: ``zipfile``
+#: пишет в локальный заголовок DOS-время с разрешением 2 секунды, поэтому два
+#: вызова через границу секунды дают разные байты (расхождение на индексе 10).
+_NONDETERMINISTIC_FIXTURES = frozenset(
+    {
+        "build_docx",
+        "build_docx_of_size",
+        "build_docx_with_entries",
+        "build_docx_with_content_types",
+        "build_fake_docx",
+    }
+)
+
+
+def _fresh_fixture_calls() -> list[tuple[int, str]]:
+    """Сравнения, где один из операндов — свежий вызов недетерминированной фикстуры."""
+    source = Path(__file__).read_text(encoding="utf-8")
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Compare):
+            continue
+        operands = [node.left, *node.comparators]
+        for operand in operands:
+            if (
+                isinstance(operand, ast.Call)
+                and isinstance(operand.func, ast.Name)
+                and operand.func.id in _NONDETERMINISTIC_FIXTURES
+            ):
+                found.append((node.lineno, operand.func.id))
+    return found
+
+
+def test_no_test_compares_bytes_against_a_fresh_fixture_call() -> None:
+    """Сверка байтов обязана идти с payload, построенным один раз.
+
+    ``build_docx()`` недетерминированна, поэтому ``assert response.content ==
+    build_docx()`` падает примерно в каждом третьем полном прогоне — когда два
+    вызова фикстуры попадают по разные стороны границы DOS-секунды. В одиночном
+    прогоне файла тест успевает внутри одной секунды и флак не виден.
+    """
+    offenders = _fresh_fixture_calls()
+    assert not offenders, (
+        "Сравнение со свежим вызовом недетерминированной фикстуры "
+        f"(строка, фикстура): {offenders}. Сохраните payload в переменную и "
+        "сверяйте с ней."
+    )
