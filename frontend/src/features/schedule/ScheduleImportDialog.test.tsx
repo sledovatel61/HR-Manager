@@ -186,6 +186,8 @@ describe("Импорт графика из Excel (диалог)", () => {
     expect(screen.getByText("новых: 1")).toBeInTheDocument();
     expect(screen.getByText("спорных: 1")).toBeInTheDocument();
     expect(screen.getByText("Новикова Мария Петровна")).toBeInTheDocument();
+    // Распознанные дни файла видны в предпросмотре.
+    expect(screen.getByText(/Распознанные дни: 10\.08\.2026 — 11\.08\.2026 \(2\)/)).toBeInTheDocument();
 
     // Подтверждение требует явного выбора по спорной строке — запись не стартует сама.
     const confirmButton = screen.getByRole("button", { name: /Подтвердить импорт/ });
@@ -293,6 +295,15 @@ describe("Импорт графика из Excel (диалог)", () => {
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:report");
     clickSpy.mockRestore();
     vi.unstubAllGlobals();
+
+    // Отчёт можно и скопировать в буфер обмена.
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    await user.click(screen.getByRole("button", { name: "Копировать отчёт" }));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Строка;Дата;Время"));
 
     await user.click(screen.getByRole("button", { name: "Готово" }));
     expect(onImported).toHaveBeenCalledTimes(1);

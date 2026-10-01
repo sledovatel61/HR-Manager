@@ -194,6 +194,16 @@ export function ScheduleImportDialog({ onClose, onImported }: ScheduleImportDial
     URL.revokeObjectURL(url);
   };
 
+  const copyReport = async () => {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.report_csv);
+      pushToast("success", "Отчёт скопирован в буфер обмена.");
+    } catch {
+      pushToast("danger", "Не удалось скопировать отчёт — скачайте CSV.");
+    }
+  };
+
   const finish = () => {
     onImported();
     onClose();
@@ -255,6 +265,9 @@ export function ScheduleImportDialog({ onClose, onImported }: ScheduleImportDial
             <Button variant="secondary" onClick={downloadReport}>
               Скачать отчёт (CSV)
             </Button>
+            <Button variant="secondary" onClick={() => void copyReport()}>
+              Копировать отчёт
+            </Button>
             <Button onClick={finish}>Готово</Button>
           </div>
         </div>
@@ -296,6 +309,13 @@ export function ScheduleImportDialog({ onClose, onImported }: ScheduleImportDial
                   <Badge tone="danger">с ошибками: {preview.summary.error_rows}</Badge>
                 )}
               </div>
+              {preview.days.length > 0 && (
+                <p className="schedule-import-hint">
+                  Распознанные дни: {formatDay(preview.days[0])}
+                  {preview.days.length > 1 && ` — ${formatDay(preview.days[preview.days.length - 1])}`}{" "}
+                  ({preview.summary.days_total})
+                </p>
+              )}
               {preview.warnings.map((warning) => (
                 <p key={warning} className="schedule-import-warning">
                   {warning}
