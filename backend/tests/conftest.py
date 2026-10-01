@@ -109,7 +109,11 @@ def _install_pg8000_error_translation() -> None:
     def execute(self, operation, args=(), stream=None):
         try:
             return original_execute(self, operation, args, stream)
-        except pg8000.dbapi.ProgrammingError as exc:
+        # pg8000 normally maps 23505 to IntegrityError itself, but errors
+        # surfaced from ``core.handle_messages`` (e.g. a deferred unique-index
+        # check) bypass that mapping and arrive as the base DatabaseError.
+        # Catch both so class-23 assertions read the same as on psycopg.
+        except (pg8000.dbapi.ProgrammingError, pg8000.dbapi.DatabaseError) as exc:
             message = exc.args[0] if exc.args else ""
             code = message.get("C", "") if isinstance(message, dict) else ""
             if code.startswith("23"):
@@ -415,7 +419,7 @@ def pg_client(pg_settings: Settings, pg_engine: Engine) -> Iterator[TestClient]:
                 "telegram_poll_state, user_emails, access_grants, "
                 "bootstrap_tickets, bootstrap_exchanges, "
                 "candidate_document_generations, document_template_versions, "
-                "document_templates, schedule_entries "
+                "document_templates, schedule_entries, candidate_attachments "
                 "RESTART IDENTITY CASCADE"
             )
         )

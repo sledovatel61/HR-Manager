@@ -1191,3 +1191,37 @@ export interface ScheduleEntryCreateInput {
 }
 
 export type ScheduleEntryUpdateInput = Partial<ScheduleEntryCreateInput>;
+
+// --- Вложения кандидата: анкеты (.docx) и сканы (.pdf) -----------------------
+
+/** Формат вложения. Сервер определяет его по сигнатуре, не по имени файла. */
+export type AttachmentKind = "docx" | "pdf";
+
+/** Метаданные одного вложения. Байты приходят только отдельным скачиванием. */
+export interface CandidateAttachment {
+  id: string;
+  candidate_id: string;
+  filename: string;
+  kind: AttachmentKind;
+  size_bytes: number;
+  sha256: string;
+  uploaded_by_user_id: string | null;
+  uploaded_by_username: string;
+  uploaded_at: string;
+}
+
+/** Действующие лимиты: UI предупреждает о превышении до отправки файла. */
+export interface AttachmentLimits {
+  max_file_bytes: number;
+  max_total_bytes: number;
+  max_count: number;
+}
+
+export interface CandidateAttachmentList {
+  items: CandidateAttachment[];
+  total: number;
+  total_bytes: number;
+  limits: AttachmentLimits;
+  /** Право загружать/удалять вложения этого кандидата — решение сервера. */
+  can_manage: boolean;
+}

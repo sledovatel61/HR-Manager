@@ -44,6 +44,8 @@ import type {
   AuditEvent,
   CalendarEvent,
   Candidate,
+  CandidateAttachment,
+  CandidateAttachmentList,
   CandidateCreateInput,
   CandidateInteraction,
   CandidateInteractionCreateInput,
@@ -1264,4 +1266,225 @@ export async function updateScheduleEntry(
 
 export async function deleteScheduleEntry(entryId: string): Promise<void> {
   await request<void>(`/work-schedule/entries/${entryId}`, { method: "DELETE" });
+}
+
+// --- Вложения кандидата: анкеты (.docx) и сканы (.pdf) ----------------------
+
+/**
+ * Список активных вложений кандидата и действующие лимиты.
+ *
+ * Доступен тому, кому сервер разрешает видеть кандидата; иначе 404.
+ */
+export async function listCandidateAttachments(
+  candidateId: string,
+): Promise<CandidateAttachmentList> {
+  return request<CandidateAttachmentList>(`/candidates/${candidateId}/attachments`);
+}
+
+/**
+ * Загрузить анкету или скан.
+ *
+ * Загрузка идёт через ``XMLHttpRequest`` — только он даёт прогресс отправки,
+ * который нужен для файлов в несколько мегабайт. Прогресс передаётся в
+ * ``onProgress`` в процентах (0–100); ошибка — ``ApiError`` с текстом сервера
+ * (413 — размер, 415 — формат, 409 — имя занято, 403/404 — права).
+ */
+export function uploadCandidateAttachment(
+  candidateId: string,
+  file: File,
+  onProgress?: (percent: number) => void,
+): Promise<CandidateAttachment> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const token = readCsrfCookie();
+
+  return new Promise<CandidateAttachment>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE}/candidates/${candidateId}/attachments`);
+    xhr.responseType = "json";
+    xhr.withCredentials = true;
+    if (token) {
+      xhr.setRequestHeader("X-CSRF-Token", token);
+    }
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && onProgress) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    xhr.onerror = () => {
+      reject(new ApiError(0, "Сеть недоступна: файл не отправлен."));
+    };
+    xhr.onload = () => {
+      const data: unknown = xhr.response;
+      if (xhr.status === 401) {
+        emitUnauthorized();
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data as CandidateAttachment);
+        return;
+      }
+      const rawDetail =
+        data && typeof data === "object" && "detail" in data
+          ? (data as { detail: unknown }).detail
+          : null;
+      const detail =
+        typeof rawDetail === "string" ? rawDetail : `Не удалось загрузить файл (${xhr.status}).`;
+      reject(new ApiError(xhr.status, detail, rawDetail));
+    };
+    xhr.send(form);
+  });
+}
+
+/** Удалить вложение (мягкое удаление на сервере, с записью в аудит). */
+export async function deleteCandidateAttachment(
+  candidateId: string,
+  attachmentId: string,
+): Promise<void> {
+  await request<{ deleted: boolean }>(
+    `/candidates/${candidateId}/attachments/${attachmentId}`,
+    { method: "DELETE" },
+  );
+}
+
+export interface AttachmentDownload {
+  blob: Blob;
+  /** Имя файла из ``Content-Disposition`` (уже очищенное на сервере). */
+  filename: string;
+}
+
+/**
+ * Скачать байты вложения через защищённый endpoint.
+ *
+ * Запрос идёт с сессионной cookie; ответ — ``Content-Disposition: attachment``,
+ * поэтому браузер не пытается показать содержимое в нашем origin.
+ */
+export async function fetchCandidateAttachment(
+  candidateId: string,
+  attachmentId: string,
+): Promise<AttachmentDownload> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE}/candidates/${candidateId}/attachments/${attachmentId}/download`,
+      { method: "GET", headers: { Accept: "*/*" }, credentials: "same-origin" },
+    );
+  } catch {
+    throw new ApiError(0, "Сеть недоступна: не удалось связаться с сервером.");
+  }
+
+  if (response.status === 401) {
+    emitUnauthorized();
+  }
+
+  if (!response.ok) {
+    let rawDetail: unknown = null;
+    try {
+      const data: unknown = await response.json();
+      if (data && typeof data === "object" && "detail" in data) {
+        rawDetail = (data as { detail: unknown }).detail;
+      }
+    } catch {
+      // не-JSON тело ошибки — оставляем общий текст
+    }
+    const detail =
+      typeof rawDetail === "string" ? rawDetail : `Не удалось скачать файл (${response.status}).`;
+    throw new ApiError(response.status, detail, rawDetail);
+  }
+
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  const plain = /filename="?([^";]+)"?/i.exec(disposition);
+  const filename = star?.[1]
+    ? decodeURIComponent(star[1])
+    : (plain?.[1] ?? "attachment");
+  return { blob: await response.blob(), filename };
+}
+
+/**
+ * Доступен ли системный диалог сохранения (File System Access API).
+ *
+ * API есть только в безопасном контексте: https или localhost. По обычному
+ * HTTP-адресу в локальной сети (http://192.168.x.x) его не будет, и интерфейс
+ * обязан предложить обычное скачивание браузером.
+ */
+export function saveDialogAvailable(): boolean {
+  return typeof window !== "undefined" && typeof window.showSaveFilePicker === "function";
+}
+
+export type SavePickerOutcome = "saved" | "cancelled";
+
+/**
+ * Сохранить вложение через системный диалог «Сохранить как…».
+ *
+ * Возвращает ``"saved"`` только после реальной записи байт; отмена диалога —
+ * это ``"cancelled"``, а не успех. Возвращает также дескриптор файла: только
+ * он позволяет потом открыть именно сохранённые байты.
+ */
+export async function saveCandidateAttachmentWithPicker(
+  candidateId: string,
+  attachmentId: string,
+): Promise<{ outcome: SavePickerOutcome; filename: string; handle?: FileSystemFileHandle }> {
+  if (typeof window.showSaveFilePicker !== "function") {
+    throw new ApiError(
+      0,
+      "Диалог «Сохранить как…» недоступен в этом браузере. Используйте обычное скачивание.",
+    );
+  }
+  const { blob, filename } = await fetchCandidateAttachment(candidateId, attachmentId);
+  const extension = filename.slice(filename.lastIndexOf(".")) || "";
+  let handle: FileSystemFileHandle;
+  try {
+    handle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [
+        {
+          description: extension === ".pdf" ? "PDF" : "Документ Word",
+          accept: {
+            [extension === ".pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]:
+              [extension || ".bin"],
+          },
+        },
+      ],
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return { outcome: "cancelled", filename };
+    }
+    throw error;
+  }
+  const writable = await handle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+  return { outcome: "saved", filename, handle };
+}
+
+/**
+ * Отдать файл менеджеру загрузок браузера.
+ *
+ * Имя и место определяет браузер (в Windows — его диалог сохранения, если он
+ * настроен). Серверный путь при этом не подменяется и не передаётся.
+ */
+export function triggerBrowserDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  // Освобождаем blob не сразу: браузер ещё читает его для записи.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/**
+ * Открыть именно сохранённые байты в новой вкладке браузера.
+ *
+ * Это честный максимум, доступный веб-странице: файл открывается в браузере,
+ * а не в Word/Acrobat — запустить внешнюю программу страница не может.
+ */
+export async function openSavedFile(handle: FileSystemFileHandle): Promise<void> {
+  const file = await handle.getFile();
+  const url = URL.createObjectURL(file);
+  window.open(url, "_blank", "noopener");
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

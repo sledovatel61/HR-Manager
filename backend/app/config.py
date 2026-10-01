@@ -80,6 +80,15 @@ Environment variables
                            disables the flow (fail-closed 503)
 ``PUBLIC_CONFIRM_RATE_LIMIT``/``PUBLIC_CONFIRM_RATE_WINDOW_S``  per-IP
                            anti-abuse of the public confirmation endpoint
+``ATTACHMENTS_ENABLED``    allow DOCX/PDF attachments on candidate cards
+                           (default true; turning it off refuses uploads and
+                           downloads with 403, existing rows stay untouched)
+``ATTACHMENTS_MAX_FILE_BYTES``   single-file size cap (default 10 MiB,
+                           allowed range 64 KiB … 64 MiB)
+``ATTACHMENTS_MAX_TOTAL_BYTES``  total attachment bytes per candidate
+                           (default 100 MiB, never below the single-file cap)
+``ATTACHMENTS_MAX_COUNT``  maximum number of attachments per candidate
+                           (default 30, allowed range 1 … 500)
 """
 
 import base64
@@ -116,6 +125,14 @@ LICENSE_PUBLIC_KEY_BYTES = 32
 LICENSE_PUBLIC_KEY_BASE64_LENGTH = 44
 
 MIN_SECRET_KEY_LENGTH = 32
+
+# Вложения в карточке кандидата (.docx/.pdf). Жёсткие границы конфигурации:
+# нижняя — чтобы случайное значение не заблокировало обычные анкеты, верхняя —
+# чтобы нельзя было задать лимит, который уронит память процесса или раздует базу.
+# Рабочие значения по умолчанию заданы в ``Settings``.
+ATTACHMENTS_MIN_FILE_BYTES = 64 * 1024
+ATTACHMENTS_HARD_MAX_FILE_BYTES = 64 * 1024 * 1024
+ATTACHMENTS_HARD_MAX_COUNT = 500
 
 # Password policy (also enforced in app/security.py with a dedicated message).
 MIN_PASSWORD_LENGTH = 12
@@ -393,6 +410,20 @@ class Settings(BaseSettings):
         default=3600, validation_alias="PUBLIC_CONFIRM_RATE_WINDOW_S"
     )
 
+    # --- Вложения в карточке кандидата (.docx/.pdf) -------------------------
+    # Закрытый список форматов живёт в ``app.candidate_attachments``; здесь —
+    # только лимиты, чтобы их можно было поднять/понизить для пилота без
+    # изменения кода. Значения по умолчанию безопасны для локальной установки:
+    # один файл до 10 МБ, не более 30 вложений и 100 МБ на кандидата.
+    attachments_enabled: bool = Field(default=True, validation_alias="ATTACHMENTS_ENABLED")
+    attachments_max_file_bytes: int = Field(
+        default=10 * 1024 * 1024, validation_alias="ATTACHMENTS_MAX_FILE_BYTES"
+    )
+    attachments_max_total_bytes: int = Field(
+        default=100 * 1024 * 1024, validation_alias="ATTACHMENTS_MAX_TOTAL_BYTES"
+    )
+    attachments_max_count: int = Field(default=30, validation_alias="ATTACHMENTS_MAX_COUNT")
+
     def candidate_reminder_hours(self) -> list[float]:
         """Parsed reminder offsets (hours), ascending, deduplicated."""
         values: list[float] = []
@@ -427,6 +458,27 @@ class Settings(BaseSettings):
         if self.public_confirm_rate_window_s < 1:
             raise ValueError("PUBLIC_CONFIRM_RATE_WINDOW_S must be at least 1")
         self.candidate_reminder_hours()  # raises on garbage input
+        return self
+
+    @model_validator(mode="after")
+    def _validate_attachment_limits(self) -> "Settings":
+        """Keep attachment limits inside sane, memory-safe boundaries."""
+        if self.attachments_max_file_bytes < ATTACHMENTS_MIN_FILE_BYTES:
+            raise ValueError(
+                f"ATTACHMENTS_MAX_FILE_BYTES must be at least {ATTACHMENTS_MIN_FILE_BYTES}"
+            )
+        if self.attachments_max_file_bytes > ATTACHMENTS_HARD_MAX_FILE_BYTES:
+            raise ValueError(
+                f"ATTACHMENTS_MAX_FILE_BYTES must not exceed {ATTACHMENTS_HARD_MAX_FILE_BYTES}"
+            )
+        if not 1 <= self.attachments_max_count <= ATTACHMENTS_HARD_MAX_COUNT:
+            raise ValueError(
+                f"ATTACHMENTS_MAX_COUNT must be between 1 and {ATTACHMENTS_HARD_MAX_COUNT}"
+            )
+        if self.attachments_max_total_bytes < self.attachments_max_file_bytes:
+            raise ValueError(
+                "ATTACHMENTS_MAX_TOTAL_BYTES must be at least ATTACHMENTS_MAX_FILE_BYTES"
+            )
         return self
 
     @property
