@@ -10,9 +10,12 @@ SQLite-only unit environment.
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -21,7 +24,7 @@ RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
 # non-integration test below fails the moment a migration is added without
 # bumping this, so the drift is caught in the fast job rather than only in
 # «Backend integration tests (PostgreSQL)».
-HEAD_REVISION = "0018"
+HEAD_REVISION = "0019"
 EXPECTED_TABLES = {
     "users",
     "user_sessions",
@@ -159,13 +162,67 @@ def test_head_revision_matches_the_migration_chain() -> None:
         capture_output=True,
         text=True,
     )
-    heads = {
-        line.split()[0]
-        for line in result.stdout.splitlines()
-        if line.strip() and not line.startswith(" ")
-    }
-    # Exactly one head: a branched chain would make «upgrade head» ambiguous.
-    assert heads == {HEAD_REVISION}, (
-        f"HEAD_REVISION={HEAD_REVISION!r} does not match `alembic heads`={sorted(heads)}. "
+    head_lines = [
+        line for line in result.stdout.splitlines() if line.strip() and not line.startswith(" ")
+    ]
+    heads = [line.split()[0] for line in head_lines]
+    # Exactly one head, counted by LINES and not folded into a set: two files
+    # claiming the same revision id print the same name twice, and a set-based
+    # check happily reduced that to {'0018'} == {'0018'} while `upgrade head`
+    # silently applied only one of the two migrations.
+    assert len(head_lines) == 1, (
+        f"`alembic heads` returned {len(head_lines)} lines ({heads}): either the chain "
+        "branches or two migration files declare the same revision id."
+    )
+    assert heads == [HEAD_REVISION], (
+        f"HEAD_REVISION={HEAD_REVISION!r} does not match `alembic heads`={heads}. "
         "Bump HEAD_REVISION in tests/test_migrations.py."
     )
+
+    _assert_chain_is_linear_and_complete()
+
+
+def _assert_chain_is_linear_and_complete() -> None:
+    """One file per revision, one parent per revision, no duplicate ids.
+
+    Two parallel PRs both adding revision «0018» merge cleanly in git and
+    ``mergeable: clean`` in the UI, yet Alembic then warns «Revision 0018 is
+    present more than once» and drops one branch from the chain — the missing
+    table only surfaces at runtime. Every condition below fails on that state.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        script = ScriptDirectory.from_config(Config(str(BACKEND_DIR / "alembic.ini")))
+        walked = list(script.walk_revisions("base", "heads"))
+    duplicates = [
+        str(item.message) for item in caught if "present more than once" in str(item.message)
+    ]
+    assert not duplicates, f"Duplicate revision id in alembic/versions: {duplicates}"
+
+    files = sorted(
+        path
+        for path in (BACKEND_DIR / "alembic" / "versions").glob("*.py")
+        if path.name != "__init__.py"
+    )
+    revisions = [item.revision for item in walked]
+    assert len(revisions) == len(files), (
+        f"{len(files)} migration files but {len(revisions)} revisions in the chain "
+        f"({sorted(revisions)}): a duplicated revision id drops one file from the walk."
+    )
+    assert len(set(revisions)) == len(revisions), f"Duplicate revision ids: {revisions}"
+
+    parents = [item.down_revision for item in walked if item.down_revision is not None]
+    assert sum(1 for item in walked if item.down_revision is None) == 1, (
+        "Exactly one base revision (down_revision is None) is expected."
+    )
+    assert len(parents) == len(set(parents)), (
+        f"The chain branches, a revision is the parent of two others: {sorted(parents)}"
+    )
+    for item in walked:
+        if item.down_revision is not None:
+            assert item.down_revision in revisions, (
+                f"Revision {item.revision} points at down_revision={item.down_revision!r}, "
+                "which is not in the chain."
+            )
+    # The head is the only revision nobody points at.
+    assert set(revisions) - set(parents) == {HEAD_REVISION}
