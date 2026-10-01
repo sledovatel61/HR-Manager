@@ -31,11 +31,13 @@ from app.db import get_db
 from app.deps import get_current_user, get_settings_from_request
 from app.document_templates import (
     activate_version,
+    add_imported_version,
     add_version,
     archive_version,
     candidate_for_user,
     create_template,
     download_payload,
+    find_same_name_template,
     generate,
     generation_for,
     generations_page,
@@ -44,14 +46,24 @@ from app.document_templates import (
     rename_template,
     require_manage,
 )
+from app.library import (
+    DEMO_PLACEHOLDER_VALUES,
+    active_material_or_404,
+    audit_material_event,
+    list_materials,
+    material_detail,
+    material_payload,
+)
 from app.models import AuditAction, CandidateStage, User
 from app.template_import import read_template_file, read_upload_limited
-from app.template_render import TemplateContentError, placeholder_catalog
+from app.template_render import TemplateContentError, placeholder_catalog, render_document
 from app.template_schemas import (
     GenerateRequest,
     GenerationOut,
     GenerationPreview,
     GenerationsOut,
+    LibraryMaterialDetail,
+    LibraryMaterialsOut,
     NewTemplateVersion,
     PlaceholderOut,
     PlaceholdersOut,
@@ -96,6 +108,9 @@ async def import_template(
     kind: str = Form(...),
     name: str = Form(""),
     scope: str = Form(""),
+    category: str = Form(""),
+    summary: str = Form(""),
+    force_new: str = Form(""),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -106,27 +121,85 @@ async def import_template(
     extension-checked and decoded, and only the validated text becomes the
     body. ``read_template_file`` raises a message that is safe to show, which
     becomes a 422 here.
+
+    Re-import protection: when a template with the same kind and name already
+    exists and ``force_new`` is not set to ``"1"``, the endpoint answers 409
+    with a structured detail naming the existing material. The interface uses
+    it to ask whether the file should become a **new version** of the existing
+    material (``POST /document-templates/{id}/import-version``) or a
+    deliberately separate one (repeat with ``force_new=1``). A plain retry can
+    therefore never quietly breed look-alike templates.
     """
     require_manage(db, user)
     try:
         payload_bytes = await read_upload_limited(file)
         imported = read_template_file(payload_bytes, file.filename, title_hint=name)
-    except TemplateContentError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    try:
         created = TemplateCreate(
             kind=kind,
             scope=CandidateStage(scope) if scope else None,
             name=name.strip() or imported.title,
             title=imported.title,
             body=imported.body,
+            category=category,
+            summary=summary,
         )
     except (TemplateContentError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
+    if force_new != "1":
+        existing = find_same_name_template(db, kind=created.kind, name=created.name)
+        if existing is not None:
+            raise HTTPException(
+                409,
+                {
+                    "message": (
+                        f"Материал «{existing.name}» уже существует. Создать новую "
+                        "версию существующего материала или отдельный материал?"
+                    ),
+                    "existing": {
+                        "id": str(existing.id),
+                        "name": existing.name,
+                        "kind": existing.kind,
+                        "revision": existing.revision,
+                    },
+                },
+            )
     return create_template(
         db,
         user,
         created,
+        origin=f"import={imported.extension} source={imported.original_name[:60]}",
+    )
+
+
+@router.post(
+    "/document-templates/{template_id}/import-version", response_model=TemplateOut, status_code=201
+)
+async def import_template_version(
+    template_id: UUID,
+    expected_revision: int = Form(...),
+    title: str = Form(""),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TemplateOut:
+    """Add a draft version to an existing template from an uploaded file.
+
+    The explicit «new version of an existing material» path of the duplicate
+    question. Same locking and audit rules as a manual «Новая версия».
+    """
+    require_manage(db, user)
+    try:
+        payload_bytes = await read_upload_limited(file)
+        imported = read_template_file(payload_bytes, file.filename, title_hint=title)
+    except TemplateContentError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return add_imported_version(
+        db,
+        user,
+        template_id,
+        title=imported.title,
+        body=imported.body,
+        expected_revision=expected_revision,
         origin=f"import={imported.extension} source={imported.original_name[:60]}",
     )
 
@@ -281,3 +354,107 @@ def download_generated_document(
     if format == "html":
         headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'"
     return Response(content=content, media_type=media_type, headers=headers)
+
+
+# --- «Библиотека HR»: read-only material screens ------------------------------
+#
+# The library reuses the template visibility rule (only published versions,
+# for every authenticated employee) and the same audit discipline as the
+# candidate download: ids and format in the audit row, never material text.
+# Draft materials answer 404 here even for managers — drafts live in
+# «Управление материалами».
+
+# Stricter than the candidate download: `sandbox` additionally blocks scripts
+# and forms inside the served document, which only styles anyway.
+_LIBRARY_HTML_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+
+
+@router.get("/library/materials", response_model=LibraryMaterialsOut)
+def library_materials(
+    db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> LibraryMaterialsOut:
+    """Card catalog of published materials (available to every role)."""
+    return LibraryMaterialsOut.model_validate(list_materials(db, user))
+
+
+@router.get("/library/materials/{material_id}", response_model=LibraryMaterialDetail)
+def library_material(
+    material_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> LibraryMaterialDetail:
+    """Read-only view of one published material with a safe demo rendering."""
+    return LibraryMaterialDetail.model_validate(material_detail(db, material_id))
+
+
+@router.get("/library/materials/{material_id}/download")
+def download_library_material(
+    material_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    format: str = Query("html"),
+) -> Response:
+    """Download a safe copy of a material (HTML for print-to-PDF, or text).
+
+    Audited with parameters only. The content is rendered with impersonal
+    demo values, so a shared copy never carries a real candidate's data.
+    """
+    template, version = active_material_or_404(db, material_id)
+    media_type, filename, content = material_payload(template, version, format=format)
+    audit_material_event(
+        db,
+        action=AuditAction.LIBRARY_MATERIAL_DOWNLOADED,
+        user=user,
+        template=template,
+        version=version,
+        client_ip=client_ip(request),
+        client_user_agent=user_agent(request.headers),
+        format=format,
+    )
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if format == "html":
+        headers["Content-Security-Policy"] = _LIBRARY_HTML_CSP
+    return Response(content=content, media_type=media_type, headers=headers)
+
+
+@router.get("/library/materials/{material_id}/view")
+def view_library_material(
+    material_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    """Standalone read-only HTML of a material, opened in a new browser tab.
+
+    Served inline (not as an attachment) with a script-blocking CSP. Audited
+    like the download: ids and category only.
+    """
+    template, version = active_material_or_404(db, material_id)
+    rendered = render_document(
+        title=version.title, body=version.body, values=DEMO_PLACEHOLDER_VALUES
+    )
+    audit_material_event(
+        db,
+        action=AuditAction.LIBRARY_MATERIAL_OPENED,
+        user=user,
+        template=template,
+        version=version,
+        client_ip=client_ip(request),
+        client_user_agent=user_agent(request.headers),
+    )
+    filename = material_payload(template, version, format="html")[1]
+    return Response(
+        content=rendered.html.encode("utf-8"),
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": _LIBRARY_HTML_CSP,
+        },
+    )

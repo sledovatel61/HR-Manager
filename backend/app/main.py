@@ -162,6 +162,20 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                     bootstrap_admin(db, app_settings)
                 except Exception:  # never let bootstrap crash the API process
                     logger.exception("administrator bootstrap failed")
+                try:
+                    # «Библиотека HR»: provision the built-in starter catalog
+                    # on a clean installation. Idempotent by seed_key: an
+                    # existing material (renamed, republished or archived by
+                    # the owner) is never touched. Needs at least one user as
+                    # the version author, so a production start before the
+                    # first administrator simply retries on the next start.
+                    from app.library_seed import seed_library
+
+                    seeded = seed_library(db)
+                    if seeded:
+                        logger.info("library seed provisioned %s materials", seeded)
+                except Exception:  # never let provisioning crash the API process
+                    logger.exception("library seed failed")
         yield
         app_engine.dispose()
 
