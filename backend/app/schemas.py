@@ -387,6 +387,53 @@ class InteractionList(BaseModel):
     offset: int
 
 
+# --- Вложения кандидата: анкеты и сканы (.docx/.pdf) -------------------------
+
+
+class AttachmentLimitsOut(BaseModel):
+    """Действующие лимиты вложений — чтобы UI предупреждал до загрузки."""
+
+    max_file_bytes: int
+    max_total_bytes: int
+    max_count: int
+
+
+class CandidateAttachmentOut(BaseModel):
+    """Метаданные одного вложения.
+
+    Байты наружу не отдаются; внутренний способ хранения (столбец BYTEA) в
+    контракт не входит и не раскрывается. Имя файла — уже очищенное на сервере
+    безопасное отображаемое имя.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    candidate_id: UUID
+    filename: str
+    kind: str
+    size_bytes: int
+    sha256: str
+    uploaded_by_user_id: UUID | None = None
+    uploaded_by_username: str = ""
+    uploaded_at: datetime
+
+
+class CandidateAttachmentList(BaseModel):
+    """Список активных вложений кандидата вместе с действующими лимитами.
+
+    ``can_manage`` — решение сервера о праве загружать и удалять вложения
+    именно этого кандидата. Интерфейс пользуется им вместо собственной копии
+    правил; защитой оно не является — сервер проверяет права на каждый запрос.
+    """
+
+    items: list[CandidateAttachmentOut]
+    total: int
+    total_bytes: int
+    limits: AttachmentLimitsOut
+    can_manage: bool = False
+
+
 # --- HR directory (phase 4): minimal user cards for owner pickers ------------
 
 

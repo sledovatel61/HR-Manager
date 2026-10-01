@@ -24,6 +24,7 @@ from app.routers import (
     analytics,
     audit,
     auth,
+    candidate_attachments,
     candidate_messages,
     candidates,
     document_rules,
@@ -198,6 +199,10 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(users.router)
     app.include_router(audit.router)
     app.include_router(candidates.router)
+    # Вложения кандидата регистрируются до documents: у обоих маршруты вида
+    # /candidates/{id}/..., порядок не важен для сопоставления, но держим
+    # группировку по кандидату.
+    app.include_router(candidate_attachments.router)
     app.include_router(work_schedule.router)
     app.include_router(documents.router)
     app.include_router(document_rules.router)

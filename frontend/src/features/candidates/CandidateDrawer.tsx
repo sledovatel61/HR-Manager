@@ -44,6 +44,7 @@ import {
 } from "../../types";
 import { displayTime, formatShortDate } from "../schedule/scheduleDate";
 import { REMINDER_STATUS_LABELS } from "../notifications/reminderLabels";
+import { AttachmentsTab } from "./AttachmentsTab";
 import { DuplicateResolveDialog } from "./DuplicateResolveDialog";
 import { MessagesTab } from "./MessagesTab";
 import { TransferDialog } from "./TransferDialog";
@@ -59,6 +60,7 @@ type DrawerTab =
   | "events"
   | "messages"
   | "documents"
+  | "attachments"
   | "generated"
   | "transfers";
 
@@ -168,6 +170,7 @@ export function CandidateDrawer({
     { id: "events" as const, label: "События" },
     { id: "messages" as const, label: "Сообщения" },
     { id: "documents" as const, label: "Документы" },
+    { id: "attachments" as const, label: "Документы и анкеты" },
     { id: "generated" as const, label: "По шаблону" },
     { id: "transfers" as const, label: "Передачи" },
   ];
@@ -231,6 +234,8 @@ export function CandidateDrawer({
 
           {tab === "messages" && <MessagesTab candidate={candidate} />}
           {tab === "documents" && <DocumentsTab candidateId={candidate.id} stage={candidate.stage} />}
+
+          {tab === "attachments" && <AttachmentsTab candidateId={candidate.id} />}
 
           {tab === "generated" && <GeneratedDocumentsTab candidateId={candidate.id} />}
 

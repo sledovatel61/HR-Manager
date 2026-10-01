@@ -28,6 +28,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     Time,
@@ -225,6 +226,14 @@ class AuditAction(StrEnum):
     TEMPLATE_VERSION_ARCHIVED = "template_version_archived"
     DOCUMENT_GENERATED = "document_generated"
     DOCUMENT_DOWNLOADED = "document_downloaded"
+    # Вложения в карточке кандидата: анкеты и сканы (.docx/.pdf). В детали
+    # строки аудита попадают только id вложения, тип и размер — никогда имя
+    # файла (в нём бывает ФИО соискателя) и никогда содержимое документа.
+    # Значения укладываются в 32 символа: downgrade миграции 0010 сужает
+    # audit_log.action до VARCHAR(32).
+    CANDIDATE_ATTACHMENT_UPLOADED = "candidate_attachment_uploaded"
+    CANDIDATE_ATTACHMENT_DOWNLOADED = "candidate_attachment_downloaded"
+    CANDIDATE_ATTACHMENT_DELETED = "candidate_attachment_deleted"
 
 
 class CandidateStage(StrEnum):
@@ -2519,3 +2528,82 @@ class ScheduleEntry(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<ScheduleEntry id={self.id} entry_date={self.entry_date}>"
+
+
+# Вложения в карточке кандидата: анкеты (.docx) и сканы (.pdf). Это сознательное
+# расширение границы Phase 16 «документы без файлов»: здесь хранится именно
+# полученный от HR файл, а не сгенерированный системой текст. Байты лежат в
+# PostgreSQL (BYTEA), а не в файловой системе: они попадают в штатный
+# pg_dump/pg_restore backup, переживают обновление контейнеров и не требуют
+# нового volume. Доступ — только через API с проверкой сессии, CSRF, прав на
+# кандидата и аудита; публичной раздачи файлов нет.
+class CandidateAttachment(Base):
+    """Одно защищённое вложение кандидата (анкета или скан).
+
+    ``filename`` — уже очищенное на сервере безопасное отображаемое имя с
+    разрешённым расширением; оно никогда не используется как путь. ``kind`` —
+    определённый по сигнатуре тип (``docx``/``pdf``), ``sha256`` — отпечаток
+    содержимого для аудита и поиска дублей. ``content`` — сами байты; колонка
+    отложена (``deferred``), поэтому списки вложений не тянут blob из БД.
+
+    Удаление мягкое: ставится ``deleted_at``, байты и аудит сохраняются —
+    в проекте запрещено молча уничтожать данные (см. ``agents.md`` §5).
+    """
+
+    __tablename__ = "candidate_attachments"
+    __table_args__ = (
+        CheckConstraint("kind IN ('docx', 'pdf')", name="ck_candidate_attachments_kind_valid"),
+        CheckConstraint("size_bytes > 0", name="ck_candidate_attachments_size_positive"),
+        CheckConstraint("length(filename) >= 1", name="ck_candidate_attachments_filename_present"),
+        CheckConstraint("length(sha256) = 64", name="ck_candidate_attachments_sha256_length"),
+        Index("ix_candidate_attachments_candidate_id", "candidate_id"),
+        # Одно активное вложение с данным именем у кандидата; удалённые имена
+        # освобождаются, чтобы повторная загрузка не упиралась в старый файл.
+        Index(
+            "uq_candidate_attachments_candidate_filename",
+            "candidate_id",
+            "filename",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, deferred=True)
+    uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    uploaded_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    candidate: Mapped[Candidate] = relationship()
+    uploaded_by: Mapped[User | None] = relationship(foreign_keys=[uploaded_by_user_id])
+    deleted_by: Mapped[User | None] = relationship(foreign_keys=[deleted_by_user_id])
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
+
+    @property
+    def uploaded_by_username(self) -> str:
+        """Имя загрузившего пользователя (ленивое обращение к связи)."""
+        return self.uploaded_by.username if self.uploaded_by is not None else ""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        # Намеренно без имени файла: repr может попасть в лог.
+        return f"<CandidateAttachment id={self.id} kind={self.kind} bytes={self.size_bytes}>"
