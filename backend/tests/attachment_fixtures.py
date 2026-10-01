@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import os
 import zipfile
+import zlib
 
 _RELS_TYPE = "application/vnd.openxmlformats-package.relationships+xml"
 _MAIN_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
@@ -130,3 +131,62 @@ def build_docx_of_size(min_bytes: int) -> bytes:
         info.compress_type = zipfile.ZIP_STORED
         archive.writestr(info, os.urandom(max(1, min_bytes)))
     return buffer.getvalue()
+
+
+# --- PDF: нормативные способы записи запрещённого имени ----------------------
+#
+# PDF 32000-1:2008 допускает white-space внутри name-токена и ``#xx``-эскейпы,
+# поэтому ``/Java Script`` и ``/J#61v#61Script`` — это то же самое имя
+# ``/JavaScript``. Фильтр обязан ловить все эти записи, а не только буквальную.
+
+
+def pdf_name_with_space(marker: str) -> str:
+    """``/JavaScript`` → ``/Java Script``: white-space внутри имени."""
+    cut = max(1, len(marker) // 2)
+    return f"{marker[:cut]} {marker[cut:]}"
+
+
+def pdf_name_with_hex_escape(marker: str) -> str:
+    """``/JavaScript`` → ``/Ja#76aScript``: ``#xx``-эскейп одного символа."""
+    index = min(2, len(marker) - 1)
+    return f"{marker[:index]}#{ord(marker[index]):02x}{marker[index + 1 :]}"
+
+
+def build_pdf_with_name(name: str) -> bytes:
+    """``.pdf`` с произвольным name-токеном в объекте действия."""
+    injection = f"\n9 0 obj<</S/URI{name}>>endobj\n".encode()
+    return build_pdf().replace(b"trailer", injection + b"trailer")
+
+
+def build_pdf_with_deflate(inner: bytes) -> bytes:
+    """``.pdf``, где запрещённая конструкция лежит в потоке ``FlateDecode``.
+
+    Именно так PDF 1.5+ хранит объекты (object streams), поэтому в сырых байтах
+    файла маркера нет вовсе — фильтр обязан распаковать поток.
+    """
+    compressed = zlib.compress(inner)
+    stream = (
+        b"\n9 0 obj<</Type/ObjStm/N 1/Filter/FlateDecode/Length "
+        + str(len(compressed)).encode()
+        + b">>stream\n"
+        + compressed
+        + b"\nendstream\nendobj\n"
+    )
+    return build_pdf().replace(b"trailer", stream + b"trailer")
+
+
+def build_pdf_with_broken_deflate() -> bytes:
+    """``.pdf`` с объявленным ``FlateDecode``, но битым содержимым потока.
+
+    Проверка того, что испорченный поток не роняет загрузку в 500: распаковка
+    обязана завершиться ошибкой, а не исключением наружу.
+    """
+    garbage = b"\x78\x9c\x01\x02\x03"
+    stream = (
+        b"\n9 0 obj<</Filter/FlateDecode/Length "
+        + str(len(garbage)).encode()
+        + b">>stream\n"
+        + garbage
+        + b"\nendstream\nendobj\n"
+    )
+    return build_pdf().replace(b"trailer", stream + b"trailer")
