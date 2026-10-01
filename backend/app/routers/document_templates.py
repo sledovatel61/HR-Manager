@@ -45,6 +45,7 @@ from app.document_templates import (
     preview,
     rename_template,
     require_manage,
+    stage_label,
 )
 from app.library import (
     DEMO_PLACEHOLDER_VALUES,
@@ -146,19 +147,33 @@ async def import_template(
     except (TemplateContentError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     if force_new != "1":
-        existing = find_same_name_template(db, kind=created.kind, name=created.name)
+        existing = find_same_name_template(
+            db, kind=created.kind, name=created.name, scope=created.scope or ""
+        )
         if existing is not None:
+            # Human-readable stage for the message; the structured `existing`
+            # keeps the raw key (the SPA renders it with its own labels).
+            scope_note = (
+                f" (этап: {stage_label(existing.scope)})" if existing.scope else ""
+            )
             raise HTTPException(
                 409,
                 {
                     "message": (
-                        f"Материал «{existing.name}» уже существует. Создать новую "
-                        "версию существующего материала или отдельный материал?"
+                        f"Материал «{existing.name}»{scope_note} уже существует. "
+                        "Создать новую версию существующего материала или "
+                        "отдельный материал?"
                     ),
                     "existing": {
                         "id": str(existing.id),
                         "name": existing.name,
                         "kind": existing.kind,
+                        # Scope is part of the identity the user must see to
+                        # make a meaningful choice between «новая версия» and
+                        # «отдельный материал». The value is a raw funnel
+                        # stage key ("" = вся база); the interface renders it
+                        # with its own Russian stage labels.
+                        "scope": existing.scope,
                         "revision": existing.revision,
                     },
                 },

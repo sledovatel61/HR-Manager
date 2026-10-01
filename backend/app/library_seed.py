@@ -664,7 +664,9 @@ def seed_library(db: Session) -> int:
     never touched: if the owner renamed, republished or archived a built-in
     material, that choice wins over re-provisioning. The function needs at
     least one user (a version's author); with no users it does nothing and the
-    next startup tries again.
+    next startup tries again. Two simultaneous starts cannot duplicate rows:
+    the loser's flush hits the partial unique index on ``seed_key`` and its
+    transaction rolls back (startup logs it and the next start is a no-op).
     """
     author = db.scalar(
         select(User).where(User.is_active.is_(True)).order_by(User.created_at, User.id)

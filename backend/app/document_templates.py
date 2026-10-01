@@ -478,27 +478,36 @@ def _placeholders_of(body: str) -> list[str]:
 
 
 def find_same_name_template(
-    db: Session, *, kind: str, name: str, exclude_id: UUID | None = None
+    db: Session, *, kind: str, name: str, scope: str = "", exclude_id: UUID | None = None
 ) -> DocumentTemplate | None:
     """The existing template the import may collide with, or ``None``.
 
     Matching is deliberately conservative so ordinary work never triggers it:
-    same controlled ``kind`` and case-insensitively equal display name. The
-    case folding happens in Python (not SQL ``lower()``, which is ASCII-only
-    on SQLite and locale-dependent on PostgreSQL), so the same names match on
-    both engines. A hit is *not* an error — the router turns it into an
-    explicit question («новая версия существующего материала» or «отдельный
-    материал»), so a re-import never quietly breeds look-alike templates.
+    the full template identity — controlled ``kind``, area of application
+    ``scope`` and case-insensitively equal display name. ``scope`` is part of
+    the identity on purpose: «Анкета» for the whole base and «Анкета» scoped
+    to one funnel stage are two different materials, so a re-import of one
+    must never be offered as a new version of the other. Normalization (case
+    folding, whitespace collapsing) happens in Python — not SQL ``lower()``,
+    which is ASCII-only on SQLite and locale-dependent on PostgreSQL — so the
+    same names match on both engines. A hit is *not* an error — the router
+    turns it into an explicit question («новая версия существующего
+    материала» or «отдельный материал»), so a re-import never quietly breeds
+    look-alike templates.
     """
     normalized = " ".join((name or "").split()).lower()
     if not normalized:
         return None
+    normalized_scope = (scope or "").strip().lower()
     query = select(DocumentTemplate).where(DocumentTemplate.kind == kind)
     if exclude_id is not None:
         query = query.where(DocumentTemplate.id != exclude_id)
     candidates = db.scalars(query.order_by(DocumentTemplate.created_at)).all()
     for candidate in candidates:
-        if " ".join(candidate.name.split()).lower() == normalized:
+        if (
+            " ".join(candidate.name.split()).lower() == normalized
+            and (candidate.scope or "").strip().lower() == normalized_scope
+        ):
             return candidate
     return None
 

@@ -1,6 +1,10 @@
 """«Библиотека HR»: category, summary and seed key for document templates.
 
-Revision 0018 (library rework of the phase 16 templates section).
+Revision 0019 (library rework of the phase 16 templates section).
+
+Numbering note: revisions 0018+ are shared with parallel work branches
+(0018_work_schedule_import merges first), so this migration is down_revision
+"0018" even though it branched from the 0017 tree originally.
 
 Adds three columns to ``document_templates`` — no new tables, no parallel
 entity:
@@ -22,8 +26,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "0018"
-down_revision = "0017"
+revision = "0019"
+down_revision = "0018"
 branch_labels = None
 depends_on = None
 
