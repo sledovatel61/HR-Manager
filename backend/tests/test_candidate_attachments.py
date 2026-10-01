@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.candidate_attachments import sanitize_filename
+from app.candidate_attachments import PDF_FORBIDDEN_MARKERS, sanitize_filename
 from app.config import Settings
 from app.main import create_app
 from app.models import AuditAction, AuditEvent, Candidate, CandidateAttachment, User, UserRole
@@ -39,6 +39,11 @@ from tests.attachment_fixtures import (
     build_fake_docx,
     build_pdf,
     build_pdf_with,
+    build_pdf_with_broken_deflate,
+    build_pdf_with_deflate,
+    build_pdf_with_name,
+    pdf_name_with_hex_escape,
+    pdf_name_with_space,
 )
 from tests.conftest import FIXTURE_PASSWORD, make_candidate, make_user
 
@@ -339,6 +344,104 @@ def test_pdf_with_javascript_rejected(client: TestClient, db_session: Session) -
         headers=_auth(client, "hr1"),
     )
     assert response.status_code == 415
+
+
+@pytest.mark.parametrize("marker", [m.decode() for m in PDF_FORBIDDEN_MARKERS])
+@pytest.mark.parametrize("obfuscate", ["space", "hex"])
+def test_pdf_forbidden_name_survives_obfuscation(
+    client: TestClient, db_session: Session, marker: str, obfuscate: str
+) -> None:
+    """Запрещённое имя ловится и с пробелом внутри, и в записи ``#xx``.
+
+    PDF допускает white-space внутри name-токена и ``#xx``-эскейпы, поэтому
+    ``/Java Script`` и ``/Ja#76aScript`` — нормативная запись того же имени
+    ``/JavaScript``. Поиск буквальной подстроки такие файлы пропускал.
+    """
+    hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(db_session, owner=hr)
+    name = pdf_name_with_space(marker) if obfuscate == "space" else pdf_name_with_hex_escape(marker)
+
+    response = _upload(
+        client,
+        candidate,
+        filename="obfuscated.pdf",
+        payload=build_pdf_with_name(name),
+        content_type=PDF_MIME,
+        headers=_auth(client, "hr1"),
+    )
+    assert response.status_code == 415
+
+
+def test_pdf_forbidden_name_inside_flate_stream_rejected(
+    client: TestClient, db_session: Session
+) -> None:
+    """Конструкция внутри сжатого потока FlateDecode тоже отклоняется.
+
+    В PDF 1.5+ объекты лежат в object streams, сжатых FlateDecode: в сырых
+    байтах файла маркера нет, поэтому поток распаковывается перед проверкой.
+    """
+    hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(db_session, owner=hr)
+    inner = b"1 0 obj<</S/JavaScript/JS(app.launchURL('c:/x.exe'))>>endobj\n"
+
+    response = _upload(
+        client,
+        candidate,
+        filename="packed.pdf",
+        payload=build_pdf_with_deflate(inner),
+        content_type=PDF_MIME,
+        headers=_auth(client, "hr1"),
+    )
+    assert response.status_code == 415
+
+
+def test_plain_pdf_still_accepted_after_name_normalisation(
+    client: TestClient, db_session: Session
+) -> None:
+    """Контроль ложных срабатываний: обычный корректный PDF загружается.
+
+    Нормализация имён не должна превращаться в отказ всех нормальных файлов.
+    """
+    hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(db_session, owner=hr)
+
+    response = _upload(
+        client,
+        candidate,
+        filename="Обычный скан.pdf",
+        payload=build_pdf(),
+        content_type=PDF_MIME,
+        headers=_auth(client, "hr1"),
+    )
+    assert response.status_code == 201
+
+
+def test_broken_deflate_stream_does_not_break_upload(
+    client: TestClient, db_session: Session
+) -> None:
+    """Битый или обрезанный поток не роняет загрузку в 5xx."""
+    hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    candidate = make_candidate(db_session, owner=hr)
+
+    broken = _upload(
+        client,
+        candidate,
+        filename="broken-stream.pdf",
+        payload=build_pdf_with_broken_deflate(),
+        content_type=PDF_MIME,
+        headers=_auth(client, "hr1"),
+    )
+    assert broken.status_code < 500
+
+    truncated = _upload(
+        client,
+        candidate,
+        filename="truncated.pdf",
+        payload=build_pdf().replace(b"endstream", b"XXXXXXXXX"),
+        content_type=PDF_MIME,
+        headers=_auth(client, "hr1"),
+    )
+    assert truncated.status_code < 500
 
 
 def test_empty_file_rejected(client: TestClient, db_session: Session) -> None:

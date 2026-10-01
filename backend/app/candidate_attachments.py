@@ -40,6 +40,7 @@ import re
 import tempfile
 import unicodedata
 import zipfile
+import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -120,7 +121,10 @@ PDF_HEADER_SCAN_BYTES = 1024
 
 #: Действия PDF, способные выполнить код или запустить внешнюю программу.
 #: ``/OpenAction`` и ``/AA`` сами по себе безобидны (навигация по страницам), но
-#: указывать они могут только на уже запрещённые конструкции.
+#: указывать они могут только на уже запрещённые конструкции — и это рассуждение
+#: верно ровно настолько, насколько надёжно находятся сами конструкции, поэтому
+#: ниже они ищутся с учётом нормативных способов записи имени (см.
+#: ``_forbidden_name_pattern``).
 PDF_FORBIDDEN_MARKERS: tuple[bytes, ...] = (
     b"/JavaScript",
     b"/JS",
@@ -129,6 +133,54 @@ PDF_FORBIDDEN_MARKERS: tuple[bytes, ...] = (
     b"/RichMedia",
     b"/XFA",
 )
+
+#: White-space по PDF 32000-1:2008 (табл. 1): NUL, HT, LF, FF, CR, SP.
+_PDF_WHITESPACE = rb"[\x00\t\n\x0c\r ]*"
+
+#: Предел распаковки одного потока и всех потоков файла суммарно: PDF-«бомба»
+#: не должна стоить ни памяти, ни бесконечного цикла.
+PDF_STREAM_MAX_BYTES = 32 * 1024 * 1024
+PDF_STREAM_MAX_TOTAL_BYTES = 128 * 1024 * 1024
+PDF_STREAM_MAX_COUNT = 512
+
+
+def _hex_escape(byte: int) -> bytes:
+    """Регэксп для ``#xx``-эскейпа конкретного байта (цифры hex в любом регистре).
+
+    PDF 32000-1:2008 §7.3.5: ``#`` внутри имени — escape-последовательность из
+    двух шестнадцатеричных цифр. Любой conforming-ридер декодирует её, то есть
+    ``/J#61v#61Script`` — это нормативная запись имени ``/JavaScript``, а не
+    причуда конкретного парсера.
+    """
+    digits = []
+    for char in f"{byte:02x}":
+        digits.append(f"[{char}{char.upper()}]" if char.isalpha() else char)
+    return ("#" + "".join(digits)).encode()
+
+
+def _forbidden_name_regex(marker: bytes) -> bytes:
+    """Шаблон имени: символы могут быть разделены пробелами и записаны ``#xx``.
+
+    Внутри name-токена PDF допускает white-space, поэтому ``/Java Script`` и
+    ``/Java\nScript`` часть ридеров читает как ``/JavaScript``. Шаблон ищет ровно
+    последовательность символов запрещённого имени, допуская между ними только
+    white-space и ``#xx``-эскейпы: посторонний текст документа совпасть не может,
+    а совпавшая последовательность и есть атака.
+    """
+    parts = []
+    for byte in marker:
+        literal = re.escape(bytes([byte]))
+        parts.append(rb"(?:" + literal + rb"|" + _hex_escape(byte) + rb")" + _PDF_WHITESPACE)
+    return b"".join(parts)
+
+
+#: Один объединённый шаблон: движок заякоривается на ``/`` и дальше проверяет
+#: альтернативы, поэтому по большому файлу это один линейный проход.
+_FORBIDDEN_NAME_PATTERN = re.compile(
+    b"|".join(_forbidden_name_regex(marker) for marker in PDF_FORBIDDEN_MARKERS)
+)
+
+_STREAM_KEYWORD = re.compile(rb"stream(?:\r\n|\n|\r)")
 
 # --- Ограничения DOCX-контейнера ---------------------------------------------
 
@@ -419,19 +471,76 @@ def validate_docx_container(payload: bytes) -> None:
             )
 
 
+def _iter_deflate_streams(payload: bytes) -> Iterator[bytes]:
+    """Распакованные потоки PDF (FlateDecode).
+
+    В PDF 1.5+ объекты штатно лежат в object streams, сжатых FlateDecode, — там
+    запрещённой конструкции в сырых байтах нет вовсе. Пробуем распаковать каждый
+    поток: не-Flate (изображения, шрифты, содержимое страниц) просто не
+    распакуется, а битый или обрезанный поток пропускается — испорченный файл не
+    повод отвечать 500. Размер жёстко ограничен, чтобы распаковка не стала
+    способом съесть память.
+    """
+    produced = 0
+    opened = 0
+    for match in _STREAM_KEYWORD.finditer(payload):
+        if opened >= PDF_STREAM_MAX_COUNT or produced >= PDF_STREAM_MAX_TOTAL_BYTES:
+            return
+        start = match.end()
+        end = payload.find(b"endstream", start)
+        if end < 0:
+            continue  # обрезанный файл: потока нет целиком
+        opened += 1
+        raw = payload[start:end]
+        budget = min(PDF_STREAM_MAX_BYTES, PDF_STREAM_MAX_TOTAL_BYTES - produced)
+        data = _inflate(raw, budget)
+        if not data:
+            continue
+        produced += len(data)
+        yield data
+
+
+def _inflate(raw: bytes, budget: int) -> bytes:
+    """Распаковать поток в пределах ``budget`` байт; ошибка — пустой результат."""
+    if budget <= 0 or not raw:
+        return b""
+    for wbits in (15, -15):  # zlib-обёртка и «голый» deflate от кривых продюсеров
+        try:
+            return zlib.decompressobj(wbits).decompress(raw, budget)
+        except zlib.error:
+            continue
+    return b""
+
+
+def _has_forbidden_name(payload: bytes) -> bool:
+    """Есть ли в файле запрещённое имя — в сыром виде или в распакованном потоке."""
+    if _FORBIDDEN_NAME_PATTERN.search(payload) is not None:
+        return True
+    return any(
+        _FORBIDDEN_NAME_PATTERN.search(chunk) is not None
+        for chunk in _iter_deflate_streams(payload)
+    )
+
+
 def validate_pdf(payload: bytes) -> None:
     """Отклонить PDF, который пытается что-то выполнить или вложить.
 
     Сервер не выполняет и не рендерит PDF, поэтому проверка сводится к отказу
     от конструкций, способных запустить код при открытии файла на машине HR.
+
+    Имена ищутся не простым поиском подстроки: учитываются white-space внутри
+    name-токена, ``#xx``-эскейпы и содержимое распакованных FlateDecode-потоков.
+    Проверка остаётся эвристической — сервер не реализует полный разбор PDF, —
+    но известные способы обхода (пробел внутри имени, ``#xx``, сжатый object
+    stream) ею закрыты; список и границы честности описаны в
+    ``docs/candidate-attachments.md``.
     """
-    for marker in PDF_FORBIDDEN_MARKERS:
-        if marker in payload:
-            raise AttachmentRejected(
-                415,
-                "PDF содержит запрещённые элементы (скрипты, вложенные файлы "
-                "или запуск программ). Сохраните документ без них.",
-            )
+    if _has_forbidden_name(payload):
+        raise AttachmentRejected(
+            415,
+            "PDF содержит запрещённые элементы (скрипты, вложенные файлы "
+            "или запуск программ). Сохраните документ без них.",
+        )
 
 
 # --- Хранение ----------------------------------------------------------------
