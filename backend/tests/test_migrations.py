@@ -158,9 +158,16 @@ def test_head_revision_matches_the_migration_chain() -> None:
         [sys.executable, "-m", "alembic", "heads"],
         cwd=BACKEND_DIR,
         env={**os.environ, "DATABASE_URL": "sqlite://", "APP_ENV": "test"},
-        check=True,
         capture_output=True,
         text=True,
+    )
+    # Not check=True: a broken chain must fail with Alembic's own reason
+    # («Can't locate revision identified by '0018'» while PR #46 is unmerged)
+    # instead of a bare CalledProcessError.
+    assert result.returncode == 0, (
+        "`alembic heads` could not read the chain "
+        f"(exit {result.returncode}).\nstdout: {result.stdout.strip()}\n"
+        f"stderr: {result.stderr.strip()}"
     )
     head_lines = [
         line for line in result.stdout.splitlines() if line.strip() and not line.startswith(" ")
