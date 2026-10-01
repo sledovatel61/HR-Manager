@@ -61,6 +61,7 @@ import type {
   EventListQuery,
   EventUpdateInput,
   HealthResponse,
+  ImportRowDecision,
   Paginated,
   ScheduleEntry,
   ScheduleEntryCreateInput,
@@ -68,6 +69,8 @@ import type {
   User,
   UserListItems,
   UserUpdateInput,
+  WorkScheduleImportPreview,
+  WorkScheduleImportResult,
   WorkScheduleList,
   WorkScheduleQuery,
   WorkScheduleSuggestions,
@@ -79,6 +82,8 @@ import type {
   GeneratedDocumentFormat,
   GeneratedDocumentPage,
   GeneratedDocumentPreview,
+  LibraryMaterialDetail,
+  LibraryMaterials,
   TemplatePlaceholder,
   TemplateVersionInput,
 } from "./types";
@@ -1008,6 +1013,8 @@ export async function createDocumentTemplate(input: {
   kind: string;
   scope: string | null;
   name: string;
+  category?: string;
+  summary?: string;
   title: string;
   body: string;
 }): Promise<DocumentTemplate> {
@@ -1018,6 +1025,12 @@ export async function createDocumentTemplate(input: {
  * Create a draft template from a local plain-text file. The server caps the
  * size, checks the extension, decodes UTF-8 and validates the text — the
  * client only refuses obviously wrong files early, to save a round trip.
+ *
+ * Duplicate protection: when a material with the same kind and name already
+ * exists, the server answers 409 with a structured detail (see
+ * `ImportDuplicateDetail`) and the UI asks whether to add a new version of
+ * the existing material instead. `forceNew` skips the question — the explicit
+ * "separate material" choice.
  */
 export const TEMPLATE_IMPORT_EXTENSIONS = [".txt", ".md", ".markdown", ".csv"];
 export const TEMPLATE_IMPORT_MAX_BYTES = 512 * 1024;
@@ -1026,14 +1039,35 @@ export async function importDocumentTemplate(input: {
   kind: string;
   scope: string;
   name: string;
+  category?: string;
+  summary?: string;
+  forceNew?: boolean;
   file: File;
 }): Promise<DocumentTemplate> {
   const form = new FormData();
   form.append("kind", input.kind);
   form.append("name", input.name);
   form.append("scope", input.scope);
+  if (input.category) form.append("category", input.category);
+  if (input.summary) form.append("summary", input.summary);
+  if (input.forceNew) form.append("force_new", "1");
   form.append("file", input.file, input.file.name);
   return requestForm<DocumentTemplate>("/document-templates/import", form);
+}
+
+/** Explicit "new version of the existing material" import path. */
+export async function importDocumentTemplateVersion(
+  templateId: string,
+  input: { expected_revision: number; title?: string; file: File }
+): Promise<DocumentTemplate> {
+  const form = new FormData();
+  form.append("expected_revision", String(input.expected_revision));
+  if (input.title) form.append("title", input.title);
+  form.append("file", input.file, input.file.name);
+  return requestForm<DocumentTemplate>(
+    `/document-templates/${templateId}/import-version`,
+    form
+  );
 }
 
 export async function renameDocumentTemplate(
@@ -1171,6 +1205,65 @@ export async function downloadGeneratedDocument(
   };
 }
 
+// --- «Библиотека HR»: read-only material screens -----------------------------
+
+/** Card catalog of published materials; available to every role. */
+export async function listLibraryMaterials(): Promise<LibraryMaterials> {
+  return request<LibraryMaterials>("/library/materials");
+}
+
+/** Read-only view of one published material with a safe demo rendering. */
+export async function getLibraryMaterial(id: string): Promise<LibraryMaterialDetail> {
+  return request<LibraryMaterialDetail>(`/library/materials/${id}`);
+}
+
+/** URL of the standalone sanitized HTML view (opens in a new tab). */
+export function libraryMaterialViewUrl(id: string): string {
+  return `${API_BASE}/library/materials/${id}/view`;
+}
+
+/**
+ * Download a safe copy of a material (HTML for print-to-PDF, or plain text).
+ * Same authenticated-blob pattern as the candidate document download: the
+ * server answers with an attachment, `no-store` and an audit row; the
+ * content never touches `file://` paths.
+ */
+export async function downloadLibraryMaterial(
+  id: string,
+  format: "html" | "txt"
+): Promise<{ blob: Blob; filename: string }> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE}/library/materials/${id}/download?format=${format}`,
+      { method: "GET", credentials: "same-origin" }
+    );
+  } catch {
+    throw new ApiError(0, "Сеть недоступна: не удалось связаться с сервером.");
+  }
+  if (response.status === 401) emitUnauthorized();
+  if (!response.ok) {
+    let rawDetail: unknown = null;
+    try {
+      const data: unknown = await response.json();
+      if (data && typeof data === "object" && "detail" in data) {
+        rawDetail = (data as { detail: unknown }).detail;
+      }
+    } catch {
+      // non-JSON error body — keep the generic message
+    }
+    const detail =
+      typeof rawDetail === "string" ? rawDetail : `Ошибка скачивания (${response.status}).`;
+    throw new ApiError(response.status, detail, rawDetail);
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+  return {
+    blob: await response.blob(),
+    filename: match?.[1] ?? "material.html",
+  };
+}
+
 // --- Phase 18: «График выхода на работу» ------------------------------------
 
 /** Общий query-строка для списка и выгрузки: фильтры на экране = фильтры в
@@ -1266,6 +1359,32 @@ export async function updateScheduleEntry(
 
 export async function deleteScheduleEntry(entryId: string): Promise<void> {
   await request<void>(`/work-schedule/entries/${entryId}`, { method: "DELETE" });
+}
+
+// --- Импорт графика выхода из Excel ------------------------------------------
+
+/** Максимальный размер .xlsx для импорта (совпадает с лимитом бэкенда). */
+export const SCHEDULE_IMPORT_MAX_BYTES = 5 * 1024 * 1024;
+export const SCHEDULE_IMPORT_EXTENSIONS = [".xlsx"];
+
+/** Шаг 1: проверить файл без сохранения — разбор, сопоставление, ошибки. */
+export async function previewWorkScheduleImport(
+  file: File
+): Promise<WorkScheduleImportPreview> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  return requestForm<WorkScheduleImportPreview>("/work-schedule/import/preview", form);
+}
+
+/** Шаг 2: подтвердить импорт с явными действиями по строкам (атомарно). */
+export async function confirmWorkScheduleImport(
+  file: File,
+  decisions: ImportRowDecision[]
+): Promise<WorkScheduleImportResult> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  form.append("decisions", JSON.stringify({ decisions }));
+  return requestForm<WorkScheduleImportResult>("/work-schedule/import", form);
 }
 
 // --- Вложения кандидата: анкеты (.docx) и сканы (.pdf) ----------------------

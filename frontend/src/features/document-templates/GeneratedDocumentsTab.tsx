@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   downloadGeneratedDocument,
   generateCandidateDocument,
@@ -7,6 +7,7 @@ import {
   previewCandidateDocument,
 } from "../../api";
 import { Button } from "../../design-system/components/Button";
+import { ConfirmDialog } from "../../design-system/components/ConfirmDialog";
 import { useToast } from "../../design-system/components/ToastContext";
 import type {
   DocumentRenderPreview,
@@ -20,14 +21,28 @@ import "./documentTemplates.css";
  * Candidate card tab: render a published template version for this candidate,
  * inspect the preview, save an immutable snapshot and download it. Nothing is
  * ever sent to the candidate and no file is stored on the server.
+ *
+ * Library integration (ветка «Библиотека HR»): the picker lists the same
+ * published templates the library shows, ordered so the ones scoped to the
+ * candidate's current funnel stage come first, and links to the library for
+ * reading questionnaires without generating anything. Opening the library
+ * never changes the candidate card and never sends the candidate a message —
+ * generating a document stays a separate, confirmed action.
  */
-export function GeneratedDocumentsTab({ candidateId }: { candidateId: string }) {
+export function GeneratedDocumentsTab({
+  candidateId,
+  candidateStage,
+}: {
+  candidateId: string;
+  candidateStage?: string;
+}) {
   const { pushToast } = useToast();
   const [templates, setTemplates] = useState<DocumentTemplate[] | null>(null);
   const [generations, setGenerations] = useState<GeneratedDocument[]>([]);
   const [versionId, setVersionId] = useState("");
   const [preview, setPreview] = useState<DocumentRenderPreview | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const idempotency = useRef({ signature: "", key: "" });
 
   const load = useCallback(async () => {
@@ -47,11 +62,22 @@ export function GeneratedDocumentsTab({ candidateId }: { candidateId: string }) 
     void load();
   }, [load]);
 
-  const versions = (templates ?? []).flatMap((template) =>
-    template.versions
-      .filter((version) => version.state === "active")
-      .map((version) => ({ template, version })),
-  );
+  const versions = useMemo(() => {
+    const all = (templates ?? []).flatMap((template) =>
+      template.versions
+        .filter((version) => version.state === "active")
+        .map((version) => ({ template, version })),
+    );
+    // Материалы по текущему этапу кандидата — первыми: так вопросник по
+    // этапу находится без чтения названий всех шаблонов.
+    const matches = (scope: string) => !scope || scope === candidateStage;
+    return all.sort((a, b) => {
+      const aMatch = matches(a.template.scope) ? 0 : 1;
+      const bMatch = matches(b.template.scope) ? 0 : 1;
+      if (aMatch !== bMatch) return aMatch - bMatch;
+      return a.template.name.localeCompare(b.template.name, "ru");
+    });
+  }, [candidateStage, templates]);
 
   const run = async (action: () => Promise<unknown>, notice: string, reload = true) => {
     setBusy(true);
@@ -67,6 +93,12 @@ export function GeneratedDocumentsTab({ candidateId }: { candidateId: string }) 
   };
 
   const save = () => {
+    if (!preview) return;
+    setConfirming(true);
+  };
+
+  const confirmSave = () => {
+    setConfirming(false);
     if (!preview) return;
     const signature = `${versionId}`;
     if (idempotency.current.signature !== signature) {
@@ -113,16 +145,27 @@ export function GeneratedDocumentsTab({ candidateId }: { candidateId: string }) 
         <Button size="sm" onClick={() => void run(load, "")}>
           Обновить
         </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="book"
+          onClick={() => {
+            window.location.hash = "#/templates";
+          }}
+          title="Открыть библиотеку материалов: вопросники и памятки без создания документа"
+        >
+          Открыть библиотеку
+        </Button>
       </div>
 
       {templates && versions.length === 0 && (
-        <p>Нет опубликованных шаблонов. Опубликуйте версию в разделе «Шаблоны документов».</p>
+        <p>Нет опубликованных материалов. Опубликуйте версию в разделе «Шаблоны и материалы».</p>
       )}
 
       {versions.length > 0 && (
         <div className="template-form">
           <label>
-            Опубликованная версия шаблона
+            Опубликованная версия материала
             <select
               value={versionId}
               onChange={(event) => {
@@ -130,10 +173,13 @@ export function GeneratedDocumentsTab({ candidateId }: { candidateId: string }) 
                 setPreview(null);
               }}
             >
-              <option value="">Выберите шаблон</option>
+              <option value="">Выберите материал</option>
               {versions.map(({ template, version }) => (
                 <option key={version.id} value={version.id}>
                   {template.name} — версия {version.number}
+                  {template.scope && template.scope === candidateStage
+                    ? " (по этапу кандидата)"
+                    : ""}
                 </option>
               ))}
             </select>
@@ -219,6 +265,17 @@ export function GeneratedDocumentsTab({ candidateId }: { candidateId: string }) 
         HTML открывается в браузере и печатается в PDF средствами браузера. Серверная
         генерация PDF/DOCX в этой версии не поддерживается.
       </p>
+
+      {confirming && (
+        <ConfirmDialog
+          open
+          title="Сохранить документ для этого кандидата?"
+          description="Документ создаётся как неизменяемый снимок выбранной версии и остаётся в истории карточки. Кандидату ничего не отправляется."
+          confirmLabel="Сохранить документ"
+          onCancel={() => setConfirming(false)}
+          onConfirm={confirmSave}
+        />
+      )}
     </section>
   );
 }

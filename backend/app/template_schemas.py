@@ -11,6 +11,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.library import validate_category, validate_summary
 from app.models import CandidateStage
 from app.template_render import (
     IDEMPOTENCY_KEY_MAX_LENGTH,
@@ -55,11 +56,19 @@ class TemplateVersionInput(StrictModel):
 
 
 class TemplateCreate(TemplateVersionInput):
-    """Create a template together with its first (draft) version."""
+    """Create a template together with its first (draft) version.
+
+    Library fields: ``category`` is a closed-dictionary key for the «Библиотека
+    HR» screen (empty string = uncategorized) and ``summary`` is the
+    one-sentence purpose shown on the card. They describe the template as a
+    whole and are not part of the immutable version content.
+    """
 
     kind: str
     scope: CandidateStage | None = None
     name: str
+    category: str = ""
+    summary: str = ""
 
     @field_validator("kind")
     @classmethod
@@ -70,6 +79,19 @@ class TemplateCreate(TemplateVersionInput):
     @classmethod
     def valid_name(cls, value: str) -> str:
         return _clean_name(value)
+
+    @field_validator("category")
+    @classmethod
+    def valid_category(cls, value: str) -> str:
+        try:
+            return validate_category(value)
+        except ValueError as exc:
+            raise TemplateContentError(str(exc)) from exc
+
+    @field_validator("summary")
+    @classmethod
+    def valid_summary(cls, value: str) -> str:
+        return validate_summary(value)
 
 
 class TemplateRename(StrictModel):
@@ -111,6 +133,8 @@ class TemplateOut(StrictModel):
     kind: str
     scope: str
     name: str
+    category: str
+    summary: str
     revision: int
     author_id: UUID
     created_at: datetime
@@ -121,6 +145,63 @@ class TemplateOut(StrictModel):
 class TemplatesOut(StrictModel):
     items: list[TemplateOut]
     can_manage: bool
+
+
+# --- «Библиотека HR»: read-only material screens ------------------------------
+
+
+class LibraryCategoryOut(StrictModel):
+    """One closed-dictionary category for the filter chips."""
+
+    key: str
+    label: str
+
+
+class LibraryMaterialOut(StrictModel):
+    """Card of the library main screen (no content — only card fields)."""
+
+    id: UUID
+    name: str
+    kind: str
+    category: str
+    summary: str
+    scope: str
+    version_id: UUID
+    version_number: int
+    title: str
+    published_at: datetime | None
+    has_placeholders: bool
+
+
+class LibraryMaterialsOut(StrictModel):
+    items: list[LibraryMaterialOut]
+    categories: list[LibraryCategoryOut]
+    can_manage: bool
+
+
+class LibraryPlaceholderHint(StrictModel):
+    """Human words for one placeholder token used by a material."""
+
+    token: str
+    hint: str
+
+
+class LibraryMaterialDetail(LibraryMaterialOut):
+    """Read-only view of one published material.
+
+    ``body`` is the validated markup of the active version; ``body_html`` and
+    ``body_text`` are rendered with impersonal demo values so a material that
+    uses placeholders still reads like a finished document. ``body_html`` is
+    produced by the same escape-first pipeline as generated documents and is
+    safe to embed.
+    """
+
+    body: str
+    body_html: str
+    body_text: str
+    placeholders: list[str]
+    placeholder_hints: list[LibraryPlaceholderHint]
+    updated_at: datetime
 
 
 class PlaceholderOut(StrictModel):

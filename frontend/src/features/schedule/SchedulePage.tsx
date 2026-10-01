@@ -27,6 +27,7 @@ import {
   type WorkScheduleSuggestions,
 } from "../../types";
 import { ScheduleEntryModal } from "./ScheduleEntryModal";
+import { ScheduleImportDialog } from "./ScheduleImportDialog";
 import {
   addDays,
   displayTime,
@@ -139,6 +140,7 @@ export default function SchedulePage({ user, onOpenCandidate }: SchedulePageProp
   const [entryModal, setEntryModal] = useState<{ date: string } | null>(null);
   const [editing, setEditing] = useState<RowEdit | null>(null);
   const [savingRow, setSavingRow] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const query = useMemo<WorkScheduleQuery>(
     () => ({
@@ -376,6 +378,15 @@ export default function SchedulePage({ user, onOpenCandidate }: SchedulePageProp
           </Button>
           <Button icon="print" onClick={() => window.print()} disabled={loading || !data}>
             Печать
+          </Button>
+          <Button
+            variant="secondary"
+            icon="upload"
+            onClick={() => setImportOpen(true)}
+            title="Импорт графика выхода из Excel: сначала предпросмотр, затем подтверждение"
+            disabled={loading}
+          >
+            Импорт графика из Excel
           </Button>
         </div>
       </div>
@@ -665,6 +676,13 @@ export default function SchedulePage({ user, onOpenCandidate }: SchedulePageProp
           suggestions={suggestions}
           onClose={() => setEntryModal(null)}
           onSaved={() => setReloadTick((tick) => tick + 1)}
+        />
+      )}
+
+      {importOpen && (
+        <ScheduleImportDialog
+          onClose={() => setImportOpen(false)}
+          onImported={() => setReloadTick((tick) => tick + 1)}
         />
       )}
     </div>

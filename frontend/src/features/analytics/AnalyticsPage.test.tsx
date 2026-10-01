@@ -11,6 +11,7 @@ import type {
 } from "../../types";
 import { ApiError } from "../../api";
 import AnalyticsPage from "./AnalyticsPage";
+import { presetBounds } from "./time";
 
 vi.mock("../../api", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../api")>();
@@ -154,20 +155,32 @@ describe("AnalyticsPage", () => {
   });
 
   it("preset tabs recompute the period (day vs quarter differ)", async () => {
-    renderPage();
+    // Pin the clock. On the first day of a quarter-opening month the default
+    // «Месяц» preset and «Квартал» share the same start date, so a real-clock
+    // run fails four days a year (seen in CI on 2026-10-01). A pinned
+    // mid-quarter instant keeps the intent and removes the calendar flake.
+    vi.useFakeTimers({ now: new Date("2026-09-15T12:00:00Z"), shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    try {
+      renderPage();
 
-    await screen.findByText("Создано кандидатов");
-    const first = vi.mocked(api.fetchAnalyticsKpi).mock.calls[0][0];
+      await screen.findByText("Создано кандидатов");
+      const first = vi.mocked(api.fetchAnalyticsKpi).mock.calls[0][0];
 
-    await userEvent.click(screen.getByRole("tab", { name: "Квартал" }));
+      await user.click(screen.getByRole("tab", { name: "Квартал" }));
 
-    await waitFor(() => {
-      const calls = vi.mocked(api.fetchAnalyticsKpi).mock.calls;
-      const last = calls[calls.length - 1][0];
-      // Сравниваем период целиком: в первый день квартала старт дня и старт
-      // квартала совпадают, а целый квартал никогда не равен одним суткам.
-      expect(`${last.from}..${last.to}`).not.toBe(`${first.from}..${first.to}`);
-    });
+      await waitFor(() => {
+        const calls = vi.mocked(api.fetchAnalyticsKpi).mock.calls;
+        const last = calls[calls.length - 1][0];
+        expect(last.from).not.toBe(first.from);
+        // The request really used the quarter bounds, not the month bounds.
+        expect(last.from).toBe(
+          presetBounds("quarter", new Date(), last.timezone ?? "UTC").from,
+        );
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows N/A for null-rate conversions and keeps real zeros", async () => {

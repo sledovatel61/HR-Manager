@@ -1,21 +1,17 @@
 """Candidate attachments: DOCX questionnaires and PDF scans on the candidate card.
 
-Revision 0019.
+Revision 0020.
 
-Revision 0018 belongs to the work-schedule import (PR #46), so this one is
-0019: two files claiming the same revision id make Alembic warn «Revision
-0018 is present more than once» and silently drop one of the two branches
-from the chain.
+0018 belongs to the work-schedule import (PR #46) and 0019 to the template
+library (PR #47), so this one is 0020. Two files claiming the same revision
+id merge cleanly in git — different file names, no textual conflict — yet
+Alembic then warns «Revision NNNN is present more than once» and silently
+drops one branch from the chain, so its table is missing at runtime. This
+branch hit exactly that when ``main`` moved under it: it carried 0019 while
+PR #47 landed its own 0019.
 
-``down_revision`` is 0018 — the merge order is PR #46 first, then this one,
-so the chain is linear (0017 -> 0018 -> 0019). Until #46 is in ``main`` this
-branch is *deliberately red* on the migration-chain test with
-«Can't locate revision identified by '0018'»; that is the intended signal.
-Pointing ``down_revision`` back at 0017 instead would keep CI green here and
-break ``alembic upgrade head`` for real the moment both PRs are merged:
-0017 would gain two children (0018 and 0019) and Alembic refuses
-«Multiple head revisions are present for given argument 'head'». A red test
-cannot be merged by accident; a documented mine still explodes on ``main``.
+``down_revision`` is 0019, the head of ``main``, so the chain stays linear
+(0018 -> 0019 -> 0020).
 
 Adds one table, ``candidate_attachments``: a protected attachment of a
 candidate — a questionnaire (``.docx``) or a scan (``.pdf``) uploaded by an HR.
@@ -52,8 +48,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0019"
-down_revision: str | None = "0018"
+revision: str = "0020"
+down_revision: str | None = "0019"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

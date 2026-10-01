@@ -1,5 +1,5 @@
 import { DocumentListsPage } from "../features/documents/DocumentListsPage";
-import { TemplatesPage } from "../features/document-templates/TemplatesPage";
+import { LibraryPage } from "../features/library/LibraryPage";
 import { MyRulesPage } from "../features/documents/MyRulesPage";
 import { useEffect, useState } from "react";
 import { logout, onUnauthorized } from "../api";
@@ -174,7 +174,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
           )}
           {activeSection === "preferences" && <PreferencesPage />}
           {activeSection === "documents" && <DocumentListsPage />}
-          {activeSection === "templates" && <TemplatesPage />}
+          {activeSection === "templates" && <LibraryPage />}
           {activeSection === "rules" && <MyRulesPage />}
           {activeSection === "integrations" && <IntegrationsPage user={user} />}
           {activeSection === "updates" && <UpdateChannelPage />}

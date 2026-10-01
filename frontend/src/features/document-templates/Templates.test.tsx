@@ -9,7 +9,7 @@ import type {
   GeneratedDocument,
 } from "../../types";
 import { GeneratedDocumentsTab } from "./GeneratedDocumentsTab";
-import { TemplatesPage } from "./TemplatesPage";
+import { ManageMaterialsPanel } from "../library/ManageMaterialsPanel";
 import {
   TEMPLATE_IMPORT_MAX_BYTES,
   describeImportFile,
@@ -23,6 +23,7 @@ vi.mock("../../api", async (importOriginal) => ({
   listTemplatePlaceholders: vi.fn(),
   createDocumentTemplate: vi.fn(),
   importDocumentTemplate: vi.fn(),
+  importDocumentTemplateVersion: vi.fn(),
   renameDocumentTemplate: vi.fn(),
   addDocumentTemplateVersion: vi.fn(),
   activateDocumentTemplateVersion: vi.fn(),
@@ -59,6 +60,8 @@ const template: DocumentTemplate = {
   kind: "offer",
   scope: "offer",
   name: "Оффер (базовый)",
+  category: "interview",
+  summary: "Предложение о работе для прошедшего собеседование.",
   revision: 3,
   author_id: "admin-1",
   created_at: "2026-09-20T10:00:00Z",
@@ -97,7 +100,7 @@ const renderPreview: DocumentRenderPreview = {
 function renderTemplates() {
   return render(
     <ToastProvider>
-      <TemplatesPage />
+      <ManageMaterialsPanel onBack={() => undefined} />
     </ToastProvider>,
   );
 }
@@ -105,7 +108,7 @@ function renderTemplates() {
 function renderTab() {
   return render(
     <ToastProvider>
-      <GeneratedDocumentsTab candidateId="candidate-1" />
+      <GeneratedDocumentsTab candidateId="candidate-1" candidateStage="offer" />
     </ToastProvider>,
   );
 }
@@ -136,7 +139,7 @@ describe("Шаблоны документов", () => {
     expect(await screen.findByText("Оффер (базовый)")).toBeInTheDocument();
     expect(screen.getByText("Опубликована v1")).toBeInTheDocument();
     expect(
-      screen.getByText(/Оффер · Оффер · ревизия 3 · версий 2/),
+      screen.getByText(/Оффер · Собеседование · Оффер · ревизия 3 · версий 2/),
     ).toBeInTheDocument();
     expect(screen.getByText("Версии и статусы")).toBeInTheDocument();
   });
@@ -149,7 +152,7 @@ describe("Шаблоны документов", () => {
     renderTemplates();
     await screen.findByText("Оффер (базовый)");
     expect(screen.getByText(/Только просмотр опубликованных версий/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Новый шаблон" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Новый материал" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Новая версия" })).toBeDisabled();
     await userEvent.click(screen.getByText("Версии и статусы"));
     expect(screen.queryByRole("button", { name: "Опубликовать" })).toBeNull();
@@ -161,17 +164,20 @@ describe("Шаблоны документов", () => {
     vi.mocked(api.createDocumentTemplate).mockResolvedValue(template);
     renderTemplates();
     await screen.findByText("Оффер (базовый)");
-    await user.click(screen.getByRole("button", { name: "Новый шаблон" }));
+    await user.click(screen.getByRole("button", { name: "Новый материал" }));
+    await user.selectOptions(screen.getByLabelText(/Тип документа/), "offer");
     await user.type(screen.getByLabelText(/^Название/), "Оффер (стажёр)");
     await user.selectOptions(screen.getByLabelText("Этап (область действия)"), "offer");
     await user.type(screen.getByLabelText(/Заголовок документа/), "Оффер");
-    await user.type(screen.getByLabelText(/Текст шаблона/), "Здравствуйте!");
+    await user.type(screen.getByLabelText(/Текст материала/), "Здравствуйте!");
     await user.click(screen.getByRole("button", { name: "Сохранить черновик" }));
     await waitFor(() =>
       expect(api.createDocumentTemplate).toHaveBeenCalledWith({
         kind: "offer",
         scope: "offer",
         name: "Оффер (стажёр)",
+        category: "",
+        summary: "",
         title: "Оффер",
         body: "Здравствуйте!",
       }),
@@ -183,7 +189,7 @@ describe("Шаблоны документов", () => {
     renderTemplates();
     await screen.findByText("Оффер (базовый)");
     await user.click(screen.getByRole("button", { name: "Новая версия" }));
-    const body = screen.getByLabelText(/Текст шаблона/) as HTMLTextAreaElement;
+    const body = screen.getByLabelText(/Текст материала/) as HTMLTextAreaElement;
     expect(body.value).toBe("Здравствуйте, {{ candidate.full_name }}!");
     // The button shows the field a person recognises; the token is in the tooltip.
     const chip = screen.getByRole("button", { name: "Текущая дата" });
@@ -269,10 +275,10 @@ describe("Шаблоны документов", () => {
     });
     renderTemplates();
 
-    expect(await screen.findByText("Шаблонов пока нет")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Создать первый шаблон" }));
+    expect(await screen.findByText("Материалов пока нет")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Создать первый материал" }));
     expect(
-      await screen.findByRole("heading", { name: "Новый шаблон" }),
+      await screen.findByRole("heading", { name: "Новый материал" }),
     ).toBeInTheDocument();
     expect(api.createDocumentTemplate).not.toHaveBeenCalled();
   });
@@ -298,7 +304,7 @@ describe("Шаблоны документов", () => {
     renderTemplates();
 
     expect(await screen.findByText("Недостаточно прав")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Новый шаблон" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Новый материал" })).not.toBeInTheDocument();
   });
 
   it("shows template creation and update dates", async () => {
@@ -314,13 +320,13 @@ describe("Шаблоны документов", () => {
     renderTemplates();
     await screen.findByText("Оффер (базовый)");
 
-    await user.type(screen.getByLabelText("Поиск шаблона"), "договор");
+    await user.type(screen.getByLabelText("Поиск материала"), "договор");
     expect(await screen.findByText(/Показано 0 из 1/)).toBeInTheDocument();
     expect(screen.getByText("Ничего не найдено")).toBeInTheDocument();
     expect(screen.queryByText("Оффер (базовый)")).not.toBeInTheDocument();
 
-    await user.clear(screen.getByLabelText("Поиск шаблона"));
-    await user.type(screen.getByLabelText("Поиск шаблона"), "базовый");
+    await user.clear(screen.getByLabelText("Поиск материала"));
+    await user.type(screen.getByLabelText("Поиск материала"), "базовый");
     expect(await screen.findByText(/Показано 1 из 1/)).toBeInTheDocument();
     expect(screen.getByText("Оффер (базовый)")).toBeInTheDocument();
   });
@@ -358,26 +364,59 @@ describe("Шаблоны документов", () => {
     );
     renderTemplates();
     await screen.findByText("Оффер (базовый)");
-    await user.click(screen.getByRole("button", { name: "Новый шаблон" }));
+    await user.click(screen.getByRole("button", { name: "Новый материал" }));
     await user.type(screen.getByLabelText(/^Название/), " ");
     await user.type(screen.getByLabelText(/Заголовок документа/), "Оффер");
-    await user.type(screen.getByLabelText(/Текст шаблона/), "Текст");
+    await user.type(screen.getByLabelText(/Текст материала/), "Текст");
     await user.click(screen.getByRole("button", { name: "Сохранить черновик" }));
 
     expect(await screen.findByText("Укажите название шаблона.")).toBeInTheDocument();
     // Форма осталась открытой — черновик не потерян молча.
-    expect(screen.getByRole("heading", { name: "Новый шаблон" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Новый материал" })).toBeInTheDocument();
   });
 
-  it("opens the related document lists section as a separate action", async () => {
+  it("возвращает в библиотеку кнопкой «Назад в библиотеку»", async () => {
     const user = userEvent.setup();
-    window.location.hash = "#/templates";
-    renderTemplates();
+    let back = false;
+    render(
+      <ToastProvider>
+        <ManageMaterialsPanel onBack={() => { back = true; }} />
+      </ToastProvider>,
+    );
     await screen.findByText("Оффер (базовый)");
+    await user.click(screen.getByRole("button", { name: "Назад в библиотеку" }));
+    expect(back).toBe(true);
+  });
+});
 
-    await user.click(screen.getByRole("button", { name: "Списки документов" }));
-    expect(window.location.hash).toBe("#/documents");
+describe("Документы по шаблону: связь с библиотекой", () => {
+  it("открывает библиотеку отдельным действием и подтверждает сохранение", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.previewCandidateDocument).mockResolvedValue(renderPreview);
+    vi.mocked(api.generateCandidateDocument).mockResolvedValue({
+      ...generated,
+      body_html: renderPreview.body_html,
+    });
+    renderTab();
+    await screen.findByText("Документы по шаблону");
+
+    await user.click(screen.getByRole("button", { name: "Открыть библиотеку" }));
+    expect(window.location.hash).toBe("#/templates");
     window.location.hash = "";
+
+    // Сортировка: материал по этапу кандидата — первым, с пометкой.
+    const picker = screen.getByLabelText("Опубликованная версия материала");
+    const options = within(picker).getAllByRole("option") as HTMLOptionElement[];
+    expect(options[1]?.textContent).toContain("(по этапу кандидата)");
+
+    await user.selectOptions(picker, "version-1");
+    await user.click(screen.getByRole("button", { name: "Предпросмотр" }));
+    await screen.findByText("Здравствуйте, Иванов Иван!");
+    await user.click(screen.getByRole("button", { name: "Сохранить документ" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/неизменяемый снимок/);
+    await user.click(within(dialog).getByRole("button", { name: "Сохранить документ" }));
+    await waitFor(() => expect(api.generateCandidateDocument).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -387,7 +426,7 @@ describe("Документы по шаблону", () => {
     vi.mocked(api.previewCandidateDocument).mockResolvedValue(renderPreview);
     renderTab();
     await screen.findByText("Документы по шаблону");
-    const picker = screen.getByLabelText("Опубликованная версия шаблона");
+    const picker = screen.getByLabelText("Опубликованная версия материала");
     expect(picker).toHaveTextContent("Оффер (базовый) — версия 1");
     expect(picker).not.toHaveTextContent("версия 2");
     await user.selectOptions(picker, "version-1");
@@ -407,12 +446,15 @@ describe("Документы по шаблону", () => {
     renderTab();
     await screen.findByText("Документы по шаблону");
     await user.selectOptions(
-      screen.getByLabelText("Опубликованная версия шаблона"),
+      screen.getByLabelText("Опубликованная версия материала"),
       "version-1",
     );
     await user.click(screen.getByRole("button", { name: "Предпросмотр" }));
     await screen.findByText("Здравствуйте, Иванов Иван!");
     await user.click(screen.getByRole("button", { name: "Сохранить документ" }));
+    // Генерация — отдельное действие с подтверждением.
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Сохранить документ" }));
     await waitFor(() => expect(api.generateCandidateDocument).toHaveBeenCalledTimes(1));
     const [candidateId, versionId, key] = vi.mocked(api.generateCandidateDocument).mock
       .calls[0];
@@ -467,7 +509,7 @@ describe("Документы по шаблону", () => {
     renderTab();
     await screen.findByText("Документы по шаблону");
     await user.selectOptions(
-      screen.getByLabelText("Опубликованная версия шаблона"),
+      screen.getByLabelText("Опубликованная версия материала"),
       "version-1",
     );
     await user.click(screen.getByRole("button", { name: "Предпросмотр" }));
@@ -486,7 +528,7 @@ describe("Документы по шаблону", () => {
     });
     renderTab();
     expect(
-      await screen.findByText(/Нет опубликованных шаблонов/),
+      await screen.findByText(/Нет опубликованных материалов/),
     ).toBeInTheDocument();
   });
 });
@@ -545,7 +587,7 @@ describe("importing methodical material", () => {
       items: [{ ...template, kind: "checklist", name: "Чек-лист интервью" }],
       can_manage: true,
     });
-    await user.type(screen.getByLabelText(/^Поиск шаблона/), "Чек-лист");
+    await user.type(screen.getByLabelText(/^Поиск материала/), "Чек-лист");
     expect(screen.queryByText(/Правовая форма/)).not.toBeInTheDocument();
   });
 
@@ -567,11 +609,15 @@ describe("importing methodical material", () => {
         kind: "checklist",
         scope: "",
         name: "",
+        category: "",
+        summary: "",
+        forceNew: false,
         file: expect.any(File),
       });
     });
+    // После импорта показывается черновик для проверки до публикации.
     expect(
-      await screen.findByText(/Шаблон загружен из файла/),
+      await screen.findByText(/Черновик из файла: проверьте текст/),
     ).toBeInTheDocument();
   });
 
@@ -594,6 +640,56 @@ describe("importing methodical material", () => {
 
     await user.upload(fileInput, new File(["# Скрипт"], "script.md"));
     expect(screen.getByRole("button", { name: /Загрузить как черновик/ })).toBeEnabled();
+  });
+
+  it("повторный импорт спрашивает про дубль и умеет создать новую версию", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.importDocumentTemplate).mockRejectedValue(
+      new api.ApiError(
+        409,
+        "Материал «Скрипт звонка» уже существует. Создать новую версию существующего материала или отдельный материал?",
+        {
+          message: "Материал «Скрипт звонка» уже существует.",
+          existing: {
+            id: "template-9",
+            name: "Скрипт звонка",
+            kind: "script",
+            scope: "interview_scheduled",
+            revision: 4,
+          },
+        },
+      ),
+    );
+    vi.mocked(api.importDocumentTemplateVersion).mockResolvedValue({
+      ...template,
+      id: "template-9",
+      name: "Скрипт звонка",
+    });
+    renderTemplates();
+    await user.click(await screen.findByRole("button", { name: /Загрузить из файла/ }));
+    await user.upload(
+      await screen.findByLabelText(/^Файл/),
+      new File(["Скрипт звонка\n- шаг"], "script.md"),
+    );
+    await user.click(screen.getByRole("button", { name: /Загрузить как черновик/ }));
+
+    // Вопрос о дубле вместо молчаливого создания копии; в вопросе видна
+    // область применения существующего материала — часть его идентичности.
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/уже существует/);
+    expect(dialog).toHaveTextContent(/область применения существующего материала/i);
+    expect(dialog).toHaveTextContent(/Собеседование/);
+    await user.click(
+      within(dialog).getByRole("button", { name: "Новая версия существующего" }),
+    );
+    await waitFor(() =>
+      expect(api.importDocumentTemplateVersion).toHaveBeenCalledWith("template-9", {
+        expected_revision: 4,
+        file: expect.any(File),
+      }),
+    );
+    // Отдельные материалы не создаются молча.
+    expect(api.importDocumentTemplate).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces the server refusal instead of pretending the import worked", async () => {
