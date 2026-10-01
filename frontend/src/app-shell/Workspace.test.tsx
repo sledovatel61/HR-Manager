@@ -50,6 +50,11 @@ vi.mock("../api", async () => ({
     stuck_sending: 0,
     worker: { alive: true },
   }),
+  listLibraryMaterials: vi.fn().mockResolvedValue({
+    items: [],
+    categories: [],
+    can_manage: false,
+  }),
   listAccessGrants: vi.fn().mockResolvedValue({ items: [] }),
   createPilot: vi.fn(),
   revokePilotAccess: vi.fn(),
@@ -204,6 +209,7 @@ describe("раздел «Настройки»", () => {
       "Аналитика",
       "Уведомления",
       "Напоминания",
+      "Шаблоны и материалы",
     ]) {
       expect(nav).toHaveTextContent(daily);
     }

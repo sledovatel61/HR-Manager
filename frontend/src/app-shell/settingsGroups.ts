@@ -30,6 +30,8 @@ export interface SettingsGroup {
 }
 
 /** Sections «Настройки» opens — exactly the ones removed from the sidebar. */
+// «Шаблоны и материалы» больше не настройка: раздел вынесен в основное
+// меню (библиотека HR). Старая ссылка #/templates продолжает работать.
 export const SETTINGS_SECTIONS: readonly WorkspaceSection[] = [
   "preferences",
   "rules",
@@ -39,7 +41,6 @@ export const SETTINGS_SECTIONS: readonly WorkspaceSection[] = [
   "users",
   "integrations",
   "documents",
-  "templates",
 ];
 
 export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
@@ -95,9 +96,9 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "content",
     title: "Контент и документы",
-    description: "Списки документов для кандидатов и шаблоны документов.",
+    description: "Списки документов для кандидатов. Шаблоны и материалы — в основном меню.",
     icon: "table",
-    targets: ["documents", "templates"],
+    targets: ["documents"],
   },
 ];
 
@@ -123,7 +124,6 @@ export const SETTINGS_SECTION_LABELS: Record<string, string> = {
   users: "Пользователи",
   integrations: "Интеграции",
   documents: "Списки документов",
-  templates: "Шаблоны документов",
 };
 
 export function settingsGroupForSection(

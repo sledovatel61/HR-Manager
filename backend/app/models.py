@@ -131,6 +131,10 @@ class AuditAction(StrEnum):
     WORK_SCHEDULE_ENTRY_UPDATED = "work_schedule_entry_updated"
     WORK_SCHEDULE_ENTRY_DELETED = "work_schedule_entry_deleted"
     WORK_SCHEDULE_EXPORTED = "work_schedule_exported"
+    # Импорт графика выхода из Excel: агрегированное событие подтверждения
+    # импорта (сколько создано/сопоставлено/обновлено/пропущено). Содержимое
+    # файла и ПДн в аудит не попадают — только счётчики и отпечаток файла.
+    WORK_SCHEDULE_IMPORTED = "work_schedule_imported"
     # Calendar events (roadmap phase: events and calendar).
     EVENT_CREATED = "event_created"
     EVENT_UPDATED = "event_updated"
@@ -226,6 +230,11 @@ class AuditAction(StrEnum):
     TEMPLATE_VERSION_ARCHIVED = "template_version_archived"
     DOCUMENT_GENERATED = "document_generated"
     DOCUMENT_DOWNLOADED = "document_downloaded"
+    # Library screen («Библиотека HR»): a material was opened in a new window
+    # or downloaded. Details carry ids/format only — never material content.
+    LIBRARY_MATERIAL_OPENED = "library_material_opened"
+    LIBRARY_MATERIAL_DOWNLOADED = "library_material_downloaded"
+
     # Вложения в карточке кандидата: анкеты и сканы (.docx/.pdf). В детали
     # строки аудита попадают только id вложения, тип и размер — никогда имя
     # файла (в нём бывает ФИО соискателя) и никогда содержимое документа.
@@ -293,6 +302,9 @@ class CandidateSource(StrEnum):
     EVENT = "event"
     AGENCY = "agency"
     INBOUND_CALL = "inbound_call"
+    # Импорт графика выхода из Excel: кандидаты, созданные массовым импортом,
+    # честно помечаются отдельным источником (не маскируются под «сайт» и т.п.).
+    EXCEL_IMPORT = "excel_import"
 
 
 class CandidateInteractionType(StrEnum):
@@ -494,7 +506,7 @@ class Candidate(Base):
         ),
         CheckConstraint(
             "source IN ('site', 'referral', 'hh_manual', 'university', 'event', "
-            "'agency', 'inbound_call')",
+            "'agency', 'inbound_call', 'excel_import')",
             name="ck_candidates_source_valid",
         ),
         Index("ix_candidates_owner_user_id", "owner_user_id"),
@@ -2360,18 +2372,41 @@ class DocumentTemplate(Base):
     """Stable template entity: a controlled ``kind`` key plus an area of
     application (``scope``: an empty string for the whole base or one funnel
     stage). ``name`` is an editable display name — it is never part of a
-    version's content, and renaming is audited."""
+    version's content, and renaming is audited.
+
+    Library fields (phase: «Библиотека HR»): ``category`` is a closed
+    dictionary key for the library screen, ``summary`` is the one-sentence
+    purpose shown on a card, and ``seed_key`` marks a template created by the
+    built-in catalog provisioning (idempotency key; ``NULL`` for anything the
+    HR created). The fields describe the template as a whole — they are not
+    part of a version's immutable content.
+    """
 
     __tablename__ = "document_templates"
     __table_args__ = (
         CheckConstraint("revision > 0", name="ck_document_templates_revision"),
+        CheckConstraint(
+            "category IN ('', 'interview', 'candidate_docs', 'calls',"
+            " 'onboarding', 'memos', 'position')",
+            name="ck_document_templates_category",
+        ),
         Index("ix_document_templates_scope_kind", "scope", "kind"),
+        Index(
+            "uq_document_templates_seed_key",
+            "seed_key",
+            unique=True,
+            postgresql_where=text("seed_key IS NOT NULL"),
+            sqlite_where=text("seed_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     scope: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    summary: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    seed_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Optimistic concurrency counter for template-level operations.
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     author_id: Mapped[uuid.UUID] = mapped_column(
@@ -2528,6 +2563,78 @@ class ScheduleEntry(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<ScheduleEntry id={self.id} entry_date={self.entry_date}>"
+
+
+class ScheduleImport(Base):
+    """Один подтверждённый импорт графика выхода из Excel (агрегат пачки).
+
+    Хранит только счётчики и отпечаток файла (SHA-256): содержимое строк,
+    ФИО и телефоны сюда не попадают. ``created_by_user_id`` при деактивации
+    пользователя обнуляется (``ON DELETE SET NULL``), история импортов
+    сохраняется.
+    """
+
+    __tablename__ = "schedule_imports"
+    __table_args__ = (
+        Index("ix_schedule_imports_file_sha256", "file_sha256"),
+        Index("ix_schedule_imports_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    sheet_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    rows_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_candidates: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    matched_candidates: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_candidates: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    service_entries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_user_id])
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<ScheduleImport id={self.id} rows={self.rows_total}>"
+
+
+class ScheduleImportRow(Base):
+    """Строка подтверждённого импорта: устойчивый ключ + результат.
+
+    ``row_key`` — детерминированный SHA-256 от содержимого строки (дата,
+    нормализованное ФИО/название, время): повторный импорт того же файла
+    находит уже импортированные ключи и не создаёт дубликаты. ``candidate_id``
+    и ``entry_id`` связывают ключ с созданной/сопоставленной сущностью; при
+    удалении сущности связь обнуляется, но сам факт импорта остаётся.
+    """
+
+    __tablename__ = "schedule_import_rows"
+    __table_args__ = (
+        UniqueConstraint("import_id", "row_key", name="uq_schedule_import_rows_key"),
+        Index("ix_schedule_import_rows_row_key", "row_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    import_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("schedule_imports.id", ondelete="CASCADE"), nullable=False
+    )
+    row_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    sheet_row: Mapped[int] = mapped_column(Integer, nullable=False)
+    result: Mapped[str] = mapped_column(String(16), nullable=False)
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    entry_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("schedule_entries.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<ScheduleImportRow key={self.row_key[:8]}… result={self.result}>"
 
 
 # Вложения в карточке кандидата: анкеты (.docx) и сканы (.pdf). Это сознательное

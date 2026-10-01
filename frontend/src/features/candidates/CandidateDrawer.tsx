@@ -237,7 +237,9 @@ export function CandidateDrawer({
 
           {tab === "attachments" && <AttachmentsTab candidateId={candidate.id} />}
 
-          {tab === "generated" && <GeneratedDocumentsTab candidateId={candidate.id} />}
+          {tab === "generated" && (
+            <GeneratedDocumentsTab candidateId={candidate.id} candidateStage={candidate.stage} />
+          )}
 
           {tab === "transfers" && (
             <TransfersTab candidate={candidate} onOpenTransfer={() => setTransferOpen(true)} />
