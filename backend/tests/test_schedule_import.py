@@ -804,3 +804,104 @@ def test_confirm_overlong_filename_is_limited(client: TestClient, db_session: Se
     assert len(record.file_name) <= 255
     # Обрезка по кодовым точкам: результат — валидный UTF-8 без обрывков.
     assert record.file_name.encode("utf-8").decode("utf-8") == record.file_name
+
+
+# --- Комментарий из файла не попадает в аудит ----------------------------------
+
+# В комментарии намеренно то, что пользователи иногда пишут в колонку заметок:
+# чужое ФИО и телефон. 14 цифр — не «чистый» телефон, парсер оставляет их текстом.
+PII_PHONE = "+7 900 123-45-67"
+PII_COMMENT = f"Мария Петровна, тел. {PII_PHONE} доб. 123"
+PII_DIGITS = "79001234567"
+
+
+def _pii_comment_workbook() -> bytes:
+    workbook, sheet = _blank_workbook()
+    sheet.append(
+        [
+            "пР",
+            "ФИО",
+            "Дата и время",
+            "Организация",
+            "Наименование отдела",
+            "должность",
+            "комментарии",
+        ]
+    )
+    block = sheet.cell(row=2, column=2, value=datetime(2026, 8, 10))
+    block.number_format = "d mmm"
+    sheet.merge_cells(start_row=2, start_column=2, end_row=2, end_column=7)
+    sheet.cell(row=3, column=2, value="Тестова Анна Ивановна")
+    sheet.cell(row=3, column=3, value=time(9, 30))
+    sheet.cell(row=3, column=4, value="ООО Пример")
+    sheet.cell(row=3, column=5, value="Цех Один")
+    sheet.cell(row=3, column=6, value="уборщица")
+    sheet.cell(row=3, column=7, value=PII_COMMENT)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def test_created_candidate_audit_has_no_comment_content(
+    client: TestClient, db_session: Session
+) -> None:
+    make_user(db_session, username="hr1", role=UserRole.HR)
+    csrf = _login(client, "hr1")
+
+    response = _confirm(client, _pii_comment_workbook(), csrf)
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 1
+
+    # В карточку комментарий пишется целиком — это штатное поле записи.
+    candidate = db_session.scalar(
+        select(Candidate).where(Candidate.source == CandidateSource.EXCEL_IMPORT)
+    )
+    assert candidate is not None and candidate.start_comment == PII_COMMENT
+
+    # В аудите содержимого комментария нет — ни при создании, ни в агрегате.
+    events = db_session.scalars(select(AuditEvent)).all()
+    assert events, "аудит не может быть пустым"
+    for event in events:
+        details = event.details or ""
+        assert PII_COMMENT not in details
+        assert PII_PHONE not in details
+        assert PII_DIGITS not in details
+        assert "Мария Петровна" not in details
+    created = next(event for event in events if event.action == AuditAction.CANDIDATE_CREATED)
+    assert "source=excel_import" in (created.details or "")
+
+
+def test_matched_candidate_audit_keeps_structural_fields_but_not_comment(
+    client: TestClient, db_session: Session
+) -> None:
+    hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    existing = make_candidate(db_session, owner=hr, full_name="Тестова Анна Ивановна")
+    csrf = _login(client, "hr1")
+
+    preview = _upload(client, _pii_comment_workbook(), csrf).json()
+    row = next(item for item in preview["rows"] if item["full_name"] == "Тестова Анна Ивановна")
+    response = _confirm(
+        client,
+        _pii_comment_workbook(),
+        csrf,
+        [{"row_index": row["row_index"], "action": "match", "candidate_id": str(existing.id)}],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["updated"] == 1
+
+    # Комментарий обновлён в карточке, но не дословно в аудите.
+    db_session.refresh(existing)
+    assert existing.start_comment == PII_COMMENT
+    event = db_session.scalar(
+        select(AuditEvent).where(AuditEvent.action == AuditAction.CANDIDATE_START_SCHEDULE_CHANGED)
+    )
+    assert event is not None
+    details = event.details or ""
+    # Факт изменения комментария зафиксирован без содержимого.
+    assert "start_comment" in details and "изменён" in details
+    assert PII_COMMENT not in details and PII_PHONE not in details
+    assert PII_DIGITS not in details and "Мария Петровна" not in details
+    # Структурные поля по-прежнему в аудите полностью — это не свободный текст.
+    assert "start_date: — -> 2026-08-10" in details
+    assert "start_time: — -> 09:30" in details
+    assert "start_organization: — -> ООО Пример" in details

@@ -756,7 +756,12 @@ def _apply_start_fields(candidate: Candidate, row: ParsedScheduleRow) -> list[st
         note("shift", candidate.shift, row.shift)
         candidate.shift = row.shift
     if row.comment and candidate.start_comment != row.comment:
-        note("start_comment", candidate.start_comment, row.comment)
+        # Комментарий — свободный текст из файла (пользователь мог записать туда
+        # телефон, e-mail или ФИО), поэтому в аудит попадает только факт
+        # изменения и его размер, а не содержимое. В карточку кандидата
+        # комментарий по-прежнему пишется целиком.
+        had = "был" if candidate.start_comment else "—"
+        changes.append(f"start_comment: {had} -> <изменён, {len(row.comment)} симв.>")
         candidate.start_comment = row.comment
     if changes:
         candidate.updated_at = utc_now()
