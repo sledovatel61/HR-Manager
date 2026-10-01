@@ -303,7 +303,7 @@ def test_migration_0017_links_one_reminder_per_event() -> None:
     assert module.down_revision == "0016"
 
     config = Config("alembic.ini")
-    assert ScriptDirectory.from_config(config).get_current_head() == "0018"
+    assert ScriptDirectory.from_config(config).get_current_head() == "0019"
 
     source = getsource(module)
     assert "uq_reminders_event_id" in source

@@ -192,13 +192,27 @@ class RenderedDocument:
     html: str
 
 
-def render_document(*, title: str, body: str, values: Mapping[str, str]) -> RenderedDocument:
-    """Render one document from a validated template and pre-formatted values.
+@dataclass(frozen=True)
+class RenderedFragment:
+    """Inner blocks of a rendered document without the HTML shell.
 
-    ``values`` must be built by the caller from the allowlist (see
-    :data:`ALLOWED_PLACEHOLDERS`); unknown keys are ignored and missing ones
-    render as an empty string. Values are sanitized and escaped here as well,
-    so this function is safe even if a caller passes raw data.
+    Used by the library screen: the SPA already provides the page chrome, so
+    it needs only the safe ``<p>``/``<ul>`` blocks (every dynamic value is
+    HTML-escaped by the same pipeline the immutable snapshots use). The
+    plain-text form is identical to the one stored in generated snapshots.
+    """
+
+    text: str
+    html: str
+
+
+def _render_blocks(*, title: str, body: str, values: Mapping[str, str]) -> tuple[str, str, str]:
+    """Shared pipeline: validate, escape, substitute, format.
+
+    Returns ``(safe_title, inner_html, text)``. Both the shell form
+    (:func:`render_document`, stored in immutable snapshots) and the fragment
+    form (:func:`render_fragment`, shown on the library screen) are composed
+    from this single pipeline, so they can never disagree about escaping.
     """
     safe_title = validate_title(title)
     safe_body = validate_body(body)
@@ -228,11 +242,37 @@ def render_document(*, title: str, body: str, values: Mapping[str, str]) -> Rend
 
     body_html = _format_html("".join(html_parts), markers)
     body_text = _format_text("".join(text_parts))
+    return safe_title, body_html, body_text
+
+
+def render_document(*, title: str, body: str, values: Mapping[str, str]) -> RenderedDocument:
+    """Render one document from a validated template and pre-formatted values.
+
+    ``values`` must be built by the caller from the allowlist (see
+    :data:`ALLOWED_PLACEHOLDERS`); unknown keys are ignored and missing ones
+    render as an empty string. Values are sanitized and escaped here as well,
+    so this function is safe even if a caller passes raw data.
+    """
+    safe_title, body_html, body_text = _render_blocks(title=title, body=body, values=values)
     return RenderedDocument(
         title=safe_title,
         text=body_text,
         html=_HTML_SHELL.format(title=html.escape(safe_title, quote=False), body=body_html),
     )
+
+
+def render_fragment(*, title: str, body: str, values: Mapping[str, str]) -> RenderedFragment:
+    """Render the inner blocks of a document (no ``<html>`` shell).
+
+    The validation, sanitizing and escaping pipeline is exactly the one used
+    for generated documents (:func:`render_document`), so a fragment can never
+    contain markup that form would not. ``title`` is validated but not
+    embedded: the caller renders its own heading.
+    """
+    # The title is validated (so an empty/oversized title fails the same way it
+    # would in the shell form) but not embedded: the caller renders its own.
+    _, body_html, body_text = _render_blocks(title=title, body=body, values=values)
+    return RenderedFragment(text=body_text, html=body_html)
 
 
 def _format_html(escaped_with_markers: str, markers: list[str]) -> str:

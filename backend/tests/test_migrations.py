@@ -21,7 +21,7 @@ RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
 # non-integration test below fails the moment a migration is added without
 # bumping this, so the drift is caught in the fast job rather than only in
 # «Backend integration tests (PostgreSQL)».
-HEAD_REVISION = "0018"
+HEAD_REVISION = "0019"
 EXPECTED_TABLES = {
     "users",
     "user_sessions",
@@ -151,6 +151,22 @@ def test_head_revision_matches_the_migration_chain() -> None:
     in «Backend integration tests (PostgreSQL)», which most contributors never
     run locally; the chain and the test then disagree silently until release.
     Reading the chain directly needs no database, so this runs everywhere.
+
+    The guard also catches the collision two set-based checks used to miss:
+    two migration files claiming the *same* revision id. Git merges such PRs
+    cleanly (different file names) and ``alembic`` silently resolves the id to
+    one file, so the other migrations never run — every table they would have
+    created is then missing at runtime. Proven regression: three open PRs each
+    carried ``revision = "0018"`` and two of them dropped out of the chain.
+    Hence the three structural checks below, each of which fails on that exact
+    state:
+
+    * ``alembic heads`` prints exactly ONE line (counted, not folded into a
+      set — ``{'0018'} == {'0018'}`` is how the old guard let duplicates by);
+    * the walked base→heads chain contains as many revisions as there are
+      migration files (a duplicated id collapses to one walk entry);
+    * every revision's ``down_revision`` is present in the chain and every
+      revision id resolves to a real file.
     """
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "heads"],
@@ -160,13 +176,50 @@ def test_head_revision_matches_the_migration_chain() -> None:
         capture_output=True,
         text=True,
     )
-    heads = {
-        line.split()[0]
-        for line in result.stdout.splitlines()
-        if line.strip() and not line.startswith(" ")
-    }
-    # Exactly one head: a branched chain would make «upgrade head» ambiguous.
-    assert heads == {HEAD_REVISION}, (
-        f"HEAD_REVISION={HEAD_REVISION!r} does not match `alembic heads`={sorted(heads)}. "
-        "Bump HEAD_REVISION in tests/test_migrations.py."
+    head_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    assert len(head_lines) == 1, (
+        "The migration chain must have exactly one head, found "
+        f"{len(head_lines)}: {head_lines}. Two migrations claim the same "
+        "revision id — renumber the newer one; do not merge until unique."
     )
+    assert head_lines[0].split()[0] == HEAD_REVISION, (
+        f"HEAD_REVISION={HEAD_REVISION!r} does not match `alembic heads`="
+        f"{head_lines[0]!r}. Bump HEAD_REVISION in tests/test_migrations.py."
+    )
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    walked_ids = [rev.revision for rev in script.walk_revisions("base", "heads")]
+
+    version_files = [
+        path.name
+        for path in (BACKEND_DIR / "alembic" / "versions").glob("*.py")
+        if path.name != "__init__.py"
+    ]
+    assert len(walked_ids) == len(version_files), (
+        f"The base→heads chain walks {len(walked_ids)} revisions, but "
+        f"alembic/versions/ holds {len(version_files)} migration files. "
+        "Some revision id is duplicated and its file will never run — "
+        "renumber the newer migration."
+    )
+
+    id_set = set(walked_ids)
+    detached = [
+        rev.revision
+        for rev in script.walk_revisions("base", "heads")
+        if rev.down_revision is not None and rev.down_revision not in id_set
+    ]
+    assert not detached, (
+        f"Revisions whose down_revision is missing from the chain: {detached}. "
+        "The chain is forked or points at a revision that does not exist; "
+        "`alembic upgrade head` cannot reach every file."
+    )
+
+    for revision_id in walked_ids:
+        entry = script.get_revision(revision_id)
+        assert Path(entry.path).is_file(), (
+            f"Revision {revision_id!r} does not resolve to a migration file "
+            f"on disk: {entry.path!r}."
+        )

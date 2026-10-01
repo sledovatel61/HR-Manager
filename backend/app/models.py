@@ -229,6 +229,10 @@ class AuditAction(StrEnum):
     TEMPLATE_VERSION_ARCHIVED = "template_version_archived"
     DOCUMENT_GENERATED = "document_generated"
     DOCUMENT_DOWNLOADED = "document_downloaded"
+    # Library screen («Библиотека HR»): a material was opened in a new window
+    # or downloaded. Details carry ids/format only — never material content.
+    LIBRARY_MATERIAL_OPENED = "library_material_opened"
+    LIBRARY_MATERIAL_DOWNLOADED = "library_material_downloaded"
 
 
 class CandidateStage(StrEnum):
@@ -2358,18 +2362,41 @@ class DocumentTemplate(Base):
     """Stable template entity: a controlled ``kind`` key plus an area of
     application (``scope``: an empty string for the whole base or one funnel
     stage). ``name`` is an editable display name — it is never part of a
-    version's content, and renaming is audited."""
+    version's content, and renaming is audited.
+
+    Library fields (phase: «Библиотека HR»): ``category`` is a closed
+    dictionary key for the library screen, ``summary`` is the one-sentence
+    purpose shown on a card, and ``seed_key`` marks a template created by the
+    built-in catalog provisioning (idempotency key; ``NULL`` for anything the
+    HR created). The fields describe the template as a whole — they are not
+    part of a version's immutable content.
+    """
 
     __tablename__ = "document_templates"
     __table_args__ = (
         CheckConstraint("revision > 0", name="ck_document_templates_revision"),
+        CheckConstraint(
+            "category IN ('', 'interview', 'candidate_docs', 'calls',"
+            " 'onboarding', 'memos', 'position')",
+            name="ck_document_templates_category",
+        ),
         Index("ix_document_templates_scope_kind", "scope", "kind"),
+        Index(
+            "uq_document_templates_seed_key",
+            "seed_key",
+            unique=True,
+            postgresql_where=text("seed_key IS NOT NULL"),
+            sqlite_where=text("seed_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     scope: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    summary: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    seed_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Optimistic concurrency counter for template-level operations.
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     author_id: Mapped[uuid.UUID] = mapped_column(
