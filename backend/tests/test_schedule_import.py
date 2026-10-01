@@ -44,6 +44,7 @@ from app.models import (
 from app.routers.auth import reset_login_limiter
 from app.routers.work_schedule import _build_report_csv
 from app.schedule_import import (
+    DEFAULT_UPLOAD_FILE_NAME,
     LookupCandidate,
     ScheduleImportFormatError,
     build_row_matches,
@@ -55,6 +56,7 @@ from app.schedule_import import (
     parse_block_date,
     parse_schedule_workbook,
     parse_time_value,
+    sanitize_upload_filename,
     validate_xlsx_upload,
 )
 from app.schedule_import_schemas import ImportRowResult
@@ -264,6 +266,54 @@ def test_upload_validation_rejects_wrong_types() -> None:
     # MIME вне белого списка.
     with pytest.raises(ScheduleImportFormatError):
         validate_xlsx_upload(b"PK\x03\x04rest", "график.xlsx", "text/html")
+
+
+def test_sanitize_upload_filename_table() -> None:
+    """Сервер не доверяет file.filename: путь, кавычки, управляющие, юникод."""
+    table: list[tuple[str | None, str]] = [
+        # Полный Windows-путь — остаётся только базовое имя.
+        (
+            "C:\\Users\\User\\Documents\\HR\\HR Manager Desktop\\LLM"
+            "\\30.09.2026\\График приемов .xlsx",
+            "График приемов .xlsx",
+        ),
+        # Unix-путь — то же правило.
+        ("/home/user/документы/график выходов.xlsx", "график выходов.xlsx"),
+        # Сетевой путь.
+        ("\\\\server\\share\\график.xlsx", "график.xlsx"),
+        # Путь без базового имени — нейтральное значение по умолчанию.
+        ("C:\\Users\\User\\", DEFAULT_UPLOAD_FILE_NAME),
+        ("/home/user/", DEFAULT_UPLOAD_FILE_NAME),
+        # Пустое и отсутствующее имя.
+        ("", DEFAULT_UPLOAD_FILE_NAME),
+        (None, DEFAULT_UPLOAD_FILE_NAME),
+        ("   ", DEFAULT_UPLOAD_FILE_NAME),
+        # Кавычки и управляющие символы вычищаются.
+        ('"график".xlsx', "график.xlsx"),
+        ("график\n\t .xlsx", "график .xlsx"),
+        # Диск без разделителя («относительный» путь с диском).
+        ("C:график.xlsx", "график.xlsx"),
+        # Юникод сохраняется.
+        ("График приёмов ☀ 2026.xlsx", "График приёмов ☀ 2026.xlsx"),
+        # Только кавычки/точки — смысла нет, нейтральное значение.
+        ('"""', DEFAULT_UPLOAD_FILE_NAME),
+        ("...", DEFAULT_UPLOAD_FILE_NAME),
+    ]
+    for raw, expected in table:
+        assert sanitize_upload_filename(raw) == expected, repr(raw)
+        result = sanitize_upload_filename(raw)
+        assert "/" not in result and "\\" not in result and ":" not in result
+
+
+def test_sanitize_upload_filename_limit_keeps_multibyte_intact() -> None:
+    long_name = "аб" * 300 + ".xlsx"
+    result = sanitize_upload_filename(long_name)
+    assert len(result) == 255
+    # Рез по кодовым точкам: строка остаётся валидным UTF-8 без обрывков.
+    assert result.encode("utf-8").decode("utf-8") == result
+    assert result == long_name[:255]
+    # Кириллическая «ы» — два байта в UTF-8: половина символа отброшена не быть.
+    assert sanitize_upload_filename("ы" * 500, limit=255) == "ы" * 255
 
 
 def test_macro_zip_is_rejected() -> None:
@@ -701,3 +751,56 @@ def test_confirm_user_decisions_override_defaults(client: TestClient, db_session
         )
         == 0
     )
+
+
+# --- Санитизация имени загруженного файла (не доверяем file.filename) -----------
+
+
+def test_confirm_strips_windows_path_to_base_name(client: TestClient, db_session: Session) -> None:
+    make_user(db_session, username="hr1", role=UserRole.HR)
+    csrf = _login(client, "hr1")
+    windows_path = (
+        "C:\\Users\\User\\Documents\\HR\\HR Manager Desktop\\LLM\\30.09.2026\\График приемов .xlsx"
+    )
+
+    # Превью тоже отдаёт только базовое имя.
+    preview = _upload(client, _fixture_bytes(), csrf, name=windows_path)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["file_name"] == "График приемов .xlsx"
+
+    confirmed = _confirm(client, _fixture_bytes(), csrf, name=windows_path)
+    assert confirmed.status_code == 200, confirmed.text
+    record = db_session.scalar(select(ScheduleImport))
+    assert record is not None
+    assert record.file_name == "График приемов .xlsx"
+    assert "/" not in record.file_name and "\\" not in record.file_name
+    assert "Users" not in record.file_name and "Documents" not in record.file_name
+
+
+def test_confirm_path_only_filename_gets_neutral_default(
+    client: TestClient, db_session: Session
+) -> None:
+    make_user(db_session, username="hr1", role=UserRole.HR)
+    csrf = _login(client, "hr1")
+
+    confirmed = _confirm(client, _fixture_bytes(), csrf, name="C:\\Users\\User\\")
+    assert confirmed.status_code == 200, confirmed.text
+    record = db_session.scalar(select(ScheduleImport))
+    assert record is not None
+    assert record.file_name == DEFAULT_UPLOAD_FILE_NAME
+    assert "/" not in record.file_name and "\\" not in record.file_name
+    assert ":" not in record.file_name
+
+
+def test_confirm_overlong_filename_is_limited(client: TestClient, db_session: Session) -> None:
+    make_user(db_session, username="hr1", role=UserRole.HR)
+    csrf = _login(client, "hr1")
+    long_name = "график" * 120 + ".xlsx"  # 726 символов
+
+    confirmed = _confirm(client, _fixture_bytes(), csrf, name=long_name)
+    assert confirmed.status_code == 200, confirmed.text
+    record = db_session.scalar(select(ScheduleImport))
+    assert record is not None
+    assert len(record.file_name) <= 255
+    # Обрезка по кодовым точкам: результат — валидный UTF-8 без обрывков.
+    assert record.file_name.encode("utf-8").decode("utf-8") == record.file_name

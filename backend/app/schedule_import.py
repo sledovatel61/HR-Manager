@@ -207,7 +207,12 @@ def validate_xlsx_upload(payload: bytes, filename: str | None, content_type: str
             f"Файл больше {MAX_IMPORT_BYTES // (1024 * 1024)} МБ. "
             "Разбейте график на части или сократите файл."
         )
-    name = (filename or "").strip().lower()
+    # Расширение проверяется по санитизированному базовому имени: сервер не
+    # доверяет file.filename (вместо имени могут прислать полный путь). Если
+    # осмысленного имени нет вовсе, расширение не проверяется — содержимое
+    # ниже всё равно отсеивается по магии, архиву, макросам и MIME.
+    clean_name = sanitize_upload_filename(filename)
+    name = "" if clean_name == DEFAULT_UPLOAD_FILE_NAME else clean_name.lower()
     if name.endswith((".xlsm", ".xlsb", ".xlam")):
         raise ScheduleImportFormatError(
             "Файлы с макросами (.xlsm/.xlsb) не принимаются. Сохраните график как .xlsx."
@@ -233,6 +238,49 @@ def validate_xlsx_upload(payload: bytes, filename: str | None, content_type: str
         raise ScheduleImportFormatError(
             "В файле найдены макросы. Сохраните график как .xlsx без макросов."
         )
+
+
+#: Нейтральное имя загрузки, когда из присланного имени нельзя выделить базовое.
+#: Не «угадывает» расширение или содержимое — просто констатирует факт импорта.
+DEFAULT_UPLOAD_FILE_NAME = "импортированный график.xlsx"
+
+
+def sanitize_upload_filename(raw: str | None, *, limit: int = 255) -> str:
+    """Имя загруженного файла, безопасное для хранения и показа в отчётах.
+
+    Сервер не доверяет ``file.filename``: прямой клиент (не браузер) может
+    прислать в multipart полный путь — ``C:\\Users\\...\\График.xlsx`` или
+    ``/home/user/график.xlsx``. Путь к файлу владельца не должен попадать ни
+    в БД, ни в отчёты, поэтому:
+
+    * остаётся только последний сегмент пути (разделители и ``/``, и ``\\``);
+    * буква диска и сетевые префиксы уходят вместе с путём;
+    * управляющие символы, кавычки и случайно уцелевшие разделители удаляются;
+    * длина ограничивается ``limit`` символами: строка режется по символам
+      (кодовым точкам), поэтому многобайтовый символ не разрезается пополам.
+
+    Если после очистки осмысленного имени не осталось (пустая строка, путь без
+    базового имени, только кавычки/точки), возвращается нейтральное значение
+    по умолчанию, а не данные из непроверенного входа.
+    """
+
+    if not raw:
+        return DEFAULT_UPLOAD_FILE_NAME
+    # Любой разделитель считаем путевым и берём только последний сегмент.
+    segment = raw.replace("\\", "/").rsplit("/", 1)[-1]
+    # Остаток вида «C:имя» — путь с диском, но без разделителя.
+    segment = re.sub(r"^[A-Za-z]:", "", segment)
+    cleaned_chars: list[str] = []
+    for char in segment:
+        if char in "\"'`/\\":
+            continue
+        if not char.isprintable():
+            continue
+        cleaned_chars.append(char)
+    name = "".join(cleaned_chars).strip().rstrip(".")
+    if not name:
+        return DEFAULT_UPLOAD_FILE_NAME
+    return name[:limit]
 
 
 def read_workbook(payload: bytes) -> list[Worksheet]:

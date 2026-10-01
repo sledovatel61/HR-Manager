@@ -69,6 +69,7 @@ from app.schedule_import import (
     make_row_key,
     mask_phone_display,
     parse_schedule_workbook,
+    sanitize_upload_filename,
 )
 from app.schedule_import_schemas import (
     DecisionAction,
@@ -681,7 +682,7 @@ async def preview_work_schedule_import(
         ambiguous_count=counters["ambiguous"],
     )
     return WorkScheduleImportPreview(
-        file_name=file.filename or "график.xlsx",
+        file_name=sanitize_upload_filename(file.filename),
         file_sha256=file_sha256,
         sheet_title=parsed.sheet_title,
         days=parsed.days,
@@ -965,7 +966,7 @@ async def confirm_work_schedule_import(
 
     # --- Применение одной транзакцией ---------------------------------------
     import_record = ScheduleImport(
-        file_name=(file.filename or "график.xlsx")[-255:],
+        file_name=sanitize_upload_filename(file.filename),
         file_sha256=file_sha256,
         sheet_title=parsed.sheet_title[:120],
         rows_total=len(parsed.rows),
