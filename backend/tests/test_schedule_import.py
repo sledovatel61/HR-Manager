@@ -332,6 +332,12 @@ def _blank_workbook() -> tuple[Workbook, Worksheet]:
     return workbook, cast(Worksheet, workbook.active)
 
 
+def _workbook_bytes(workbook: Workbook) -> bytes:
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
 def test_unknown_format_raises_readable_error() -> None:
     workbook, sheet = _blank_workbook()
     sheet.append(["Раз", "Два", "Три"])
@@ -382,6 +388,41 @@ def test_extract_shift_and_phones() -> None:
     assert format_phone_display("89518329029") == "+7 951 832-90-29"
     masked = mask_phone_display("+7 951 832-90-29")
     assert masked is not None and "832" not in masked and masked.endswith("29")
+
+
+def test_phone_far_right_of_comment_column_is_detected() -> None:
+    """Телефон ищется в колонке комментариев и до 8 колонок правее неё.
+
+    Фиксированных номеров колонок нет: значение стоит в колонке L (5 пустых
+    колонок после комментариев) и всё равно распознаётся телефоном, не оседая
+    в тексте комментария.
+    """
+    workbook, sheet = _blank_workbook()
+    sheet.append(
+        [
+            "пР",
+            "ФИО",
+            "Дата и время",
+            "Организация",
+            "Наименование отдела",
+            "должность",
+            "комментарии",
+        ]
+    )
+    block = sheet.cell(row=2, column=2, value=datetime(2026, 8, 12))
+    block.number_format = "d mmm"
+    sheet.merge_cells(start_row=2, start_column=2, end_row=2, end_column=7)
+    sheet.cell(row=3, column=2, value="Дальнова Ирина Петровна")
+    sheet.cell(row=3, column=3, value=time(10, 0))
+    sheet.cell(row=3, column=7, value="просто заметка")
+    sheet.cell(row=3, column=12, value=79000000009.0)  # колонка L
+
+    parsed = parse_schedule_workbook(_workbook_bytes(workbook))
+    rows = [row for row in parsed.rows if row.kind == "candidate"]
+    assert len(rows) == 1
+    assert rows[0].phone_display == "+7 900 000-00-09"
+    assert rows[0].phone_normalized == "+79000000009"
+    assert rows[0].comment == "просто заметка"
 
 
 def test_row_key_is_stable_and_content_based() -> None:
@@ -837,9 +878,7 @@ def _pii_comment_workbook() -> bytes:
     sheet.cell(row=3, column=5, value="Цех Один")
     sheet.cell(row=3, column=6, value="уборщица")
     sheet.cell(row=3, column=7, value=PII_COMMENT)
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    return buffer.getvalue()
+    return _workbook_bytes(workbook)
 
 
 def test_created_candidate_audit_has_no_comment_content(
