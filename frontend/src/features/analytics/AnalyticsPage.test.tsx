@@ -154,18 +154,27 @@ describe("AnalyticsPage", () => {
   });
 
   it("preset tabs recompute the period (day vs quarter differ)", async () => {
-    renderPage();
+    // Дата фиксируется внутри квартала: 1-го числа квартала пресеты «день» и
+    // «квартал» начинаются одновременно, и тест становился календарно-зависимым.
+    // Инвариант сохраняется: вне границы пресеты обязаны давать разный период.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-15T12:00:00Z"));
+    try {
+      renderPage();
 
-    await screen.findByText("Создано кандидатов");
-    const first = vi.mocked(api.fetchAnalyticsKpi).mock.calls[0][0];
+      await screen.findByText("Создано кандидатов");
+      const first = vi.mocked(api.fetchAnalyticsKpi).mock.calls[0][0];
 
-    await userEvent.click(screen.getByRole("tab", { name: "Квартал" }));
+      await userEvent.click(screen.getByRole("tab", { name: "Квартал" }));
 
-    await waitFor(() => {
-      const calls = vi.mocked(api.fetchAnalyticsKpi).mock.calls;
-      const last = calls[calls.length - 1][0];
-      expect(last.from).not.toBe(first.from);
-    });
+      await waitFor(() => {
+        const calls = vi.mocked(api.fetchAnalyticsKpi).mock.calls;
+        const last = calls[calls.length - 1][0];
+        expect(last.from).not.toBe(first.from);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows N/A for null-rate conversions and keeps real zeros", async () => {

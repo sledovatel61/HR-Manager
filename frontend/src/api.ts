@@ -59,6 +59,7 @@ import type {
   EventListQuery,
   EventUpdateInput,
   HealthResponse,
+  ImportRowDecision,
   Paginated,
   ScheduleEntry,
   ScheduleEntryCreateInput,
@@ -66,6 +67,8 @@ import type {
   User,
   UserListItems,
   UserUpdateInput,
+  WorkScheduleImportPreview,
+  WorkScheduleImportResult,
   WorkScheduleList,
   WorkScheduleQuery,
   WorkScheduleSuggestions,
@@ -1264,4 +1267,30 @@ export async function updateScheduleEntry(
 
 export async function deleteScheduleEntry(entryId: string): Promise<void> {
   await request<void>(`/work-schedule/entries/${entryId}`, { method: "DELETE" });
+}
+
+// --- Импорт графика выхода из Excel ------------------------------------------
+
+/** Максимальный размер .xlsx для импорта (совпадает с лимитом бэкенда). */
+export const SCHEDULE_IMPORT_MAX_BYTES = 5 * 1024 * 1024;
+export const SCHEDULE_IMPORT_EXTENSIONS = [".xlsx"];
+
+/** Шаг 1: проверить файл без сохранения — разбор, сопоставление, ошибки. */
+export async function previewWorkScheduleImport(
+  file: File
+): Promise<WorkScheduleImportPreview> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  return requestForm<WorkScheduleImportPreview>("/work-schedule/import/preview", form);
+}
+
+/** Шаг 2: подтвердить импорт с явными действиями по строкам (атомарно). */
+export async function confirmWorkScheduleImport(
+  file: File,
+  decisions: ImportRowDecision[]
+): Promise<WorkScheduleImportResult> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  form.append("decisions", JSON.stringify({ decisions }));
+  return requestForm<WorkScheduleImportResult>("/work-schedule/import", form);
 }
