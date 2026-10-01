@@ -40,7 +40,7 @@ from fastapi import (
     status,
 )
 from pydantic import ValidationError
-from sqlalchemy import distinct, select
+from sqlalchemy import distinct, select, text
 from sqlalchemy.orm import Session
 
 from app.analytics_ledger import record_fact
@@ -566,6 +566,33 @@ def _existing_row_keys(db: Session, keys: set[str]) -> set[str]:
     return set(found)
 
 
+def _serialize_import_by_file(db: Session, file_sha256: str) -> None:
+    """Сериализовать одновременные подтверждения одного файла (PostgreSQL).
+
+    Идемпотентность повтора держится на чтении уже записанных ключей строк до
+    записи. Без сериализации два одновременных подтверждения одного файла оба
+    видят «ещё не импортировано» и создают дубликаты: уникальность
+    ``schedule_import_rows`` задана по ``(import_id, row_key)``, а ``import_id``
+    у каждого подтверждения свой.
+
+    Транзакционная advisory-блокировка по отпечатку файла заставляет второе
+    подтверждение ждать коммита первого и видеть уже записанные ключи. Ключ
+    блокировки — отпечаток файла, поэтому разные файлы импортируются
+    параллельно. Блокировка снимается автоматически коммитом или откатом
+    транзакции запроса.
+
+    На SQLite (юнит-тесты) механизма нет — конкурентных подтверждений в одном
+    процессе не бывает; защита требуется только реальному PostgreSQL.
+    """
+
+    bind = db.bind
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    digest = hashlib.sha256(f"hr-manager:schedule-import:{file_sha256}".encode()).digest()
+    lock_key = int.from_bytes(digest[:8], "big", signed=True)
+    db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
+
+
 def _suggested_action(
     row: ParsedScheduleRow,
     *,
@@ -894,12 +921,17 @@ async def confirm_work_schedule_import(
 
     Файл перечитывается и переразбирается на подтверждении (превью ничего не
     хранит), действия сверяются с распознанными строками. Любая ошибка
-    откатывает всю пачку — половина кандидатов не остаётся.
+    откатывает всю пачку — половина кандидатов не остаётся. Одновременные
+    подтверждения одного файла сериализуются блокировкой по отпечатку файла,
+    поэтому повтор не создаёт дублей даже при гонке запросов.
     """
 
     payload = await _read_import_upload(file)
     parsed = _parse_or_422(payload)
     file_sha256 = hashlib.sha256(payload).hexdigest()
+    # До любого чтения, влияющего на решение: второй одновременный импорт того
+    # же файла подождёт коммита первого и увидит уже записанные ключи строк.
+    _serialize_import_by_file(db, file_sha256)
     rows_by_index = {row.row_index: row for row in parsed.rows}
     decision_map = _parse_decisions(decisions)
 

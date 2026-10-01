@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import time
 from pathlib import Path
 from uuid import uuid4
@@ -24,9 +26,11 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
+from app.config import Settings
+from app.main import create_app
 from app.models import (
     AuditAction,
     AuditEvent,
@@ -243,3 +247,82 @@ def test_hr_scope_is_respected_on_postgres(pg_client: TestClient, pg_db: Session
     ).all()
     assert len(mine) == 1
     assert mine[0].stage == CandidateStage.OFFER
+
+
+def test_concurrent_confirms_of_same_file_do_not_duplicate(
+    pg_client: TestClient,
+    pg_db: Session,
+    pg_settings: Settings,
+    pg_engine: Engine,
+) -> None:
+    """Два одновременных подтверждения одного файла не создают дублей.
+
+    Без блокировки по отпечатку файла оба запроса читают «ещё не
+    импортированные» ключи и записывают по своему набору (уникальность
+    ``(import_id, row_key)`` чужой импорт не останавливает). Проверка:
+    после завершения обоих запросов создан ровно один набор кандидатов и
+    служебных записей, второй запрос идемпотентно пропускает строки,
+    ошибок уникальности и частичных данных нет.
+    """
+    make_user(pg_db, username="hr1", role=UserRole.HR)
+    csrf_first = _login(pg_client, "hr1")
+
+    # Второй независимый клиент — вторая сессия, как при двойном подтверждении.
+    second_app = create_app(pg_settings, engine=pg_engine)
+    payload = _fixture_bytes()
+    barrier = threading.Barrier(2)
+
+    def run_confirm(client: TestClient, csrf: str) -> httpx.Response:
+        # Барьер разводит запросы как можно ближе по времени.
+        barrier.wait(timeout=30)
+        return _confirm(client, payload, csrf)
+
+    with TestClient(second_app) as second_client:
+        csrf_second = _login(second_client, "hr1")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(run_confirm, pg_client, csrf_first)
+            second_future = pool.submit(run_confirm, second_client, csrf_second)
+            responses = [
+                first_future.result(timeout=120),
+                second_future.result(timeout=120),
+            ]
+
+    # Оба запроса завершились без ошибок (ошибка уникальности дала бы 500).
+    assert [response.status_code for response in responses] == [200, 200], [
+        response.text for response in responses
+    ]
+    bodies = [response.json() for response in responses]
+
+    # Один импорт записывает весь набор, второй идемпотентно пропускает:
+    # «размазывания» строк между запросами нет.
+    created = sorted(body["created"] for body in bodies)
+    service = sorted(body["service_created"] for body in bodies)
+    assert created[0] == 0 and created[1] > 0
+    assert service[0] == 0 and service[1] > 0
+
+    pg_db.expire_all()
+
+    # Кандидатов ровно один набор, без дублей по ФИО.
+    assert (
+        pg_db.scalar(
+            select(func.count())
+            .select_from(Candidate)
+            .where(Candidate.source == CandidateSource.EXCEL_IMPORT)
+        )
+        == created[1]
+    )
+    duplicated_names = pg_db.execute(
+        select(Candidate.full_name)
+        .where(Candidate.source == CandidateSource.EXCEL_IMPORT)
+        .group_by(Candidate.full_name)
+        .having(func.count() > 1)
+    ).all()
+    assert duplicated_names == []
+
+    # Служебных записей — по одному разу на строку.
+    assert pg_db.scalar(select(func.count()).select_from(ScheduleEntry)) == service[1]
+
+    # Агрегатов импорта два (по одному на запрос), но реально записывал один.
+    imports = pg_db.scalars(select(ScheduleImport)).all()
+    assert len(imports) == 2
+    assert sorted(record.created_candidates for record in imports) == [0, created[1]]
