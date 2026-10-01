@@ -164,7 +164,9 @@ describe("AnalyticsPage", () => {
     await waitFor(() => {
       const calls = vi.mocked(api.fetchAnalyticsKpi).mock.calls;
       const last = calls[calls.length - 1][0];
-      expect(last.from).not.toBe(first.from);
+      // Сравниваем период целиком: в первый день квартала старт дня и старт
+      // квартала совпадают, а целый квартал никогда не равен одним суткам.
+      expect(`${last.from}..${last.to}`).not.toBe(`${first.from}..${first.to}`);
     });
   });
 
