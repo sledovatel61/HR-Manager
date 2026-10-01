@@ -1,6 +1,13 @@
 """Candidate attachments: DOCX questionnaires and PDF scans on the candidate card.
 
-Revision 0018.
+Revision 0019.
+
+Revision 0018 belongs to the work-schedule import (PR #46), so this one is
+0019: two files claiming the same revision id make Alembic warn «Revision
+0018 is present more than once» and silently drop one of the two branches
+from the chain. ``down_revision`` points at 0017 for as long as 0018 is not
+in ``main``; once PR #46 is merged this becomes 0018 and the chain is linear
+again (0017 -> 0018 -> 0019).
 
 Adds one table, ``candidate_attachments``: a protected attachment of a
 candidate — a questionnaire (``.docx``) or a scan (``.pdf``) uploaded by an HR.
@@ -37,7 +44,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0018"
+revision: str = "0019"
 down_revision: str | None = "0017"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
