@@ -629,19 +629,59 @@ def test_duplicate_name_is_a_conflict(client: TestClient, db_session: Session) -
     assert third.status_code == 201
 
 
-def test_attachments_disabled_by_config(disabled_client: TestClient, db_session: Session) -> None:
+def test_attachments_disabled_by_config(
+    client: TestClient, disabled_client: TestClient, db_session: Session
+) -> None:
+    """``ATTACHMENTS_ENABLED=false`` закрывает весь контур, а не только загрузку.
+
+    Вложение создаётся при включённых вложениях, затем тот же кандидат
+    опрашивается клиентом с выключенным флагом: список, скачивание и удаление
+    обязаны отвечать 403. Иначе флаг выключал бы лишь загрузку, а уже
+    загруженные файлы продолжали бы читаться.
+    """
     hr = make_user(db_session, username="hr1", role=UserRole.HR)
     candidate = make_candidate(db_session, owner=hr)
-
-    response = _upload(
-        disabled_client,
+    payload = build_docx()
+    created = _upload(
+        client,
         candidate,
         filename="Анкета.docx",
-        payload=build_docx(),
-        headers=_auth(disabled_client, "hr1"),
+        payload=payload,
+        headers=_auth(client, "hr1"),
     )
-    assert response.status_code == 403
-    assert "отключены" in response.json()["detail"]
+    assert created.status_code == 201, created.text
+    attachment_id = created.json()["id"]
+    headers = _auth(disabled_client, "hr1")
+
+    listing = disabled_client.get(f"/candidates/{candidate.id}/attachments", headers=headers)
+    assert listing.status_code == 403
+    assert "отключены" in listing.json()["detail"]
+
+    download = disabled_client.get(
+        f"/candidates/{candidate.id}/attachments/{attachment_id}/download", headers=headers
+    )
+    assert download.status_code == 403
+    assert "отключены" in download.json()["detail"]
+
+    removed = disabled_client.delete(
+        f"/candidates/{candidate.id}/attachments/{attachment_id}", headers=headers
+    )
+    assert removed.status_code == 403
+    assert "отключены" in removed.json()["detail"]
+
+    # Загрузка под тем же флагом по-прежнему закрыта, а файл остался цел.
+    upload = _upload(
+        disabled_client,
+        candidate,
+        filename="Вторая анкета.docx",
+        payload=payload,
+        headers=headers,
+    )
+    assert upload.status_code == 403
+    assert "отключены" in upload.json()["detail"]
+
+    row = db_session.get(CandidateAttachment, UUID(attachment_id))
+    assert row is not None and row.deleted_at is None
 
 
 # --- Права доступа -----------------------------------------------------------

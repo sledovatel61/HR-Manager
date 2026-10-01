@@ -12,7 +12,11 @@
   руководитель, администратор, держатель гранта) — скрытие кнопки во frontend
   защитой не считается;
 * скачивание идёт только через этот endpoint: файлы не лежат в публичном
-  каталоге и не раздаются nginx.
+  каталоге и не раздаются nginx;
+* ``ATTACHMENTS_ENABLED=false`` закрывает **весь** контур — список, загрузку,
+  скачивание и удаление (403). Иначе флаг выключал бы только загрузку, а уже
+  загруженные файлы продолжали бы читаться, хотя документация обещает общий
+  режим отключения.
 
 Коды ответов: 401 (нет сессии), 403 (нет прав/вложения выключены),
 404 (кандидат или вложение недоступны), 409 (имя уже занято, вложение уже
@@ -102,7 +106,13 @@ def list_candidate_attachments(
 ) -> CandidateAttachmentList:
     """Активные вложения кандидата и действующие лимиты (без байтов)."""
     candidate = _candidate(db, candidate_id, user)
-    items = list_attachments(db, candidate.id)
+    try:
+        # Отключённый контур закрывает и чтение: иначе флаг выключал бы только
+        # загрузку, а уже загруженные файлы продолжали бы отдаваться.
+        ensure_enabled(settings)
+        items = list_attachments(db, candidate.id)
+    except AttachmentRejected as exc:
+        raise _reject(exc) from exc
     limits = AttachmentLimits.from_settings(settings)
     return CandidateAttachmentList(
         items=[CandidateAttachmentOut.model_validate(item) for item in items],
@@ -163,6 +173,7 @@ def download_attachment(
     request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings_from_request),
 ) -> StreamingResponse:
     """Отдать байты вложения как скачиваемый файл.
 
@@ -172,6 +183,7 @@ def download_attachment(
     """
     candidate = _candidate(db, candidate_id, user)
     try:
+        ensure_enabled(settings)
         attachment = get_attachment(db, candidate, _attachment_id(candidate_id, attachment_id))
         # Байты читаются здесь, а не внутри генератора: сессия запроса
         # закрывается до отправки тела ответа.
@@ -210,6 +222,7 @@ def remove_attachment(
     request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings_from_request),
 ) -> dict[str, bool]:
     """Мягкое удаление вложения с аудитом (байты остаются в резервных копиях)."""
     candidate = _candidate(db, candidate_id, user)
@@ -219,6 +232,7 @@ def remove_attachment(
             detail="Недостаточно прав для удаления вложений этого кандидата.",
         )
     try:
+        ensure_enabled(settings)
         attachment = get_attachment(db, candidate, _attachment_id(candidate_id, attachment_id))
         delete_attachment(
             db,
