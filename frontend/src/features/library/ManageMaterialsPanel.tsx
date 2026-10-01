@@ -1,3 +1,13 @@
+/**
+ * «Управление материалами» — the administrative side of the library.
+ *
+ * Creation, file import, versions and publication live here, behind the
+ * secondary entry point, so the library screen stays a reading room. The
+ * versioning rules are unchanged (draft → published → archived, immutable
+ * content, optimistic locking, audit); the rework adds the library fields
+ * (category, summary), the duplicate question on re-import and a readable
+ * draft preview before publication.
+ */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
@@ -6,6 +16,7 @@ import {
   archiveDocumentTemplateVersion,
   createDocumentTemplate,
   importDocumentTemplate,
+  importDocumentTemplateVersion,
   listDocumentTemplates,
   listTemplatePlaceholders,
   renameDocumentTemplate,
@@ -28,6 +39,7 @@ import {
   type CandidateStage,
   type DocumentTemplate,
   type DocumentTemplateVersion,
+  type ImportDuplicateDetail,
   type StageTone,
   type TemplatePlaceholder,
   type TemplateVersionState,
@@ -42,8 +54,10 @@ import {
   describeImportFile,
   friendlyPlaceholderName,
   kindLabel as kindLabelOf,
-} from "./vocabulary";
-import "./documentTemplates.css";
+} from "../document-templates/vocabulary";
+import { LIBRARY_CATEGORY_ORDER } from "./libraryCategories";
+import { renderMarkupPreview } from "./markupPreview";
+import "./library.css";
 
 const STATE_LABELS: Record<TemplateVersionState, string> = {
   draft: "Черновик",
@@ -61,25 +75,34 @@ interface ImportState {
   kind: string;
   scope: string;
   name: string;
+  category: string;
+  summary: string;
   file: File | null;
 }
 
-const STATUS_FILTER_OPTIONS = [
-  { value: "all", label: "Все шаблоны" },
-  { value: "published", label: "С опубликованной версией" },
-  { value: "unpublished", label: "Без опубликованной версии" },
-] as const;
+/** A draft freshly created by the import: shown for review before publish. */
+interface ImportedDraft {
+  template: DocumentTemplate;
+  body: string;
+  title: string;
+}
 
-type StatusFilter = (typeof STATUS_FILTER_OPTIONS)[number]["value"];
+type EditorState =
+  | {
+      mode: "create";
+      kind: string;
+      name: string;
+      scope: string;
+      category: string;
+      summary: string;
+      draft: VersionDraft;
+    }
+  | { mode: "version"; template: DocumentTemplate; draft: VersionDraft };
 
 interface VersionDraft {
   title: string;
   body: string;
 }
-
-type EditorState =
-  | { mode: "create"; kind: string; name: string; scope: string; draft: VersionDraft }
-  | { mode: "version"; template: DocumentTemplate; draft: VersionDraft };
 
 /** Опасные действия над версией — проводятся только после подтверждения. */
 type PendingVersionAction = {
@@ -88,12 +111,21 @@ type PendingVersionAction = {
   version: DocumentTemplateVersion;
 };
 
-function formatDateTime(value: string): string {
-  return new Date(value).toLocaleString("ru-RU");
+/** Re-import hit an existing material: ask, don't guess. */
+interface DuplicateQuestion {
+  file: File;
+  form: {
+    kind: string;
+    scope: string;
+    name: string;
+    category: string;
+    summary: string;
+  };
+  existing: ImportDuplicateDetail;
 }
 
-function hasActiveVersion(template: DocumentTemplate): boolean {
-  return template.versions.some((version) => version.state === "active");
+function formatDateTime(value: string): string {
+  return new Date(value).toLocaleString("ru-RU");
 }
 
 /**
@@ -119,7 +151,26 @@ function templateError(error: unknown): string {
   return errorText(error);
 }
 
-export function TemplatesPage() {
+/** Structured 409 payload of the duplicate question, if present. */
+function duplicateDetailOf(error: unknown): ImportDuplicateDetail | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const raw = error.rawDetail as { message?: unknown; existing?: unknown } | null;
+  if (
+    raw &&
+    typeof raw === "object" &&
+    typeof raw.message === "string" &&
+    raw.existing &&
+    typeof raw.existing === "object" &&
+    typeof (raw.existing as { id?: unknown }).id === "string"
+  ) {
+    return raw as ImportDuplicateDetail;
+  }
+  return null;
+}
+
+const emptyVersionDraft: VersionDraft = { title: "", body: "" };
+
+export function ManageMaterialsPanel({ onBack }: { onBack: () => void }) {
   const { pushToast } = useToast();
   const [templates, setTemplates] = useState<DocumentTemplate[] | null>(null);
   const [canManage, setCanManage] = useState(false);
@@ -133,8 +184,10 @@ export function TemplatesPage() {
   );
   const [pendingAction, setPendingAction] = useState<PendingVersionAction | null>(null);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "published" | "unpublished">("all");
   const [importer, setImporter] = useState<ImportState | null>(null);
+  const [importedDraft, setImportedDraft] = useState<ImportedDraft | null>(null);
+  const [duplicate, setDuplicate] = useState<DuplicateQuestion | null>(null);
 
   const load = useCallback(async () => {
     setLoadError("");
@@ -175,12 +228,48 @@ export function TemplatesPage() {
     }
   };
 
+  const submitImport = (state: ImportState, forceNew: boolean) => {
+    if (!state.file) return;
+    setBusy(true);
+    importDocumentTemplate({
+      kind: state.kind,
+      scope: state.scope,
+      name: state.name,
+      category: state.category,
+      summary: state.summary,
+      forceNew,
+      file: state.file,
+    })
+      .then(async (created) => {
+        const version = created.versions[created.versions.length - 1];
+        setImporter(null);
+        setImportedDraft({
+          template: created,
+          title: version?.title ?? created.name,
+          body: version?.body ?? "",
+        });
+        pushToast("success", "Черновик загружен из файла — проверьте текст перед публикацией");
+        await load();
+      })
+      .catch((error: unknown) => {
+        const question = duplicateDetailOf(error);
+        if (question && state.file) {
+          setDuplicate({ file: state.file, form: { ...state }, existing: question });
+          setImporter(null);
+        } else {
+          pushToast("danger", templateError(error));
+        }
+      })
+      .finally(() => setBusy(false));
+  };
+
   const visible = useMemo(() => {
     if (!templates) return [];
     const query = search.trim().toLowerCase();
     return templates.filter((template) => {
-      if (statusFilter === "published" && !hasActiveVersion(template)) return false;
-      if (statusFilter === "unpublished" && hasActiveVersion(template)) return false;
+      const hasActive = template.versions.some((version) => version.state === "active");
+      if (statusFilter === "published" && !hasActive) return false;
+      if (statusFilter === "unpublished" && hasActive) return false;
       if (!query) return true;
       const scopeLabel = template.scope
         ? (STAGE_LABELS[template.scope as CandidateStage] ?? template.scope)
@@ -189,6 +278,7 @@ export function TemplatesPage() {
         template.name,
         template.kind,
         kindLabelOf(template.kind),
+        libraryCategoryLabelSafe(template.category),
         scopeLabel,
         ...template.versions.map((version) => version.title),
       ]
@@ -201,9 +291,7 @@ export function TemplatesPage() {
   const filtersActive = search.trim() !== "" || statusFilter !== "all";
 
   if (forbidden) {
-    return (
-      <PermissionDeniedState />
-    );
+    return <PermissionDeniedState />;
   }
   if (!templates && loadError) {
     return <ErrorState onRetry={() => void load()} />;
@@ -213,15 +301,11 @@ export function TemplatesPage() {
   }
 
   return (
-    <section className="templates-page">
-      <p className="templates-intro">
-        Методическая база: чек-листы, вопросники, памятки и скрипты. Опубликованная
-        версия неизменяема — правка это новая версия. Материал можно загрузить из
-        текстового файла: на сервер уйдёт только проверенный текст черновика.
-        Документы кандидату не отправляются.
-      </p>
-
+    <section className="templates-page" aria-label="Управление материалами">
       <div className="templates-toolbar">
+        <Button variant="ghost" icon="chevron-left" onClick={onBack}>
+          Назад в библиотеку
+        </Button>
         <Button
           variant="primary"
           icon="plus"
@@ -229,33 +313,33 @@ export function TemplatesPage() {
           onClick={() =>
             setEditor({
               mode: "create",
-              kind: "offer",
+              kind: "document",
               name: "",
               scope: "",
-              draft: { title: "", body: "" },
+              category: "",
+              summary: "",
+              draft: { ...emptyVersionDraft },
             })
           }
         >
-          Новый шаблон
+          Новый материал
         </Button>
         <Button
           variant="secondary"
           icon="file-text"
           disabled={!canManage || busy}
           onClick={() =>
-            setImporter({ kind: "checklist", scope: "", name: "", file: null })
+            setImporter({
+              kind: "checklist",
+              scope: "",
+              name: "",
+              category: "",
+              summary: "",
+              file: null,
+            })
           }
         >
           Загрузить из файла
-        </Button>
-        <Button
-          variant="ghost"
-          icon="table"
-          onClick={() => {
-            window.location.hash = "#/documents";
-          }}
-        >
-          Списки документов
         </Button>
         <span className="template-meta">
           {canManage
@@ -266,7 +350,7 @@ export function TemplatesPage() {
 
       {templates.length > 0 && (
         <div className="templates-filters">
-          <Field label="Поиск шаблона">
+          <Field label="Поиск материала">
             {(id, describedBy) => (
               <TextInput
                 id={id}
@@ -284,13 +368,13 @@ export function TemplatesPage() {
                 id={id}
                 aria-describedby={describedBy}
                 value={statusFilter}
-                onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
+                onChange={(event) =>
+                  setStatusFilter(event.target.value as "all" | "published" | "unpublished")
+                }
               >
-                {STATUS_FILTER_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
+                <option value="all">Все материалы</option>
+                <option value="published">С опубликованной версией</option>
+                <option value="unpublished">Без опубликованной версии</option>
               </SelectInput>
             )}
           </Field>
@@ -305,8 +389,8 @@ export function TemplatesPage() {
       {templates.length === 0 && (
         <EmptyState
           icon="file-text"
-          title="Шаблонов пока нет"
-          description="Создайте шаблон вручную или загрузите готовый материал из файла — после публикации версии шаблон станет доступен в карточках кандидатов."
+          title="Материалов пока нет"
+          description="Создайте материал вручную или загрузите готовый текст из файла — после публикации версии он появится в библиотеке для всех сотрудников."
           action={
             canManage && (
               <Button
@@ -315,14 +399,16 @@ export function TemplatesPage() {
                 onClick={() =>
                   setEditor({
                     mode: "create",
-                    kind: "offer",
+                    kind: "document",
                     name: "",
                     scope: "",
-                    draft: { title: "", body: "" },
+                    category: "",
+                    summary: "",
+                    draft: { ...emptyVersionDraft },
                   })
                 }
               >
-                Создать первый шаблон
+                Создать первый материал
               </Button>
             )
           }
@@ -347,11 +433,13 @@ export function TemplatesPage() {
                 <h2>{template.name}</h2>
                 <p className="template-meta">
                   {kindLabelOf(template.kind)} ·{" "}
+                  {libraryCategoryLabelSafe(template.category)} ·{" "}
                   {template.scope
                     ? (STAGE_LABELS[template.scope as CandidateStage] ?? template.scope)
                     : "Все этапы"}{" "}
                   · ревизия {template.revision} · версий {template.versions.length}
                 </p>
+                {template.summary && <p className="template-summary">{template.summary}</p>}
                 {REVIEW_KINDS.has(template.kind) && (
                   <p className="template-review-note" role="note">
                     Правовая форма: перед использованием проверьте, что текст
@@ -431,7 +519,9 @@ export function TemplatesPage() {
 
             <details>
               <summary>Текст последней версии</summary>
-              <pre className="template-body">{latest?.body ?? ""}</pre>
+              <div className="template-body-preview">
+                {renderMarkupPreview(latest?.body ?? "")}
+              </div>
             </details>
           </article>
         );
@@ -460,22 +550,115 @@ export function TemplatesPage() {
           busy={busy}
           onChange={setImporter}
           onCancel={() => setImporter(null)}
-          onSubmit={() => {
-            const file = importer.file;
-            if (!file) return;
-            void run(
-              () =>
-                importDocumentTemplate({
-                  kind: importer.kind,
-                  scope: importer.scope,
-                  name: importer.name,
-                  file,
-                }),
-              "Шаблон загружен из файла (черновик) — проверьте текст и опубликуйте",
-            );
-            setImporter(null);
-          }}
+          onSubmit={() => submitImport(importer, false)}
         />
+      )}
+
+      {importedDraft && (
+        <Modal
+          open
+          size="lg"
+          onClose={() => setImportedDraft(null)}
+          title="Черновик из файла: проверьте текст"
+          description="Так материал увидят сотрудники после публикации. Пока версия — черновик, в библиотеке её нет."
+        >
+          <div className="template-body-preview">
+            {renderMarkupPreview(importedDraft.body)}
+          </div>
+          <div className="template-actions">
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={() => {
+                const draft = importedDraft;
+                setImportedDraft(null);
+                void run(
+                  () =>
+                    activateDocumentTemplateVersion(
+                      draft.template.id,
+                      draft.template.versions[draft.template.versions.length - 1].id,
+                      draft.template.revision,
+                    ),
+                  "Материал опубликован и появился в библиотеке",
+                );
+              }}
+            >
+              Опубликовать
+            </Button>
+            <Button variant="secondary" onClick={() => setImportedDraft(null)}>
+              Проверю позже
+            </Button>
+          </div>
+        </Modal>
+      )}
+
+      {duplicate && (
+        <Modal
+          open
+          onClose={() => setDuplicate(null)}
+          title={`Материал «${duplicate.existing.existing.name}» уже существует`}
+          description={`${duplicate.existing.message} Файл можно добавить новой версией существующего материала — прежние версии останутся в истории.`}
+        >
+          <div className="template-actions">
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={() => {
+                const question = duplicate;
+                setDuplicate(null);
+                setBusy(true);
+                importDocumentTemplateVersion(question.existing.existing.id, {
+                  expected_revision: question.existing.existing.revision,
+                  file: question.file,
+                })
+                  .then(async () => {
+                    pushToast(
+                      "success",
+                      "Добавлена новая версия существующего материала (черновик)",
+                    );
+                    await load();
+                  })
+                  .catch((error: unknown) => {
+                    pushToast("danger", templateError(error));
+                  })
+                  .finally(() => setBusy(false));
+              }}
+            >
+              Новая версия существующего
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => {
+                const question = duplicate;
+                setDuplicate(null);
+                setBusy(true);
+                importDocumentTemplate({
+                  kind: question.form.kind,
+                  scope: question.form.scope,
+                  name: question.form.name,
+                  category: question.form.category,
+                  summary: question.form.summary,
+                  forceNew: true,
+                  file: question.file,
+                })
+                  .then(async () => {
+                    pushToast("success", "Создан отдельный материал (черновик)");
+                    await load();
+                  })
+                  .catch((error: unknown) => {
+                    pushToast("danger", templateError(error));
+                  })
+                  .finally(() => setBusy(false));
+              }}
+            >
+              Отдельный материал
+            </Button>
+            <Button variant="ghost" disabled={busy} onClick={() => setDuplicate(null)}>
+              Отмена
+            </Button>
+          </div>
+        </Modal>
       )}
 
       {editor && (
@@ -493,10 +676,12 @@ export function TemplatesPage() {
                     kind: editor.kind,
                     scope: editor.scope || null,
                     name: editor.name,
+                    category: editor.category,
+                    summary: editor.summary,
                     title: editor.draft.title,
                     body: editor.draft.body,
                   }),
-                "Шаблон создан (черновик)",
+                "Материал создан (черновик)",
               );
               return;
             }
@@ -517,7 +702,7 @@ export function TemplatesPage() {
         <Modal
           open
           onClose={() => setRename(null)}
-          title="Переименовать шаблон"
+          title="Переименовать материал"
           description="Имя меняется отдельно от версий и не влияет на созданные документы: они хранят имя на момент создания."
         >
           <form
@@ -530,7 +715,7 @@ export function TemplatesPage() {
                     name: rename.name,
                     expected_revision: rename.template.revision,
                   }),
-                "Шаблон переименован",
+                "Материал переименован",
               );
             }}
           >
@@ -590,14 +775,19 @@ export function TemplatesPage() {
           }
           description={
             pendingAction.operation === "activate"
-              ? `Сотрудники будут видеть текст версии ${pendingAction.version.number}. Текущая опубликованная версия этого шаблона, если она есть, автоматически уйдёт в архив.`
-              : `Версия ${pendingAction.version.number} перестанет публиковаться для новых документов. Если она опубликована, шаблон останется без опубликованной версии, пока вы не опубликуете другую.`
+              ? `Сотрудники будут видеть текст версии ${pendingAction.version.number}. Текущая опубликованная версия этого материала, если она есть, автоматически уйдёт в архив.`
+              : `Версия ${pendingAction.version.number} перестанет публиковаться для новых документов. Если она опубликована, материал останется без опубликованной версии, пока вы не опубликуете другую.`
           }
           confirmLabel={pendingAction.operation === "activate" ? "Опубликовать" : "В архив"}
         />
       )}
     </section>
   );
+}
+
+function libraryCategoryLabelSafe(key: string): string {
+  if (!key) return "Без категории";
+  return LIBRARY_CATEGORY_ORDER.find((option) => option.value === key)?.label ?? key;
 }
 
 function VersionRow({
@@ -672,7 +862,7 @@ function TemplateImporter({
     <Modal
       open
       onClose={onCancel}
-      title="Загрузить шаблон из файла"
+      title="Загрузить материал из файла"
       description="Из файла создаётся черновик: сначала проверьте текст, потом опубликуйте версию."
     >
       <form
@@ -682,7 +872,11 @@ function TemplateImporter({
           onSubmit();
         }}
       >
-        <Field label="Файл" required hint={`${TEMPLATE_IMPORT_EXTENSIONS.join(", ")}, до ${TEMPLATE_IMPORT_MAX_BYTES / 1024} КБ, UTF-8`}>
+        <Field
+          label="Файл"
+          required
+          hint={`${TEMPLATE_IMPORT_EXTENSIONS.join(", ")}, до ${TEMPLATE_IMPORT_MAX_BYTES / 1024} КБ, UTF-8`}
+        >
           {(id, describedBy) => (
             <input
               id={id}
@@ -719,6 +913,22 @@ function TemplateImporter({
             </SelectInput>
           )}
         </Field>
+        <Field label="Категория в библиотеке" required>
+          {(id) => (
+            <SelectInput
+              id={id}
+              value={state.category}
+              onChange={(event) => onChange({ ...state, category: event.target.value })}
+            >
+              <option value="">Без категории</option>
+              {LIBRARY_CATEGORY_ORDER.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </SelectInput>
+          )}
+        </Field>
         <Field label="Название" hint="Если оставить пустым, возьмём первую строку файла.">
           {(id, describedBy) => (
             <TextInput
@@ -727,6 +937,20 @@ function TemplateImporter({
               maxLength={120}
               value={state.name}
               onChange={(event) => onChange({ ...state, name: event.target.value })}
+            />
+          )}
+        </Field>
+        <Field
+          label="Назначение (одна строка на карточке)"
+          hint="Например: «Что уточнить в первом звонке и как договориться о встрече»."
+        >
+          {(id, describedBy) => (
+            <TextInput
+              id={id}
+              aria-describedby={describedBy}
+              maxLength={300}
+              value={state.summary}
+              onChange={(event) => onChange({ ...state, summary: event.target.value })}
             />
           )}
         </Field>
@@ -748,9 +972,8 @@ function TemplateImporter({
         </Field>
         <p className="template-meta">
           Файл остаётся на вашем компьютере: на сервер уходит только текст, проверенный
-          на размер, кодировку и безопасность. Персональные данные кандидатов из
-          методички в шаблон не попадут — вставляйте их через поля «ФИО кандидата»
-          и другие подстановки.
+          на размер, кодировку и безопасность. Персональные данные кандидатов в шаблон
+          не попадут — вставляйте их через поля «ФИО кандидата» и другие подстановки.
         </p>
         <p className="template-meta">{TEMPLATE_IMPORT_PDF_NOTE}</p>
         <div className="template-actions">
@@ -795,7 +1018,7 @@ function TemplateEditor({
       onClose={onCancel}
       size="lg"
       title={
-        editor.mode === "create" ? "Новый шаблон" : `Новая версия: ${editor.template.name}`
+        editor.mode === "create" ? "Новый материал" : `Новая версия: ${editor.template.name}`
       }
       description="Черновик не виден сотрудникам, пока вы не опубликуете версию."
     >
@@ -823,6 +1046,22 @@ function TemplateEditor({
                 </SelectInput>
               )}
             </Field>
+            <Field label="Категория в библиотеке" required>
+              {(id) => (
+                <SelectInput
+                  id={id}
+                  value={editor.category}
+                  onChange={(e) => onChange({ ...editor, category: e.target.value })}
+                >
+                  <option value="">Без категории</option>
+                  {LIBRARY_CATEGORY_ORDER.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </SelectInput>
+              )}
+            </Field>
             <Field label="Название" required>
               {(id) => (
                 <TextInput
@@ -831,6 +1070,20 @@ function TemplateEditor({
                   maxLength={120}
                   value={editor.name}
                   onChange={(e) => onChange({ ...editor, name: e.target.value })}
+                />
+              )}
+            </Field>
+            <Field
+              label="Назначение (одна строка на карточке)"
+              hint="Например: «Структурированные вопросы с критериями оценки ответов»."
+            >
+              {(id, describedBy) => (
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  maxLength={300}
+                  value={editor.summary}
+                  onChange={(e) => onChange({ ...editor, summary: e.target.value })}
                 />
               )}
             </Field>
@@ -868,7 +1121,7 @@ function TemplateEditor({
         </Field>
 
         <Field
-          label="Текст шаблона"
+          label="Текст материала"
           required
           hint="Разрешены абзацы, список «- » и **полужирный**. Значения плейсхолдеров экранируются."
         >
@@ -900,10 +1153,10 @@ function TemplateEditor({
           ))}
         </div>
         <details className="template-token-syntax">
-          <summary>Как это выглядит в тексте шаблона</summary>
+          <summary>Как это выглядит в тексте материала</summary>
           <p className="template-meta">
             Подстановки в тексте записываются в двойных фигурных скобках:{" "}
-            <code>{"{{ candidate.full_name }}"}</code>, <code>{"{{ system.date }}"}</code>.
+            <code>{`{{ candidate.full_name }}`}</code>, <code>{`{{ system.date }}`}</code>.
             Обычный текст, списки через «- » и выделение через **жирный** тоже
             поддерживаются. HTML и произвольные выражения — нет: это защищает
             персональные данные.

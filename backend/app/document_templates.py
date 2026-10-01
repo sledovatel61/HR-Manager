@@ -235,6 +235,8 @@ def template_out(db: Session, row: DocumentTemplate, *, manage: bool) -> Templat
         kind=row.kind,
         scope=row.scope,
         name=row.name,
+        category=row.category,
+        summary=row.summary,
         revision=row.revision,
         author_id=row.author_id,
         created_at=row.created_at,
@@ -309,6 +311,8 @@ def create_template(
         kind=payload.kind,
         scope=payload.scope.value if payload.scope else "",
         name=payload.name,
+        category=payload.category,
+        summary=payload.summary,
         author_id=user.id,
     )
     db.add(template)
@@ -468,6 +472,96 @@ def _placeholders_of(body: str) -> list[str]:
     from app.template_render import extract_placeholders
 
     return extract_placeholders(body)
+
+
+# --- Duplicate matching for imports ------------------------------------------
+
+
+def find_same_name_template(
+    db: Session, *, kind: str, name: str, exclude_id: UUID | None = None
+) -> DocumentTemplate | None:
+    """The existing template the import may collide with, or ``None``.
+
+    Matching is deliberately conservative so ordinary work never triggers it:
+    same controlled ``kind`` and case-insensitively equal display name. The
+    case folding happens in Python (not SQL ``lower()``, which is ASCII-only
+    on SQLite and locale-dependent on PostgreSQL), so the same names match on
+    both engines. A hit is *not* an error — the router turns it into an
+    explicit question («новая версия существующего материала» or «отдельный
+    материал»), so a re-import never quietly breeds look-alike templates.
+    """
+    normalized = " ".join((name or "").split()).lower()
+    if not normalized:
+        return None
+    query = select(DocumentTemplate).where(DocumentTemplate.kind == kind)
+    if exclude_id is not None:
+        query = query.where(DocumentTemplate.id != exclude_id)
+    candidates = db.scalars(query.order_by(DocumentTemplate.created_at)).all()
+    for candidate in candidates:
+        if " ".join(candidate.name.split()).lower() == normalized:
+            return candidate
+    return None
+
+
+def add_imported_version(
+    db: Session,
+    user: User,
+    template_id: UUID,
+    *,
+    title: str,
+    body: str,
+    expected_revision: int,
+    origin: str,
+) -> TemplateOut:
+    """Create a new draft version from an imported file (explicit user choice).
+
+    Reuses the same locking, version numbering and audit path as a manual
+    «Новая версия», so concurrent edits answer 409 exactly like everywhere
+    else.
+    """
+    template = _parent(db, template_id, expected_revision)
+    count = db.scalar(
+        select(func.count())
+        .select_from(DocumentTemplateVersion)
+        .where(DocumentTemplateVersion.template_id == template.id)
+    )
+    if (count or 0) >= MAX_VERSIONS_PER_TEMPLATE:
+        raise HTTPException(
+            409,
+            f"Достигнут предел {MAX_VERSIONS_PER_TEMPLATE} версий. Архивируйте шаблон "
+            "и создайте новый.",
+        )
+    number = (
+        db.scalar(
+            select(func.max(DocumentTemplateVersion.number)).where(
+                DocumentTemplateVersion.template_id == template.id
+            )
+        )
+        or 0
+    ) + 1
+    version = DocumentTemplateVersion(
+        template_id=template.id,
+        number=number,
+        state="draft",
+        title=title,
+        body=body,
+        placeholders=_placeholders_of(body),
+        author_id=user.id,
+    )
+    db.add(version)
+    db.flush()
+    record_event(
+        db,
+        AuditAction.TEMPLATE_VERSION_CREATED,
+        actor=user,
+        details=(
+            f"template={template.id} version={version.id} number={number} "
+            f"kind={template.kind} {origin}"
+        ),
+        commit=False,
+    )
+    db.commit()
+    return template_out(db, template, manage=True)
 
 
 # --- Rendering and generated documents ---------------------------------------

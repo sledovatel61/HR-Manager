@@ -1039,6 +1039,10 @@ export interface DocumentTemplate {
   /** Empty string = available for every stage, otherwise a CandidateStage. */
   scope: string;
   name: string;
+  /** Library category key (closed dictionary) — «Библиотека HR» filter. */
+  category: string;
+  /** One-sentence purpose shown on the library card. */
+  summary: string;
   /** Optimistic counter; every rename or new version bumps it. */
   revision: number;
   author_id: string;
@@ -1057,6 +1061,72 @@ export interface DocumentTemplates {
 export interface TemplatePlaceholder {
   token: string;
   description: string;
+}
+
+/** Structured 409 payload of a re-import hitting an existing material. */
+export interface ImportDuplicateDetail {
+  message: string;
+  existing: {
+    id: string;
+    name: string;
+    kind: string;
+    revision: number;
+  };
+}
+
+// --- «Библиотека HR»: read-only material screens ------------------------------
+
+/** Closed-dictionary category key; the empty string means uncategorized. */
+export type LibraryCategoryKey =
+  | ""
+  | "interview"
+  | "candidate_docs"
+  | "calls"
+  | "onboarding"
+  | "memos"
+  | "position";
+
+export interface LibraryCategory {
+  key: string;
+  label: string;
+}
+
+/** Card of the library main screen (no content — only card fields). */
+export interface LibraryMaterial {
+  id: string;
+  name: string;
+  kind: string;
+  category: string;
+  summary: string;
+  scope: string;
+  version_id: string;
+  version_number: number;
+  title: string;
+  published_at: string | null;
+  has_placeholders: boolean;
+}
+
+export interface LibraryMaterials {
+  items: LibraryMaterial[];
+  categories: LibraryCategory[];
+  /** False for HR without the document_lists_manage grant. */
+  can_manage: boolean;
+}
+
+/** Human words for one placeholder token used by a material. */
+export interface LibraryPlaceholderHint {
+  token: string;
+  hint: string;
+}
+
+/** Read-only view of one published material with a safe demo rendering. */
+export interface LibraryMaterialDetail extends LibraryMaterial {
+  body: string;
+  body_html: string;
+  body_text: string;
+  placeholders: string[];
+  placeholder_hints: LibraryPlaceholderHint[];
+  updated_at: string;
 }
 
 export interface TemplateVersionInput {
