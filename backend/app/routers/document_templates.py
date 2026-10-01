@@ -153,9 +153,7 @@ async def import_template(
         if existing is not None:
             # Human-readable stage for the message; the structured `existing`
             # keeps the raw key (the SPA renders it with its own labels).
-            scope_note = (
-                f" (этап: {stage_label(existing.scope)})" if existing.scope else ""
-            )
+            scope_note = f" (этап: {stage_label(existing.scope)})" if existing.scope else ""
             raise HTTPException(
                 409,
                 {
