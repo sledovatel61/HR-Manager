@@ -168,6 +168,53 @@
   text-align: right;
 }
 
+/* ---------- Active filter chips ---------- */
+
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 10px;
+  border-radius: var(--chip-radius);
+  border: 1px solid var(--accent-subtle-border);
+  background: var(--accent-subtle);
+  color: var(--accent-default);
+  font-size: var(--text-size-xs);
+  font-weight: var(--font-weight-medium);
+}
+
+.filter-chip-label {
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-regular);
+}
+
+.filter-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.filter-chip-remove:hover {
+  background: var(--surface-pressed);
+  color: var(--text-primary);
+}
+
 /* ---------- Pagination ---------- */
 
 .pagination {
