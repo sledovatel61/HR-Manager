@@ -142,9 +142,11 @@
     radial-gradient(44vw 44vw at 38% 108%, var(--blob-3), transparent 70%);
 }
 
-/* Интерфейс всегда выше подложки. */
+/* Интерфейс всегда выше подложки. z-index работает и без position, потому что
+   это flex-элемент (CSS Flexbox: z-index applies to flex items) — а position
+   здесь задавать нельзя: правило перебило бы position: sticky у .sidebar в
+   продакшен-сборке (порядок файлов там другой, специфичность равная). */
 .workspace > * {
-  position: relative;
   z-index: 1;
 }
 
