@@ -3,11 +3,12 @@
   max-width: 1100px;
 }
 .document-panel {
-  border: 1px solid var(--border-default);
-  border-radius: 10px;
-  padding: 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
   margin: 16px 0;
   background: var(--surface-raised);
+  box-shadow: var(--card-shadow);
 }
 .document-form {
   display: grid;
@@ -23,11 +24,12 @@
 .document-form select,
 .document-form textarea {
   border: 1px solid var(--border-strong);
-  border-radius: 5px;
+  border-radius: var(--btn-radius);
   padding: 9px;
   font: inherit;
   color: inherit;
-  background: white;
+  /* Не white: в тёмной теме белое поле на тёмном фоне. */
+  background: var(--surface-app);
 }
 .document-form label:has(input[type="checkbox"]) {
   display: flex;
@@ -43,7 +45,7 @@
 .document-panel button {
   padding: 8px 12px;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: var(--btn-radius);
   background: var(--status-success-bg);
   color: var(--status-success-fg);
   cursor: pointer;
@@ -64,6 +66,12 @@
   padding: 10px;
   border-bottom: 1px solid var(--border-subtle);
   text-align: left;
+}
+
+.document-table th {
+  background: var(--table-head-bg);
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
 }
 .document-panel pre {
   white-space: pre-wrap;

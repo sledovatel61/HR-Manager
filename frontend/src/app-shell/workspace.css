@@ -8,6 +8,15 @@
 .sidebar {
   width: var(--sidebar-width);
   flex-shrink: 0;
+  /* §6.2 промпта: в мокауте сайдбар sticky на 100vh. В продовой компоновке
+     это безопасно — на <=1024px он не уезжает за экран, а сворачивается в
+     колонку иконок. align-self отключает растягивание по высоте контента,
+     иначе sticky не срабатывает (элемент равен контейнеру). */
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow-y: auto;
   background: var(--surface-sidebar);
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
