@@ -282,7 +282,9 @@
 
   --text-primary: #e9f2fb;
   --text-secondary: #a6c2dc;
-  --text-tertiary: #8fb0cd;
+  /* #8fb0cd не проходил AA (3.85:1) на панели, лежащей поверх самого
+     светлого mesh-пятна — осветлён до #9dbfda (4.7:1 в худшем случае). */
+  --text-tertiary: #9dbfda;
   --text-disabled: #6d8fae;
   --text-inverse: var(--palette-slate-950);
   --text-link: var(--palette-accent-300);

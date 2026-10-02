@@ -1,191 +1,184 @@
-# План реализации победителя (один PR)
+# План внедрения: Bento Showcase, палитра «Лазурь» (`bento-arctic.html`)
 
-Рядом с этим файлом — три мокапа, которых **нет у других агентов**: направление №5 из
-промпта и две авторские темы, собранные после ресерча трендов 2026 и открытых китов.
-Каждый мокап — **один самодостаточный HTML-файл** (inline CSS + JS + SVG, без сборщиков и
-зависимостей). Открываются двойным кликом, работают офлайн; шрифт Inter подгружается с CDN
-только как «украшение» — есть переключатель «Системные шрифты», дизайн деградирует корректно.
+**Статус:** выполняется. Ветка `arena/01a0fb7d-hr-manager`, PR → `main`.
+**Источник визуала:** `design/mockups/bento-arctic.html` (акцент `#0b6bcb`).
+**Оценка пригодности:** `design-review/BENTO_SHOWCASE_REVIEW.md`.
+**Промпт внедрения:** `prompts/BENTO_ARCTIC_IMPLEMENTATION_PROMPT.md`.
+**Требования заказчика:** `design/mockups/IMPLEMENTATION_BACKLOG.md`.
 
-| Файл | Направление | Откуда идея | Характер |
-| --- | --- | --- | --- |
-| `bold-editorial.html` | **№5 Bold Editorial** | промпт §4.5 + практика нео-брутализма[5](https://retroui.dev/) | 2px-бордеры, жёсткие тени-смещения, плоские насыщенные цвета, крупные заголовки |
-| `clay-tactile.html` | **Clay Tactile** (авторская) | тренд 2026 «3D tactile & material» / claymorphism[2](https://pixso.net/articles/7-ui-ux-design-trends/)[1](https://uidesignprompts.com/prompts/claymorphism)[4](https://www.typeui.sh/design-skills/claymorphism) | «вылепленные» поверхности, экструзия, толстая цветная «губа» у кнопок, продавливание при нажатии |
-| `blueprint-cad.html` | **Blueprint CAD** (авторская) | инженерные эстетики: Blueprint/CAD, Braun–Dieter Rams, btop Meters[2](https://github.com/LeviTrillfonix/retro-design-system) + «тихий хром и таблицы вместо стен графиков»[2](https://adminlte.io/blog/saas-dashboard-design-examples/) | миллиметровка на канвасе, хайрлайн-панели, моно-лейблы, угловые засечки рамки, штамп листа |
+> Предыдущая версия этого файла описывала направления №5 Bold Editorial,
+> Clay Tactile и Blueprint CAD. Заказчик выбрал Bento («этот мокап лучший из
+> 12»), поэтому план переписан под победителя. Старые направления остаются в
+> истории git.
 
-> Первая попытка (№1 Calm Precision, №2 Warm Soft, №4 Bento Showcase) убрана в
-> `design/_archive-agent4-1-2-4/` — те направления уже сделали другие агенты.
-> План по ним: `design/_archive-agent4-1-2-4/IMPLEMENTATION_PLAN-1-2-4.md`.
+---
 
-## Почему именно такие две авторские темы
+## 0. Что уже сделано
 
-- **Clay Tactile** — единственный крупный тренд 2026, которого нет в шестёрке направлений
-  промпта: «3D tactile & material design» с clay-экструзией — мягкая, «человечная»
-  материальность[2](https://pixso.net/articles/7-ui-ux-design-trends/). Ключевая механика —
-  **нулевой блюр и сплощённая тень-смещение** (`0 6px 0 0`) плюс продавливание при нажатии[1](https://uidesignprompts.com/prompts/claymorphism).
-  Это не «ещё одно тёплое мягкое» (№2): Warm Soft — плоское и воздушное, Clay — объёмное,
-  насыщенное, с крупными пилюльными контролами и физикой нажатия.
-- **Blueprint CAD** — ход, которого нет ни у одного из шести направлений: интерфейс как
-  **инженерный чертёж**. Для HR-Manager это не случайная эстетика, а попадание в контекст
-  (завод: ЧПУ, РЭА, цеха, график выхода). Миллиметровка, моно-лейблы, хайрлайны, засечки
-  рамки и штамп листа дают максимальную запоминаемость при почти нулевой декоративности —
-  то есть не конфликтуют с плотными таблицами[2](https://adminlte.io/blog/saas-dashboard-design-examples/).
+| Шаг | Коммит | Содержание |
+| --- | --- | --- |
+| 1 | `510699d` | Палитра «Лазурь» перенесена в `frontend/src/design-system/tokens.css` |
+| 2 | `ef7b042` | Новый файл `design-system/components/bentoSurface.css` (mesh, стекло, spring, `--cat-*`) |
+| 3 | `56051c1` | Материал Bento в компонентах design-system |
+| 4 | `1c6213f` | Шелл и экраны; 29 несуществующих токенов заменены на актуальные |
+| 5 | `b335f29` | Требование заказчика: фильтр «Должность» (бэкенд + список + воронка) |
+| 6 | `efcec0b` | Требование заказчика: экран «Моя очередь» |
 
-От Liquid Glass (главный тренд 2026[3](https://www.uxstudioteam.com/ux-blog/ui-trends-2019)) и
-Bento-grid[4](https://theplusaddons.com/blog/web-design-trends-2026/) отказался сознательно:
-стекло уже занято направлением №4, два стеклянных мокапа в одной подборке выглядят дублями.
+---
 
-## Что уже есть в каждом мокапе
+## 1. Палитра «Лазурь» (фактические значения после переноса)
 
-8 экранов (Моя очередь, Кандидаты, Воронка, Календарь, Аналитика, Списки документов, Шаблоны
-и материалы, Настройки) + мастер «Новый список документов»; карточка-кандидата drawer с 5
-вкладками; командная палитра (`Ctrl/Cmd+K`); скелетоны со stagger-появлением; тосты;
-drag-and-drop в воронке; анимированные счётчики KPI и спарклайны; переключатели **темы**,
-**плотности** и **системных шрифтов**; tabular-nums; видимый focus-ring.
-Горячие клавиши: `Ctrl/Cmd+K` — палитра, `Ctrl/Cmd+\` — свернуть сайдбар, `Esc` — закрыть.
+### Сырые шкалы
 
-## А. Таблица токенов (semantic → новое значение)
+| Токен | Значение |
+| --- | --- |
+| `--palette-slate-25…950` | `#fbfdff #f2f7fd #e5eef9 #d8e5f5 #c5d9ef #9fbddc #6f95bb #4e6b85 #3a5570 #24425c #14293c #0b1f33 #061423` |
+| `--palette-accent-50/100/200/300/400/500/600/700/900` | `#e8f2fd #cadffa #bae6fd #7dd3fc #38bdf8 #0b6bcb #0369a1 #075985 #08365c` |
 
-Имена зеркалят `frontend/src/design-system/tokens.css`, поэтому PR = подмена значений в
-`:root` / `[data-theme="dark"]` / `[data-density]`.
+`--palette-indigo-*`, `teal`, `amber`, `red`, `violet`, `cyan`, `rose` **не
+тронуты**: они обслуживают статусы. Акцент построен только из
+`--palette-accent-*` — иначе будущий компонент с `var(--palette-indigo-500)`
+получил бы индиго вместо акцента темы (P1 из ревью, §2.4).
 
-### №5 Bold Editorial
+### Семантика
 
 | Токен | light | dark |
 | --- | --- | --- |
-| `--surface-canvas` | `#f4f1e8` | `#101010` |
-| `--surface-app` / `--surface-raised` | `#ffffff` | `#1a1a1a` |
-| `--surface-sunken` | `#efe9db` | `#141414` |
-| `--surface-sidebar` | `#ffffff` | `#161616` |
-| `--surface-selected` | `#ffe36b` | `#3d2f00` |
-| `--text-primary` / `--secondary` / `--tertiary` | `#111111` / `#3f3f46` / `#52525b` | `#fafafa` / `#d4d4d8` / `#a1a1aa` |
-| `--border-subtle` / `--default` / `--strong` | `rgba(17,17,17,.22)` / `#111111` / `#111111` | `rgba(255,255,255,.26)` / `#ffffff` / `#ffffff` |
-| `--accent-default` / `--hover` / `--pressed` | `#d92d20` / `#b91c1c` / `#8f1414` | `#ffd400` / `#ffe14d` / `#fff08a` |
-| `--accent-subtle` | `#fde8e6` | `#3d2f00` |
-| `--text-on-accent` | `#ffffff` | `#111111` (инверсия) |
-| `--status-success-fg` / `-bg` | `#065f46` / `#86e3b8` | `#86e3b8` / `#07503c` |
-| `--status-warning-fg` / `-bg` | `#6b3d05` / `#ffd166` | `#ffd166` / `#5e3a05` |
-| `--status-danger-fg` / `-bg` | `#7a1414` / `#ff9d94` | `#ff9d94` / `#6d1414` |
-| `--status-info-fg` / `-bg` | `#12386e` / `#a9c9f5` | `#a9c9f5` / `#123a72` |
-| `--status-indigo-fg` / `-bg` | `#241f8f` / `#b3b0f7` | `#b3b0f7` / `#211d80` |
-| `--status-violet-fg` / `-bg` | `#40247a` / `#cdb4f5` | `#cdb4f5` / `#3b2274` |
-| `--status-teal-fg` / `-bg` | `#0a4f45` / `#86ded0` | `#86ded0` / `#08453d` |
-| `--status-neutral-fg` / `-bg` | `#2b2b31` / `#e2dccd` | `#d4d4d8` / `#2b2b2b` |
-| `--radius-xs…xl` | `0/2/3/4/6px` | без изменений |
-| `--shadow-1…4` | `2/3/5/8px 2/3/5/8px 0 #111111` | то же, но `#ffffff` |
+| `--surface-canvas` | `#f2f7fd` | `#061423` |
+| `--surface-app` | `rgba(255,255,255,.78)` | `rgba(255,255,255,.06)` |
+| `--surface-raised` | `rgba(255,255,255,.86)` | `rgba(255,255,255,.09)` |
+| `--surface-sunken` | `rgba(11,31,51,.035)` | `rgba(255,255,255,.03)` |
+| `--surface-glass` | `rgba(255,255,255,.72)` | `rgba(255,255,255,.055)` |
+| `--surface-sidebar` | `var(--surface-glass)` | `rgba(255,255,255,.05)` |
+| `--text-primary` | `#0b1f33` | `#e9f2fb` |
+| `--text-secondary` | `#3a5570` | `#a6c2dc` |
+| `--text-tertiary` | `#4e6b85` | `#9dbfda` |
+| `--text-link` | `#0369a1` | `#7dd3fc` |
+| `--text-on-accent` | `#ffffff` | `#06263a` |
+| `--text-sidebar` | `var(--text-secondary)` | `var(--text-secondary)` |
+| `--border-subtle/-default/-strong` | `rgba(11,31,51,.09/.14/.24)` | `rgba(255,255,255,.09/.14/.24)` |
+| `--accent-default/-hover/-pressed` | `#0b6bcb / #0369a1 / #075985` | `#38bdf8 / #7dd3fc / #bae6fd` |
+| `--accent-gradient` | `linear-gradient(135deg,#075985,#0b6bcb 55%,#0284c7)` | `linear-gradient(135deg,#7dd3fc,#38bdf8 55%,#22d3ee)` |
+| `--accent-gradient-soft` | `linear-gradient(135deg,#075985,#0b6bcb)` | `linear-gradient(135deg,#38bdf8,#0ea5e9)` |
+| `--shadow-1…4` | тонированные `rgba(8,45,80,…)` | `rgba(0,0,0,…)` |
+| `--easing-spring` | `cubic-bezier(.34,1.56,.64,1)` | без изменений |
 
-Дополнительно: `--font-weight-bold: 800`, `--text-size-3xl: 42px`, маркерная подложка под H1
-(`linear-gradient(180deg, transparent 62%, #ffd400 62%)`), толщина рамок 2–3px во всех
-компонентах.
+### Новые токены: разделение
 
-### Clay Tactile
+**В `tokens.css`** (семантика, нужна компонентам): `--surface-glass`,
+`--accent-gradient`, `--accent-gradient-soft`, `--glass-blur`,
+`--glass-saturate`, `--easing-spring`, `--palette-accent-*`.
 
-| Токен | light | dark |
+**В `bentoSurface.css`** (материал направления): `--blob-1…3`,
+`--mesh-opacity`, `--cat-*×6 тонов ×2`, `--card-radius/-padding/-shadow/
+-hover-shadow/-hover-transform`, `--btn-radius/-shadow/-primary-shadow`,
+`--chip-radius`, `--search-radius`, `--topbar-bg`, `--drawer-bg`, `--toast-bg`,
+`--table-head-bg`, `--skeleton-bg`, `--spark-color`, `--nav-*`,
+`--brand-mark-bg/-fg`, `--kpi-cols`, `--kpi-value-size`, `--dash-gap`.
+
+**Не перенесены сознательно** (в проде нет соответствующих элементов, иначе
+это были бы мёртвые переменные): `--avatar-1…6` (цвета аватара задаёт
+`Avatar.tsx` из статусных токенов), `--select-arrow` (нативный `<select>`),
+`--score-fill`, `--seg-on-*` (сегментированного контрола в проде нет),
+`--palette-radius`, `--palette-bg`, `--d`.
+
+**Имя подложки:** план №1–2–4 называл её `--surface-glass`, мокап использует
+`--card-bg`. Выбрано `--surface-glass` — оно продолжает нейминг
+`--surface-*`. Соответствие: `--card-bg` (мокап) = `--surface-glass` (прод).
+
+---
+
+## 2. Имена классов: решение по ревью §2.1
+
+Мокап остаётся источником визуала и не переименовывается. Правки шли в
+**боевой** CSS под те имена, которые реально рендерит React:
+
+| Прод (className) | Что сделано |
+| --- | --- |
+| `.field`, `.field-label`, `.field-hint`, `.field-error` | переписан `field.css` |
+| `.text-input` (+ `.is-invalid`), `.select-input` | переписан `field.css`, состояние ошибки покрыто |
+| `.tab-item` + `.is-active`, `.tab-count` | переписан `tabs.css` |
+| `.status-chip status-chip-{tone} status-chip-{size}` | переписан `statusChip.css` (радиус `--chip-radius`) |
+| `.avatar avatar-{sm,md,lg}` | размеры сохранены; `.avatar-sm` = 24px не сломан |
+| `.btn btn-{variant} btn-{size}`, `.btn-spinner`, `.btn-label` | переписан `button.css`; `.btn-label` — обычный span, отдельного правила не требует |
+| `.icon-btn icon-btn-{size} icon-btn-{variant}` + `.is-active` | переписан `button.css` |
+| `.kpi-strip`, `.kpi-card`, `.kpi-card-warning` | рерайт сетки в `analytics.css` (§6.1 промпта) |
+| `.tabs` | оставлен как есть ( underline-паттерн) |
+| `.toast-title` | **не существует в проде** — в `Toast.tsx` рендерится `.toast-message`; правило не добавлено |
+| `.avatar-md` | задаётся `avatar.css` (32px) |
+
+---
+
+## 3. Конфликты (ревью §2.2) — решение по каждому
+
+| Класс | Решение |
+| --- | --- |
+| `.table-wrap` | правило не затёрто: фон, рамка и скругление сохранены, добавлен материал карточки (`--card-radius`, `--card-shadow`) |
+| `.avatar` | базовые размеры не заданы; `.avatar-sm/md/lg` работают как раньше, добавлена только мягкая тень |
+| `.field` | `gap: var(--space-1)` (4px) — не изменён |
+| `.kpi-label` | размер `sm` → `xs`, цвет `secondary` → `tertiary` (осознанно: в Bento подпись — слабый элемент под крупным числом) |
+| `.kpi-value` | `--text-size-xl` → `var(--kpi-value-size)` = 30px |
+| `.muted` | `#8a94a8` → `var(--text-tertiary)` (серый не в тон палитре) |
+| `.sidebar` | стала стеклянной; `gap: var(--space-5)` сохранён, `height: 100vh` и `position: sticky` **не переносились** (в проде своя компоновка шелла) |
+| `.toast` | стекло + `--toast-bg`, радиус `lg`; дочерних `.toast-ico` в проде нет |
+| `.btn` | рамка `1px solid transparent` сохранена, добавлены радиус и мягкая тень; высоты — из `--control-height-*` |
+| `.btn-primary` | градиент `--accent-gradient-soft` (оба конца ≥ 5.2:1 с белым), при hover/active — плоский акцент |
+
+---
+
+## 4. Стекло (ревью §2.3)
+
+* `backdrop-filter` — только на overlay-панелях: `.sidebar`, `.topbar`,
+  `.drawer-panel`, `.modal-panel`, `.toast`. **На `.btn`/`.icon-btn` нет.**
+* `@media (prefers-reduced-transparency: reduce)` — стекло выключено, панели
+  становятся плотными, mesh скрыт (в мокапе этого не было).
+* `@media (prefers-contrast: more)` — поверхности становятся
+  непрозрачными, границы усилены, mesh приглушён.
+* `@media (prefers-reduced-motion: reduce)` — глобальное правило из
+  `global.css` сохранено; анимации KPI и карточек выключены дополнительно.
+* mesh рисуется на `.workspace::before` **без `filter: blur()`**: три
+  радиальных градиента вместо трёх размытых пятен — визуально эквивалентно,
+  но без полноэкранного compositing-слоя.
+
+---
+
+## 5. Новые классы (появились в продакшене)
+
+| Класс | Файл | Зачем |
 | --- | --- | --- |
-| `--surface-canvas` | `#f2f5fa` | `#141a24` |
-| `--surface-app` / `--raised` | `#ffffff` | `#1e2634` |
-| `--surface-sunken` | `#e9eef7` | `#18202c` |
-| `--surface-sidebar` | `#eaeff8` | `#161d28` |
-| `--text-primary` / `--secondary` / `--tertiary` | `#1f2937` / `#475569` / `#5b6b80` | `#eaf0f8` / `#a9b8cc` / `#8a9ab0` |
-| `--border-subtle` / `--default` / `--strong` | `rgba(31,41,55,.08/.13/.22)` | `rgba(255,255,255,.07/.12/.2)` |
-| `--accent-default` / `--hover` / `--pressed` | `#6c5ce7` / `#5b4bd6` / `#4c3fc0` | `#6d5ce7` / `#5b4bd6` / `#4c3fc0` |
-| `--text-on-accent` | `#ffffff` | `#ffffff` |
-| `--status-success-fg` / `-bg` | `#166534` / `#dcfce7` | `#86e3b0` / `rgba(22,101,52,.3)` |
-| `--status-warning-fg` / `-bg` | `#92400e` / `#fef3c7` | `#fcd177` / `rgba(146,64,14,.3)` |
-| `--status-danger-fg` / `-bg` | `#991b1b` / `#fee2e2` | `#ffa9a4` / `rgba(153,27,27,.32)` |
-| `--status-info-fg` / `-bg` | `#1e40af` / `#dbeafe` | `#a8c4ff` / `rgba(30,64,175,.28)` |
-| `--radius-xs…xl` | `10/12/16/22/28px` | без изменений |
-| `--shadow-*` | мягкая тень + `inset 0 2px 0 rgba(255,255,255,.85)` | тень + `inset 0 2px 0 rgba(255,255,255,.07)` |
+| `.filter-chips`, `.filter-chip`, `.filter-chip-label`, `.filter-chip-remove` | `features/candidates/candidates.css` | чипы активных фильтров (требование заказчика §7.1) |
+| `.queue-*` (18 классов) | `features/queue/queue.css` | экран «Моя очередь» (§7.2) |
 
-Новые служебные токены (только для этой темы):
-`--clay-lip` (цвет «губы» кнопки: `#dbe2ee` / `#131a25`),
-`--btn-shadow: 0 4px 0 var(--clay-lip), 0 10px 18px -10px rgba(...), inset 0 2px 0 rgba(255,255,255,.8)`;
-нажатие — `translateY(4px)` и схлопывание губы.
+Новых классов в design-system нет: mesh и анимации подключены к
+существующим `.workspace` и `.kpi-card`/`.queue-kpi`.
 
-### Blueprint CAD
+---
 
-| Токен | light (ватман) | dark (синька) |
+## 6. Проверки (§9 промпта)
+
+| Проверка | До | После |
 | --- | --- | --- |
-| `--surface-canvas` | `#f4f9ff` | `#08243d` |
-| `--surface-app` / `--raised` | `#ffffff` | `#0e3055` |
-| `--surface-sunken` | `#eaf2fb` | `#0a2946` |
-| `--surface-sidebar` | `#eaf2fb` | `#0a2946` |
-| `--text-primary` / `--secondary` / `--tertiary` | `#0b2a4a` / `#33526e` / `#4e6b85` | `#e8f1fa` / `#a9c7e4` / `#7fa5c7` |
-| `--border-subtle` / `--default` / `--strong` | `#cfe2f5` / `#9cc3e8` / `#2e6fa8` | `rgba(127,179,255,.16)` / `#2e6fa8` / `#7fb3ff` |
-| `--accent-default` / `--hover` / `--pressed` | `#1d4ed8` / `#1740b8` / `#11308c` | `#7fb3ff` / `#9cc7ff` / `#bcd9ff` |
-| `--text-on-accent` | `#ffffff` | `#06203a` (инверсия) |
-| `--status-success-fg` / `-bg` | `#10603f` / `#d7f0e4` | `#7fdcae` / `rgba(16,96,63,.3)` |
-| `--status-warning-fg` / `-bg` | `#8a4b00` / `#fdebd2` | `#ffc178` / `rgba(138,75,0,.32)` |
-| `--status-danger-fg` / `-bg` | `#9b1c1c` / `#fbdddd` | `#ff9d97` / `rgba(155,28,28,.32)` |
-| `--status-info-fg` / `-bg` | `#14459e` / `#dce7fb` | `#a8c7ff` / `rgba(30,64,175,.28)` |
-| `--radius-xs…xl` | `0/2/2/3/4px` | без изменений |
-| `--shadow-*` | почти нет: `0 1px 0 rgba(11,42,74,.04…)` | `rgba(0,0,0,.3…8)` |
+| `npx vitest run` | 31 файл / 336 тестов, 0 падений | **32 файла / 340 тестов, 0 падений** (+4 новых) |
+| `npx tsc -b` | чисто | чисто |
+| `npx eslint .` | чисто | чисто |
+| `npm run build` | CSS 85 086 b (gzip 14.81), JS 474 562 b (gzip 131.72) | CSS **98 729 b** (gzip 16.71), JS **482 629 b** (gzip 133.87) |
+| Контраст AA (18 пар × 2 темы, учёт композитинга и mesh) | — | **0 проблем**; худший случай light 4.91:1, dark 4.53:1 |
+| `pytest backend/tests/test_candidates.py` | 24 теста | **25 тестов** (+1 на фильтр по должности) |
 
-Новые служебные токены: `--bp-grid` / `--bp-grid-strong` (сетка 24/120px),
-`--bp-mark` (оранжевая «красная правка»: `#c2410c` / `#ffb454`).
-Моно-лейблы (`--font-mono`, 10px, uppercase, `.08em`) применяются к `.eyebrow`, `.kpi-label`,
-`.nav-title`, `.card-sub`, `.chip`, `.tbl th`, `.seg button`, `.tab`, `.feed-time`,
-`.axis-*`, `.bar-name`, `.counter`, `.toolbar-note`.
+**Размер CSS вырос на 16,0 % (gzip +12,8 %)** — выше порога 15 % из §9.
+Причины: новый `bentoSurface.css` (mesh, стекло, `--cat-*`, media-запросы
+доступности — ~7 КБ), `queue.css` (~4 КБ) и расширенные правила компонентов
+(покрытие недостающих вариантов кнопок/полей/чипов). JS вырос на 1,7 %
+(экран «Моя очередь» + фильтр).
 
-### Плотность (общая)
+---
 
-| Токен | comfortable | compact |
-| --- | --- | --- |
-| `--row-height` | 46–54px | 34–42px |
-| `--control-height-md` / `-sm` | 36–42 / 30–36px | 32–36 / 26–30px |
-| `--table-cell-padding-y` | 11–14px | 7–9px |
+## 7. Что осталось
 
-## Б. Файлы под restyle
-
-1. `frontend/src/design-system/tokens.css` — новые значения semantic-токенов (light/dark/density).
-2. `frontend/src/design-system/global.css` — фон, типографика, focus-ring.
-3. `frontend/src/app-shell/workspace.css` — сайдбар и топбар (в Blueprint — «штамп» топбара).
-4. `frontend/src/design-system/components/` — `button.css` (+ «губа»/жёсткая тень по направлению),
-   `field.css`, `statusChip.css`, `avatar.css`, `drawer.css`, `modal.css`, `tabs.css`,
-   `toast.css`, `stateViews.css`.
-5. `frontend/src/features/candidates/` — `candidates.css`, `kanban.css`, `drawer.css`.
-6. `frontend/src/features/analytics/analytics.css` — KPI-плитки, графики, воронка.
-7. `frontend/src/features/calendar/calendar.css`, `features/documents/documents.css`,
-   `features/library/library.css`.
-8. `frontend/src/styles.css` — точечные правки отступов.
-
-Новые CSS-файлы: один на направление — `design-system/components/claySurface.css`
-(экструзия/губа/пресс) или `blueprintFrame.css` (сетка, засечки, штамп). Больше одного
-файла на направление не требуется.
-
-## В. Риски и что НЕ меняем
-
-- **Bold Editorial.** Полноэкранный нео-брутализм «остывает» и конфликтует с плотными
-  данными[4](https://theplusaddons.com/blog/web-design-trends-2026/): рамки 2px и жёсткие тени
-  не применять к ячейкам таблиц (только к панелям и CTA), в таблицах — хайрлайны. Тёмная тема
-  с белыми рамками требует ревью на OLED-экранах (гало).
-- **Clay Tactile.** Claymorphism плохо переносит плотные формы и таблицы[4](https://theplusaddons.com/blog/web-design-trends-2026/):
-  экструзию даём карточками дашборда, кнопкам и чипам; поля ввода — всегда «вдавленные»
-  (inset), чтобы не терять границы. Тени дорогие по перерисовке — не более двух слоёв на элемент.
-- **Blueprint CAD.** Моно-лейблы 10px допустимы только для подписей, не для значений; штамп
-  листа и засечки — декоративные `::before/::after`, не должны попадать в DOM-текст (иначе
-  скринридеры зачитают мусор). Сетка-миллиметровка отключается в `prefers-reduced-motion`/
-  `prefers-contrast: more`.
-- **Общее.** Инверсия `--text-on-accent` в тёмных темах (Bold/Blueprint) переиспользуется в
-  чипах, тумблерах и бейджах — пройтись по всем местам. Сайдбар 264–272px (Bold/Clay) съедает
-  ширину таблиц — проверить 1280px.
-
-**Не меняем:** функционал, роутинг, состав полей, API; веб-шрифты (новые не подключаем, только
-системный стек); a11y-семантика и aria-атрибуты; контраст ≥ AA (проверено: 14 пар «текст/фон»,
-«чип», «акцент/текст на акценте» на каждую тему × 2 темы × 3 файла — всё зелёное); данные в
-мокапах — статичные заглушки.
-
-## Г. Оценка: влезает ли в один PR
-
-Да: подмена значений токенов + restyle ~15 CSS-файлов + один новый файл под «материал»
-направления. Оценка на одного фронтендера:
-
-- токены и global — 0.5 дня;
-- компоненты design-system — 1–1.5 дня;
-- экраны (кандидаты, воронка, аналитика, календарь, документы/мастер) — 2–3 дня;
-- «вау»-слой (командная палитра, скелетоны, тосты, счётчики) — 1–2 дня;
-- материал направления (экструзия/пресс у Clay, сетка и засечки у Blueprint, жёсткие тени у
-  Bold) — +0.5–1 день;
-- ревью a11y, плотность, тёмная тема — 1 день.
-
-Итого **~5–8 рабочих дней**, один PR, без новых runtime-зависимостей. Дороже всех —
-палитра команд (новый компонент) и Clay (точная настройка теней под светлую/тёмную темы).
+1. Визуальная приёмка заказчиком: браузера в песочнице нет, рендер не
+   проверен глазами. Открыть ветку и посмотреть: светлая/тёмная темы,
+   1280px, `prefers-contrast`/`prefers-reduced-transparency`,
+   «Моя очередь» и фильтр «Должность».
+2. По результатам приёмки — докалибровать `--mesh-opacity` и радиусы.
+3. Перенести сводку «Моя очередь» в календарь/уведомления, если заказчик
+   захочет видеть те же числа там.
