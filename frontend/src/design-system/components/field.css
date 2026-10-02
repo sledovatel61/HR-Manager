@@ -1,3 +1,7 @@
+/* Поля формы — направление Bento.
+   Боевые имена: .field, .field-label, .field-hint, .field-error,
+   .text-input (+ .is-invalid), .select-input. */
+
 .field {
   display: flex;
   flex-direction: column;
@@ -23,22 +27,31 @@
   gap: 4px;
 }
 
-.text-input, .select-input {
+.text-input,
+.select-input {
   height: var(--control-height-md);
   padding: 0 var(--space-3);
-  border-radius: var(--radius-md);
+  border-radius: var(--btn-radius);
   border: 1px solid var(--border-default);
   background: var(--surface-app);
   color: var(--text-primary);
   font-size: var(--text-size-sm);
   width: 100%;
+  transition: border-color var(--duration-fast) var(--easing-standard),
+    box-shadow var(--duration-fast) var(--easing-standard);
 }
 
-.text-input::placeholder { color: var(--text-tertiary); }
+.text-input::placeholder {
+  color: var(--text-tertiary);
+}
 
-.text-input:hover, .select-input:hover { border-color: var(--border-strong); }
+.text-input:hover,
+.select-input:hover {
+  border-color: var(--border-strong);
+}
 
-.text-input:focus-visible, .select-input:focus-visible {
+.text-input:focus-visible,
+.select-input:focus-visible {
   border-color: var(--border-focus);
   box-shadow: var(--focus-ring);
 }
@@ -47,8 +60,20 @@
   border-color: var(--status-danger-fg);
 }
 
-.text-input:disabled, .select-input:disabled {
+.text-input.is-invalid:focus-visible {
+  border-color: var(--status-danger-fg);
+}
+
+.text-input:disabled,
+.select-input:disabled {
   background: var(--surface-disabled);
   color: var(--text-disabled);
   cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .text-input,
+  .select-input {
+    transition: none;
+  }
 }
