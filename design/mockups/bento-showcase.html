@@ -558,7 +558,7 @@ textarea.input { height: auto; padding: var(--space-2) var(--space-3); resize: v
 
 /* ---------------- Таблицы ---------------- */
 .table-card { padding: 0; overflow: hidden; }
-.table-wrap { overflow-x: auto; }
+.bento-table-scroll { overflow-x: auto; }
 .tbl th, .tbl td { text-align: left; padding: var(--table-cell-padding-y) var(--space-4); font-size: var(--text-size-sm); }
 .tbl th { font-size: var(--text-size-2xs); font-weight: var(--font-weight-semibold); color: var(--text-tertiary);
   text-transform: uppercase; letter-spacing: .06em; background: var(--table-head-bg);
@@ -1044,7 +1044,7 @@ textarea.input { height: auto; padding: var(--space-2) var(--space-3); resize: v
 .kcol-body { border-radius: var(--radius-lg); }
 .kcard:hover { transform: var(--card-hover-transform); }
 .tpl:hover, .cat:hover { transform: var(--card-hover-transform); }
-.kanban-scroll, .table-wrap, .cal-card { border-radius: var(--radius-lg); }
+.kanban-scroll, .bento-table-scroll, .cal-card { border-radius: var(--radius-lg); }
 .tbl th { font-size: var(--text-size-2xs); }
 .score > i { background: var(--accent-gradient-soft); }
 .pitem.is-on .pitem-ico { background: var(--accent-gradient-soft); color: #fff; }
@@ -1482,7 +1482,7 @@ textarea.input { height: auto; padding: var(--space-2) var(--space-3); resize: v
       '<select class="select"><option>Все этапы</option>' + STAGES.map(function (s) { return "<option>" + s + "</option>"; }).join("") + "</select>" +
       '<select class="select"><option>Все источники</option><option>hh.ru</option><option>Авито Работа</option><option>Рекомендация</option></select>' +
       '<span class="grow"></span><span class="toolbar-note num">Показано 1–16 из 16</span></div>' +
-      '<article class="card table-card"><div class="table-wrap"><table class="tbl"><thead><tr>' +
+      '<article class="card table-card"><div class="bento-table-scroll"><table class="tbl"><thead><tr>' +
       "<th>Кандидат</th><th>Вакансия</th><th>Этап</th><th>Источник</th><th>HR</th><th>Обновлено</th><th>Скоринг</th><th></th>" +
       "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
       '<div class="card-foot"><span class="muted">Нажмите строку, чтобы открыть карточку кандидата</span>' +
@@ -1586,7 +1586,7 @@ textarea.input { height: auto; padding: var(--space-2) var(--space-3); resize: v
       funnelChart(FUNNEL) + "</article>" +
       '<article class="card dash-wide"><div class="card-head"><div><h2 class="card-title">Эффективность источников</h2>' +
       '<p class="card-sub">Отклики, доля и конверсия в собеседование</p></div></div>' +
-      '<div class="table-wrap"><table class="tbl tbl-compact"><thead><tr><th>Источник</th><th class="r">Отклики</th><th class="r">Доля</th><th class="r">В собеседование</th><th class="r">Срок найма</th><th>Оценка</th></tr></thead><tbody>' +
+      '<div class="bento-table-scroll"><table class="tbl tbl-compact"><thead><tr><th>Источник</th><th class="r">Отклики</th><th class="r">Доля</th><th class="r">В собеседование</th><th class="r">Срок найма</th><th>Оценка</th></tr></thead><tbody>' +
       srcRows + "</tbody></table></div></article>" +
       "</div></section>";
   }
@@ -1609,7 +1609,7 @@ textarea.input { height: auto; padding: var(--space-2) var(--space-3); resize: v
       '<div class="toolbar"><label class="search-field">' + ico("search") + '<input type="search" placeholder="Поиск по названию или типу" /></label>' +
       '<select class="select"><option>Все статусы</option><option>Черновик</option><option>На подписи</option><option>Готово</option></select>' +
       '<span class="grow"></span><span class="toolbar-note num">47 записей</span></div>' +
-      '<article class="card table-card"><div class="table-wrap"><table class="tbl"><thead><tr><th>Список</th><th>Записей</th><th>Автор</th><th>Создан</th><th>Статус</th><th></th></tr></thead><tbody>' +
+      '<article class="card table-card"><div class="bento-table-scroll"><table class="tbl"><thead><tr><th>Список</th><th>Записей</th><th>Автор</th><th>Создан</th><th>Статус</th><th></th></tr></thead><tbody>' +
       rows + "</tbody></table></div>" +
       '<div class="card-foot"><span class="muted">Мастер создания списка — по кнопке «Новый список документов»</span></div></article>' +
       "</section>";
