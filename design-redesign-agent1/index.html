@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="ru" data-theme="dark" data-density="comfortable" data-fonts="display">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#090e14" />
+    <meta name="description" content="Концепт операционного центра HR Manager — интерактивный дизайн-мокап." />
+    <title>HR Manager — Mission Control</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="is-loading">
+    <a class="skip-link" href="#main-content">Перейти к содержанию</a>
+    <div class="app-shell">
+      <aside class="sidebar" id="app-sidebar" aria-label="Основная навигация">
+        <div class="brand-row">
+          <a class="brand" href="#dashboard" aria-label="HR Manager — на главную">
+            <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+            <span class="brand-copy"><strong>hr<span class="brand-dot">.</span>manager</strong><small>HR-ПРОЦЕССЫ КОМАНДЫ</small></span>
+          </a>
+          <button class="icon-button sidebar-collapse" id="sidebar-collapse" type="button" aria-label="Свернуть меню" title="Свернуть меню"><span data-icon="panel"></span></button>
+        </div>
+
+        <button class="workspace-switch" type="button" data-toast="Рабочее пространство «Север»">
+          <span class="workspace-avatar">С</span>
+          <span class="workspace-copy"><strong>Север</strong><small>Рабочее пространство</small></span>
+          <span class="workspace-chevron" data-icon="chevron-down"></span>
+        </button>
+
+        <nav class="primary-nav" aria-label="Разделы продукта">
+          <div class="nav-group-label">Работа</div>
+          <a class="nav-link is-active" href="#dashboard" data-route="dashboard" aria-current="page" title="Моя очередь">
+            <span class="nav-icon" data-icon="inbox"></span><span class="nav-label">Моя очередь</span><span class="nav-count">8</span>
+          </a>
+          <a class="nav-link" href="#candidates" data-route="candidates" title="Кандидаты">
+            <span class="nav-icon" data-icon="users"></span><span class="nav-label">Кандидаты</span><span class="nav-count nav-count-muted">142</span>
+          </a>
+          <a class="nav-link" href="#pipeline" data-route="pipeline" title="Воронка">
+            <span class="nav-icon" data-icon="kanban"></span><span class="nav-label">Воронка</span>
+          </a>
+          <a class="nav-link" href="#calendar" data-route="calendar" title="Календарь">
+            <span class="nav-icon" data-icon="calendar"></span><span class="nav-label">Календарь</span><span class="nav-dot" aria-label="Есть события сегодня"></span>
+          </a>
+          <a class="nav-link" href="#schedule" data-route="schedule" title="График выхода">
+            <span class="nav-icon" data-icon="briefcase"></span><span class="nav-label">График выхода</span>
+          </a>
+
+          <div class="nav-group-label nav-group-spaced">Обзор</div>
+          <a class="nav-link" href="#analytics" data-route="analytics" title="Аналитика">
+            <span class="nav-icon" data-icon="chart"></span><span class="nav-label">Аналитика</span>
+          </a>
+          <a class="nav-link" href="#notifications" data-route="notifications" title="Уведомления">
+            <span class="nav-icon" data-icon="bell"></span><span class="nav-label">Уведомления</span><span class="nav-count nav-count-alert">3</span>
+          </a>
+          <a class="nav-link" href="#reminders" data-route="reminders" title="Напоминания">
+            <span class="nav-icon" data-icon="clock"></span><span class="nav-label">Напоминания</span>
+          </a>
+
+          <div class="nav-group-label nav-group-spaced">Библиотека</div>
+          <a class="nav-link" href="#documents" data-route="documents" title="Списки документов">
+            <span class="nav-icon" data-icon="file"></span><span class="nav-label">Списки документов</span>
+          </a>
+          <a class="nav-link" href="#library" data-route="library" title="Шаблоны и материалы">
+            <span class="nav-icon" data-icon="folder"></span><span class="nav-label">Шаблоны и материалы</span>
+          </a>
+          <a class="nav-link" href="#trash" data-route="trash" title="Удалённые">
+            <span class="nav-icon" data-icon="trash"></span><span class="nav-label">Удалённые</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <div class="system-health"><span class="health-indicator"><i></i></span><span class="health-copy"><strong>Все системы в норме</strong><small>Обновлено 2 мин назад</small></span><span class="health-pulse" aria-hidden="true"></span></div>
+          <a class="nav-link settings-link" href="#settings" data-route="settings" title="Настройки">
+            <span class="nav-icon" data-icon="settings"></span><span class="nav-label">Настройки</span>
+          </a>
+          <div class="account-card">
+            <div class="avatar avatar-small avatar-lilac">АМ</div>
+            <span class="account-copy"><strong>Анна Миронова</strong><small>HR-директор</small></span>
+            <button class="icon-button account-more" type="button" aria-label="Меню профиля" data-toast="Профиль Анны Мироновой"><span data-icon="more"></span></button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button class="icon-button mobile-menu" id="mobile-menu" type="button" aria-label="Открыть меню"><span data-icon="menu"></span></button>
+            <div class="breadcrumbs"><span class="breadcrumb-root">HR MANAGER</span><span class="breadcrumb-separator">/</span><strong id="current-section">Моя очередь</strong></div>
+          </div>
+          <div class="topbar-actions">
+            <button class="command-trigger" id="open-command" type="button" aria-label="Поиск и команды, Ctrl или Command K"><span data-icon="search"></span><span class="command-placeholder">Поиск по системе...</span><span class="key-hint"><kbd>⌘</kbd><kbd>K</kbd></span></button>
+            <span class="topbar-divider" aria-hidden="true"></span>
+            <button class="preference-button font-toggle" id="font-toggle" type="button" aria-pressed="false" title="Переключить на системные шрифты"><span class="font-glyph">Aa</span><span class="preference-label">DM Sans</span></button>
+            <button class="preference-button density-toggle" id="density-toggle" type="button" aria-pressed="false" title="Изменить плотность интерфейса"><span data-icon="density"></span><span class="preference-label">Обычная</span></button>
+            <button class="preference-button theme-toggle" id="theme-toggle" type="button" aria-pressed="true" title="Переключить тему"><span data-icon="moon"></span><span class="preference-label">Тёмная</span></button>
+            <span class="topbar-divider preference-divider" aria-hidden="true"></span>
+            <button class="icon-button notification-button" type="button" aria-label="Уведомления, 3 новых" data-route-shortcut="notifications"><span data-icon="bell"></span><i class="notification-dot"></i></button>
+            <div class="topbar-avatar avatar avatar-small avatar-lilac" aria-label="Анна Миронова">АМ</div>
+          </div>
+        </header>
+
+        <main class="main-content" id="main-content" tabindex="-1">
+          <section class="page dashboard-page" data-page="dashboard" aria-labelledby="dashboard-title">
+            <div class="skeleton-screen" aria-hidden="true">
+              <div class="skeleton-heading"><span class="skeleton-line skeleton-eyebrow"></span><span class="skeleton-line skeleton-title"></span><span class="skeleton-line skeleton-subtitle"></span></div>
+              <div class="skeleton-kpis"><span></span><span></span><span></span><span></span></div>
+              <div class="skeleton-panels"><span></span><span></span></div>
+              <div class="skeleton-panels skeleton-bottom"><span></span><span></span></div>
+            </div>
+            <div class="dashboard-content">
+              <header class="page-heading dashboard-heading">
+                <div>
+                  <div class="eyebrow"><span class="live-dot"></span><span id="date-stamp">ПЯТНИЦА · 02 ОКТЯБРЯ 2026</span><span class="eyebrow-separator">/</span><span>ОПЕРАЦИОННЫЙ ЦЕНТР</span></div>
+                  <h1 id="dashboard-title">Моя очередь<span class="heading-period">.</span></h1>
+                  <p class="page-subtitle">Доброе утро, Анна. Вот что требует внимания сегодня.</p>
+                </div>
+                <div class="heading-actions">
+                  <button class="button button-quiet" type="button" data-toast="Отчёт за день готов к выгрузке"><span data-icon="download"></span><span>Экспорт</span></button>
+                  <button class="button button-primary" type="button" data-open-candidate-modal><span data-icon="plus"></span><span>Новый кандидат</span></button>
+                </div>
+              </header>
+
+              <section class="metric-grid" aria-label="Ключевые показатели">
+                <article class="metric-card panel">
+                  <div class="metric-topline"><span class="metric-label">Кандидаты в работе</span><span class="metric-icon"><span data-icon="users"></span></span></div>
+                  <div class="metric-value"><strong data-counter="142">142</strong><span class="metric-unit">человека</span></div>
+                  <div class="metric-foot"><span class="metric-delta"><span data-icon="arrow-up-right"></span> 12%</span><span>за 30 дней</span><svg class="sparkline" viewBox="0 0 82 30" aria-hidden="true"><path d="M2 23 C12 18 12 20 20 21 S30 10 39 14 S50 7 57 12 S69 5 80 2" /></svg></div>
+                </article>
+                <article class="metric-card panel">
+                  <div class="metric-topline"><span class="metric-label">Интервью сегодня</span><span class="metric-icon metric-icon-blue"><span data-icon="calendar"></span></span></div>
+                  <div class="metric-value"><strong data-counter="7">7</strong><span class="metric-unit">встреч</span></div>
+                  <div class="metric-foot"><span class="metric-delta"><span data-icon="arrow-up-right"></span> 2</span><span>к прошлой неделе</span><svg class="sparkline sparkline-blue" viewBox="0 0 82 30" aria-hidden="true"><path d="M2 22 C10 20 13 24 20 18 S31 18 39 11 S52 15 57 9 S70 13 80 3" /></svg></div>
+                </article>
+                <article class="metric-card panel">
+                  <div class="metric-topline"><span class="metric-label">Активные вакансии</span><span class="metric-icon metric-icon-violet"><span data-icon="briefcase"></span></span></div>
+                  <div class="metric-value"><strong data-counter="12">12</strong><span class="metric-unit">открыто</span></div>
+                  <div class="metric-foot"><span class="metric-delta"><span data-icon="arrow-up-right"></span> 3</span><span>за эту неделю</span><svg class="sparkline sparkline-violet" viewBox="0 0 82 30" aria-hidden="true"><path d="M2 23 C10 25 13 15 20 18 S28 19 38 12 S49 16 57 10 S70 6 80 3" /></svg></div>
+                </article>
+                <article class="metric-card panel">
+                  <div class="metric-topline"><span class="metric-label">Средний срок найма</span><span class="metric-icon metric-icon-amber"><span data-icon="clock"></span></span></div>
+                  <div class="metric-value"><strong data-counter="18">18</strong><span class="metric-unit">дней</span></div>
+                  <div class="metric-foot"><span class="metric-delta is-positive"><span data-icon="arrow-down-right"></span> 4 дня</span><span>быстрее плана</span><svg class="sparkline sparkline-amber" viewBox="0 0 82 30" aria-hidden="true"><path d="M2 4 C12 9 12 11 21 8 S31 15 39 13 S50 19 58 17 S69 23 80 25" /></svg></div>
+                </article>
+              </section>
+
+              <div class="dashboard-grid">
+                <section class="panel chart-panel" aria-labelledby="pipeline-chart-title">
+                  <div class="panel-heading">
+                    <div><div class="panel-eyebrow">ДИНАМИКА НАЙМА</div><h2 id="pipeline-chart-title">Воронка кандидатов</h2><p>Активность по неделям</p></div>
+                    <div class="chart-toolbar"><span class="legend-key"><i></i>Кандидаты</span><div class="segmented-control" role="group" aria-label="Период графика"><button class="is-selected" type="button" data-chart-range="7д">7 дней</button><button type="button" data-chart-range="30д">30 дней</button></div></div>
+                  </div>
+                  <div class="chart-summary"><strong class="mono" id="chart-total">118</strong><span>новых кандидатов</span><span class="chart-change"><span data-icon="arrow-up-right"></span> +18.6%</span><span class="chart-summary-period">к предыдущему периоду</span></div>
+                  <div class="main-chart-wrap">
+                    <svg class="main-chart" viewBox="0 0 760 208" role="img" aria-label="График активности найма: рост количества кандидатов за последнюю неделю">
+                      <line x1="44" y1="18" x2="744" y2="18" class="chart-gridline"/><line x1="44" y1="62" x2="744" y2="62" class="chart-gridline"/><line x1="44" y1="106" x2="744" y2="106" class="chart-gridline"/><line x1="44" y1="150" x2="744" y2="150" class="chart-gridline"/>
+                      <text x="2" y="22" class="chart-axis">160</text><text x="2" y="66" class="chart-axis">120</text><text x="8" y="110" class="chart-axis">80</text><text x="8" y="154" class="chart-axis">40</text>
+                      <path class="chart-line chart-line-primary" id="activity-line" d="M46 145 C88 136 102 121 145 129 S205 112 245 117 S306 85 345 99 S407 91 446 76 S510 85 546 66 S610 72 644 50 S707 50 742 31" />
+                      <circle class="chart-point" cx="742" cy="31" r="4.5" />
+                      <text x="42" y="194" class="chart-axis">ПН</text><text x="155" y="194" class="chart-axis">ВТ</text><text x="270" y="194" class="chart-axis">СР</text><text x="382" y="194" class="chart-axis">ЧТ</text><text x="495" y="194" class="chart-axis">ПТ</text><text x="609" y="194" class="chart-axis">СБ</text><text x="725" y="194" class="chart-axis">ВС</text>
+                    </svg>
+                  </div>
+                  <div class="chart-footer"><span><i class="chart-footer-dot"></i>Цель недели <strong>100</strong></span><span class="chart-footer-divider"></span><span>Последнее обновление <strong>09:42</strong></span><button class="text-button" type="button" data-route-shortcut="analytics">Подробная аналитика <span data-icon="arrow-right"></span></button></div>
+                </section>
+
+                <section class="panel pulse-panel" aria-labelledby="pulse-title">
+                  <div class="panel-heading panel-heading-tight"><div><div class="panel-eyebrow">КОМАНДА СЕГОДНЯ</div><h2 id="pulse-title">Пульс найма</h2></div><button class="icon-button" type="button" aria-label="Дополнительные действия" data-toast="Данные обновляются автоматически"><span data-icon="more"></span></button></div>
+                  <div class="pulse-score-row">
+                    <div class="pulse-ring" role="img" aria-label="План закрытия вакансий выполнен на 78 процентов"><svg viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-track" cx="60" cy="60" r="48"/><circle class="ring-value" cx="60" cy="60" r="48"/></svg><div class="pulse-ring-copy"><strong>78<span>%</span></strong><small>план месяца</small></div></div>
+                    <div class="pulse-score-copy"><span class="status-chip status-success"><i></i>В ритме</span><p>Команда движется на <strong>6%</strong> быстрее прошлого месяца.</p></div>
+                  </div>
+                  <div class="pulse-divider"></div>
+                  <div class="pulse-row"><div><span class="pulse-row-label">Вакансии с планом</span><span class="pulse-row-meta">9 из 12 закрываются в срок</span></div><strong class="mono">75%</strong></div>
+                  <div class="progress-track"><span style="width:75%"></span></div>
+                  <div class="pulse-row pulse-row-second"><div><span class="pulse-row-label">Ожидают решения</span><span class="pulse-row-meta">Требуют внимания сегодня</span></div><strong class="mono">4</strong></div>
+                  <a class="panel-link" href="#analytics">Смотреть показатели <span data-icon="arrow-right"></span></a>
+                </section>
+              </div>
+
+              <div class="dashboard-bottom-grid">
+                <section class="panel task-panel" aria-labelledby="tasks-title">
+                  <div class="panel-heading"><div><div class="panel-eyebrow">ТРЕБУЮТ ДЕЙСТВИЯ <span class="eyebrow-count">03</span></div><h2 id="tasks-title">Задачи на сегодня</h2><p>3 из 8 задач ждут вашего решения</p></div><button class="icon-button" type="button" aria-label="Все задачи" data-toast="Показаны актуальные задачи"><span data-icon="more"></span></button></div>
+                  <div class="task-list">
+                    <article class="task-item" data-task-item>
+                      <span class="task-priority priority-high" aria-label="Высокий приоритет"></span><div class="task-time mono">10:30</div><div class="task-copy"><strong>Подтвердить время интервью</strong><span>Анна Иванова <b>·</b> Product designer</span></div><button class="task-complete" type="button" data-complete-task aria-label="Отметить задачу выполненной"><span data-icon="check"></span><span class="task-action-label">Готово</span></button>
+                    </article>
+                    <article class="task-item" data-task-item>
+                      <span class="task-priority priority-medium" aria-label="Средний приоритет"></span><div class="task-time mono">12:00</div><div class="task-copy"><strong>Отправить оффер кандидату</strong><span>Илья Сергеев <b>·</b> Data analyst</span></div><button class="task-complete" type="button" data-complete-task aria-label="Отметить задачу выполненной"><span data-icon="check"></span><span class="task-action-label">Готово</span></button>
+                    </article>
+                    <article class="task-item" data-task-item>
+                      <span class="task-priority priority-low" aria-label="Низкий приоритет"></span><div class="task-time mono">15:45</div><div class="task-copy"><strong>Собрать обратную связь команды</strong><span>Константин Баев <b>·</b> Backend engineer</span></div><button class="task-complete" type="button" data-complete-task aria-label="Отметить задачу выполненной"><span data-icon="check"></span><span class="task-action-label">Готово</span></button>
+                    </article>
+                  </div>
+                  <div class="task-panel-footer"><span><span class="task-footer-dot"></span>Ещё 5 задач в очереди</span><button class="text-button" type="button" data-toast="Открыта полная очередь задач">Открыть очередь <span data-icon="arrow-right"></span></button></div>
+                </section>
+
+                <section class="panel schedule-panel" aria-labelledby="schedule-title">
+                  <div class="panel-heading"><div><div class="panel-eyebrow">СЕГОДНЯ · 02 ОКТ</div><h2 id="schedule-title">Ближайшие встречи</h2><p>Следующее событие через 48 минут</p></div><button class="icon-button" type="button" aria-label="Открыть календарь" data-route-shortcut="calendar"><span data-icon="arrow-up-right"></span></button></div>
+                  <div class="meeting-list">
+                    <article class="meeting-item is-next"><div class="meeting-time mono"><strong>10:30</strong><span>11:15</span></div><div class="meeting-marker"><i></i></div><div class="meeting-copy"><div class="meeting-title-row"><strong>Техническое интервью</strong><span class="meeting-live">СЛЕДУЮЩЕЕ</span></div><span>Анна Иванова <b>·</b> Senior product designer</span><div class="meeting-meta"><span data-icon="video"></span> Google Meet <b>·</b> Дмитрий, Анна</div></div></article>
+                    <article class="meeting-item"><div class="meeting-time mono"><strong>12:00</strong><span>12:30</span></div><div class="meeting-marker"><i></i></div><div class="meeting-copy"><strong>Первичный звонок</strong><span>Константин Баев <b>·</b> Backend engineer</span><div class="meeting-meta"><span data-icon="phone"></span> Телефон <b>·</b> Анна Миронова</div></div></article>
+                    <article class="meeting-item"><div class="meeting-time mono"><strong>14:30</strong><span>15:15</span></div><div class="meeting-marker"><i></i></div><div class="meeting-copy"><strong>Финальное интервью</strong><span>Мария Петрова <b>·</b> HR generalist</span><div class="meeting-meta"><span data-icon="video"></span> Google Meet <b>·</b> Елена, Мария</div></div></article>
+                  </div>
+                  <a class="panel-link" href="#calendar">Открыть календарь <span data-icon="arrow-right"></span></a>
+                </section>
+              </div>
+            </div>
+          </section>
+
+          <section class="page candidates-page" data-page="candidates" aria-labelledby="candidates-title" hidden>
+            <header class="page-heading">
+              <div><div class="eyebrow"><span class="eyebrow-marker"></span>БАЗА КАНДИДАТОВ <span class="eyebrow-separator">/</span> 142 В ПРОЦЕССЕ</div><h1 id="candidates-title">Кандидаты<span class="heading-period">.</span></h1><p class="page-subtitle">Вся история найма — в одном рабочем пространстве.</p></div>
+              <div class="heading-actions"><button class="button button-quiet" type="button" data-toast="Импорт кандидатов из Excel"><span data-icon="upload"></span><span>Импорт</span></button><button class="button button-primary" type="button" data-open-candidate-modal><span data-icon="plus"></span><span>Новый кандидат</span></button></div>
+            </header>
+            <div class="candidate-toolbar">
+              <label class="field-search"><span data-icon="search"></span><input id="candidate-search" type="search" placeholder="Имя, должность или email" autocomplete="off" /><kbd>/</kbd></label>
+              <label class="select-wrap"><span class="sr-only">Фильтр по этапу</span><select id="candidate-stage-filter"><option value="">Все этапы</option><option>Новая заявка</option><option>Отклик</option><option>Звонок</option><option>Собеседование</option><option>Оффер</option></select><span data-icon="chevron-down"></span></label>
+              <button class="filter-button" type="button" data-toast="Фильтры кандидатов"><span data-icon="sliders"></span><span>Фильтры</span><span class="filter-count">2</span></button>
+              <div class="toolbar-spacer"></div><span class="view-label">Вид</span><button class="view-toggle is-active" type="button" aria-label="Табличный вид" aria-pressed="true"><span data-icon="list"></span></button><button class="view-toggle" type="button" aria-label="Плиточный вид" aria-pressed="false" data-toast="Табличный вид включён"><span data-icon="grid"></span></button>
+            </div>
+            <div class="candidate-layout" id="candidate-layout">
+              <section class="panel candidate-table-panel" aria-label="Таблица кандидатов">
+                <div class="table-panel-heading"><div><span class="table-result-count"><strong id="visible-candidate-count">14</strong> кандидатов</span><span class="table-subtext"> · Обновлено сегодня в 09:42</span></div><button class="icon-button" type="button" aria-label="Настроить столбцы" data-toast="Настройка столбцов таблицы"><span data-icon="more"></span></button></div>
+                <div class="table-scroll"><table class="candidate-table"><thead><tr><th scope="col" class="candidate-col">Кандидат</th><th scope="col">Этап</th><th scope="col">Вакансия</th><th scope="col">Добавлен</th><th scope="col" class="table-actions-col"><span class="sr-only">Действия</span></th></tr></thead>
+                  <tbody id="candidate-rows">
+                    <tr class="candidate-row is-selected" data-candidate-row data-name="Анна Иванова" data-role="Senior product designer" data-stage="Собеседование" data-stage-class="info" data-date="02.10.2026" data-initials="АИ" data-tone="teal"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Анны Ивановой"><span class="avatar avatar-table avatar-teal">АИ</span><span><strong>Анна Иванова</strong><small>anna.ivanova@mail.ru</small></span></button></td><td><span class="status-chip status-info"><i></i>Собеседование</span></td><td>Product designer</td><td class="table-date mono">02.10.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Анны Ивановой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Константин Баев" data-role="Senior backend engineer" data-stage="Отклик" data-stage-class="neutral" data-date="02.10.2026" data-initials="КБ" data-tone="blue"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Константина Баева"><span class="avatar avatar-table avatar-blue">КБ</span><span><strong>Константин Баев</strong><small>k.baev@inbox.ru</small></span></button></td><td><span class="status-chip status-neutral"><i></i>Отклик</span></td><td>Backend engineer</td><td class="table-date mono">02.10.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Константина Баева" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Мария Петрова" data-role="HR generalist" data-stage="Оффер" data-stage-class="success" data-date="01.10.2026" data-initials="МП" data-tone="rose"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Марии Петровой"><span class="avatar avatar-table avatar-rose">МП</span><span><strong>Мария Петрова</strong><small>m.petrova@yandex.ru</small></span></button></td><td><span class="status-chip status-success"><i></i>Оффер</span></td><td>HR generalist</td><td class="table-date mono">01.10.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Марии Петровой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Илья Кузнецов" data-role="Аналитик данных" data-stage="Собеседование" data-stage-class="info" data-date="01.10.2026" data-initials="ИК" data-tone="violet"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Ильи Кузнецова"><span class="avatar avatar-table avatar-violet">ИК</span><span><strong>Илья Кузнецов</strong><small>ilya.kuznetsov@me.com</small></span></button></td><td><span class="status-chip status-info"><i></i>Собеседование</span></td><td>Data analyst</td><td class="table-date mono">01.10.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Ильи Кузнецова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Софья Смирнова" data-role="QA engineer" data-stage="Звонок" data-stage-class="warning" data-date="30.09.2026" data-initials="СС" data-tone="amber"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Софьи Смирновой"><span class="avatar avatar-table avatar-amber">СС</span><span><strong>Софья Смирнова</strong><small>sofia.sm@mail.ru</small></span></button></td><td><span class="status-chip status-warning"><i></i>Звонок</span></td><td>QA engineer</td><td class="table-date mono">30.09.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Софьи Смирновой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Артём Волков" data-role="Product manager" data-stage="Новая заявка" data-stage-class="violet" data-date="30.09.2026" data-initials="АВ" data-tone="blue"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Артёма Волкова"><span class="avatar avatar-table avatar-blue">АВ</span><span><strong>Артём Волков</strong><small>art.volkov@inbox.ru</small></span></button></td><td><span class="status-chip status-violet"><i></i>Новая заявка</span></td><td>Product manager</td><td class="table-date mono">30.09.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Артёма Волкова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Елена Морозова" data-role="UX researcher" data-stage="Собеседование" data-stage-class="info" data-date="29.09.2026" data-initials="ЕМ" data-tone="lilac"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Елены Морозовой"><span class="avatar avatar-table avatar-lilac">ЕМ</span><span><strong>Елена Морозова</strong><small>e.morozova@mail.ru</small></span></button></td><td><span class="status-chip status-info"><i></i>Собеседование</span></td><td>UX researcher</td><td class="table-date mono">29.09.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Елены Морозовой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Никита Орлов" data-role="DevOps engineer" data-stage="Отклик" data-stage-class="neutral" data-date="29.09.2026" data-initials="НО" data-tone="teal"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Никиты Орлова"><span class="avatar avatar-table avatar-teal">НО</span><span><strong>Никита Орлов</strong><small>n.orlov@pm.me</small></span></button></td><td><span class="status-chip status-neutral"><i></i>Отклик</span></td><td>DevOps engineer</td><td class="table-date mono">29.09.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Никиты Орлова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Полина Сергеева" data-role="Рекрутер" data-stage="Оффер" data-stage-class="success" data-date="28.09.2026" data-initials="ПС" data-tone="rose"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Полины Сергеевой"><span class="avatar avatar-table avatar-rose">ПС</span><span><strong>Полина Сергеева</strong><small>polina.sergeeva@mail.ru</small></span></button></td><td><span class="status-chip status-success"><i></i>Оффер</span></td><td>Рекрутер</td><td class="table-date mono">28.09.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Полины Сергеевой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Михаил Фёдоров" data-role="Backend developer" data-stage="Звонок" data-stage-class="warning" data-date="28.09.2026" data-initials="МФ" data-tone="amber"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Михаила Фёдорова"><span class="avatar avatar-table avatar-amber">МФ</span><span><strong>Михаил Фёдоров</strong><small>m.fedorov@inbox.ru</small></span></button></td><td><span class="status-chip status-warning"><i></i>Звонок</span></td><td>Backend developer</td><td class="table-date mono">28.09.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Михаила Фёдорова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Дарья Николаева" data-role="Финансовый аналитик" data-stage="Отклик" data-stage-class="neutral" data-date="27.09.2026" data-initials="ДН" data-tone="lilac"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Дарьи Николаевой"><span class="avatar avatar-table avatar-lilac">ДН</span><span><strong>Дарья Николаева</strong><small>d.nikolaeva@ya.ru</small></span></button></td><td><span class="status-chip status-neutral"><i></i>Отклик</span></td><td>Финансовый аналитик</td><td class="table-date mono">27.09.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Дарьи Николаевой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Алексей Соколов" data-role="Sales manager" data-stage="Новая заявка" data-stage-class="violet" data-date="26.09.2026" data-initials="АС" data-tone="blue"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Алексея Соколова"><span class="avatar avatar-table avatar-blue">АС</span><span><strong>Алексей Соколов</strong><small>a.sokolov@mail.ru</small></span></button></td><td><span class="status-chip status-violet"><i></i>Новая заявка</span></td><td>Sales manager</td><td class="table-date mono">26.09.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Алексея Соколова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Вероника Егорова" data-role="Legal counsel" data-stage="Собеседование" data-stage-class="info" data-date="25.09.2026" data-initials="ВЕ" data-tone="violet"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Вероники Егоровой"><span class="avatar avatar-table avatar-violet">ВЕ</span><span><strong>Вероника Егорова</strong><small>v.egorova@inbox.ru</small></span></button></td><td><span class="status-chip status-info"><i></i>Собеседование</span></td><td>Юрист</td><td class="table-date mono">25.09.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Вероники Егоровой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                    <tr class="candidate-row" data-candidate-row data-name="Дмитрий Павлов" data-role="Data engineer" data-stage="Оффер" data-stage-class="success" data-date="24.09.2026" data-initials="ДП" data-tone="teal"><td><button class="candidate-person" type="button" data-candidate-open aria-label="Открыть карточку Дмитрия Павлова"><span class="avatar avatar-table avatar-teal">ДП</span><span><strong>Дмитрий Павлов</strong><small>d.pavlov@proton.me</small></span></button></td><td><span class="status-chip status-success"><i></i>Оффер</span></td><td>Data engineer</td><td class="table-date mono">24.09.2026</td><td><button class="row-more icon-button" type="button" aria-label="Действия для Дмитрия Павлова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></td></tr>
+                  </tbody></table><div class="empty-filter" id="candidate-empty" hidden><span data-icon="search"></span><strong>Ничего не найдено</strong><span>Попробуйте изменить запрос или фильтр.</span></div></div>
+                <div class="table-panel-footer"><span>Показано <strong id="table-range">14</strong> из 142 кандидатов</span><div class="pagination"><button type="button" aria-label="Предыдущая страница" disabled><span data-icon="chevron-left"></span></button><button type="button" class="current-page" aria-current="page">1</button><button type="button" data-toast="Страница 2"><span>2</span></button><button type="button" data-toast="Страница 3"><span>3</span></button><span>…</span><button type="button" data-toast="Последняя страница"><span>15</span></button><button type="button" aria-label="Следующая страница" data-toast="Следующая страница"><span data-icon="chevron-right"></span></button></div></div>
+              </section>
+
+              <aside class="panel candidate-drawer" id="candidate-drawer" aria-label="Карточка кандидата" aria-live="polite">
+                <div class="drawer-heading"><div><span class="panel-eyebrow">КАРТОЧКА КАНДИДАТА</span><span class="candidate-id mono">HR-0248</span></div><div class="drawer-actions"><button class="icon-button" type="button" aria-label="Редактировать карточку" data-toast="Редактирование карточки"><span data-icon="edit"></span></button><button class="icon-button" type="button" aria-label="Закрыть карточку" id="close-candidate-drawer"><span data-icon="close"></span></button></div></div>
+                <div class="drawer-person"><div class="avatar avatar-large avatar-teal" id="drawer-avatar">АИ</div><div class="drawer-person-copy"><h2 id="drawer-name">Анна Иванова</h2><span id="drawer-role">Senior product designer</span><span class="status-chip status-info" id="drawer-stage"><i></i><span>Собеседование</span></span></div></div>
+                <div class="drawer-meta"><div><span data-icon="mail"></span><a id="drawer-email" href="mailto:anna.ivanova@mail.ru">anna.ivanova@mail.ru</a></div><div><span data-icon="phone"></span><span>+7 916 204-18-36</span></div><div><span data-icon="location"></span><span>Москва · гибрид</span></div></div>
+                <div class="drawer-detail"><div><span>Источник</span><strong>Рекомендация</strong></div><div><span>Ответственный</span><strong><span class="mini-avatar">АМ</span> Анна Миронова</strong></div><div><span>Дата добавления</span><strong class="mono" id="drawer-date">02.10.2026</strong></div></div>
+                <div class="drawer-tabs" role="tablist" aria-label="Разделы карточки кандидата">
+                  <button class="drawer-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="tab-messages" id="tab-button-messages" data-drawer-tab="messages">Сообщения <span>2</span></button>
+                  <button class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-documents" id="tab-button-documents" data-drawer-tab="documents">Документы <span>3</span></button>
+                  <button class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-attachments" id="tab-button-attachments" data-drawer-tab="attachments">Вложения <span>2</span></button>
+                  <button class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-generated" id="tab-button-generated" data-drawer-tab="generated">Сген. документы <span>2</span></button>
+                  <button class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-transfers" id="tab-button-transfers" data-drawer-tab="transfers">Перемещения</button>
+                </div>
+                <div class="drawer-tab-content">
+                  <section class="drawer-tab-panel" id="tab-messages" role="tabpanel" aria-labelledby="tab-button-messages" data-drawer-panel="messages">
+                    <div class="message-item"><div class="message-avatar avatar-teal">АМ</div><div><div class="message-heading"><strong>Вы</strong><span class="mono">09:18</span></div><p>Анна, приглашаем вас на техническое интервью сегодня в 10:30. Подойдёт?</p></div></div>
+                    <div class="message-item"><div class="message-avatar avatar-neutral">АИ</div><div><div class="message-heading"><strong>Анна Иванова</strong><span class="mono">09:31</span></div><p>Да, спасибо! Буду на связи.</p></div></div>
+                    <button class="button button-secondary drawer-message-button" type="button" data-toast="Новое сообщение"><span data-icon="message"></span><span>Написать сообщение</span></button>
+                  </section>
+                  <section class="drawer-tab-panel" id="tab-documents" role="tabpanel" aria-labelledby="tab-button-documents" data-drawer-panel="documents" hidden>
+                    <div class="file-row"><span class="file-icon"><span data-icon="file"></span></span><span><strong>Резюме_Иванова.pdf</strong><small>PDF · 1,8 МБ</small></span><button class="icon-button" type="button" aria-label="Скачать резюме" data-toast="Скачивание резюме"><span data-icon="download"></span></button></div>
+                    <div class="file-row"><span class="file-icon file-icon-teal"><span data-icon="file"></span></span><span><strong>Портфолио_2026.pdf</strong><small>PDF · 4,2 МБ</small></span><button class="icon-button" type="button" aria-label="Скачать портфолио" data-toast="Скачивание портфолио"><span data-icon="download"></span></button></div>
+                    <div class="file-row"><span class="file-icon file-icon-violet"><span data-icon="link"></span></span><span><strong>Профиль Behance</strong><small>behance.net/annaivanova</small></span><button class="icon-button" type="button" aria-label="Открыть ссылку" data-toast="Ссылка скопирована"><span data-icon="external"></span></button></div>
+                    <button class="button button-secondary drawer-message-button" type="button" data-toast="Загрузить документы"><span data-icon="upload"></span><span>Добавить документ</span></button>
+                  </section>
+                  <section class="drawer-tab-panel" id="tab-attachments" role="tabpanel" aria-labelledby="tab-button-attachments" data-drawer-panel="attachments" hidden>
+                    <div class="panel-eyebrow drawer-section-label">ВЛОЖЕНИЯ К ПРОФИЛЮ</div>
+                    <div class="file-row"><span class="file-icon file-icon-teal"><span data-icon="file"></span></span><span><strong>Кейс_редизайн.pdf</strong><small>PDF · 2,3 МБ · добавлен сегодня</small></span><button class="icon-button" type="button" aria-label="Скачать кейс" data-toast="Скачивание кейса"><span data-icon="download"></span></button></div>
+                    <div class="file-row"><span class="file-icon file-icon-violet"><span data-icon="file"></span></span><span><strong>Рекомендация_команды.pdf</strong><small>PDF · 840 КБ · 30.09.2026</small></span><button class="icon-button" type="button" aria-label="Скачать рекомендацию" data-toast="Скачивание рекомендации"><span data-icon="download"></span></button></div>
+                    <button class="button button-secondary drawer-message-button" type="button" data-toast="Добавить вложение"><span data-icon="paperclip"></span><span>Добавить вложение</span></button>
+                  </section>
+                  <section class="drawer-tab-panel" id="tab-generated" role="tabpanel" aria-labelledby="tab-button-generated" data-drawer-panel="generated" hidden>
+                    <div class="panel-eyebrow drawer-section-label">СОЗДАННЫЕ ДОКУМЕНТЫ</div>
+                    <div class="file-row"><span class="file-icon"><span data-icon="file"></span></span><span><strong>Согласие на обработку ПДн</strong><small>DOCX · создано 01.10.2026</small></span><button class="icon-button" type="button" aria-label="Скачать согласие на обработку данных" data-toast="Скачивание документа"><span data-icon="download"></span></button></div>
+                    <div class="file-row"><span class="file-icon file-icon-teal"><span data-icon="file"></span></span><span><strong>Анкета кандидата</strong><small>PDF · создана 30.09.2026</small></span><button class="icon-button" type="button" aria-label="Скачать анкету кандидата" data-toast="Скачивание анкеты"><span data-icon="download"></span></button></div>
+                    <button class="button button-secondary drawer-message-button" type="button" data-toast="Создать документ по шаблону"><span data-icon="plus"></span><span>Создать по шаблону</span></button>
+                  </section>
+                  <section class="drawer-tab-panel" id="tab-transfers" role="tabpanel" aria-labelledby="tab-button-transfers" data-drawer-panel="transfers" hidden>
+                    <div class="panel-eyebrow drawer-section-label">ИСТОРИЯ ЭТАПОВ</div>
+                    <div class="history-item"><span class="history-dot"></span><div><strong>Собеседование</strong><small>Анна Миронова · 02.10.2026, 09:14</small></div></div>
+                    <div class="history-item"><span class="history-dot history-dot-blue"></span><div><strong>Звонок → Собеседование</strong><small>Анна Миронова · 01.10.2026, 16:32</small></div></div>
+                    <div class="history-item"><span class="history-dot history-dot-violet"></span><div><strong>Новая заявка → Звонок</strong><small>Система · 30.09.2026, 12:06</small></div></div>
+                  </section>
+                </div>
+                <div class="drawer-bottom"><button class="button button-secondary" type="button" data-toast="Карточка сохранена"><span data-icon="bookmark"></span><span>Сохранить</span></button><button class="button button-primary" type="button" data-toast="Назначение встречи"><span data-icon="calendar-plus"></span><span>Встреча</span></button></div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="page pipeline-page" data-page="pipeline" aria-labelledby="pipeline-title" hidden>
+            <header class="page-heading">
+              <div><div class="eyebrow"><span class="live-dot"></span>АКТИВНЫЙ НАЙМ <span class="eyebrow-separator">/</span> 62 КАНДИДАТА</div><h1 id="pipeline-title">Воронка<span class="heading-period">.</span></h1><p class="page-subtitle">Двигайте кандидатов по этапам — вся команда видит обновления.</p></div>
+              <div class="heading-actions"><button class="button button-quiet" type="button" data-toast="Настройки отображения воронки"><span data-icon="sliders"></span><span>Настроить вид</span></button><button class="button button-primary" type="button" data-open-candidate-modal><span data-icon="plus"></span><span>Добавить кандидата</span></button></div>
+            </header>
+            <div class="board-toolbar"><div class="board-filters"><button class="filter-pill is-active" type="button" data-board-filter="all">Все кандидаты <span>62</span></button><button class="filter-pill" type="button" data-board-filter="mine">Мои <span>18</span></button><button class="filter-pill" type="button" data-board-filter="urgent">Требуют внимания <span class="pill-alert">4</span></button></div><div class="board-toolbar-right"><span class="board-updated"><i></i>Синхронизировано</span><button class="icon-button" type="button" aria-label="Фильтры воронки" data-toast="Фильтры воронки"><span data-icon="sliders"></span></button></div></div>
+            <div class="kanban-board" aria-label="Воронка кандидатов по этапам">
+              <section class="kanban-column" data-kanban-column="Новая заявка"><div class="column-heading"><div class="column-title-wrap"><i class="column-dot dot-violet"></i><h2>Новая заявка</h2><span class="column-count">12</span></div><button class="icon-button" type="button" aria-label="Добавить в этап Новая заявка" data-toast="Добавить кандидата на этап"><span data-icon="plus"></span></button></div><div class="column-subtitle">Первичная проверка</div><div class="kanban-cards">
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Артём Волков"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-blue">АВ</span><button class="icon-button" type="button" aria-label="Действия для Артёма Волкова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Артём Волков</h3><p>Product manager</p><div class="skill-tags"><span>Product</span><span>B2B</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="link"></span> hh.ru</span><span class="mono">2 ч назад</span></div></article>
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Алексей Соколов"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-lilac">АС</span><button class="icon-button" type="button" aria-label="Действия для Алексея Соколова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Алексей Соколов</h3><p>Sales manager</p><div class="skill-tags"><span>Sales</span><span>Enterprise</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="link"></span> Рекомендация</span><span class="mono">1 д назад</span></div></article>
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Дарья Николаева"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-amber">ДН</span><button class="icon-button" type="button" aria-label="Действия для Дарьи Николаевой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Дарья Николаева</h3><p>Финансовый аналитик</p><div class="skill-tags"><span>FP&amp;A</span><span>Excel</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="link"></span> LinkedIn</span><span class="mono">1 д назад</span></div></article>
+              </div><button class="column-add" type="button" data-toast="Добавить кандидата на этап"><span data-icon="plus"></span>Добавить кандидата</button></section>
+
+              <section class="kanban-column" data-kanban-column="Отклик"><div class="column-heading"><div class="column-title-wrap"><i class="column-dot dot-blue"></i><h2>Отклик</h2><span class="column-count">18</span></div><button class="icon-button" type="button" aria-label="Добавить в этап Отклик" data-toast="Добавить кандидата на этап"><span data-icon="plus"></span></button></div><div class="column-subtitle">Проверка резюме</div><div class="kanban-cards">
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Константин Баев"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-blue">КБ</span><button class="icon-button" type="button" aria-label="Действия для Константина Баева" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Константин Баев</h3><p>Senior backend engineer</p><div class="skill-tags"><span>Go</span><span>PostgreSQL</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="link"></span> Habr Career</span><span class="mono">3 ч назад</span></div></article>
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Никита Орлов"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-teal">НО</span><button class="icon-button" type="button" aria-label="Действия для Никиты Орлова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Никита Орлов</h3><p>DevOps engineer</p><div class="skill-tags"><span>AWS</span><span>Kubernetes</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="link"></span> LinkedIn</span><span class="mono">1 д назад</span></div></article>
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Михаил Фёдоров"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-amber">МФ</span><button class="icon-button" type="button" aria-label="Действия для Михаила Фёдорова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Михаил Фёдоров</h3><p>Backend developer</p><div class="skill-tags"><span>Java</span><span>Spring</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="link"></span> hh.ru</span><span class="mono">2 д назад</span></div></article>
+              </div><button class="column-add" type="button" data-toast="Добавить кандидата на этап"><span data-icon="plus"></span>Добавить кандидата</button></section>
+
+              <section class="kanban-column" data-kanban-column="Звонок"><div class="column-heading"><div class="column-title-wrap"><i class="column-dot dot-amber"></i><h2>Звонок</h2><span class="column-count">9</span></div><button class="icon-button" type="button" aria-label="Добавить в этап Звонок" data-toast="Добавить кандидата на этап"><span data-icon="plus"></span></button></div><div class="column-subtitle">Знакомство с HR</div><div class="kanban-cards">
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Софья Смирнова"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-amber">СС</span><button class="icon-button" type="button" aria-label="Действия для Софьи Смирновой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Софья Смирнова</h3><p>QA engineer</p><div class="skill-tags"><span>Manual QA</span><span>API</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="link"></span> Telegram</span><span class="mono">Сегодня</span></div></article>
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Виктория Белова"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-rose">ВБ</span><button class="icon-button" type="button" aria-label="Действия для Виктории Беловой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Виктория Белова</h3><p>Account executive</p><div class="skill-tags"><span>SaaS</span><span>English C1</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="link"></span> Рекомендация</span><span class="mono">Вчера</span></div></article>
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Егор Матвеев"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-violet">ЕМ</span><button class="icon-button" type="button" aria-label="Действия для Егора Матвеева" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Егор Матвеев</h3><p>UX writer</p><div class="skill-tags"><span>Content</span><span>UX</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="link"></span> LinkedIn</span><span class="mono">2 д назад</span></div></article>
+              </div><button class="column-add" type="button" data-toast="Добавить кандидата на этап"><span data-icon="plus"></span>Добавить кандидата</button></section>
+
+              <section class="kanban-column" data-kanban-column="Собеседование"><div class="column-heading"><div class="column-title-wrap"><i class="column-dot dot-teal"></i><h2>Собеседование</h2><span class="column-count">14</span></div><button class="icon-button" type="button" aria-label="Добавить в этап Собеседование" data-toast="Добавить кандидата на этап"><span data-icon="plus"></span></button></div><div class="column-subtitle">Встреча с командой</div><div class="kanban-cards">
+                <article class="kanban-card is-highlighted" draggable="true" tabindex="0" data-card-name="Анна Иванова"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-teal">АИ</span><button class="icon-button" type="button" aria-label="Действия для Анны Ивановой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Анна Иванова</h3><p>Senior product designer</p><div class="skill-tags"><span>Figma</span><span>Design systems</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="calendar"></span> Сегодня, 10:30</span><span class="mono card-owner">АМ</span></div></article>
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Илья Кузнецов"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-violet">ИК</span><button class="icon-button" type="button" aria-label="Действия для Ильи Кузнецова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Илья Кузнецов</h3><p>Data analyst</p><div class="skill-tags"><span>SQL</span><span>Python</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="calendar"></span> Сегодня, 16:00</span><span class="mono card-owner">ЕП</span></div></article>
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Елена Морозова"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-lilac">ЕМ</span><button class="icon-button" type="button" aria-label="Действия для Елены Морозовой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Елена Морозова</h3><p>UX researcher</p><div class="skill-tags"><span>Research</span><span>JTBD</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="calendar"></span> 05.10 · 11:00</span><span class="mono card-owner">АМ</span></div></article>
+              </div><button class="column-add" type="button" data-toast="Добавить кандидата на этап"><span data-icon="plus"></span>Добавить кандидата</button></section>
+
+              <section class="kanban-column" data-kanban-column="Оффер"><div class="column-heading"><div class="column-title-wrap"><i class="column-dot dot-green"></i><h2>Оффер</h2><span class="column-count">5</span></div><button class="icon-button" type="button" aria-label="Добавить в этап Оффер" data-toast="Добавить кандидата на этап"><span data-icon="plus"></span></button></div><div class="column-subtitle">Финальное решение</div><div class="kanban-cards">
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Мария Петрова"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-rose">МП</span><button class="icon-button" type="button" aria-label="Действия для Марии Петровой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Мария Петрова</h3><p>HR generalist</p><div class="skill-tags"><span>People</span><span>HRBP</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="check-circle"></span> Оффер отправлен</span><span class="mono">Вчера</span></div></article>
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Полина Сергеева"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-rose">ПС</span><button class="icon-button" type="button" aria-label="Действия для Полины Сергеевой" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Полина Сергеева</h3><p>Рекрутер</p><div class="skill-tags"><span>Recruiting</span><span>IT</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="check-circle"></span> Оффер согласован</span><span class="mono">30.09</span></div></article>
+                <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Дмитрий Павлов"><div class="card-grab" aria-hidden="true" data-icon="grip"></div><div class="kanban-card-top"><span class="avatar avatar-card avatar-teal">ДП</span><button class="icon-button" type="button" aria-label="Действия для Дмитрия Павлова" data-toast="Действия с кандидатом"><span data-icon="more"></span></button></div><h3>Дмитрий Павлов</h3><p>Data engineer</p><div class="skill-tags"><span>Python</span><span>Airflow</span></div><div class="kanban-card-foot"><span class="card-source"><span data-icon="check-circle"></span> Ожидает ответа</span><span class="mono">29.09</span></div></article>
+              </div><button class="column-add" type="button" data-toast="Добавить кандидата на этап"><span data-icon="plus"></span>Добавить кандидата</button></section>
+            </div>
+            <div class="board-hint"><span data-icon="grip"></span><span>Перетаскивайте карточки между этапами, чтобы обновить статус.</span><span class="board-hint-kbd">Drag &amp; drop</span></div>
+          </section>
+
+          <section class="page analytics-page" data-page="analytics" aria-labelledby="analytics-title" hidden>
+            <header class="page-heading">
+              <div><div class="eyebrow"><span class="live-dot"></span>ОТЧЁТ ПО НАЙМУ <span class="eyebrow-separator">/</span> 02.10.2026</div><h1 id="analytics-title">Аналитика<span class="heading-period">.</span></h1><p class="page-subtitle">Понимайте скорость, качество и узкие места в найме.</p></div>
+              <div class="heading-actions"><label class="select-wrap analytics-filter"><span class="sr-only">HR-специалист</span><select><option>Вся команда</option><option>Анна Миронова</option><option>Елена Петрова</option></select><span data-icon="chevron-down"></span></label><button class="button button-quiet" type="button" data-toast="Отчёт экспортирован"><span data-icon="download"></span><span>Экспорт отчёта</span></button></div>
+            </header>
+            <div class="analytics-toolbar"><div class="period-tabs" role="group" aria-label="Период аналитики"><button class="is-selected" type="button" data-analytics-period="День">День</button><button type="button" data-analytics-period="Неделя">Неделя</button><button type="button" data-analytics-period="Месяц">Месяц</button><button type="button" data-analytics-period="Квартал">Квартал</button></div><button class="date-range-button" type="button" data-toast="Выбор периода"><span data-icon="calendar"></span>01.09.2026 — 30.09.2026<span data-icon="chevron-down"></span></button></div>
+            <section class="metric-grid analytics-metrics" aria-label="Показатели за период">
+              <article class="metric-card panel"><div class="metric-topline"><span class="metric-label">Создано кандидатов</span><span class="metric-icon"><span data-icon="users"></span></span></div><div class="metric-value"><strong data-counter="286">286</strong><span class="metric-unit">человек</span></div><div class="metric-foot"><span class="metric-delta"><span data-icon="arrow-up-right"></span> 18%</span><span>к прошлому периоду</span><svg class="sparkline" viewBox="0 0 82 30" aria-hidden="true"><path d="M2 23 C13 20 16 13 23 17 S34 8 42 14 S54 7 60 10 S72 3 80 2"/></svg></div></article>
+              <article class="metric-card panel"><div class="metric-topline"><span class="metric-label">Конверсия в интервью</span><span class="metric-icon metric-icon-blue"><span data-icon="chart"></span></span></div><div class="metric-value"><strong data-counter="34">34</strong><span class="metric-unit">%</span></div><div class="metric-foot"><span class="metric-delta"><span data-icon="arrow-up-right"></span> 4.2 п.п.</span><span>за месяц</span><svg class="sparkline sparkline-blue" viewBox="0 0 82 30" aria-hidden="true"><path d="M2 25 C9 22 15 23 22 17 S31 19 39 12 S50 15 57 8 S70 12 80 2"/></svg></div></article>
+              <article class="metric-card panel"><div class="metric-topline"><span class="metric-label">Средний срок найма</span><span class="metric-icon metric-icon-amber"><span data-icon="clock"></span></span></div><div class="metric-value"><strong data-counter="18">18</strong><span class="metric-unit">дней</span></div><div class="metric-foot"><span class="metric-delta is-positive"><span data-icon="arrow-down-right"></span> 3 дня</span><span>к прошлому месяцу</span><svg class="sparkline sparkline-amber" viewBox="0 0 82 30" aria-hidden="true"><path d="M2 2 C10 7 15 5 22 10 S32 8 40 14 S50 12 58 18 S69 20 80 26"/></svg></div></article>
+              <article class="metric-card panel"><div class="metric-topline"><span class="metric-label">Закрыто вакансий</span><span class="metric-icon metric-icon-violet"><span data-icon="check-circle"></span></span></div><div class="metric-value"><strong data-counter="21">21</strong><span class="metric-unit">из 28</span></div><div class="metric-foot"><span class="metric-delta"><span data-icon="arrow-up-right"></span> 7</span><span>план выполнен на 75%</span><svg class="sparkline sparkline-violet" viewBox="0 0 82 30" aria-hidden="true"><path d="M2 24 C12 25 14 20 22 21 S33 14 40 17 S51 10 59 12 S69 7 80 3"/></svg></div></article>
+            </section>
+            <div class="analytics-grid">
+              <section class="panel funnel-panel" aria-labelledby="funnel-title"><div class="panel-heading"><div><div class="panel-eyebrow">КОНВЕРСИЯ ПО ЭТАПАМ</div><h2 id="funnel-title">Воронка найма</h2><p>От первого отклика до выхода в команду</p></div><button class="icon-button" type="button" aria-label="Фильтры воронки" data-toast="Фильтры аналитики"><span data-icon="more"></span></button></div>
+                <div class="funnel-list"><div class="funnel-row"><div class="funnel-row-head"><span>Отклик</span><strong class="mono">640 <small>100%</small></strong></div><div class="funnel-track"><span style="width:100%"></span></div></div><div class="funnel-row"><div class="funnel-row-head"><span>Звонок</span><strong class="mono">442 <small>69%</small></strong></div><div class="funnel-track"><span style="width:69%"></span></div></div><div class="funnel-row"><div class="funnel-row-head"><span>Собеседование</span><strong class="mono">298 <small>47%</small></strong></div><div class="funnel-track"><span style="width:47%"></span></div></div><div class="funnel-row"><div class="funnel-row-head"><span>Оффер</span><strong class="mono">162 <small>25%</small></strong></div><div class="funnel-track"><span style="width:25%"></span></div></div><div class="funnel-row"><div class="funnel-row-head"><span>Выход</span><strong class="mono">97 <small>15%</small></strong></div><div class="funnel-track"><span style="width:15%"></span></div></div></div>
+                <div class="funnel-footnote"><span class="footnote-dot"></span>Самый высокий отток — между этапами «Отклик» и «Звонок» <strong>−31%</strong></div>
+              </section>
+              <section class="panel sources-panel" aria-labelledby="sources-title"><div class="panel-heading"><div><div class="panel-eyebrow">КАЧЕСТВО ИСТОЧНИКОВ</div><h2 id="sources-title">Откуда приходят кандидаты</h2><p>286 новых профилей за месяц</p></div><button class="icon-button" type="button" aria-label="Подробнее об источниках" data-toast="Детализация источников"><span data-icon="more"></span></button></div>
+                <div class="source-chart-row"><div class="source-donut" role="img" aria-label="Источники кандидатов: рекомендации 38 процентов, hh.ru 31 процент, LinkedIn 19 процентов, другое 12 процентов"><svg viewBox="0 0 160 160" aria-hidden="true"><circle class="donut-track" cx="80" cy="80" r="58"/><circle class="donut-segment segment-a" cx="80" cy="80" r="58"/><circle class="donut-segment segment-b" cx="80" cy="80" r="58"/><circle class="donut-segment segment-c" cx="80" cy="80" r="58"/></svg><div class="donut-label"><strong>286</strong><span>кандидатов</span></div></div><div class="source-legend"><div><i class="source-dot source-teal"></i><span>Рекомендации</span><strong>38%</strong></div><div><i class="source-dot source-blue"></i><span>hh.ru</span><strong>31%</strong></div><div><i class="source-dot source-violet"></i><span>LinkedIn</span><strong>19%</strong></div><div><i class="source-dot source-muted"></i><span>Другое</span><strong>12%</strong></div></div></div>
+                <div class="source-insight"><span class="insight-icon"><span data-icon="sparkle"></span></span><p><strong>Рекомендации — самый эффективный канал.</strong> Конверсия в интервью на 14% выше средней.</p></div>
+              </section>
+              <section class="panel time-panel" aria-labelledby="time-title"><div class="panel-heading"><div><div class="panel-eyebrow">СКОРОСТЬ ПРОЦЕССА</div><h2 id="time-title">Время до этапа</h2><p>Среднее количество дней, сентябрь 2026</p></div><div class="time-legend"><i></i>Текущий период</div></div><div class="time-bars" role="img" aria-label="Время на этап: отклик 1,2 дня, звонок 2,4 дня, интервью 5,8 дня, оффер 3,1 дня"><div><span class="time-value mono">1,2 дн.</span><i style="--bar-height:25%"></i><small>Отклик</small></div><div><span class="time-value mono">2,4 дн.</span><i style="--bar-height:43%"></i><small>Звонок</small></div><div><span class="time-value mono">5,8 дн.</span><i style="--bar-height:90%"></i><small>Интервью</small></div><div><span class="time-value mono">3,1 дн.</span><i style="--bar-height:56%"></i><small>Оффер</small></div></div><div class="time-panel-footer"><span>Целевой срок найма</span><strong class="mono">≤ 21 дня</strong><span class="status-chip status-success"><i></i>В норме</span></div></section>
+              <section class="panel recruiters-panel" aria-labelledby="recruiters-title"><div class="panel-heading"><div><div class="panel-eyebrow">КОМАНДА</div><h2 id="recruiters-title">Результаты рекрутеров</h2><p>Закрытые вакансии за месяц</p></div><button class="text-button" type="button" data-toast="Все рекрутеры">Все <span data-icon="arrow-right"></span></button></div><div class="recruiter-list"><div class="recruiter-row"><span class="avatar avatar-card avatar-lilac">АМ</span><span class="recruiter-name"><strong>Анна Миронова</strong><small>8 активных вакансий</small></span><div class="recruiter-progress"><i style="width:82%"></i></div><strong class="mono">9</strong><span class="recruiter-trend">+2</span></div><div class="recruiter-row"><span class="avatar avatar-card avatar-teal">ЕП</span><span class="recruiter-name"><strong>Елена Петрова</strong><small>6 активных вакансий</small></span><div class="recruiter-progress"><i style="width:65%"></i></div><strong class="mono">7</strong><span class="recruiter-trend">+1</span></div><div class="recruiter-row"><span class="avatar avatar-card avatar-amber">ДК</span><span class="recruiter-name"><strong>Дмитрий Ким</strong><small>5 активных вакансий</small></span><div class="recruiter-progress"><i style="width:44%"></i></div><strong class="mono">5</strong><span class="recruiter-trend is-flat">0</span></div></div></section>
+            </div>
+          </section>
+
+          <section class="page wizard-page" data-page="new-list" aria-labelledby="wizard-title" hidden>
+            <header class="page-heading">
+              <div><div class="eyebrow"><span class="eyebrow-marker"></span>ДОКУМЕНТЫ <span class="eyebrow-separator">/</span> НОВЫЙ СПИСОК</div><h1 id="wizard-title">Новый список<span class="heading-period">.</span></h1><p class="page-subtitle">Соберите документы для каждого этапа найма в одном месте.</p></div>
+              <div class="heading-actions"><a class="button button-quiet" href="#documents"><span data-icon="arrow-left"></span><span>К спискам</span></a></div>
+            </header>
+            <div class="wizard-layout">
+              <section class="panel wizard-form-panel" aria-label="Настройка списка документов">
+                <div class="wizard-card-header"><div><span class="panel-eyebrow">МАСТЕР НАСТРОЙКИ</span><h2 id="wizard-card-title">Создайте рабочий список</h2><p>Пара коротких шагов — и всё готово для команды.</p></div><span class="step-counter mono" id="step-counter">01 <i>/</i> 02</span></div>
+                <div class="wizard-stepper" aria-label="Шаги мастера"><div class="wizard-step is-current" data-step-indicator="1"><span class="step-number">01</span><span><strong>Основное</strong><small>Название и назначение</small></span></div><span class="step-connector"></span><div class="wizard-step" data-step-indicator="2"><span class="step-number">02</span><span><strong>Состав</strong><small>Документы и доступ</small></span></div></div>
+                <form id="document-list-form" novalidate>
+                  <div class="wizard-panel-content" data-step-panel="1">
+                    <div class="form-section-title"><span>ШАГ 01</span><h3>Основная информация</h3></div>
+                    <label class="form-field"><span>Название списка <b>*</b></span><input id="list-name" name="name" type="text" required placeholder="Например, Выход в команду" maxlength="60" /><small>Понятное название поможет коллегам быстро найти список.</small></label>
+                    <label class="form-field"><span>Для какого этапа найма</span><select id="list-stage"><option value="">Выберите этап</option><option>Первичное интервью</option><option>Оформление оффера</option><option>Выход в команду</option><option>Испытательный срок</option></select><span class="select-chevron" data-icon="chevron-down"></span></label>
+                    <label class="form-field"><span>Краткое описание</span><textarea id="list-description" rows="3" placeholder="Какие документы собрать и кто отвечает за процесс?"></textarea><small>Необязательно · до 240 символов.</small></label>
+                    <div class="form-field"><span>Владелец списка</span><button class="owner-select" type="button" data-toast="Владелец списка: Анна Миронова"><span class="avatar avatar-mini avatar-lilac">АМ</span><span><strong>Анна Миронова</strong><small>HR-директор</small></span><span class="owner-chevron" data-icon="chevron-down"></span></button></div>
+                    <div class="form-error" id="wizard-error" role="alert" hidden>Укажите название списка, чтобы продолжить.</div>
+                    <div class="wizard-form-actions"><span class="required-hint"><b>*</b> Обязательное поле</span><button class="button button-primary" type="button" id="wizard-next">Продолжить <span data-icon="arrow-right"></span></button></div>
+                  </div>
+                  <div class="wizard-panel-content" data-step-panel="2" hidden>
+                    <div class="form-section-title"><span>ШАГ 02</span><h3>Документы и доступ</h3></div>
+                    <fieldset class="form-fieldset"><legend>Добавьте документы в список</legend><label class="check-option"><input type="checkbox" checked /><span class="custom-check"></span><span class="check-option-copy"><strong>Паспорт</strong><small>Основной документ кандидата</small></span><span class="check-badge">Обязательно</span></label><label class="check-option"><input type="checkbox" checked /><span class="custom-check"></span><span class="check-option-copy"><strong>СНИЛС</strong><small>Страховой номер индивидуального счёта</small></span></label><label class="check-option"><input type="checkbox" /><span class="custom-check"></span><span class="check-option-copy"><strong>ИНН</strong><small>Свидетельство о постановке на учёт</small></span></label><label class="check-option"><input type="checkbox" /><span class="custom-check"></span><span class="check-option-copy"><strong>Диплом об образовании</strong><small>Документ об образовании и квалификации</small></span></label><button class="add-doc-link" type="button" data-toast="Выбор документа из библиотеки"><span data-icon="plus"></span> Добавить из библиотеки</button></fieldset>
+                    <fieldset class="form-fieldset access-fieldset"><legend>Кто может управлять списком</legend><label class="radio-option"><input type="radio" name="access" checked /><span class="custom-radio"></span><span><strong>Вся команда</strong><small>Видно всем участникам пространства</small></span></label><label class="radio-option"><input type="radio" name="access" /><span class="custom-radio"></span><span><strong>Только я</strong><small>Доступ только у Анны Мироновой</small></span></label></fieldset>
+                    <div class="wizard-form-actions"><button class="button button-quiet" type="button" id="wizard-back"><span data-icon="arrow-left"></span> Назад</button><button class="button button-primary" type="submit"><span data-icon="check"></span> Создать список</button></div>
+                  </div>
+                  <div class="wizard-success" id="wizard-success" hidden><span class="success-icon"><span data-icon="check"></span></span><span class="panel-eyebrow">ГОТОВО</span><h3>Список создан</h3><p id="success-list-name">Он уже доступен команде и готов к использованию.</p><a class="button button-primary" href="#documents">К спискам документов <span data-icon="arrow-right"></span></a></div>
+                </form>
+              </section>
+              <aside class="wizard-aside">
+                <section class="panel preview-panel"><div class="preview-header"><div><span class="panel-eyebrow">ПРЕДПРОСМОТР</span><h2>Как это увидит команда</h2></div><span class="preview-live"><i></i>В реальном времени</span></div><div class="document-list-preview"><div class="preview-list-top"><span class="preview-folder"><span data-icon="folder"></span></span><span class="preview-menu" data-icon="more"></span></div><h3 id="preview-list-title">Название списка</h3><p id="preview-list-stage">Этап не выбран</p><div class="preview-divider"></div><div class="preview-document"><span class="preview-doc-icon"><span data-icon="file"></span></span><span><strong>Паспорт</strong><small>Обязательный документ</small></span><span class="preview-doc-check"><span data-icon="check"></span></span></div><div class="preview-document"><span class="preview-doc-icon doc-icon-teal"><span data-icon="file"></span></span><span><strong>СНИЛС</strong><small>Добавьте скан документа</small></span><span class="preview-doc-check"><span data-icon="check"></span></span></div><div class="preview-document preview-document-muted"><span class="preview-doc-icon doc-icon-violet"><span data-icon="file"></span></span><span><strong>ИНН</strong><small>По необходимости</small></span><span class="preview-doc-plus"><span data-icon="plus"></span></span></div><div class="preview-owner"><span class="avatar avatar-mini avatar-lilac">АМ</span><span><small>Владелец</small><strong>Анна Миронова</strong></span><span class="preview-access"><span data-icon="users"></span> Команда</span></div></div></section>
+                <section class="panel tip-panel"><span class="tip-icon"><span data-icon="sparkle"></span></span><div><strong>Совет</strong><p>Создайте отдельный список для каждого этапа: так ничего не потеряется между оффером и первым рабочим днём.</p></div></section>
+              </aside>
+            </div>
+          </section>
+
+          <section class="page coming-soon-page" data-page="coming-soon" aria-labelledby="coming-title" hidden>
+            <div class="coming-content"><span class="coming-icon"><span data-icon="sparkle"></span></span><div class="eyebrow"><span class="live-dot"></span>РАБОЧЕЕ ПРОСТРАНСТВО</div><h1 id="coming-title">Календарь<span class="heading-period">.</span></h1><p id="coming-description">Все события команды в одном ритме.</p><div class="coming-divider"></div><div class="coming-note"><span data-icon="info"></span><span>Этот раздел предусмотрен в структуре HR Manager. В макете доступны ключевые сценарии: очередь, кандидаты, воронка, аналитика и документы.</span></div><a href="#dashboard" class="button button-primary"><span data-icon="arrow-left"></span> Вернуться в очередь</a></div>
+            <div class="coming-shortcuts"><span class="panel-eyebrow">БЫСТРЫЙ ПЕРЕХОД</span><a href="#candidates"><span data-icon="users"></span>Кандидаты<span data-icon="arrow-up-right"></span></a><a href="#pipeline"><span data-icon="kanban"></span>Воронка<span data-icon="arrow-up-right"></span></a><a href="#analytics"><span data-icon="chart"></span>Аналитика<span data-icon="arrow-up-right"></span></a><a href="#new-list"><span data-icon="file"></span>Новый список документов<span data-icon="arrow-up-right"></span></a></div>
+          </section>
+        </main>
+        <footer class="app-footer"><span>HR MANAGER <i>·</i> DESIGN CONCEPT 01</span><span><span class="footer-live-dot"></span>Интерфейс работает в режиме превью</span><span>Рабочее пространство «Север»</span></footer>
+      </div>
+    </div>
+
+    <dialog class="command-dialog" id="command-palette" aria-labelledby="command-title">
+      <div class="command-shell"><div class="command-search-row"><span data-icon="search"></span><label class="sr-only" id="command-title" for="command-input">Поиск и команды</label><input id="command-input" type="search" placeholder="Найти экран, кандидата или действие..." autocomplete="off" /><kbd>ESC</kbd></div><div class="command-results" id="command-results" role="listbox" aria-label="Результаты поиска"></div><div class="command-footer"><span><kbd>↑</kbd><kbd>↓</kbd> навигация</span><span><kbd>↵</kbd> открыть</span><span><kbd>ESC</kbd> закрыть</span></div></div>
+    </dialog>
+
+    <dialog class="form-dialog" id="candidate-modal" aria-labelledby="candidate-modal-title">
+      <form id="new-candidate-form" method="dialog">
+        <div class="modal-heading"><div><span class="panel-eyebrow">НОВЫЙ ПРОФИЛЬ</span><h2 id="candidate-modal-title">Добавить кандидата</h2><p>Создайте карточку и продолжите работу в воронке.</p></div><button class="icon-button" type="button" aria-label="Закрыть" data-close-candidate-modal><span data-icon="close"></span></button></div>
+        <label class="form-field"><span>Имя и фамилия <b>*</b></span><input id="new-candidate-name" type="text" required placeholder="Например, Ирина Смирнова" /></label>
+        <label class="form-field"><span>Вакансия <b>*</b></span><select id="new-candidate-role" required><option value="">Выберите вакансию</option><option>Product designer</option><option>Backend engineer</option><option>Data analyst</option><option>QA engineer</option><option>Рекрутер</option></select><span class="select-chevron" data-icon="chevron-down"></span></label>
+        <label class="form-field"><span>Источник</span><select><option>Рекомендация</option><option>hh.ru</option><option>LinkedIn</option><option>Другое</option></select><span class="select-chevron" data-icon="chevron-down"></span></label>
+        <div class="modal-actions"><button class="button button-quiet" type="button" data-close-candidate-modal>Отмена</button><button class="button button-primary" type="submit"><span data-icon="plus"></span> Создать профиль</button></div>
+      </form>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+    <script src="app.js" defer></script>
+  </body>
+</html>
