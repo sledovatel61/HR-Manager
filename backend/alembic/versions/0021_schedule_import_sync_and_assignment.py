@@ -16,6 +16,7 @@ Create Date: 2026-10-02
 """
 
 from collections.abc import Sequence
+from typing import Any
 
 import sqlalchemy as sa
 
@@ -246,7 +247,7 @@ def upgrade() -> None:
             sa.Column(name, sa.Integer(), nullable=False, server_default="0"),
         )
 
-    additions = (
+    additions: tuple[sa.Column[Any], ...] = (
         sa.Column("source_identity", sa.String(length=64), nullable=True),
         sa.Column("row_order", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("row_type", sa.String(length=16), nullable=False, server_default="skip"),

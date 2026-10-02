@@ -19,14 +19,16 @@ import json
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from datetime import time
+from datetime import date, datetime, time
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.worksheet.worksheet import Worksheet
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
@@ -67,6 +69,46 @@ def _same_rows_different_workbook_bytes() -> bytes:
 
     workbook = load_workbook(io.BytesIO(_fixture_bytes()))
     workbook.properties.title = "Параллельная версия того же графика"
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+def _small_schedule_workbook(
+    *, include_person: bool = True, person_time: time = time(9, 30)
+) -> bytes:
+    """Build a compact source snapshot for changed/active/missing row checks."""
+
+    workbook = Workbook()
+    sheet = cast(Worksheet, workbook.active)
+    sheet.append(
+        [
+            "пР",
+            "ФИО",
+            "Дата и время",
+            "Организация",
+            "Наименование отдела",
+            "должность",
+            "комментарии",
+        ]
+    )
+    date_row = sheet.max_row + 1
+    sheet.cell(row=date_row, column=2, value=datetime(2026, 8, 10))
+    sheet.merge_cells(start_row=date_row, start_column=2, end_row=date_row, end_column=7)
+    if include_person:
+        sheet.append(
+            [
+                1,
+                "Импортированная Анна Петрова",
+                person_time,
+                "ООО Пример",
+                "Цех Один",
+                "Кладовщик",
+                None,
+            ]
+        )
+    sheet.append([2, "Увольнение", "13:00–14:00", None, None, None, None])
     output = io.BytesIO()
     workbook.save(output)
     workbook.close()
@@ -119,6 +161,7 @@ def test_preview_is_read_only_on_postgres(pg_client: TestClient, pg_db: Session)
 
 def test_confirmed_import_round_trips_on_postgres(pg_client: TestClient, pg_db: Session) -> None:
     hr = make_user(pg_db, username="hr1", role=UserRole.HR)
+    make_user(pg_db, username="boss", role=UserRole.MANAGER)
     csrf = _login(pg_client, "hr1")
 
     response = _confirm(pg_client, _fixture_bytes(), csrf)
@@ -143,11 +186,20 @@ def test_confirmed_import_round_trips_on_postgres(pg_client: TestClient, pg_db: 
     assert testova.start_date.isoformat() == "2026-08-10"
     assert testova.start_time == time(9, 30)
 
-    # Служебные строки видны в графике вместе с кандидатами.
+    # HR without the all-candidates grant does not gain access to unassigned
+    # candidate cards just by importing their source rows; service entries are
+    # still visible in the shared schedule.
+    hr_listing = pg_client.get("/work-schedule?from=2026-08-10&to=2026-08-14").json()
+    assert {item["kind"] for item in hr_listing["items"]} == {"entry"}
+
+    # A manager has schedule-wide candidate visibility, including active
+    # imported rows with dates, alongside the service entries.
+    _login(pg_client, "boss")
     listing = pg_client.get("/work-schedule?from=2026-08-10&to=2026-08-14").json()
     kinds = {item["kind"] for item in listing["items"]}
     assert kinds == {"candidate", "entry"}
     assert any(item["display_name"] == "Увольнение" for item in listing["items"])
+    assert any(item["display_name"] == "Тестова Анна Ивановна" for item in listing["items"])
 
     # Связи импорт → сущности сохранены (провенанс).
     import_record = pg_db.scalar(select(ScheduleImport))
@@ -155,9 +207,8 @@ def test_confirmed_import_round_trips_on_postgres(pg_client: TestClient, pg_db: 
     links = pg_db.scalars(
         select(ScheduleImportRow).where(ScheduleImportRow.import_id == import_record.id)
     ).all()
-    assert (
-        len(links) == body["created"] + body["service_created"] + body["updated"] + body["matched"]
-    )
+    assert len(links) == len(body["rows"])
+    assert len({row.row_key for row in links}) == len(links)
 
     # Повтор того же ФИО внутри файла: один кандидат, вторая строка обновляет
     # поля выхода той же карточки (никаких тихих дублей).
@@ -180,21 +231,179 @@ def test_confirmed_import_round_trips_on_postgres(pg_client: TestClient, pg_db: 
     assert "Тестова" not in (audit.details or "")
 
 
+def test_latest_import_controls_scheduled_candidates_on_postgres(
+    pg_client: TestClient, pg_db: Session
+) -> None:
+    manager = make_user(pg_db, username="boss", role=UserRole.MANAGER)
+    manual = make_candidate(
+        pg_db,
+        owner=manager,
+        full_name="Ручной кандидат Петров",
+        stage=CandidateStage.OFFER,
+    )
+    manual.start_date = date(2026, 8, 10)
+    manual.start_time = time(8, 30)
+    pg_db.commit()
+    csrf = _login(pg_client, "boss")
+
+    first = _confirm(pg_client, _small_schedule_workbook(), csrf)
+    assert first.status_code == 200, first.text
+    assert first.json()["created"] == 1
+    assert first.json()["service_created"] == 1
+    pg_db.expire_all()
+
+    imported = pg_db.scalar(
+        select(Candidate).where(Candidate.source == CandidateSource.EXCEL_IMPORT)
+    )
+    assert imported is not None
+    first_import = pg_db.scalar(
+        select(ScheduleImport).order_by(ScheduleImport.created_at.desc()).limit(1)
+    )
+    assert first_import is not None
+    first_rows = list(
+        pg_db.scalars(
+            select(ScheduleImportRow).where(
+                ScheduleImportRow.import_id == first_import.id,
+                ScheduleImportRow.is_active.is_(True),
+            )
+        ).all()
+    )
+    imported_source = next(row for row in first_rows if row.row_type == "person")
+    service_source = next(row for row in first_rows if row.row_type == "service")
+    assert imported_source.candidate_id == imported.id
+    assert service_source.entry_id is not None
+
+    before = pg_client.get("/work-schedule?from=2026-08-10&to=2026-08-10").json()
+    before_candidates = {
+        item["candidate_id"] for item in before["items"] if item["kind"] == "candidate"
+    }
+    assert str(imported.id) in before_candidates
+    assert str(manual.id) in before_candidates
+    before_entries = [item for item in before["items"] if item["kind"] == "entry"]
+    assert len(before_entries) == 1
+    assert before_entries[0]["id"] == str(service_source.entry_id)
+
+    # A changed source time updates the linked candidate without creating a
+    # second card or service entry.
+    changed = _confirm(
+        pg_client,
+        _small_schedule_workbook(person_time=time(10, 15)),
+        csrf,
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["created"] == 0
+    assert changed.json()["rows_updated"] >= 1
+    pg_db.expire_all()
+    resynced = pg_db.get(Candidate, imported.id)
+    assert resynced is not None and resynced.start_time == time(10, 15)
+    changed_import = pg_db.scalar(
+        select(ScheduleImport).order_by(ScheduleImport.created_at.desc()).limit(1)
+    )
+    assert changed_import is not None and changed_import.id != first_import.id
+    assert pg_db.scalar(select(func.count()).select_from(Candidate)) == 2
+    assert pg_db.scalar(select(func.count()).select_from(ScheduleEntry)) == 1
+
+    # Removing the person from the latest master deactivates only that source
+    # row; it does not delete the Candidate or an unrelated manual candidate.
+    third = _confirm(pg_client, _small_schedule_workbook(include_person=False), csrf)
+    assert third.status_code == 200, third.text
+    assert third.json()["rows_missing"] == 1
+    pg_db.expire_all()
+
+    missing_source = pg_db.scalar(
+        select(ScheduleImportRow).where(
+            ScheduleImportRow.import_id == changed_import.id,
+            ScheduleImportRow.candidate_id == imported.id,
+        )
+    )
+    assert missing_source is not None
+    assert missing_source.is_active is False
+    assert missing_source.sync_status == "missing"
+    assert pg_db.get(Candidate, imported.id) is not None
+    assert pg_db.scalar(select(func.count()).select_from(ScheduleEntry)) == 1
+
+    after = pg_client.get("/work-schedule?from=2026-08-10&to=2026-08-10").json()
+    after_candidates = {
+        item["candidate_id"] for item in after["items"] if item["kind"] == "candidate"
+    }
+    assert str(imported.id) not in after_candidates
+    assert str(manual.id) in after_candidates
+    after_entries = [item for item in after["items"] if item["kind"] == "entry"]
+    assert len(after_entries) == 1
+    assert after_entries[0]["id"] == str(service_source.entry_id)
+
+
 def test_reimport_is_idempotent_on_postgres(pg_client: TestClient, pg_db: Session) -> None:
     make_user(pg_db, username="hr1", role=UserRole.HR)
     csrf = _login(pg_client, "hr1")
 
     first = _confirm(pg_client, _fixture_bytes(), csrf)
     assert first.status_code == 200
-    created_first = first.json()["created"]
-    service_first = first.json()["service_created"]
+    first_body = first.json()
+    created_first = first_body["created"]
+    service_first = first_body["service_created"]
+    first_import = pg_db.scalar(
+        select(ScheduleImport).order_by(ScheduleImport.created_at.desc()).limit(1)
+    )
+    assert first_import is not None
+    first_rows = list(
+        pg_db.scalars(
+            select(ScheduleImportRow).where(
+                ScheduleImportRow.import_id == first_import.id,
+                ScheduleImportRow.is_active.is_(True),
+            )
+        ).all()
+    )
+    first_links = {
+        row.row_key: (row.row_type, row.candidate_id, row.entry_id) for row in first_rows
+    }
+    assert len(first_links) == len(first_rows)
 
     second = _confirm(pg_client, _fixture_bytes(), csrf)
     assert second.status_code == 200
     body = second.json()
     assert body["created"] == 0
+    assert body["matched"] == 0
+    assert body["updated"] == 0
     assert body["service_created"] == 0
     assert body["skipped"] >= created_first + service_first
+    assert body["rows_added"] == 0
+    assert body["rows_updated"] == 0
+    assert body["rows_unchanged"] == first_body["rows_added"]
+    assert body["rows_missing"] == 0
+    assert body["skipped"] == len(body["rows"])
+    assert all(row["result"] == "skipped" for row in body["rows"])
+
+    pg_db.expire_all()
+    latest_import = pg_db.scalar(
+        select(ScheduleImport).order_by(ScheduleImport.created_at.desc()).limit(1)
+    )
+    assert latest_import is not None and latest_import.id != first_import.id
+    active_rows = list(
+        pg_db.scalars(
+            select(ScheduleImportRow).where(ScheduleImportRow.is_active.is_(True))
+        ).all()
+    )
+    assert len(active_rows) == len(first_links)
+    assert {row.import_id for row in active_rows} == {latest_import.id}
+    assert len({row.row_key for row in active_rows}) == len(active_rows)
+    assert {
+        row.row_key: (row.row_type, row.candidate_id, row.entry_id) for row in active_rows
+    } == first_links
+    superseded_rows = list(
+        pg_db.scalars(
+            select(ScheduleImportRow).where(ScheduleImportRow.import_id == first_import.id)
+        ).all()
+    )
+    assert all(not row.is_active and row.sync_status == "superseded" for row in superseded_rows)
+    assert (
+        pg_db.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.action == AuditAction.CANDIDATE_START_SCHEDULE_CHANGED)
+        )
+        == 0
+    )
 
     assert (
         pg_db.scalar(
