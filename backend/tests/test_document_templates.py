@@ -88,6 +88,34 @@ def _published_template(client: TestClient, db: Session) -> tuple[User, dict, di
     return admin, template, headers
 
 
+def test_generated_document_renders_missing_hr_for_unassigned_candidate(
+    client: TestClient, db_session: Session
+) -> None:
+    admin, template, headers = _published_template(client, db_session)
+    hr = make_user(db_session, username="unassigned-document-hr")
+    candidate = make_candidate(db_session, owner=hr, full_name="Кандидат без HR")
+    candidate.owner_user_id = None
+    candidate.owner = None
+    db_session.add(
+        AccessGrant(
+            user_id=admin.id,
+            scope=AccessGrantScope.CANDIDATE_DOCUMENTS_ALL,
+            granted_by_user_id=admin.id,
+            granted_at=ops.utc_now(),
+        )
+    )
+    db_session.commit()
+
+    version_id = template["versions"][0]["id"]
+    preview = client.post(
+        f"/candidates/{candidate.id}/generated-documents/preview",
+        json={"template_version_id": version_id},
+        headers=headers,
+    )
+    assert preview.status_code == 200, preview.text
+    assert "Ответственный HR: —" in preview.json()["body_text"]
+
+
 # --- Dictionaries -------------------------------------------------------------
 
 

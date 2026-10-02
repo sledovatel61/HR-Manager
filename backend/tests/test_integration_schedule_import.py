@@ -26,6 +26,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
@@ -59,6 +60,17 @@ def _clean_limiter() -> Iterator[None]:
 
 def _fixture_bytes() -> bytes:
     return FIXTURE_PATH.read_bytes()
+
+
+def _same_rows_different_workbook_bytes() -> bytes:
+    """Keep source rows identical while changing the file fingerprint."""
+
+    workbook = load_workbook(io.BytesIO(_fixture_bytes()))
+    workbook.properties.title = "Параллельная версия того же графика"
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
 
 
 def _login(client: TestClient, username: str) -> str:
@@ -115,14 +127,15 @@ def test_confirmed_import_round_trips_on_postgres(pg_client: TestClient, pg_db: 
     assert body["created"] >= 20
     assert body["service_created"] == 5
 
-    # Источник и владелец записаны честно, дата/время дошли до БД.
+    # Импортёр указан автором импорта, но не назначается владельцем
+    # импортированных кандидатов автоматически; дата/время дошли до БД.
     created = list(
         pg_db.scalars(
             select(Candidate).where(Candidate.source == CandidateSource.EXCEL_IMPORT)
         ).all()
     )
     assert len(created) == body["created"]
-    assert all(candidate.owner_user_id == hr.id for candidate in created)
+    assert all(candidate.owner_user_id is None for candidate in created)
     testova = next(
         candidate for candidate in created if candidate.full_name == "Тестова Анна Ивановна"
     )
@@ -226,7 +239,7 @@ def test_ambiguous_names_and_foreign_candidates_on_postgres(
 
 
 def test_hr_scope_is_respected_on_postgres(pg_client: TestClient, pg_db: Session) -> None:
-    hr1 = make_user(pg_db, username="hr1", role=UserRole.HR)
+    make_user(pg_db, username="hr1", role=UserRole.HR)
     hr2 = make_user(pg_db, username="hr2", role=UserRole.HR)
     make_candidate(pg_db, owner=hr2, full_name="Тестова Анна Ивановна")
     csrf = _login(pg_client, "hr1")
@@ -239,14 +252,15 @@ def test_hr_scope_is_respected_on_postgres(pg_client: TestClient, pg_db: Session
 
     confirmed = _confirm(pg_client, _fixture_bytes(), csrf)
     assert confirmed.status_code == 200
-    mine = pg_db.scalars(
+    imported = pg_db.scalar(
         select(Candidate).where(
             Candidate.full_name == "Тестова Анна Ивановна",
-            Candidate.owner_user_id == hr1.id,
+            Candidate.source == CandidateSource.EXCEL_IMPORT,
         )
-    ).all()
-    assert len(mine) == 1
-    assert mine[0].stage == CandidateStage.OFFER
+    )
+    assert imported is not None
+    assert imported.owner_user_id is None
+    assert imported.stage == CandidateStage.OFFER
 
 
 def test_concurrent_confirms_of_same_file_do_not_duplicate(
@@ -257,9 +271,9 @@ def test_concurrent_confirms_of_same_file_do_not_duplicate(
 ) -> None:
     """Два одновременных подтверждения одного файла не создают дублей.
 
-    Без блокировки по отпечатку файла оба запроса читают «ещё не
-    импортированные» ключи и записывают по своему набору (уникальность
-    ``(import_id, row_key)`` чужой импорт не останавливает). Проверка:
+    Без общего advisory-lock оба запроса читают «ещё не импортированные»
+    ключи и записывают по своему набору (уникальность ``(import_id, row_key)``
+    чужой импорт не останавливает). Проверка:
     после завершения обоих запросов создан ровно один набор кандидатов и
     служебных записей, второй запрос идемпотентно пропускает строки,
     ошибок уникальности и частичных данных нет.
@@ -326,3 +340,63 @@ def test_concurrent_confirms_of_same_file_do_not_duplicate(
     imports = pg_db.scalars(select(ScheduleImport)).all()
     assert len(imports) == 2
     assert sorted(record.created_candidates for record in imports) == [0, created[1]]
+
+
+def test_concurrent_confirms_of_different_files_share_master_lock(
+    pg_client: TestClient,
+    pg_db: Session,
+    pg_settings: Settings,
+    pg_engine: Engine,
+) -> None:
+    """Distinct file fingerprints still serialize against the one master set."""
+
+    hr = make_user(pg_db, username="hr-different-files", role=UserRole.HR)
+    csrf_first = _login(pg_client, hr.username)
+    first_payload = _fixture_bytes()
+    second_payload = _same_rows_different_workbook_bytes()
+    assert first_payload != second_payload
+
+    second_app = create_app(pg_settings, engine=pg_engine)
+    barrier = threading.Barrier(2)
+
+    def run_confirm(client: TestClient, csrf: str, payload: bytes) -> httpx.Response:
+        barrier.wait(timeout=30)
+        return _confirm(client, payload, csrf)
+
+    with TestClient(second_app) as second_client:
+        csrf_second = _login(second_client, hr.username)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(run_confirm, pg_client, csrf_first, first_payload)
+            second_future = pool.submit(run_confirm, second_client, csrf_second, second_payload)
+            responses = [
+                first_future.result(timeout=120),
+                second_future.result(timeout=120),
+            ]
+
+    assert [response.status_code for response in responses] == [200, 200], [
+        response.text for response in responses
+    ]
+    bodies = [response.json() for response in responses]
+    created = sorted(body["created"] for body in bodies)
+    services = sorted(body["service_created"] for body in bodies)
+    assert created[0] == 0 and created[1] > 0
+    assert services[0] == 0 and services[1] > 0
+
+    pg_db.expire_all()
+    imports = pg_db.scalars(select(ScheduleImport)).all()
+    assert len(imports) == 2
+    assert len({record.file_sha256 for record in imports}) == 2
+    latest = max(imports, key=lambda item: (item.created_at, str(item.id)))
+    active_rows = pg_db.scalars(
+        select(ScheduleImportRow).where(ScheduleImportRow.is_active.is_(True))
+    ).all()
+    assert len(active_rows) == len(bodies[0]["rows"])
+    assert {row.import_id for row in active_rows} == {latest.id}
+    assert latest.rows_missing == 0
+
+    imported_candidates = pg_db.scalars(
+        select(Candidate).where(Candidate.source == CandidateSource.EXCEL_IMPORT)
+    ).all()
+    assert len(imported_candidates) == created[1]
+    assert all(candidate.owner_user_id is None for candidate in imported_candidates)
+    assert pg_db.scalar(select(func.count()).select_from(ScheduleEntry)) == services[1]

@@ -221,6 +221,9 @@ describe("SchedulePage — назначение HR исходным строка
     expect(screen.getByText("Недатова Ирина Петровна")).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: /Дата не указана/ })).toBeInTheDocument();
     expect(
+      screen.getByText(/неназначенные кандидаты попадут в аналитику только после ручного назначения/i)
+    ).toBeInTheDocument();
+    expect(
       screen.getByText("Не назначен", { selector: "span.schedule-unassigned" })
     ).toBeInTheDocument();
 
@@ -236,8 +239,9 @@ describe("SchedulePage — назначение HR исходным строка
     );
   });
 
-  it("массово назначает выбранные строки и предлагает экспорт актуального набора", async () => {
+  it("массово снимает назначение после подтверждения и предлагает экспорт актуального набора", async () => {
     const user = userEvent.setup();
+    const confirmation = vi.spyOn(window, "confirm").mockReturnValue(true);
     renderPage(MANAGER);
 
     await screen.findByText(/2 человек · график.xlsx/);
@@ -254,9 +258,29 @@ describe("SchedulePage — назначение HR исходным строка
         owner_user_id: null,
       })
     );
+    expect(confirmation).toHaveBeenCalledWith(
+      expect.stringContaining("Снять назначение HR у 2 выбранных строк?")
+    );
     expect(
       screen.getByRole("button", { name: "Экспортировать актуальную таблицу" })
     ).toBeInTheDocument();
+    confirmation.mockRestore();
+  });
+
+  it("does not remove an owner when the confirmation is cancelled", async () => {
+    const user = userEvent.setup();
+    const confirmation = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderPage(MANAGER);
+
+    await screen.findByText(/2 человек · график.xlsx/);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Ответственный HR для строки 10" }),
+      "__unassigned__"
+    );
+
+    expect(confirmation).toHaveBeenCalledWith(expect.stringContaining("Снять назначение HR"));
+    expect(api.assignScheduleImportRows).not.toHaveBeenCalled();
+    confirmation.mockRestore();
   });
 });
 

@@ -171,9 +171,21 @@ function ScheduleImportAssignments({ refreshKey }: { refreshKey: number }) {
     () => snapshot?.rows.filter((row) => row.row_type === "person") ?? [],
     [snapshot]
   );
+  const unassignedPeopleCount = people.filter((row) => row.owner_user_id === null).length;
 
   const applyAssignment = async (rowKeys: string[], ownerValue: string) => {
     if (!ownerValue || saving || rowKeys.length === 0) return;
+    if (ownerValue === "__unassigned__") {
+      const message =
+        rowKeys.length === 1
+          ? `Снять назначение HR у «${people.find((row) => row.row_key === rowKeys[0])?.full_name ?? "кандидата"}»?`
+          : `Снять назначение HR у ${rowKeys.length} выбранных строк?`;
+      if (!window.confirm(`${message} Неназначенные кандидаты не попадают в очередь HR и аналитику.`)) {
+        setBulkOwner("");
+        setSavingKey(null);
+        return;
+      }
+    }
     setSaving(true);
     try {
       const result = await assignScheduleImportRows({
@@ -241,8 +253,13 @@ function ScheduleImportAssignments({ refreshKey }: { refreshKey: number }) {
         <div>
           <h2 id="schedule-import-rows-title">Люди из последнего импорта</h2>
           <p>
-            {snapshot.active_people} человек · {snapshot.file_name ?? "исходная таблица"}. Строки без даты и кандидата тоже сохранены.
+            {snapshot.active_people} человек · {snapshot.file_name ?? "исходная таблица"}. Строки без даты и ответственного тоже сохранены.
           </p>
+          {unassignedPeopleCount > 0 && (
+            <p className="schedule-import-analytics-note" role="note">
+              Назначьте HR: неназначенные кандидаты попадут в аналитику только после ручного назначения.
+            </p>
+          )}
         </div>
         <Button icon="download" onClick={() => void exportCurrent()} loading={exporting}>
           Экспортировать актуальную таблицу
@@ -337,7 +354,9 @@ function ScheduleImportAssignments({ refreshKey }: { refreshKey: number }) {
                         disabled={saving}
                         onChange={(event) => assignOne(row, event.target.value)}
                       >
-                        <option value="__unassigned__">Не назначен</option>
+                        <option value="__unassigned__">
+                          {row.owner_user_id ? "Снять назначение" : "Не назначен"}
+                        </option>
                         {directory.map((item) => (
                           <option key={item.id} value={item.id}>
                             {item.full_name || item.username}

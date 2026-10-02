@@ -215,6 +215,29 @@ def test_create_without_owner_defaults_to_creator(client: TestClient, db_session
     assert created.json()["owner_username"] == "hr1"
 
 
+def test_manager_can_list_and_open_candidate_without_owner(
+    client: TestClient, db_session: Session
+) -> None:
+    hr = make_user(db_session, username="unassigned-source-hr", role=UserRole.HR)
+    manager = make_user(db_session, username="unassigned-source-manager", role=UserRole.MANAGER)
+    candidate = make_candidate(db_session, owner=hr, full_name="Импортированный без ответственного")
+    candidate.owner_user_id = None
+    candidate.owner = None
+    db_session.commit()
+
+    _login(client, manager.username)
+    listing = client.get("/candidates")
+    assert listing.status_code == 200, listing.text
+    listed = next(item for item in listing.json()["items"] if item["id"] == str(candidate.id))
+    assert listed["owner_user_id"] is None
+    assert listed["owner_username"] is None
+
+    detail = client.get(f"/candidates/{candidate.id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["owner_user_id"] is None
+    assert detail.json()["owner_username"] is None
+
+
 def test_hr_cannot_create_for_another_owner(client: TestClient, db_session: Session) -> None:
     make_user(db_session, username="hr1", role=UserRole.HR)
     hr2 = make_user(db_session, username="hr2", role=UserRole.HR)

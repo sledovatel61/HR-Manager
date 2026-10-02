@@ -102,6 +102,20 @@ describe("CandidateDrawer", () => {
     expect(screen.getByLabelText("Изменить этап")).toHaveValue("new");
   });
 
+  it("shows an unassigned owner safely and does not offer transfer", async () => {
+    const manager: User = { ...HR, id: "33333333-3333-4333-8333-333333333333", role: "manager" };
+    vi.mocked(api.getCandidate).mockResolvedValue({
+      ...CANDIDATE,
+      owner_user_id: null,
+      owner_username: null,
+    });
+    renderDrawer({ user: manager });
+
+    await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+    expect(screen.getByText("Не назначен")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Передать" })).not.toBeInTheDocument();
+  });
+
   it("changes the stage via PATCH and rolls back on failure", async () => {
     vi.mocked(api.updateCandidate).mockResolvedValueOnce({ ...CANDIDATE, stage: "offer" });
     renderDrawer();

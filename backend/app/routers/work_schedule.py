@@ -740,6 +740,12 @@ def _source_row_changed(row: ParsedScheduleRow, old: ScheduleImportRow | None) -
         "source_values": old.source_values,
         "parse_error": old.parse_error,
     }
+    if not old.source_values:
+        # Pre-0021 imports did not retain raw source-cell snapshots. The
+        # migration initializes those rows to []; do not mark an otherwise
+        # identical first re-import as changed only because the lost cells
+        # cannot be reconstructed. Subsequent imports compare stored values.
+        old_payload["source_values"] = [_source_cell_value(value) for value in row.source_values]
     return (
         _source_row_signature(row, _source_row_type(row))
         != json.dumps(old_payload, ensure_ascii=False, sort_keys=True, default=str)
@@ -748,11 +754,18 @@ def _source_row_changed(row: ParsedScheduleRow, old: ScheduleImportRow | None) -
 
 
 def _serialize_schedule_import(db: Session) -> None:
-    """Serialize all versions of the current master-table import on PostgreSQL."""
+    """Serialize writes to the single current master-table snapshot on PostgreSQL.
+
+    This lock is intentionally global rather than per file fingerprint: every
+    workbook replaces/reconciles against the same active source set, so two
+    different uploads must not plan their row/history changes concurrently.
+    """
 
     bind = db.bind
     if bind is None or bind.dialect.name != "postgresql":
         return
+    # Deliberately not keyed by file SHA: distinct XLSX uploads still mutate
+    # one shared current-master snapshot and must observe the preceding commit.
     digest = hashlib.sha256(b"hr-manager:schedule-import:current-master").digest()
     lock_key = int.from_bytes(digest[:8], "big", signed=True)
     db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
@@ -805,13 +818,14 @@ def list_active_import_rows(
     user: User = Depends(get_current_user),
 ) -> ActiveScheduleImportRows:
     _require_source_schedule_manager(db, user)
+    can_assign = _can_manage_source_schedule(db, user)
     latest = db.scalar(
         select(ScheduleImport)
         .order_by(ScheduleImport.created_at.desc(), ScheduleImport.id.desc())
         .limit(1)
     )
     if latest is None:
-        return ActiveScheduleImportRows(can_assign=True)
+        return ActiveScheduleImportRows(can_assign=can_assign)
 
     active = _active_import_rows(db)
     candidate_ids = {row.candidate_id for row in active if row.candidate_id is not None}
@@ -866,7 +880,7 @@ def list_active_import_rows(
         file_name=latest.file_name,
         imported_at=latest.created_at,
         active_people=people,
-        can_assign=True,
+        can_assign=can_assign,
         rows=items,
     )
 

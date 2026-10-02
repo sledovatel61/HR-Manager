@@ -373,6 +373,11 @@
   font-size: var(--text-size-sm);
 }
 
+.schedule-import-analytics-note {
+  color: var(--text-warning, #93370d) !important;
+  font-weight: var(--font-weight-medium);
+}
+
 .schedule-import-bulk-actions {
   display: flex;
   align-items: center;

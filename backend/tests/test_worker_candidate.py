@@ -604,6 +604,7 @@ def _confirm_token_row(db: Session, candidate: Candidate, **overrides: object) -
 def _confirm_letter_row(db: Session, candidate: Candidate, token_id: UUID) -> NotificationOutbox:
     from app.candidate_messages import queue_candidate_email_confirm
 
+    assert candidate.owner_user_id is not None
     row = queue_candidate_email_confirm(
         db,
         candidate=candidate,
