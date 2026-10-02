@@ -45,7 +45,13 @@ try:
         UserRole,
     )
     from app.security import hash_password
-    from app.utils import normalize_email, normalize_full_name, normalize_phone, utc_now
+    from app.utils import (
+        normalize_email,
+        normalize_full_name,
+        normalize_phone,
+        normalize_position,
+        utc_now,
+    )
 
     _HEAVY_AVAILABLE = True
     _HEAVY_IMPORT_ERROR: Exception | None = None
@@ -305,6 +311,7 @@ def make_candidate(
         email_normalized=normalize_email(email),
         source=source,
         position=position,
+        position_normalized=normalize_position(position),
         owner_user_id=owner.id,
         stage=stage,
         stage_position=CANDIDATE_STAGE_POSITION[stage],

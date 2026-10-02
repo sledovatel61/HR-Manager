@@ -514,6 +514,7 @@ class Candidate(Base):
         Index("ix_candidates_owner_user_id", "owner_user_id"),
         Index("ix_candidates_stage", "stage"),
         Index("ix_candidates_full_name_normalized", "full_name_normalized"),
+        Index("ix_candidates_position_normalized", "position_normalized"),
         Index("ix_candidates_phone_normalized", "phone_normalized"),
         Index("ix_candidates_email_normalized", "email_normalized"),
         Index("ix_candidates_deleted_at", "deleted_at"),
@@ -540,6 +541,12 @@ class Candidate(Base):
         nullable=False,
     )
     position: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    # Нормализованная должность (trim + casefold, считается в Python) — для
+    # точного фильтра «Должность» без зависимости от локали БД: SQL lower()
+    # не трогает кириллицу ни в SQLite, ни в PostgreSQL с локалью C.
+    position_normalized: Mapped[str] = mapped_column(
+        String(200), nullable=False, default=""
+    )
     # Candidates imported from the source schedule stay unassigned until a
     # manager explicitly allocates them. Regular candidate creation still
     # defaults to the creating user in the API.

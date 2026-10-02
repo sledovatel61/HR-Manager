@@ -862,7 +862,7 @@ def test_export_requires_authentication(client: TestClient, db_session: Session)
 
 
 def test_migration_0016_is_in_chain_and_adds_schedule_objects() -> None:
-    """Ревизия 0016 создаёт объекты графика; текущая голова цепочки — 0021.
+    """Ревизия 0016 создаёт объекты графика; текущая голова цепочки — 0022.
 
     Само применение (upgrade/downgrade на PostgreSQL) проверяет integration
     job; здесь — структурная проверка, доступная и на SQLite-only прогоне.
@@ -886,7 +886,7 @@ def test_migration_0016_is_in_chain_and_adds_schedule_objects() -> None:
 
     config = Config("alembic.ini")
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0021"
+    assert script.get_current_head() == "0022"
 
     from inspect import getsource
 
