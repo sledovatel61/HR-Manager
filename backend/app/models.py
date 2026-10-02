@@ -544,9 +544,7 @@ class Candidate(Base):
     # Нормализованная должность (trim + casefold, считается в Python) — для
     # точного фильтра «Должность» без зависимости от локали БД: SQL lower()
     # не трогает кириллицу ни в SQLite, ни в PostgreSQL с локалью C.
-    position_normalized: Mapped[str] = mapped_column(
-        String(200), nullable=False, default=""
-    )
+    position_normalized: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     # Candidates imported from the source schedule stay unassigned until a
     # manager explicitly allocates them. Regular candidate creation still
     # defaults to the creating user in the API.
