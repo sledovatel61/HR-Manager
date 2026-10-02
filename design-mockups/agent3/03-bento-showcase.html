@@ -1,0 +1,917 @@
+<!doctype html>
+<html lang="ru" data-concept="bento" data-theme="light" data-density="comfortable" data-system-fonts="false">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f7fa">
+  <meta name="description" content="Самостоятельный интерактивный HTML-мокап HR Manager — дизайн-концепция Bento Showcase.">
+  <title>HR Manager — Bento Showcase / концепт 03 / 03</title>
+  <style>/* Semantic design tokens: names mirror frontend/src/design-system/tokens.css. */
+:root {
+  color-scheme: light;
+  --surface-canvas:#f5f7fa; --surface-app:#fff; --surface-raised:#fff; --surface-sunken:#f8fafc;
+  --surface-overlay:rgba(14,20,35,.48); --surface-hover:#f0f3f7; --surface-pressed:#e9edf3;
+  --surface-selected:#eef1ff; --surface-selected-hover:#e1e6ff; --surface-disabled:#eef0f3;
+  --surface-sidebar:#f8fafc; --surface-sidebar-hover:#edf1f7; --surface-sidebar-active:#e8edff;
+  --text-primary:#171a22; --text-secondary:#515969; --text-tertiary:#697283; --text-disabled:#959dad;
+  --text-inverse:#fff; --text-link:#3345bd; --text-on-accent:#fff; --text-sidebar:#303847; --text-sidebar-muted:#677181;
+  --border-subtle:#e9edf2; --border-default:#dce2ea; --border-strong:#c4ccd8; --border-focus:#4f5eea; --border-sidebar:#e7ebf0;
+  --accent-default:#3f4bd1; --accent-hover:#333cac; --accent-pressed:#252c83; --accent-subtle:#eef1ff; --accent-subtle-border:#dce2ff;
+  --status-info-fg:#333cac; --status-info-bg:#eef1ff; --status-info-border:#dce2ff;
+  --status-success-fg:#0d7255; --status-success-bg:#e8f7f1; --status-success-border:#c3e9dc;
+  --status-warning-fg:#805300; --status-warning-bg:#fff5df; --status-warning-border:#f2dfaa;
+  --status-danger-fg:#9c2e27; --status-danger-bg:#fdf0ef; --status-danger-border:#f4cbc7;
+  --status-neutral-fg:#515969; --status-neutral-bg:#eff1f4; --status-neutral-border:#dce2ea;
+  --status-violet-fg:#65359a; --status-violet-bg:#f4edfb; --status-violet-border:#e2d1f1;
+  --status-teal-fg:#0d7255; --status-teal-bg:#e8f7f1; --status-teal-border:#c3e9dc;
+  --status-indigo-fg:#333cac; --status-indigo-bg:#eef1ff; --status-indigo-border:#dce2ff;
+  --focus-ring-color:#4f5eea; --focus-ring:0 0 0 2px var(--surface-app),0 0 0 4px var(--focus-ring-color);
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px; --space-6:24px; --space-7:32px; --space-8:40px; --space-9:48px; --space-10:64px;
+  --radius-xs:4px; --radius-sm:6px; --radius-md:9px; --radius-lg:13px; --radius-xl:18px; --radius-full:999px;
+  --shadow-1:0 1px 2px rgba(18,27,44,.04); --shadow-2:0 4px 14px rgba(18,27,44,.06); --shadow-3:0 12px 32px rgba(18,27,44,.10); --shadow-4:0 20px 56px rgba(18,27,44,.16);
+  --font-sans:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; --font-display:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; --font-mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --text-size-2xs:11px; --text-size-xs:12px; --text-size-sm:13px; --text-size-md:14px; --text-size-lg:16px; --text-size-xl:20px; --text-size-2xl:24px; --text-size-3xl:32px;
+  --line-height-tight:1.2; --line-height-normal:1.45; --line-height-relaxed:1.6; --font-weight-regular:400; --font-weight-medium:500; --font-weight-semibold:600; --font-weight-bold:700;
+  --icon-size-sm:14px; --icon-size-md:16px; --icon-size-lg:20px; --sidebar-width:248px; --sidebar-width-collapsed:68px; --topbar-height:66px; --content-max-width:1580px;
+  --row-height:48px; --control-height-md:38px; --control-height-sm:30px; --table-cell-padding-y:11px;
+  --duration-instant:80ms; --duration-fast:130ms; --duration-base:180ms; --duration-slow:280ms; --easing-standard:cubic-bezier(.2,0,0,1); --easing-decelerate:cubic-bezier(0,0,.2,1); --easing-accelerate:cubic-bezier(.4,0,1,1);
+  --z-base:0; --z-sticky:10; --z-dropdown:20; --z-drawer:30; --z-modal-overlay:40; --z-modal:41; --z-toast:50;
+  --hero-bg:#edf1ff; --hero-ink:#1a2252; --hero-accent:#3f4bd1; --hero-decoration:rgba(63,75,209,.11); --glass:rgba(255,255,255,.74);
+}
+[data-theme="dark"] {
+  color-scheme:dark;
+  --surface-canvas:#11131a; --surface-app:#191c25; --surface-raised:#222631; --surface-sunken:#14161e;
+  --surface-overlay:rgba(0,0,0,.66); --surface-hover:rgba(255,255,255,.06); --surface-pressed:rgba(255,255,255,.1);
+  --surface-selected:rgba(101,119,255,.18); --surface-selected-hover:rgba(101,119,255,.26); --surface-disabled:rgba(255,255,255,.06);
+  --surface-sidebar:#151821; --surface-sidebar-hover:rgba(255,255,255,.06); --surface-sidebar-active:rgba(255,255,255,.11);
+  --text-primary:#f4f5f8; --text-secondary:#c4c9d4; --text-tertiary:#a1a9b8; --text-disabled:#727b8c;
+  --text-inverse:#171a22; --text-link:#a6b3ff; --text-on-accent:#fff; --text-sidebar:#e7e9f0; --text-sidebar-muted:#a3a9b6;
+  --border-subtle:rgba(255,255,255,.075); --border-default:rgba(255,255,255,.12); --border-strong:rgba(255,255,255,.2); --border-focus:#9aa7ff; --border-sidebar:rgba(255,255,255,.09);
+  --accent-default:#596bf4; --accent-hover:#7887ff; --accent-pressed:#a8b1ff; --accent-subtle:rgba(89,107,244,.17); --accent-subtle-border:rgba(119,135,255,.34);
+  --status-info-fg:#b2bbff; --status-info-bg:rgba(89,107,244,.18); --status-info-border:rgba(119,135,255,.34);
+  --status-success-fg:#64ddb4; --status-success-bg:rgba(23,147,111,.18); --status-success-border:rgba(67,203,160,.34);
+  --status-warning-fg:#ffd273; --status-warning-bg:rgba(179,118,10,.2); --status-warning-border:rgba(240,183,63,.34);
+  --status-danger-fg:#ff978d; --status-danger-bg:rgba(194,59,48,.2); --status-danger-border:rgba(241,139,129,.34);
+  --status-neutral-fg:#d3d7e0; --status-neutral-bg:rgba(255,255,255,.08); --status-neutral-border:rgba(255,255,255,.13);
+  --status-violet-fg:#d4aaff; --status-violet-bg:rgba(129,70,193,.2); --status-violet-border:rgba(194,147,238,.34);
+  --status-teal-fg:#64ddb4; --status-teal-bg:rgba(23,147,111,.18); --status-teal-border:rgba(67,203,160,.34);
+  --status-indigo-fg:#b2bbff; --status-indigo-bg:rgba(89,107,244,.18); --status-indigo-border:rgba(119,135,255,.34);
+  --focus-ring-color:#a5b0ff; --focus-ring:0 0 0 2px var(--surface-app),0 0 0 4px var(--focus-ring-color);
+  --shadow-1:0 1px 2px rgba(0,0,0,.26); --shadow-2:0 4px 14px rgba(0,0,0,.25); --shadow-3:0 12px 32px rgba(0,0,0,.3); --shadow-4:0 20px 56px rgba(0,0,0,.38);
+  --hero-bg:#242a4b; --hero-ink:#f4f5ff; --hero-accent:#aab5ff; --hero-decoration:rgba(150,164,255,.13); --glass:rgba(29,32,44,.82);
+}
+[data-density="comfortable"] { --row-height:48px; --control-height-md:38px; --control-height-sm:30px; --table-cell-padding-y:11px; }
+[data-density="compact"] { --row-height:36px; --control-height-md:33px; --control-height-sm:27px; --table-cell-padding-y:7px; }
+[data-system-fonts="true"] { --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; --font-display:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+* { box-sizing:border-box; }
+html { min-width:320px; scroll-behavior:smooth; }
+body { margin:0; min-height:100vh; background:var(--surface-canvas); color:var(--text-primary); font:400 var(--text-size-md)/var(--line-height-normal) var(--font-sans); font-feature-settings:"tnum" 1; transition:background-color var(--duration-base) var(--easing-standard),color var(--duration-base) var(--easing-standard); }
+button,input,select,textarea { font:inherit; color:inherit; }
+button { cursor:pointer; }
+a { color:inherit; }
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible { outline:3px solid var(--border-focus); outline-offset:3px; box-shadow:var(--focus-ring); }
+[hidden] { display:none !important; }
+.skip-link { position:fixed; left:16px; top:-60px; z-index:100; padding:10px 14px; border-radius:var(--radius-md); background:var(--surface-app); color:var(--text-primary); box-shadow:var(--shadow-3); }
+.skip-link:focus { top:12px; }
+.icon { width:18px; height:18px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.icon-sm { width:15px; height:15px; }
+.app-shell { display:grid; grid-template-columns:var(--sidebar-width) minmax(0,1fr); min-height:100vh; }
+.sidebar { position:sticky; inset-block-start:0; height:100vh; min-height:680px; display:flex; flex-direction:column; padding:17px 13px 14px; background:var(--surface-sidebar); border-right:1px solid var(--border-sidebar); z-index:var(--z-sticky); transition:width var(--duration-base) var(--easing-standard),background-color var(--duration-base); }
+.brand { display:flex; align-items:center; gap:11px; padding:5px 8px 23px; text-decoration:none; min-height:48px; }
+.brand-mark { width:34px; height:34px; border-radius:10px; display:grid; place-items:center; background:var(--accent-default); color:var(--text-on-accent); font-weight:800; letter-spacing:-.09em; box-shadow:0 4px 11px rgba(63,75,209,.22); }
+.brand-name { display:grid; line-height:1.08; font-weight:750; letter-spacing:-.035em; font-size:15px; }
+.brand-name small { margin-top:4px; font-size:10px; letter-spacing:.12em; color:var(--text-sidebar-muted); font-weight:650; text-transform:uppercase; }
+.sidebar-nav { overflow:auto; flex:1; padding:0 1px; }
+.nav-caption { padding:13px 9px 7px; color:var(--text-sidebar-muted); font-size:10px; font-weight:750; letter-spacing:.1em; text-transform:uppercase; }
+.nav-link { position:relative; min-height:39px; display:flex; align-items:center; gap:11px; margin:2px 0; padding:0 10px; border-radius:var(--radius-md); color:var(--text-sidebar); text-decoration:none; font-size:13px; font-weight:560; transition:background var(--duration-fast),color var(--duration-fast),transform var(--duration-fast); }
+.nav-link:hover { background:var(--surface-sidebar-hover); transform:translateX(1px); }
+.nav-link[aria-current="page"] { background:var(--surface-sidebar-active); color:var(--accent-default); font-weight:700; }
+.nav-link[aria-current="page"]::before { content:""; position:absolute; left:-13px; top:9px; height:21px; width:3px; border-radius:0 3px 3px 0; background:var(--accent-default); }
+.nav-link span:not(.nav-count) { white-space:nowrap; }
+.nav-count { margin-left:auto; min-width:22px; height:21px; display:grid; place-items:center; padding:0 5px; border-radius:var(--radius-full); background:var(--surface-sidebar-hover); font-size:11px; font-weight:700; color:var(--text-sidebar-muted); font-variant-numeric:tabular-nums; }
+.nav-link[aria-current="page"] .nav-count { background:var(--surface-app); color:var(--accent-default); }
+.sidebar-bottom { margin-top:auto; }
+.concept-switch { display:flex; align-items:center; gap:5px; padding:11px 7px 12px; color:var(--text-sidebar-muted); border-bottom:1px solid var(--border-sidebar); margin-bottom:12px; font-size:10px; white-space:nowrap; }
+.concept-switch span { margin-right:auto; font-weight:700; letter-spacing:.05em; }
+.concept-switch a { display:grid; place-items:center; width:23px; height:23px; border:1px solid var(--border-sidebar); border-radius:7px; text-decoration:none; color:var(--text-sidebar); font-size:10px; font-weight:750; }
+.concept-switch a:hover,.concept-switch a[aria-current="page"] { background:var(--surface-sidebar-active); color:var(--accent-default); }
+.user-profile { display:flex; align-items:center; gap:10px; padding:9px 8px; border-radius:var(--radius-lg); }
+.avatar { width:34px; height:34px; flex:0 0 auto; display:grid; place-items:center; border-radius:50%; color:#4e367e; background:#e9def9; font-size:11px; font-weight:760; }
+.avatar.teal { color:#155947; background:#d4f1e7; }
+.avatar.amber { color:#715316; background:#faeccb; }
+.avatar.rose { color:#803955; background:#f7dce7; }
+.avatar.blue { color:#354a83; background:#dce7ff; }
+.user-meta { min-width:0; display:grid; line-height:1.2; }
+.user-meta strong { font-size:12px; font-weight:700; }
+.user-meta small { margin-top:3px; color:var(--text-sidebar-muted); font-size:10px; }
+.main-shell { min-width:0; }
+.topbar { position:sticky; top:0; z-index:var(--z-sticky); min-height:var(--topbar-height); padding:0 28px; display:flex; align-items:center; gap:18px; border-bottom:1px solid var(--border-subtle); background:var(--surface-app); }
+.crumb { display:grid; gap:2px; min-width:155px; }
+.crumb small { color:var(--text-tertiary); font-size:10px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; }
+.crumb strong { font-size:13px; font-weight:700; }
+.topbar-spacer { flex:1; }
+.search-trigger { height:36px; min-width:235px; padding:0 9px 0 11px; display:flex; align-items:center; gap:9px; background:var(--surface-sunken); border:1px solid var(--border-default); border-radius:var(--radius-md); color:var(--text-tertiary); text-align:left; font-size:12px; }
+.search-trigger:hover { border-color:var(--border-strong); background:var(--surface-hover); }
+kbd { padding:2px 5px; border:1px solid var(--border-default); border-radius:5px; background:var(--surface-app); color:var(--text-tertiary); font:600 10px var(--font-mono); white-space:nowrap; }
+.search-trigger kbd { margin-left:auto; }
+.topbar-tools { display:flex; align-items:center; gap:7px; }
+.icon-button { width:35px; height:35px; display:grid; place-items:center; position:relative; border:1px solid transparent; border-radius:var(--radius-md); background:transparent; color:var(--text-secondary); }
+.icon-button:hover { background:var(--surface-hover); color:var(--text-primary); }
+.notification-dot { position:absolute; right:6px; top:5px; width:7px; height:7px; border:1px solid var(--surface-app); border-radius:50%; background:#d64e47; }
+.control-button { min-height:35px; display:flex; align-items:center; gap:7px; padding:0 9px; border:1px solid var(--border-default); border-radius:var(--radius-md); background:var(--surface-app); color:var(--text-secondary); font-size:11px; font-weight:650; white-space:nowrap; }
+.control-button:hover { background:var(--surface-hover); color:var(--text-primary); }
+.control-button[aria-pressed="true"] { background:var(--accent-subtle); color:var(--text-link); border-color:var(--accent-subtle-border); }
+.control-letter { font-size:11px; font-weight:800; }
+.app-content { width:100%; max-width:var(--content-max-width); margin:0 auto; padding:27px 31px 54px; }
+.view { position:relative; animation:view-in 420ms var(--easing-decelerate) both; }
+@keyframes view-in { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:translateY(0); } }
+.page-heading { display:flex; justify-content:space-between; align-items:flex-end; gap:20px; margin:0 0 20px; }
+.heading-copy { min-width:0; }
+.concept-label { display:flex; align-items:center; gap:7px; margin-bottom:7px; color:var(--text-tertiary); font-size:10px; font-weight:780; letter-spacing:.105em; text-transform:uppercase; }
+.concept-label::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent-default); }
+h1,h2,h3,p { margin-top:0; }
+h1 { margin-bottom:4px; font-family:var(--font-display); font-size:clamp(25px,2.2vw,31px); line-height:1.15; letter-spacing:-.045em; font-weight:730; }
+.page-subtitle { margin:0; color:var(--text-secondary); font-size:13px; }
+.heading-actions { display:flex; align-items:center; gap:8px; }
+.button { min-height:var(--control-height-md); display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:0 13px; border:1px solid var(--border-default); border-radius:var(--radius-md); background:var(--surface-app); color:var(--text-primary); font-size:12px; font-weight:680; text-decoration:none; white-space:nowrap; transition:transform var(--duration-fast),background var(--duration-fast),box-shadow var(--duration-fast),border-color var(--duration-fast); }
+.button:hover { transform:translateY(-1px); background:var(--surface-hover); box-shadow:var(--shadow-1); }
+.button:active { transform:translateY(0); }
+.button-primary { background:var(--accent-default); border-color:var(--accent-default); color:var(--text-on-accent); }
+.button-primary:hover { background:var(--accent-hover); border-color:var(--accent-hover); color:var(--text-on-accent); }
+.button-quiet { color:var(--text-secondary); }
+.button-small { min-height:29px; padding:0 9px; font-size:11px; }
+.button-text { border:0; background:transparent; color:var(--text-link); padding:0 5px; font-size:11px; font-weight:700; }
+.button-text:hover { text-decoration:underline; }
+.panel { min-width:0; background:var(--surface-app); border:1px solid var(--border-subtle); border-radius:var(--radius-lg); box-shadow:var(--shadow-1); transition:border-color var(--duration-fast),box-shadow var(--duration-fast),transform var(--duration-fast); }
+.panel-head { min-height:55px; padding:15px 17px 12px; display:flex; align-items:center; justify-content:space-between; gap:10px; border-bottom:1px solid var(--border-subtle); }
+.panel-head h2,.panel-head h3 { margin:0; font-size:14px; font-weight:720; letter-spacing:-.02em; }
+.panel-kicker { display:block; margin-bottom:3px; color:var(--text-tertiary); font-size:10px; font-weight:720; letter-spacing:.075em; text-transform:uppercase; }
+.panel-body { padding:16px 17px; }
+.panel-link { display:inline-flex; align-items:center; gap:5px; color:var(--text-link); font-size:11px; font-weight:700; text-decoration:none; }
+.panel-link:hover { text-decoration:underline; }
+.hero-banner { min-height:140px; margin:0 0 17px; padding:21px 23px; position:relative; overflow:hidden; display:flex; align-items:center; justify-content:space-between; gap:24px; background:var(--hero-bg); color:var(--hero-ink); border:1px solid var(--accent-subtle-border); border-radius:var(--radius-xl); }
+.hero-banner::after { content:""; position:absolute; width:260px; height:260px; right:18%; top:-155px; border-radius:50%; border:1px solid var(--hero-decoration); box-shadow:0 0 0 24px var(--hero-decoration),0 0 0 48px transparent; pointer-events:none; }
+.hero-copy { position:relative; z-index:1; max-width:560px; }
+.hero-copy .panel-kicker { color:var(--text-tertiary); }
+.hero-copy h2 { margin:2px 0 7px; font-family:var(--font-display); font-size:21px; letter-spacing:-.035em; line-height:1.2; }
+.hero-copy p { margin:0; color:var(--text-secondary); font-size:12px; }
+.hero-meta { display:flex; gap:14px; align-items:center; margin-top:13px; }
+.hero-progress { width:210px; position:relative; z-index:1; }
+.hero-progress-top { display:flex; justify-content:space-between; align-items:baseline; gap:8px; font-size:11px; color:var(--text-secondary); }
+.hero-progress-top strong { color:var(--hero-ink); font-size:27px; letter-spacing:-.05em; font-variant-numeric:tabular-nums; }
+.progress-track { height:7px; margin-top:8px; overflow:hidden; border-radius:var(--radius-full); background:var(--surface-pressed); }
+.progress-track span { display:block; height:100%; border-radius:inherit; background:var(--accent-default); transition:width 800ms var(--easing-decelerate); }
+.hero-progress small { display:block; margin-top:7px; color:var(--text-tertiary); font-size:10px; }
+.kpi-strip { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+.kpi-card { min-height:116px; padding:14px 15px 12px; position:relative; overflow:hidden; }
+.kpi-head { display:flex; align-items:center; justify-content:space-between; gap:6px; color:var(--text-secondary); font-size:11px; font-weight:620; }
+.kpi-mark { width:27px; height:27px; display:grid; place-items:center; color:var(--accent-default); background:var(--accent-subtle); border-radius:8px; }
+.kpi-value { display:flex; align-items:baseline; gap:5px; margin:9px 0 4px; color:var(--text-primary); font-size:27px; line-height:1; font-weight:760; letter-spacing:-.055em; font-variant-numeric:tabular-nums; }
+.kpi-value small { color:var(--text-secondary); font-size:11px; font-weight:580; letter-spacing:0; }
+.kpi-foot { display:flex; align-items:center; justify-content:space-between; gap:6px; color:var(--text-tertiary); font-size:10px; }
+.trend { color:var(--status-success-fg); font-weight:750; white-space:nowrap; }
+.spark { width:57px; height:19px; overflow:visible; }
+.spark path { fill:none; stroke:var(--accent-default); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:90; stroke-dashoffset:90; animation:draw-line 900ms 280ms var(--easing-decelerate) forwards; }
+@keyframes draw-line { to { stroke-dashoffset:0; } }
+.dashboard-grid { display:grid; grid-template-columns:minmax(0,1.55fr) minmax(300px,.9fr); gap:15px; margin-bottom:15px; }
+.chart-card { min-height:300px; }
+.chart-card .panel-head { min-height:62px; }
+.chart-meta { display:flex; flex-direction:column; gap:2px; }
+.chart-meta small { color:var(--text-tertiary); font-size:10px; }
+.segmented { display:inline-flex; align-items:center; gap:2px; padding:3px; border:1px solid var(--border-subtle); border-radius:var(--radius-md); background:var(--surface-sunken); }
+.segmented button { min-height:25px; padding:0 8px; border:0; border-radius:6px; background:transparent; color:var(--text-secondary); font-size:10px; font-weight:650; }
+.segmented button[aria-pressed="true"] { background:var(--surface-app); color:var(--text-primary); box-shadow:var(--shadow-1); }
+.chart-wrap { padding:11px 17px 3px; }
+.chart-svg { display:block; width:100%; height:175px; overflow:visible; }
+.chart-grid-line { stroke:var(--border-subtle); stroke-width:1; }
+.chart-axis { fill:var(--text-tertiary); font:10px var(--font-sans); }
+.chart-area { fill:var(--accent-subtle); opacity:.8; }
+.chart-line { fill:none; stroke:var(--accent-default); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:800; stroke-dashoffset:800; animation:draw-line 1.4s .15s var(--easing-decelerate) forwards; }
+.chart-point { fill:var(--surface-app); stroke:var(--accent-default); stroke-width:3; }
+.chart-footer { display:flex; flex-wrap:wrap; align-items:center; gap:16px; padding:3px 18px 15px; color:var(--text-tertiary); font-size:10px; }
+.chart-legend { display:flex; align-items:center; gap:6px; color:var(--text-secondary); }
+.legend-dot { width:7px; height:7px; border-radius:50%; background:var(--accent-default); }
+.legend-dot.alt { background:var(--status-teal-fg); }
+.queue-panel { min-height:300px; }
+.queue-count { display:flex; min-width:22px; height:22px; align-items:center; justify-content:center; border-radius:var(--radius-full); background:var(--status-warning-bg); border:1px solid var(--status-warning-border); color:var(--status-warning-fg); font-size:10px; font-weight:750; }
+.task-list { padding:2px 14px 10px; }
+.task-row { min-height:58px; display:grid; grid-template-columns:27px minmax(0,1fr) auto; gap:10px; align-items:center; padding:9px 2px; border-bottom:1px solid var(--border-subtle); }
+.task-row:last-child { border-bottom:0; }
+.task-icon { width:26px; height:26px; display:grid; place-items:center; border-radius:8px; background:var(--surface-sunken); color:var(--text-secondary); }
+.task-copy { min-width:0; }
+.task-copy strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; font-weight:700; }
+.task-copy small { display:block; margin-top:3px; color:var(--text-tertiary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
+.task-time { display:block; margin-top:3px; color:var(--text-secondary); font-size:9px; text-align:right; }
+.task-row.task-done .task-copy strong { color:var(--text-tertiary); text-decoration:line-through; }
+.task-row.task-done .task-icon { color:var(--status-success-fg); background:var(--status-success-bg); }
+.task-done-button { min-width:50px; min-height:27px; padding:0 7px; border:1px solid var(--border-default); border-radius:7px; background:var(--surface-app); color:var(--text-secondary); font-size:10px; font-weight:650; }
+.task-done-button:hover { color:var(--status-success-fg); border-color:var(--status-success-border); background:var(--status-success-bg); }
+.dashboard-lower { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:15px; }
+.stage-list { display:grid; gap:12px; }
+.stage-line { display:grid; grid-template-columns:130px minmax(40px,1fr) 32px; gap:12px; align-items:center; font-size:11px; }
+.stage-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-secondary); }
+.stage-bar { height:7px; overflow:hidden; border-radius:var(--radius-full); background:var(--surface-sunken); }
+.stage-bar span { display:block; height:100%; border-radius:inherit; background:var(--accent-default); }
+.stage-line:nth-child(2) .stage-bar span { background:var(--status-teal-fg); }
+.stage-line:nth-child(3) .stage-bar span { background:var(--status-violet-fg); }
+.stage-line:nth-child(4) .stage-bar span { background:var(--status-warning-fg); }
+.stage-value { text-align:right; font-weight:740; font-variant-numeric:tabular-nums; }
+.agenda-list { display:grid; gap:0; }
+.agenda-row { min-height:52px; display:grid; grid-template-columns:42px minmax(0,1fr) auto; align-items:center; gap:10px; border-bottom:1px solid var(--border-subtle); }
+.agenda-row:last-child { border-bottom:0; }
+.agenda-time { padding:5px 6px; border-radius:7px; background:var(--surface-sunken); color:var(--text-secondary); text-align:center; font-size:10px; font-weight:750; font-variant-numeric:tabular-nums; }
+.agenda-main strong { display:block; font-size:11px; }
+.agenda-main small { display:block; margin-top:3px; color:var(--text-tertiary); font-size:10px; }
+.status-chip { display:inline-flex; align-items:center; gap:5px; min-height:23px; padding:2px 8px; border:1px solid var(--status-neutral-border); border-radius:var(--radius-full); background:var(--status-neutral-bg); color:var(--status-neutral-fg); font-size:10px; font-weight:680; white-space:nowrap; }
+.status-chip::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
+.status-chip.info { background:var(--status-info-bg); border-color:var(--status-info-border); color:var(--status-info-fg); }
+.status-chip.success { background:var(--status-success-bg); border-color:var(--status-success-border); color:var(--status-success-fg); }
+.status-chip.warning { background:var(--status-warning-bg); border-color:var(--status-warning-border); color:var(--status-warning-fg); }
+.status-chip.danger { background:var(--status-danger-bg); border-color:var(--status-danger-border); color:var(--status-danger-fg); }
+.status-chip.violet { background:var(--status-violet-bg); border-color:var(--status-violet-border); color:var(--status-violet-fg); }
+.status-chip.teal { background:var(--status-teal-bg); border-color:var(--status-teal-border); color:var(--status-teal-fg); }
+.status-chip.indigo { background:var(--status-indigo-bg); border-color:var(--status-indigo-border); color:var(--status-indigo-fg); }
+.toolbar { min-height:58px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:11px 13px; border-bottom:1px solid var(--border-subtle); }
+.search-field { position:relative; min-width:180px; flex:1; }
+.search-field .icon { position:absolute; top:50%; left:10px; transform:translateY(-50%); color:var(--text-tertiary); pointer-events:none; }
+.input,.select,.textarea { min-height:var(--control-height-md); width:100%; padding:0 10px; border:1px solid var(--border-default); border-radius:var(--radius-md); background:var(--surface-app); color:var(--text-primary); font-size:12px; outline:none; }
+.search-field .input { padding-left:34px; }
+.input::placeholder,.textarea::placeholder { color:var(--text-tertiary); }
+.input:focus,.select:focus,.textarea:focus { border-color:var(--border-focus); box-shadow:var(--focus-ring); }
+.filter-button { min-height:var(--control-height-md); display:inline-flex; align-items:center; gap:7px; padding:0 10px; border:1px solid var(--border-default); border-radius:var(--radius-md); background:var(--surface-app); color:var(--text-secondary); font-size:11px; font-weight:650; }
+.table-wrap { width:100%; overflow:auto; }
+table { width:100%; border-collapse:collapse; text-align:left; font-size:11px; }
+th { padding:10px 12px; border-bottom:1px solid var(--border-default); color:var(--text-tertiary); background:var(--surface-sunken); font-size:9px; font-weight:760; letter-spacing:.055em; text-transform:uppercase; white-space:nowrap; }
+td { height:var(--row-height); padding:var(--table-cell-padding-y) 12px; border-bottom:1px solid var(--border-subtle); vertical-align:middle; color:var(--text-secondary); white-space:nowrap; }
+tbody tr:hover { background:var(--surface-hover); }
+tbody tr:last-child td { border-bottom:0; }
+.person-cell { min-width:170px; display:flex; align-items:center; gap:9px; }
+.person-cell .avatar { width:29px; height:29px; font-size:9px; }
+.person-name { display:grid; min-width:0; }
+.person-name strong { color:var(--text-primary); font-size:11px; font-weight:710; }
+.person-name small { margin-top:2px; color:var(--text-tertiary); font-size:9px; }
+.candidate-open { border:0; padding:0; background:transparent; text-align:left; color:inherit; }
+.candidate-open:hover .person-name strong { color:var(--text-link); text-decoration:underline; }
+.candidate-layout { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(335px,.82fr); gap:14px; align-items:start; }
+.candidate-table-panel { overflow:hidden; }
+.candidate-table-panel .panel-head { border-bottom:0; }
+.table-footer { min-height:43px; display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 13px; border-top:1px solid var(--border-subtle); color:var(--text-tertiary); font-size:10px; }
+.candidate-drawer { overflow:hidden; position:sticky; top:calc(var(--topbar-height) + 15px); box-shadow:var(--shadow-2); }
+.drawer-title { display:flex; align-items:center; gap:10px; min-width:0; }
+.drawer-title .avatar { width:40px; height:40px; }
+.drawer-title h2 { margin:0 0 3px; font-size:14px; letter-spacing:-.02em; }
+.drawer-title small { display:block; color:var(--text-tertiary); font-size:10px; }
+.drawer-actions { display:flex; align-items:center; gap:6px; }
+.drawer-tabs { display:flex; overflow:auto; gap:14px; padding:0 15px; border-bottom:1px solid var(--border-subtle); }
+.drawer-tab { min-height:42px; position:relative; border:0; background:transparent; color:var(--text-tertiary); font-size:10px; font-weight:650; white-space:nowrap; }
+.drawer-tab[aria-selected="true"] { color:var(--accent-default); }
+.drawer-tab[aria-selected="true"]::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:2px; border-radius:2px 2px 0 0; background:var(--accent-default); }
+.drawer-body { min-height:285px; padding:16px; }
+.profile-summary { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:14px; }
+.profile-title { margin:0 0 4px; font-size:16px; letter-spacing:-.035em; }
+.profile-position { margin:0; color:var(--text-secondary); font-size:11px; }
+.detail-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:13px 0 16px; }
+.detail-item { min-width:0; padding:9px; border:1px solid var(--border-subtle); border-radius:var(--radius-md); background:var(--surface-sunken); }
+.detail-item small { display:block; margin-bottom:4px; color:var(--text-tertiary); font-size:9px; }
+.detail-item strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; font-weight:680; }
+.drawer-section-title { margin:16px 0 8px; color:var(--text-secondary); font-size:10px; font-weight:740; text-transform:uppercase; letter-spacing:.055em; }
+.timeline { display:grid; gap:11px; }
+.timeline-entry { display:grid; grid-template-columns:19px minmax(0,1fr); gap:8px; position:relative; }
+.timeline-entry:not(:last-child)::after { content:""; position:absolute; left:8px; top:17px; bottom:-10px; border-left:1px solid var(--border-default); }
+.timeline-dot { width:17px; height:17px; display:grid; place-items:center; position:relative; z-index:1; border-radius:50%; background:var(--accent-subtle); color:var(--accent-default); font-size:8px; }
+.timeline-entry strong { display:block; font-size:10px; }
+.timeline-entry small { display:block; margin-top:3px; color:var(--text-tertiary); font-size:9px; }
+.kanban-toolbar { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:13px; }
+.kanban-board { display:grid; grid-template-columns:repeat(5,minmax(220px,1fr)); gap:11px; overflow-x:auto; padding:0 0 12px; align-items:start; }
+.kanban-column { min-width:220px; padding:10px; border:1px solid var(--border-subtle); border-radius:var(--radius-lg); background:var(--surface-sunken); transition:background var(--duration-fast),border-color var(--duration-fast); }
+.kanban-column.drag-target { border-color:var(--accent-default); background:var(--surface-selected); }
+.kanban-col-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:3px 2px 10px; }
+.kanban-col-title { display:flex; align-items:center; gap:8px; font-size:11px; font-weight:740; }
+.stage-dot { width:8px; height:8px; border-radius:50%; background:var(--status-info-fg); }
+.kanban-column:nth-child(2) .stage-dot { background:var(--status-teal-fg); }
+.kanban-column:nth-child(3) .stage-dot { background:var(--status-violet-fg); }
+.kanban-column:nth-child(4) .stage-dot { background:var(--status-warning-fg); }
+.kanban-column:nth-child(5) .stage-dot { background:var(--status-success-fg); }
+.kanban-count { min-width:22px; height:21px; display:grid; place-items:center; padding:0 5px; border-radius:7px; background:var(--surface-app); color:var(--text-secondary); font-size:10px; font-weight:740; font-variant-numeric:tabular-nums; }
+.kanban-cards { min-height:145px; display:grid; align-content:start; gap:8px; }
+.kanban-card { padding:11px; background:var(--surface-app); border:1px solid var(--border-subtle); border-radius:var(--radius-md); box-shadow:var(--shadow-1); cursor:grab; transition:transform var(--duration-fast),box-shadow var(--duration-fast),border-color var(--duration-fast); }
+.kanban-card:hover { transform:translateY(-2px); box-shadow:var(--shadow-2); border-color:var(--border-strong); }
+.kanban-card:active { cursor:grabbing; }
+.kanban-card[aria-grabbed="true"] { opacity:.55; }
+.kanban-person { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.kanban-person .avatar { width:28px; height:28px; font-size:9px; }
+.kanban-person strong { font-size:10px; font-weight:730; }
+.kanban-role { min-height:30px; margin-bottom:9px; color:var(--text-secondary); font-size:10px; line-height:1.4; }
+.kanban-card-foot { display:flex; justify-content:space-between; align-items:center; gap:5px; padding-top:8px; border-top:1px solid var(--border-subtle); }
+.kanban-card-foot small { color:var(--text-tertiary); font-size:9px; }
+.move-card { width:24px; height:24px; display:grid; place-items:center; border:1px solid var(--border-subtle); border-radius:7px; background:var(--surface-app); color:var(--text-secondary); }
+.move-card:hover { color:var(--accent-default); border-color:var(--accent-subtle-border); background:var(--accent-subtle); }
+.analytics-kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:15px; }
+.analytics-kpi { padding:13px 15px; }
+.analytics-kpi small { display:block; color:var(--text-tertiary); font-size:10px; }
+.analytics-kpi strong { display:block; margin:6px 0 2px; font-size:24px; line-height:1; letter-spacing:-.05em; font-variant-numeric:tabular-nums; }
+.analytics-kpi span { color:var(--status-success-fg); font-size:10px; font-weight:700; }
+.analytics-grid { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(280px,.9fr); gap:15px; margin-bottom:15px; }
+.analytics-grid.secondary { grid-template-columns:1fr 1fr; }
+.chart-large .chart-svg { height:224px; }
+.conversion-list { display:grid; gap:13px; padding:4px 0; }
+.conversion-row { display:grid; grid-template-columns:98px minmax(40px,1fr) 35px; align-items:center; gap:9px; font-size:10px; }
+.conversion-row span:first-child { color:var(--text-secondary); }
+.conversion-row strong { text-align:right; font-variant-numeric:tabular-nums; font-size:10px; }
+.conversion-track { height:9px; overflow:hidden; border-radius:var(--radius-full); background:var(--surface-sunken); }
+.conversion-track span { display:block; height:100%; border-radius:inherit; background:var(--accent-default); }
+.source-bars { display:grid; gap:12px; }
+.source-row { display:grid; grid-template-columns:95px 1fr 30px; align-items:center; gap:9px; font-size:10px; }
+.source-row span { color:var(--text-secondary); }
+.source-row strong { text-align:right; font-variant-numeric:tabular-nums; }
+.source-row .conversion-track span { background:var(--status-teal-fg); }
+.table-title { display:flex; align-items:center; gap:9px; }
+.table-title strong { font-size:13px; }
+.form-layout { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(270px,.75fr); gap:15px; align-items:start; }
+.wizard-panel { overflow:hidden; }
+.wizard-steps { display:flex; align-items:center; gap:0; padding:17px 20px; border-bottom:1px solid var(--border-subtle); }
+.wizard-step { min-width:0; display:flex; align-items:center; gap:8px; color:var(--text-tertiary); font-size:10px; font-weight:650; }
+.wizard-step + .wizard-step::before { content:""; width:26px; height:1px; margin:0 9px; background:var(--border-default); }
+.wizard-step-number { width:24px; height:24px; display:grid; place-items:center; border:1px solid var(--border-default); border-radius:50%; font-size:10px; font-weight:750; }
+.wizard-step[aria-current="step"] { color:var(--accent-default); }
+.wizard-step[aria-current="step"] .wizard-step-number,.wizard-step.is-done .wizard-step-number { color:var(--text-on-accent); border-color:var(--accent-default); background:var(--accent-default); }
+.wizard-content { min-height:295px; padding:22px; }
+.wizard-content h2 { margin:0 0 6px; font-size:17px; letter-spacing:-.03em; }
+.wizard-content > p { margin:0 0 19px; color:var(--text-secondary); font-size:11px; }
+.form-grid { display:grid; grid-template-columns:1fr 1fr; gap:13px 12px; }
+.field { display:grid; gap:6px; }
+.field.full { grid-column:1/-1; }
+.field label,.field-label { color:var(--text-secondary); font-size:10px; font-weight:720; }
+.textarea { min-height:74px; padding:9px 10px; resize:vertical; line-height:1.5; }
+.field-note { color:var(--text-tertiary); font-size:9px; }
+.checkbox-list { display:grid; gap:9px; }
+.check-row { display:flex; align-items:flex-start; gap:9px; padding:9px 10px; border:1px solid var(--border-subtle); border-radius:var(--radius-md); background:var(--surface-sunken); font-size:11px; }
+.check-row input { margin:1px 0 0; accent-color:var(--accent-default); }
+.check-row small { display:block; margin-top:3px; color:var(--text-tertiary); font-size:9px; }
+.wizard-footer { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:13px 20px; border-top:1px solid var(--border-subtle); background:var(--surface-sunken); }
+.wizard-footer small { color:var(--text-tertiary); font-size:10px; }
+.material-list { display:grid; }
+.material-row { display:flex; align-items:center; gap:10px; min-height:58px; border-bottom:1px solid var(--border-subtle); }
+.material-row:last-child { border-bottom:0; }
+.file-icon { width:30px; height:34px; display:grid; place-items:center; border-radius:7px; background:var(--accent-subtle); color:var(--accent-default); font-size:9px; font-weight:800; }
+.material-copy { min-width:0; flex:1; }
+.material-copy strong { display:block; font-size:11px; }
+.material-copy small { display:block; margin-top:3px; color:var(--text-tertiary); font-size:9px; }
+.calendar-toolbar { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:13px; }
+.week-grid { display:grid; grid-template-columns:repeat(5,minmax(130px,1fr)); overflow:auto; border:1px solid var(--border-subtle); border-radius:var(--radius-lg); background:var(--surface-app); }
+.week-day { min-height:270px; border-right:1px solid var(--border-subtle); }
+.week-day:last-child { border-right:0; }
+.week-day-head { padding:12px; border-bottom:1px solid var(--border-subtle); text-align:center; }
+.week-day-head small { display:block; color:var(--text-tertiary); font-size:9px; font-weight:700; text-transform:uppercase; }
+.week-day-head strong { display:block; margin-top:3px; font-size:17px; }
+.week-day.today .week-day-head strong { color:var(--accent-default); }
+.calendar-event { margin:9px 7px; padding:9px; border-left:3px solid var(--accent-default); border-radius:0 7px 7px 0; background:var(--accent-subtle); font-size:10px; }
+.calendar-event.interview { border-color:var(--status-violet-fg); background:var(--status-violet-bg); }
+.calendar-event.offer { border-color:var(--status-success-fg); background:var(--status-success-bg); }
+.calendar-event strong { display:block; font-size:10px; }
+.calendar-event small { display:block; margin-top:4px; color:var(--text-secondary); font-size:9px; }
+.calendar-event time { display:block; margin-bottom:5px; color:var(--text-secondary); font-size:9px; font-weight:750; }
+.palette-layer,.dialog-layer { position:fixed; inset:0; z-index:var(--z-modal-overlay); display:grid; place-items:start center; padding:13vh 20px 20px; }
+.modal-backdrop { position:absolute; inset:0; background:var(--surface-overlay); backdrop-filter:blur(3px); }
+.palette,.dialog-card { position:relative; z-index:1; width:min(570px,100%); max-height:min(680px,78vh); overflow:auto; background:var(--surface-app); border:1px solid var(--border-default); border-radius:var(--radius-xl); box-shadow:var(--shadow-4); animation:modal-in 160ms var(--easing-decelerate) both; }
+@keyframes modal-in { from { opacity:0; transform:translateY(-8px) scale(.985); } to { opacity:1; transform:translateY(0) scale(1); } }
+.palette-search { display:flex; align-items:center; gap:11px; padding:16px; border-bottom:1px solid var(--border-subtle); }
+.palette-search .icon { color:var(--text-tertiary); }
+.palette-search input { width:100%; border:0; outline:0; background:transparent; font-size:15px; }
+.palette-search input:focus { box-shadow:none; }
+.palette-hint { color:var(--text-tertiary); font-size:10px; white-space:nowrap; }
+.palette-results { padding:8px; }
+.palette-caption { padding:8px 9px 5px; color:var(--text-tertiary); font-size:9px; font-weight:760; letter-spacing:.1em; text-transform:uppercase; }
+.palette-item { width:100%; display:flex; align-items:center; gap:10px; padding:10px; border:0; border-radius:var(--radius-md); background:transparent; text-align:left; color:var(--text-primary); }
+.palette-item:hover,.palette-item[aria-selected="true"] { background:var(--surface-selected); }
+.palette-item-icon { width:29px; height:29px; display:grid; place-items:center; border-radius:8px; background:var(--surface-sunken); color:var(--text-secondary); }
+.palette-item-text { min-width:0; flex:1; }
+.palette-item-text strong { display:block; font-size:11px; }
+.palette-item-text small { display:block; margin-top:2px; color:var(--text-tertiary); font-size:9px; }
+.palette-empty { padding:25px 12px; text-align:center; color:var(--text-tertiary); font-size:11px; }
+.palette-footer { display:flex; gap:15px; padding:10px 15px; border-top:1px solid var(--border-subtle); color:var(--text-tertiary); font-size:9px; }
+.dialog-layer { padding-top:9vh; }
+.dialog-card { width:min(480px,100%); padding:21px; }
+.dialog-head { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; margin-bottom:17px; }
+.dialog-head h2 { margin:0 0 4px; font-size:18px; }
+.dialog-head p { margin:0; color:var(--text-secondary); font-size:11px; }
+.dialog-form { display:grid; gap:12px; }
+.dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:6px; }
+.toast-region { position:fixed; right:21px; bottom:20px; z-index:var(--z-toast); display:grid; gap:9px; width:min(350px,calc(100vw - 30px)); pointer-events:none; }
+.toast { display:flex; align-items:flex-start; gap:10px; padding:12px 14px; background:var(--surface-app); border:1px solid var(--border-default); border-radius:var(--radius-lg); box-shadow:var(--shadow-3); animation:toast-in 240ms var(--easing-decelerate) both; pointer-events:auto; }
+.toast.leaving { opacity:0; transform:translateY(7px); transition:opacity 180ms,transform 180ms; }
+@keyframes toast-in { from { opacity:0; transform:translateY(9px); } to { opacity:1; transform:translateY(0); } }
+.toast-mark { width:23px; height:23px; flex:0 0 auto; display:grid; place-items:center; border-radius:50%; background:var(--status-success-bg); color:var(--status-success-fg); font-size:12px; font-weight:800; }
+.toast strong { display:block; font-size:11px; }
+.toast small { display:block; margin-top:3px; color:var(--text-secondary); font-size:10px; }
+.skeleton-overlay { position:absolute; inset:0; z-index:5; padding:17px; display:grid; align-content:start; gap:12px; background:var(--surface-app); border-radius:inherit; }
+.skeleton-bar { height:11px; border-radius:5px; background:linear-gradient(90deg,var(--surface-hover),var(--surface-pressed),var(--surface-hover)); background-size:200% 100%; animation:sheen 1s linear infinite; }
+.skeleton-bar.large { height:28px; width:38%; }
+.skeleton-bar.medium { width:68%; }
+.skeleton-bar.short { width:27%; }
+.skeleton-row { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+.skeleton-block { height:66px; border-radius:var(--radius-md); background:var(--surface-hover); animation:sheen 1s linear infinite; }
+@keyframes sheen { to { background-position:-200% 0; } }
+.is-loading-content > :not(.skeleton-overlay) { opacity:.15; filter:blur(1px); transition:opacity 160ms,filter 160ms; }
+.reveal { animation:reveal-up 480ms var(--easing-decelerate) both; }
+.reveal:nth-child(2) { animation-delay:45ms; } .reveal:nth-child(3) { animation-delay:90ms; } .reveal:nth-child(4) { animation-delay:135ms; }
+@keyframes reveal-up { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+.empty-note { padding:24px 12px; color:var(--text-tertiary); text-align:center; font-size:11px; }
+@media (max-width:1260px) {
+  .app-shell { grid-template-columns:var(--sidebar-width-collapsed) minmax(0,1fr); }
+  .sidebar { padding-inline:9px; }
+  .brand { justify-content:center; padding-inline:0; }
+  .brand-name,.nav-caption,.nav-link span:not(.nav-count),.nav-link .nav-count,.user-meta,.concept-switch span { display:none; }
+  .nav-link { justify-content:center; padding:0; }
+  .nav-link[aria-current="page"]::before { left:-9px; }
+  .nav-link[title]::after { content:none; }
+  .concept-switch { justify-content:center; padding-inline:0; flex-wrap:wrap; }
+  .concept-switch a { width:24px; }
+  .user-profile { justify-content:center; padding-inline:0; }
+  .topbar { padding-inline:21px; }
+  .app-content { padding-inline:22px; }
+}
+@media (max-width:990px) {
+  .control-button .control-label { display:none; }
+  .control-button { width:35px; justify-content:center; padding:0; }
+  .dashboard-grid,.analytics-grid { grid-template-columns:1fr; }
+  .candidate-layout { grid-template-columns:1fr; }
+  .candidate-drawer { position:relative; top:auto; }
+}
+@media (max-width:700px) {
+  .app-shell { grid-template-columns:1fr; padding-bottom:63px; }
+  .sidebar { position:fixed; inset:auto 0 0; width:100%; height:63px; min-height:0; padding:5px 8px env(safe-area-inset-bottom,0); flex-direction:row; border-right:0; border-top:1px solid var(--border-sidebar); overflow-x:auto; }
+  .brand,.sidebar-bottom { display:none; }
+  .sidebar-nav { display:flex; overflow:visible; gap:4px; padding:0; }
+  .nav-group { display:flex; }
+  .nav-caption { display:none; }
+  .nav-link { width:47px; min-width:47px; height:48px; min-height:48px; margin:0; }
+  .nav-link[aria-current="page"]::before { left:13px; top:-5px; width:21px; height:3px; border-radius:0 0 3px 3px; }
+  .topbar { min-height:58px; padding:0 12px; gap:9px; }
+  .crumb { min-width:100px; }
+  .crumb small { display:none; }
+  .search-trigger { min-width:37px; width:37px; justify-content:center; padding:0; border:0; background:transparent; }
+  .search-trigger span,.search-trigger kbd { display:none; }
+  .topbar-tools { gap:3px; }
+  .icon-button,.control-button { width:32px; height:32px; min-height:32px; }
+  .app-content { padding:20px 13px 30px; }
+  .page-heading { align-items:flex-start; flex-direction:column; gap:12px; }
+  .heading-actions { width:100%; }
+  .heading-actions .button { flex:1; }
+  .hero-banner { align-items:flex-start; flex-direction:column; padding:17px; gap:14px; }
+  .hero-progress { width:100%; }
+  .kpi-strip,.analytics-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+  .kpi-card { min-height:105px; padding:11px; }
+  .kpi-value { font-size:23px; }
+  .dashboard-grid,.dashboard-lower,.analytics-grid.secondary,.form-layout { grid-template-columns:1fr; }
+  .panel-head { padding-inline:13px; }
+  .panel-body { padding:13px; }
+  .chart-wrap { padding-inline:10px; }
+  .chart-svg { height:150px; }
+  .stage-line { grid-template-columns:102px minmax(30px,1fr) 28px; gap:7px; }
+  .candidate-layout { grid-template-columns:minmax(0,1fr); }
+  .candidate-drawer { position:relative; }
+  .toolbar { padding-inline:10px; }
+  .search-field { flex-basis:100%; }
+  .calendar-toolbar,.kanban-toolbar { align-items:flex-start; flex-direction:column; }
+  .week-grid { grid-template-columns:repeat(5,minmax(125px,1fr)); }
+  .form-grid { grid-template-columns:1fr; }
+  .field.full { grid-column:auto; }
+  .wizard-steps { padding:13px; }
+  .wizard-step { gap:5px; font-size:0; }
+  .wizard-step + .wizard-step::before { width:17px; margin-inline:5px; }
+  .wizard-content { padding:16px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  *,*::before,*::after { scroll-behavior:auto !important; animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; }
+}
+
+/* Направление №4 — Bento Showcase: светлая mesh-подложка, стеклянные поверхности, яркий hero-блок. */
+[data-concept="bento"] { --surface-canvas:#f1f2ff; --surface-app:rgba(255,255,255,.88); --surface-raised:rgba(255,255,255,.94); --surface-sunken:rgba(247,247,255,.86); --surface-hover:#f0efff; --surface-pressed:#e8e6ff; --surface-selected:#ecebff; --surface-selected-hover:#dfddff; --surface-sidebar:#282644; --surface-sidebar-hover:rgba(255,255,255,.08); --surface-sidebar-active:rgba(255,255,255,.13); --text-primary:#23213a; --text-secondary:#5d5c78; --text-tertiary:#696882; --text-disabled:#aaa9bf; --text-inverse:#fff; --text-link:#4842b8; --text-on-accent:#fff; --text-sidebar:#f1f0ff; --text-sidebar-muted:#b6b4cf; --border-subtle:rgba(72,66,184,.12); --border-default:rgba(72,66,184,.19); --border-strong:rgba(72,66,184,.29); --border-sidebar:rgba(255,255,255,.11); --accent-default:#4c46c8; --accent-hover:#3c36aa; --accent-pressed:#2e297e; --accent-subtle:#eeedff; --accent-subtle-border:#dad8ff; --status-info-fg:#413aab; --status-info-bg:#eeedff; --status-info-border:#d8d6ff; --status-violet-fg:#733fa8; --status-violet-bg:#f4eaff; --status-violet-border:#e1cef5; --status-indigo-fg:#413aab; --status-indigo-bg:#eeedff; --status-indigo-border:#d8d6ff; --focus-ring-color:#635cf0; --radius-md:14px; --radius-lg:21px; --radius-xl:26px; --shadow-1:0 3px 10px rgba(53,47,137,.055); --shadow-2:0 8px 22px rgba(53,47,137,.095); --shadow-3:0 17px 42px rgba(53,47,137,.14); --shadow-4:0 24px 65px rgba(36,32,93,.24); --glass:rgba(255,255,255,.72); --hero-bg:linear-gradient(120deg,#4c46c8 0%,#7154ca 56%,#9a62cb 100%); --hero-ink:#fff; --hero-accent:#fff; --hero-decoration:rgba(255,255,255,.18); }
+[data-theme="dark"][data-concept="bento"] { --surface-canvas:#141521; --surface-app:rgba(30,31,48,.88); --surface-raised:rgba(38,39,61,.94); --surface-sunken:rgba(23,24,39,.85); --surface-hover:rgba(255,255,255,.07); --surface-pressed:rgba(255,255,255,.12); --surface-selected:rgba(130,122,255,.19); --surface-selected-hover:rgba(130,122,255,.28); --surface-sidebar:#191927; --surface-sidebar-hover:rgba(255,255,255,.06); --surface-sidebar-active:rgba(130,122,255,.16); --text-primary:#f4f2ff; --text-secondary:#d0cde7; --text-tertiary:#aaa7c6; --text-disabled:#76738f; --text-link:#b4aaff; --text-sidebar:#efedff; --text-sidebar-muted:#aaa7c6; --border-subtle:rgba(190,183,255,.1); --border-default:rgba(190,183,255,.16); --border-strong:rgba(190,183,255,.25); --border-sidebar:rgba(255,255,255,.08); --text-on-accent:#171526; --accent-default:#8378ff; --accent-hover:#9c94ff; --accent-pressed:#b9b3ff; --accent-subtle:rgba(131,120,255,.17); --accent-subtle-border:rgba(161,152,255,.34); --status-info-fg:#c4bdff; --status-info-bg:rgba(131,120,255,.18); --status-info-border:rgba(161,152,255,.34); --status-violet-fg:#dfb9ff; --status-violet-bg:rgba(159,93,208,.19); --status-violet-border:rgba(197,145,235,.35); --status-indigo-fg:#c4bdff; --status-indigo-bg:rgba(131,120,255,.18); --status-indigo-border:rgba(161,152,255,.34); --focus-ring-color:#beb7ff; --glass:rgba(32,33,52,.8); --hero-bg:linear-gradient(120deg,#39347e 0%,#493b7b 58%,#563b71 100%); --hero-ink:#fff; --hero-accent:#e8e2ff; --hero-decoration:rgba(255,255,255,.13); }
+[data-concept="bento"] body { background:radial-gradient(ellipse at 82% 0%,rgba(160,150,255,.21),transparent 32rem),radial-gradient(ellipse at 4% 42%,rgba(255,193,219,.12),transparent 27rem),var(--surface-canvas); }
+[data-concept="bento"] .app-shell { background:radial-gradient(ellipse at 80% 5%,rgba(160,150,255,.18),transparent 34rem),radial-gradient(ellipse at 8% 48%,rgba(255,193,219,.11),transparent 26rem),var(--surface-canvas); }
+[data-concept="bento"] .topbar { background:var(--glass); backdrop-filter:blur(18px); }
+[data-concept="bento"] .panel { background:var(--glass); backdrop-filter:blur(16px); box-shadow:var(--shadow-1); }
+[data-concept="bento"] .panel:hover { transform:translateY(-2px); box-shadow:var(--shadow-2); border-color:var(--border-default); }
+[data-concept="bento"] .hero-banner { border:0; box-shadow:0 16px 36px rgba(77,68,185,.18); }
+[data-theme="dark"][data-concept="bento"] .hero-banner { box-shadow:0 16px 38px rgba(0,0,0,.25); }
+[data-concept="bento"] .kpi-card { background:var(--glass); backdrop-filter:blur(15px); }
+[data-concept="bento"] .brand-mark { border-radius:12px; box-shadow:0 6px 16px rgba(115,84,208,.36); }
+[data-concept="bento"] .chart-line { filter:drop-shadow(0 3px 4px rgba(76,70,200,.25)); }
+[data-concept="bento"] .kanban-column { background:rgba(255,255,255,.44); backdrop-filter:blur(12px); }
+[data-theme="dark"][data-concept="bento"] .kanban-column { background:rgba(25,26,41,.62); }
+
+/* Дополнительная асимметрия и вау-плитка — Bento остаётся читабельным в обеих темах. */
+[data-concept="bento"] .kpi-strip { grid-template-columns:repeat(5,minmax(0,1fr)); }
+[data-concept="bento"] .kpi-card:first-child { grid-column:span 2; min-height:126px; background:linear-gradient(135deg,rgba(137,124,255,.16),rgba(112,204,221,.11)); }
+[data-theme="dark"][data-concept="bento"] .kpi-card:first-child { background:linear-gradient(135deg,rgba(137,124,255,.22),rgba(112,204,221,.12)); }
+[data-concept="bento"] .kpi-card:first-child .kpi-value { font-size:34px; margin-top:14px; }
+[data-concept="bento"] .hero-banner { min-height:158px; padding:25px 27px; }
+[data-concept="bento"] .hero-copy .panel-kicker,[data-concept="bento"] .hero-copy p,[data-concept="bento"] .hero-progress-top,[data-concept="bento"] .hero-progress small { color:rgba(255,255,255,.82); }
+[data-concept="bento"] .hero-banner .panel-link { color:#fff; }
+[data-concept="bento"] .hero-progress .progress-track { background:rgba(255,255,255,.27); }
+[data-concept="bento"] .hero-progress .progress-track span { background:#fff; }
+[data-concept="bento"] .dashboard-grid { grid-template-columns:minmax(0,1.65fr) minmax(305px,.8fr); }
+@media (max-width:700px) {
+  [data-concept="bento"] .kpi-strip { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  [data-concept="bento"] .dashboard-grid { grid-template-columns:1fr; }
+}
+
+</style>
+</head>
+<body>
+<a class="skip-link" href="#mainContent">Перейти к основному содержимому</a>
+<svg aria-hidden="true" width="0" height="0" style="position:absolute;overflow:hidden">
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 4.5h16l1.5 10v4a1 1 0 0 1-1 1h-17a1 1 0 0 1-1-1v-4z"/><path d="M3 14h5l1.5 2h5L16 14h5"/><path d="M8 8h8"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.8 20v-1.3A5.7 5.7 0 0 1 8.5 13h1A5.7 5.7 0 0 1 15.2 18.7V20z"/><path d="M16 4.8a3.4 3.4 0 0 1 0 6.4M17 14h.6a4.7 4.7 0 0 1 4.6 4.7V20h-4"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M7.5 3.5v3M16.5 3.5v3M3.5 9.5h17M8 13h2m4 0h2M8 16.5h2"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 19.5v-6M10 19.5V5M16 19.5v-9M22 19.5H2"/><path d="m3 10 5-4 5 3 7-6"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v5h5M9 13h6M9 16.5h6"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.7"/><path d="m16 16 4.5 4.5"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 15A8.5 8.5 0 0 1 9 3.5 8.8 8.8 0 1 0 20.5 15z"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="m13.5 2.5-9 11h7l-1 8 9-12h-7z"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><path d="M7 3.5h10a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M10 17.5h4"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16M7 12h10m-7 7h4"/><circle cx="8" cy="5" r="1.5"/><circle cx="14" cy="12" r="1.5"/><circle cx="11" cy="19" r="1.5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+</svg>
+<div class="app-shell">
+  <aside class="sidebar" aria-label="Основная навигация">
+    <a class="brand" href="#/queue" aria-label="HR Manager — на главную">
+      <span class="brand-mark">hr</span><span class="brand-name">HR Manager<small>people operations</small></span>
+    </a>
+    <nav class="sidebar-nav">
+      <div class="nav-group"><div class="nav-caption">Рабочее пространство</div>
+        <a class="nav-link" href="#/queue" data-route-link="queue" title="Моя очередь"><svg class="icon"><use href="#i-inbox"/></svg><span>Моя очередь</span><span class="nav-count">7</span></a>
+        <a class="nav-link" href="#/candidates" data-route-link="candidates" title="Кандидаты"><svg class="icon"><use href="#i-users"/></svg><span>Кандидаты</span></a>
+        <a class="nav-link" href="#/funnel" data-route-link="funnel" title="Воронка кандидатов"><svg class="icon"><use href="#i-layers"/></svg><span>Воронка кандидатов</span></a>
+        <a class="nav-link" href="#/calendar" data-route-link="calendar" title="Календарь"><svg class="icon"><use href="#i-calendar"/></svg><span>Календарь</span><span class="nav-count">4</span></a>
+      </div>
+      <div class="nav-group"><div class="nav-caption">Результаты</div>
+        <a class="nav-link" href="#/analytics" data-route-link="analytics" title="Аналитика"><svg class="icon"><use href="#i-chart"/></svg><span>Аналитика</span></a>
+        <a class="nav-link" href="#/templates" data-route-link="templates" title="Шаблоны и материалы"><svg class="icon"><use href="#i-file"/></svg><span>Шаблоны и материалы</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="concept-switch" aria-label="Другие дизайн-концепции"><span>ВАРИАНТ 03 / 03</span><a href="01-calm-precision.html" data-concept-link="calm" aria-label="Открыть Calm Precision">01</a><a href="02-warm-soft.html" data-concept-link="warm" aria-label="Открыть Warm Soft">02</a><a href="03-bento-showcase.html" data-concept-link="bento" aria-label="Открыть Bento Showcase">03</a></div>
+      <div class="user-profile"><span class="avatar">АС</span><span class="user-meta"><strong>Анна Смирнова</strong><small>HR-менеджер</small></span><button class="icon-button" type="button" data-action="user-menu" aria-label="Меню пользователя" title="Анна Смирнова"><svg class="icon icon-sm"><use href="#i-more"/></svg></button></div>
+    </div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar">
+      <div class="crumb"><small>Подбор персонала</small><strong id="currentSection">Моя очередь</strong></div>
+      <div class="topbar-spacer"></div>
+      <button class="search-trigger" type="button" data-open-palette aria-label="Поиск по системе"><svg class="icon icon-sm"><use href="#i-search"/></svg><span>Поиск по кандидатам и разделам</span><kbd>Ctrl K</kbd></button>
+      <div class="topbar-tools">
+        <button class="icon-button" type="button" data-theme-toggle aria-label="Переключить светлую или тёмную тему" title="Тема: светлая"><svg class="icon"><use href="#i-moon"/></svg></button>
+        <button class="control-button" type="button" data-density-toggle aria-pressed="false" aria-label="Переключить плотность таблиц"><span class="control-letter">≡</span><span class="control-label" data-density-label>Плотность</span></button>
+        <button class="control-button" type="button" data-font-toggle aria-pressed="false" aria-label="Переключить системные шрифты"><span class="control-letter">Aa</span><span class="control-label">System</span></button>
+        <button class="icon-button" type="button" data-action="notifications" aria-label="Уведомления, 3 новых" title="Уведомления"><svg class="icon"><use href="#i-bell"/></svg><span class="notification-dot"></span></button>
+      </div>
+    </header>
+    <main class="app-content" id="mainContent" tabindex="-1">
+      <section class="view" data-view="queue" aria-labelledby="queueTitle">
+        <div class="page-heading">
+          <div class="heading-copy"><div class="concept-label">ДИЗАЙН-КОНЦЕПТ 03 / 03 · Bento Showcase</div><h1 id="queueTitle">Моя очередь</h1><p class="page-subtitle">Доброе утро, Анна. Вот что важно сегодня — 2 октября 2026.</p></div>
+          <div class="heading-actions"><button class="button button-quiet" type="button" data-action="refresh"><svg class="icon icon-sm"><use href="#i-bolt"/></svg>Обновить</button><button class="button button-primary" type="button" data-open-new-candidate><svg class="icon icon-sm"><use href="#i-plus"/></svg>Создать кандидата</button></div>
+        </div>
+        <section class="hero-banner reveal" aria-label="План подбора">
+          <div class="hero-copy"><span class="panel-kicker">ОКТЯБРЬ · ПЛАН КОМАНДЫ</span><h2>Подбор идёт в хорошем ритме</h2><p>За последние 30 дней команда закрыла 6 вакансий и назначила 41 собеседование.</p><div class="hero-meta"><a class="panel-link" href="#/analytics">Посмотреть аналитику <svg class="icon icon-sm"><use href="#i-arrow"/></svg></a><span class="status-chip success">+12% к прошлому месяцу</span></div></div>
+          <div class="hero-progress"><div class="hero-progress-top"><span>План закрытия вакансий</span><strong>84%</strong></div><div class="progress-track" aria-label="План выполнен на 84 процента"><span style="width:84%"></span></div><small>6 из 7 целевых выходов в этом месяце</small></div>
+        </section>
+        <div class="kpi-strip">
+          <article class="panel kpi-card reveal"><div class="kpi-head"><span>Открытые вакансии</span><span class="kpi-mark"><svg class="icon icon-sm"><use href="#i-grid"/></svg></span></div><div class="kpi-value"><span data-count="18">18</span></div><div class="kpi-foot"><span class="trend">↗ 2 за неделю</span><svg class="spark" viewBox="0 0 60 20" aria-hidden="true"><path d="M1 16 L9 13 L17 14 L25 8 L33 11 L42 5 L50 7 L59 2"/></svg></div></article>
+          <article class="panel kpi-card reveal"><div class="kpi-head"><span>Новые кандидаты</span><span class="kpi-mark"><svg class="icon icon-sm"><use href="#i-users"/></svg></span></div><div class="kpi-value"><span data-count="148">148</span></div><div class="kpi-foot"><span class="trend">↗ 18% к сентябрю</span><svg class="spark" viewBox="0 0 60 20" aria-hidden="true"><path d="M1 17 L8 14 L15 16 L23 9 L31 12 L38 5 L46 8 L53 3 L59 2"/></svg></div></article>
+          <article class="panel kpi-card reveal"><div class="kpi-head"><span>Собеседования</span><span class="kpi-mark"><svg class="icon icon-sm"><use href="#i-calendar"/></svg></span></div><div class="kpi-value"><span data-count="41">41</span></div><div class="kpi-foot"><span class="trend">↗ 6 на этой неделе</span><svg class="spark" viewBox="0 0 60 20" aria-hidden="true"><path d="M1 16 L9 12 L17 15 L24 8 L32 9 L40 4 L48 6 L55 2 L59 3"/></svg></div></article>
+          <article class="panel kpi-card reveal"><div class="kpi-head"><span>Средний срок найма</span><span class="kpi-mark"><svg class="icon icon-sm"><use href="#i-clock"/></svg></span></div><div class="kpi-value"><span data-count="18">18</span><small>дней</small></div><div class="kpi-foot"><span class="trend">↓ на 3 дня быстрее</span><svg class="spark" viewBox="0 0 60 20" aria-hidden="true"><path d="M1 3 L9 5 L17 4 L25 9 L33 8 L42 13 L50 12 L59 17"/></svg></div></article>
+        </div>
+        <div class="dashboard-grid">
+          <article class="panel chart-card reveal">
+            <div class="panel-head"><div class="chart-meta"><h2>Темп подбора</h2><small>Кандидаты, прошедшие этап за период</small></div><div class="segmented" role="group" aria-label="Период графика"><button type="button" data-period="7" aria-pressed="false">7 дн.</button><button type="button" data-period="30" aria-pressed="true">30 дн.</button><button type="button" data-period="90" aria-pressed="false">90 дн.</button></div></div>
+            <div class="chart-wrap"><svg class="chart-svg" viewBox="0 0 620 190" role="img" aria-label="График динамики: рост числа кандидатов от 12 до 41"><line class="chart-grid-line" x1="35" y1="25" x2="610" y2="25"/><line class="chart-grid-line" x1="35" y1="68" x2="610" y2="68"/><line class="chart-grid-line" x1="35" y1="111" x2="610" y2="111"/><line class="chart-grid-line" x1="35" y1="154" x2="610" y2="154"/><text class="chart-axis" x="3" y="28">50</text><text class="chart-axis" x="3" y="71">35</text><text class="chart-axis" x="3" y="114">20</text><text class="chart-axis" x="3" y="157">5</text><path class="chart-area" id="chartFill" d="M35 145 C75 133 85 123 120 129 S175 105 204 111 S260 80 290 93 S340 65 372 76 S430 54 458 60 S515 38 544 49 S580 28 610 34 L610 160 L35 160Z"/><path class="chart-line" id="chartLine" d="M35 145 C75 133 85 123 120 129 S175 105 204 111 S260 80 290 93 S340 65 372 76 S430 54 458 60 S515 38 544 49 S580 28 610 34"/><circle class="chart-point" cx="610" cy="34" r="4.5"/><text class="chart-axis" x="35" y="181">3 сен.</text><text class="chart-axis" x="170" y="181">10 сен.</text><text class="chart-axis" x="310" y="181">17 сен.</text><text class="chart-axis" x="450" y="181">24 сен.</text><text class="chart-axis" x="573" y="181">2 окт.</text></svg></div>
+            <div class="chart-footer"><span class="chart-legend"><i class="legend-dot"></i>Кандидаты в работе</span><span class="chart-legend"><i class="legend-dot alt"></i>План на месяц</span><span class="trend">+18% к прошлому периоду</span></div>
+          </article>
+          <article class="panel queue-panel reveal">
+            <div class="panel-head"><div><span class="panel-kicker">ТРЕБУЮТ ВНИМАНИЯ</span><h2>Задачи на сегодня</h2></div><span class="queue-count" aria-label="4 задачи">4</span></div>
+            <div class="task-list">
+              <div class="task-row"><span class="task-icon"><svg class="icon icon-sm"><use href="#i-calendar"/></svg></span><span class="task-copy"><strong>Подтвердить интервью</strong><small>Илья Морозов · Python-разработчик</small><span class="task-time">10:30</span></span><button class="task-done-button" type="button" data-complete aria-label="Отметить задачу «Подтвердить интервью» выполненной">Готово</button></div>
+              <div class="task-row"><span class="task-icon"><svg class="icon icon-sm"><use href="#i-phone"/></svg></span><span class="task-copy"><strong>Связаться после отклика</strong><small>Полина Фёдорова · Продуктовый дизайнер</small><span class="task-time">11:00</span></span><button class="task-done-button" type="button" data-complete aria-label="Отметить задачу «Связаться после отклика» выполненной">Готово</button></div>
+              <div class="task-row"><span class="task-icon"><svg class="icon icon-sm"><use href="#i-file"/></svg></span><span class="task-copy"><strong>Отправить документы на оффер</strong><small>Баев Константин · Инженер по тестированию</small><span class="task-time">13:15</span></span><button class="task-done-button" type="button" data-complete aria-label="Отметить задачу «Отправить документы на оффер» выполненной">Готово</button></div>
+              <div class="task-row"><span class="task-icon"><svg class="icon icon-sm"><use href="#i-clock"/></svg></span><span class="task-copy"><strong>Запросить обратную связь</strong><small>Мария Волкова · Менеджер B2B</small><span class="task-time">15:00</span></span><button class="task-done-button" type="button" data-complete aria-label="Отметить задачу «Запросить обратную связь» выполненной">Готово</button></div>
+            </div>
+          </article>
+        </div>
+        <div class="dashboard-lower">
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">СЕЙЧАС В РАБОТЕ</span><h2>Воронка подбора</h2></div><a class="panel-link" href="#/funnel">Открыть воронку <svg class="icon icon-sm"><use href="#i-arrow"/></svg></a></div><div class="panel-body"><div class="stage-list"><div class="stage-line"><span class="stage-name">Отклик</span><div class="stage-bar"><span style="width:100%"></span></div><strong class="stage-value">148</strong></div><div class="stage-line"><span class="stage-name">Связались</span><div class="stage-bar"><span style="width:74%"></span></div><strong class="stage-value">109</strong></div><div class="stage-line"><span class="stage-name">Собеседование</span><div class="stage-bar"><span style="width:42%"></span></div><strong class="stage-value">62</strong></div><div class="stage-line"><span class="stage-name">Оффер</span><div class="stage-bar"><span style="width:18%"></span></div><strong class="stage-value">27</strong></div></div></div></article>
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">БЛИЖАЙШИЕ СОБЫТИЯ</span><h2>В календаре</h2></div><a class="panel-link" href="#/calendar">Весь календарь <svg class="icon icon-sm"><use href="#i-arrow"/></svg></a></div><div class="panel-body"><div class="agenda-list"><div class="agenda-row"><span class="agenda-time">10:30</span><span class="agenda-main"><strong>Техническое интервью</strong><small>Илья Морозов · переговорная «Полёт»</small></span><span class="status-chip info">Интервью</span></div><div class="agenda-row"><span class="agenda-time">13:00</span><span class="agenda-main"><strong>Знакомство с командой</strong><small>Баев Константин · онлайн</small></span><span class="status-chip violet">Встреча</span></div><div class="agenda-row"><span class="agenda-time">16:15</span><span class="agenda-main"><strong>Финальный звонок</strong><small>Анна Иванова · телефон</small></span><span class="status-chip success">Финал</span></div></div></div></article>
+        </div>
+        <div class="skeleton-overlay" id="skeleton" hidden aria-label="Загрузка данных" aria-live="polite"><div class="skeleton-bar short"></div><div class="skeleton-bar large"></div><div class="skeleton-row"><div class="skeleton-block"></div><div class="skeleton-block"></div><div class="skeleton-block"></div><div class="skeleton-block"></div></div><div class="skeleton-bar medium"></div><div class="skeleton-bar"></div></div>
+      </section>
+      <section class="view" data-view="candidates" aria-labelledby="candidatePageTitle" hidden>
+        <div class="page-heading"><div class="heading-copy"><div class="concept-label">БАЗА ТАЛАНТОВ · 1 284 ПРОФИЛЯ</div><h1 id="candidatePageTitle">Кандидаты</h1><p class="page-subtitle">Единый список людей и их пути в команде.</p></div><div class="heading-actions"><button class="button" type="button" data-action="export"><svg class="icon icon-sm"><use href="#i-file"/></svg>Экспорт</button><button class="button button-primary" type="button" data-open-new-candidate><svg class="icon icon-sm"><use href="#i-plus"/></svg>Новый кандидат</button></div></div>
+        <div class="candidate-layout">
+          <article class="panel candidate-table-panel"><div class="panel-head"><div class="table-title"><h2>Все кандидаты</h2><span class="status-chip neutral">1 284</span></div><button class="filter-button" type="button" data-action="filters"><svg class="icon icon-sm"><use href="#i-filter"/></svg>Фильтры</button></div><div class="toolbar"><label class="search-field"><svg class="icon icon-sm"><use href="#i-search"/></svg><input id="candidateFilter" class="input" type="search" placeholder="Имя, вакансия или город" aria-label="Поиск по кандидатам"></label><select class="select" aria-label="Фильтр по этапу"><option>Все этапы</option><option>Отклик</option><option>Собеседование</option><option>Оффер</option></select></div>
+            <div class="table-wrap"><table><thead><tr><th scope="col">Кандидат</th><th scope="col">Вакансия</th><th scope="col">Этап</th><th scope="col">Обновлён</th></tr></thead><tbody id="candidateRows">
+              <tr><td><button class="candidate-open" type="button" data-name="Анна Иванова" data-title="Backend-разработчик (Python)" data-city="Москва" data-stage="Техническое интервью" data-initials="АИ" data-email="anna.ivanova@example.com"><span class="person-cell"><span class="avatar blue">АИ</span><span class="person-name"><strong>Анна Иванова</strong><small>Москва · источник: рекомендация</small></span></span></button></td><td>Backend-разработчик</td><td><span class="status-chip info">Собеседование</span></td><td>02.10.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Баев Константин" data-title="Инженер по тестированию" data-city="Санкт-Петербург" data-stage="Оффер" data-initials="БК" data-email="konstantin.baev@example.com"><span class="person-cell"><span class="avatar amber">БК</span><span class="person-name"><strong>Баев Константин</strong><small>Санкт-Петербург · сайт</small></span></span></button></td><td>QA-инженер</td><td><span class="status-chip success">Оффер</span></td><td>02.10.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Полина Фёдорова" data-title="Продуктовый дизайнер" data-city="Казань" data-stage="Первичный контакт" data-initials="ПФ" data-email="polina.fedorova@example.com"><span class="person-cell"><span class="avatar rose">ПФ</span><span class="person-name"><strong>Полина Фёдорова</strong><small>Казань · карьерный сайт</small></span></span></button></td><td>Продуктовый дизайнер</td><td><span class="status-chip violet">Первичный контакт</span></td><td>01.10.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Илья Морозов" data-title="Backend-разработчик (Python)" data-city="Москва" data-stage="Техническое интервью" data-initials="ИМ" data-email="ilya.morozov@example.com"><span class="person-cell"><span class="avatar teal">ИМ</span><span class="person-name"><strong>Илья Морозов</strong><small>Москва · рекомендация</small></span></span></button></td><td>Backend-разработчик</td><td><span class="status-chip info">Собеседование</span></td><td>01.10.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Мария Волкова" data-title="Менеджер по продажам B2B" data-city="Екатеринбург" data-stage="Новый отклик" data-initials="МВ" data-email="maria.volkova@example.com"><span class="person-cell"><span class="avatar">МВ</span><span class="person-name"><strong>Мария Волкова</strong><small>Екатеринбург · работный сайт</small></span></span></button></td><td>Менеджер B2B</td><td><span class="status-chip neutral">Новый отклик</span></td><td>30.09.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Денис Соколов" data-title="Аналитик данных" data-city="Новосибирск" data-stage="Первичный контакт" data-initials="ДС" data-email="denis.sokolov@example.com"><span class="person-cell"><span class="avatar blue">ДС</span><span class="person-name"><strong>Денис Соколов</strong><small>Новосибирск · сообщество</small></span></span></button></td><td>Аналитик данных</td><td><span class="status-chip violet">Первичный контакт</span></td><td>30.09.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Екатерина Орлова" data-title="Менеджер по продажам B2B" data-city="Москва" data-stage="Выход" data-initials="ЕО" data-email="ekaterina.orlova@example.com"><span class="person-cell"><span class="avatar rose">ЕО</span><span class="person-name"><strong>Екатерина Орлова</strong><small>Москва · рекомендация</small></span></span></button></td><td>Менеджер B2B</td><td><span class="status-chip success">Выход</span></td><td>29.09.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Артём Егоров" data-title="Специалист поддержки" data-city="Ростов-на-Дону" data-stage="Оффер" data-initials="АЕ" data-email="artem.egorov@example.com"><span class="person-cell"><span class="avatar amber">АЕ</span><span class="person-name"><strong>Артём Егоров</strong><small>Ростов-на-Дону · сайт</small></span></span></button></td><td>Специалист поддержки</td><td><span class="status-chip success">Оффер</span></td><td>29.09.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Ксения Павлова" data-title="Рекрутёр (стажёр)" data-city="Казань" data-stage="Новый отклик" data-initials="КП" data-email="ksenia.pavlova@example.com"><span class="person-cell"><span class="avatar teal">КП</span><span class="person-name"><strong>Ксения Павлова</strong><small>Казань · университет</small></span></span></button></td><td>Рекрутёр-стажёр</td><td><span class="status-chip neutral">Новый отклик</span></td><td>28.09.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Роман Николаев" data-title="Backend-разработчик (Python)" data-city="Санкт-Петербург" data-stage="Отклонён" data-initials="РН" data-email="roman.nikolaev@example.com"><span class="person-cell"><span class="avatar">РН</span><span class="person-name"><strong>Роман Николаев</strong><small>Санкт-Петербург · работный сайт</small></span></span></button></td><td>Backend-разработчик</td><td><span class="status-chip danger">Отклонён</span></td><td>28.09.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Светлана Миронова" data-title="Продуктовый дизайнер" data-city="Москва" data-stage="Первичный контакт" data-initials="СМ" data-email="svetlana.mironova@example.com"><span class="person-cell"><span class="avatar rose">СМ</span><span class="person-name"><strong>Светлана Миронова</strong><small>Москва · портфолио</small></span></span></button></td><td>Продуктовый дизайнер</td><td><span class="status-chip violet">Первичный контакт</span></td><td>27.09.2026</td></tr>
+              <tr><td><button class="candidate-open" type="button" data-name="Максим Захаров" data-title="Аналитик данных" data-city="Нижний Новгород" data-stage="Новый отклик" data-initials="МЗ" data-email="maxim.zakharov@example.com"><span class="person-cell"><span class="avatar blue">МЗ</span><span class="person-name"><strong>Максим Захаров</strong><small>Нижний Новгород · сайт</small></span></span></button></td><td>Аналитик данных</td><td><span class="status-chip neutral">Новый отклик</span></td><td>26.09.2026</td></tr>
+            </tbody></table></div><div class="table-footer"><span>Показаны 12 из 1 284 кандидатов</span><button class="button-text" type="button" data-action="load-more">Показать ещё</button></div></article>
+          <aside class="panel candidate-drawer" aria-label="Карточка кандидата"><div class="panel-head"><div class="drawer-title"><span class="avatar blue" id="drawerAvatar">АИ</span><span><h2 id="drawerName">Анна Иванова</h2><small id="drawerSub">Карточка кандидата · создана 18.09.2026</small></span></div><div class="drawer-actions"><button class="icon-button" type="button" data-action="candidate-more" aria-label="Другие действия"><svg class="icon"><use href="#i-more"/></svg></button></div></div>
+            <div class="drawer-tabs" role="tablist" aria-label="Разделы карточки кандидата"><button class="drawer-tab" type="button" role="tab" data-tab="overview" aria-selected="true" aria-controls="candidateTabBody" tabindex="0">Обзор</button><button class="drawer-tab" type="button" role="tab" data-tab="messages" aria-selected="false" aria-controls="candidateTabBody" tabindex="-1">Сообщения</button><button class="drawer-tab" type="button" role="tab" data-tab="documents" aria-selected="false" aria-controls="candidateTabBody" tabindex="-1">Документы</button><button class="drawer-tab" type="button" role="tab" data-tab="attachments" aria-selected="false" aria-controls="candidateTabBody" tabindex="-1">Вложения</button><button class="drawer-tab" type="button" role="tab" data-tab="transfers" aria-selected="false" aria-controls="candidateTabBody" tabindex="-1">Перемещения</button></div>
+            <div class="drawer-body" id="candidateTabBody" role="tabpanel"><div class="profile-summary"><div><h3 class="profile-title" id="drawerPosition">Backend-разработчик (Python)</h3><p class="profile-position" id="drawerCity">Москва · рекомендация</p></div><span class="status-chip info" id="drawerStatus">Техническое интервью</span></div><div class="detail-grid"><div class="detail-item"><small>Электронная почта</small><strong id="drawerEmail">anna.ivanova@example.com</strong></div><div class="detail-item"><small>Телефон</small><strong>+7 900 000-21-34</strong></div><div class="detail-item"><small>Ожидания</small><strong>190 000 ₽</strong></div><div class="detail-item"><small>Ответственная</small><strong>Анна Смирнова</strong></div></div><div class="drawer-section-title">Последняя активность</div><div class="timeline"><div class="timeline-entry"><span class="timeline-dot">✓</span><span><strong>Техническое интервью назначено</strong><small>Сегодня, 10:30 · Игорь Белов</small></span></div><div class="timeline-entry"><span class="timeline-dot">↗</span><span><strong>Положительная обратная связь HR</strong><small>30.09.2026 · Анна Смирнова</small></span></div></div><div style="display:flex;gap:8px;margin-top:17px"><button class="button button-primary button-small" type="button" data-action="message"><svg class="icon icon-sm"><use href="#i-mail"/></svg>Написать</button><button class="button button-small" type="button" data-action="schedule">Назначить событие</button></div></div>
+          </aside>
+        </div>
+      </section>
+      <section class="view" data-view="funnel" aria-labelledby="funnelTitle" hidden>
+        <div class="page-heading"><div class="heading-copy"><div class="concept-label">ПРОГРЕСС ПОДБОРА · 5 ЭТАПОВ</div><h1 id="funnelTitle">Воронка кандидатов</h1><p class="page-subtitle">Перемещайте карточки между этапами — мышью или кнопкой со стрелкой.</p></div><div class="heading-actions"><button class="button" type="button" data-action="filters"><svg class="icon icon-sm"><use href="#i-filter"/></svg>Фильтры</button><button class="button button-primary" type="button" data-open-new-candidate><svg class="icon icon-sm"><use href="#i-plus"/></svg>Добавить кандидата</button></div></div>
+        <div class="kanban-toolbar"><div class="segmented" role="group" aria-label="Период воронки"><button type="button" aria-pressed="false" data-period="7">Неделя</button><button type="button" aria-pressed="true" data-period="30">Месяц</button><button type="button" aria-pressed="false" data-period="90">Квартал</button></div><span class="page-subtitle">32 активных кандидата · обновлено только что</span></div>
+        <div class="kanban-board" id="kanbanBoard" aria-label="Канбан-доска этапов подбора">
+          <section class="kanban-column" data-stage="Отклик"><div class="kanban-col-head"><span class="kanban-col-title"><i class="stage-dot"></i>Отклик</span><span class="kanban-count">3</span></div><div class="kanban-cards">
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Мария Волкова"><div class="kanban-person"><span class="avatar">МВ</span><strong>Мария Волкова</strong></div><div class="kanban-role">Менеджер по продажам B2B</div><div class="kanban-card-foot"><small>Сегодня · сайт</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Марию Волкову на следующий этап">↗</button></div></article>
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Ксения Павлова"><div class="kanban-person"><span class="avatar teal">КП</span><strong>Ксения Павлова</strong></div><div class="kanban-role">Рекрутёр (стажёр)</div><div class="kanban-card-foot"><small>Вчера · вуз</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Ксению Павлову на следующий этап">↗</button></div></article>
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Максим Захаров"><div class="kanban-person"><span class="avatar blue">МЗ</span><strong>Максим Захаров</strong></div><div class="kanban-role">Аналитик данных</div><div class="kanban-card-foot"><small>26.09 · рекомендация</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Максима Захарова на следующий этап">↗</button></div></article>
+          </div></section>
+          <section class="kanban-column" data-stage="Первичный контакт"><div class="kanban-col-head"><span class="kanban-col-title"><i class="stage-dot"></i>Связались</span><span class="kanban-count">3</span></div><div class="kanban-cards">
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Полина Фёдорова"><div class="kanban-person"><span class="avatar rose">ПФ</span><strong>Полина Фёдорова</strong></div><div class="kanban-role">Продуктовый дизайнер</div><div class="kanban-card-foot"><small>Сегодня · сайт</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Полину Фёдорову на следующий этап">↗</button></div></article>
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Денис Соколов"><div class="kanban-person"><span class="avatar blue">ДС</span><strong>Денис Соколов</strong></div><div class="kanban-role">Аналитик данных</div><div class="kanban-card-foot"><small>30.09 · сообщество</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Дениса Соколова на следующий этап">↗</button></div></article>
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Светлана Миронова"><div class="kanban-person"><span class="avatar rose">СМ</span><strong>Светлана Миронова</strong></div><div class="kanban-role">Продуктовый дизайнер</div><div class="kanban-card-foot"><small>27.09 · портфолио</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Светлану Миронову на следующий этап">↗</button></div></article>
+          </div></section>
+          <section class="kanban-column" data-stage="Собеседование"><div class="kanban-col-head"><span class="kanban-col-title"><i class="stage-dot"></i>Собеседование</span><span class="kanban-count">3</span></div><div class="kanban-cards">
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Анна Иванова"><div class="kanban-person"><span class="avatar blue">АИ</span><strong>Анна Иванова</strong></div><div class="kanban-role">Backend-разработчик (Python)</div><div class="kanban-card-foot"><small>Сегодня · тех. интервью</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Анну Иванову на следующий этап">↗</button></div></article>
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Илья Морозов"><div class="kanban-person"><span class="avatar teal">ИМ</span><strong>Илья Морозов</strong></div><div class="kanban-role">Backend-разработчик (Python)</div><div class="kanban-card-foot"><small>Сегодня · тех. интервью</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Илью Морозова на следующий этап">↗</button></div></article>
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Ольга Лебедева"><div class="kanban-person"><span class="avatar rose">ОЛ</span><strong>Ольга Лебедева</strong></div><div class="kanban-role">Менеджер по продажам B2B</div><div class="kanban-card-foot"><small>Завтра · встреча</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Ольгу Лебедеву на следующий этап">↗</button></div></article>
+          </div></section>
+          <section class="kanban-column" data-stage="Оффер"><div class="kanban-col-head"><span class="kanban-col-title"><i class="stage-dot"></i>Оффер</span><span class="kanban-count">3</span></div><div class="kanban-cards">
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Баев Константин"><div class="kanban-person"><span class="avatar amber">БК</span><strong>Баев Константин</strong></div><div class="kanban-role">Инженер по тестированию</div><div class="kanban-card-foot"><small>Ожидает ответа</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Баева Константина на следующий этап">↗</button></div></article>
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Артём Егоров"><div class="kanban-person"><span class="avatar amber">АЕ</span><strong>Артём Егоров</strong></div><div class="kanban-role">Специалист поддержки</div><div class="kanban-card-foot"><small>Отправлен 01.10</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Артёма Егорова на следующий этап">↗</button></div></article>
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Екатерина Орлова"><div class="kanban-person"><span class="avatar rose">ЕО</span><strong>Екатерина Орлова</strong></div><div class="kanban-role">Менеджер по продажам B2B</div><div class="kanban-card-foot"><small>Финальная встреча</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Екатерину Орлову на следующий этап">↗</button></div></article>
+          </div></section>
+          <section class="kanban-column" data-stage="Выход"><div class="kanban-col-head"><span class="kanban-col-title"><i class="stage-dot"></i>Выход</span><span class="kanban-count">3</span></div><div class="kanban-cards">
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Дмитрий Павлов"><div class="kanban-person"><span class="avatar teal">ДП</span><strong>Дмитрий Павлов</strong></div><div class="kanban-role">Специалист поддержки</div><div class="kanban-card-foot"><small>Выход · 05.10.2026</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Дмитрия Павлова на следующий этап">↗</button></div></article>
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Ирина Белова"><div class="kanban-person"><span class="avatar rose">ИБ</span><strong>Ирина Белова</strong></div><div class="kanban-role">Менеджер по продажам B2B</div><div class="kanban-card-foot"><small>Выход · 12.10.2026</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Ирину Белову на следующий этап">↗</button></div></article>
+            <article class="kanban-card" draggable="true" tabindex="0" data-card-name="Иван Кузнецов"><div class="kanban-person"><span class="avatar blue">ИК</span><strong>Иван Кузнецов</strong></div><div class="kanban-role">Специалист поддержки</div><div class="kanban-card-foot"><small>Выход · 15.10.2026</small><button class="move-card" type="button" data-action="move-card" aria-label="Перевести Ивана Кузнецова на следующий этап">↗</button></div></article>
+          </div></section>
+        </div>
+      </section>
+      <section class="view" data-view="analytics" aria-labelledby="analyticsTitle" hidden>
+        <div class="page-heading"><div class="heading-copy"><div class="concept-label">МЕТРИКИ И ЭФФЕКТИВНОСТЬ</div><h1 id="analyticsTitle">Аналитика подбора</h1><p class="page-subtitle">Как движется воронка и откуда приходят сильные кандидаты.</p></div><div class="heading-actions"><button class="filter-button" type="button" data-action="filters"><svg class="icon icon-sm"><use href="#i-filter"/></svg>Фильтры</button><button class="button" type="button" data-action="export"><svg class="icon icon-sm"><use href="#i-file"/></svg>Экспорт отчёта</button></div></div>
+        <div class="kanban-toolbar"><div class="segmented" role="group" aria-label="Период аналитики"><button type="button" data-analytics-period="7">7 дней</button><button type="button" data-analytics-period="30" aria-pressed="true">30 дней</button><button type="button" data-analytics-period="90">Квартал</button></div><span class="page-subtitle">01.09.2026 — 02.10.2026 · все HR-менеджеры</span></div>
+        <div class="analytics-kpis"><article class="panel analytics-kpi"><small>Создано кандидатов</small><strong>148</strong><span>↑ 18% к прошлому периоду</span></article><article class="panel analytics-kpi"><small>Конверсия в интервью</small><strong>27,7%</strong><span>↑ 3,2 п.п.</span></article><article class="panel analytics-kpi"><small>Средний срок найма</small><strong>18 дней</strong><span>↓ 3 дня быстрее</span></article><article class="panel analytics-kpi"><small>Принято офферов</small><strong>17</strong><span>↑ 4 к сентябрю</span></article></div>
+        <div class="analytics-grid"><article class="panel chart-large"><div class="panel-head"><div class="chart-meta"><h2>Найм по неделям</h2><small>Прошедшие этап кандидаты и целевой план</small></div><span class="status-chip success">Выше плана</span></div><div class="chart-wrap"><svg class="chart-svg" viewBox="0 0 620 220" role="img" aria-label="Рост количества нанятых сотрудников по неделям"><line class="chart-grid-line" x1="35" y1="25" x2="610" y2="25"/><line class="chart-grid-line" x1="35" y1="75" x2="610" y2="75"/><line class="chart-grid-line" x1="35" y1="125" x2="610" y2="125"/><line class="chart-grid-line" x1="35" y1="175" x2="610" y2="175"/><text class="chart-axis" x="4" y="28">50</text><text class="chart-axis" x="4" y="78">35</text><text class="chart-axis" x="4" y="128">20</text><text class="chart-axis" x="4" y="178">5</text><path class="chart-area" d="M35 163 C80 153 102 142 138 147 S198 119 230 126 S292 96 326 103 S385 78 421 83 S485 51 520 60 S574 39 610 43 L610 182 L35 182Z"/><path class="chart-line" d="M35 163 C80 153 102 142 138 147 S198 119 230 126 S292 96 326 103 S385 78 421 83 S485 51 520 60 S574 39 610 43"/><circle class="chart-point" cx="610" cy="43" r="4.5"/><text class="chart-axis" x="42" y="208">1 сен.</text><text class="chart-axis" x="180" y="208">8 сен.</text><text class="chart-axis" x="320" y="208">15 сен.</text><text class="chart-axis" x="460" y="208">22 сен.</text><text class="chart-axis" x="560" y="208">29 сен.</text></svg></div><div class="chart-footer"><span class="chart-legend"><i class="legend-dot"></i>Воронка</span><span class="chart-legend"><i class="legend-dot alt"></i>План</span><span class="trend">17 выходов</span></div></article>
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">КОНВЕРСИЯ</span><h2>По этапам</h2></div><span class="status-chip info">30 дней</span></div><div class="panel-body"><div class="conversion-list"><div class="conversion-row"><span>Отклик</span><div class="conversion-track"><span style="width:100%"></span></div><strong>148</strong></div><div class="conversion-row"><span>Контакт</span><div class="conversion-track"><span style="width:82%"></span></div><strong>121</strong></div><div class="conversion-row"><span>Интервью</span><div class="conversion-track"><span style="width:39%"></span></div><strong>58</strong></div><div class="conversion-row"><span>Оффер</span><div class="conversion-track"><span style="width:15%"></span></div><strong>22</strong></div><div class="conversion-row"><span>Выход</span><div class="conversion-track"><span style="width:12%"></span></div><strong>17</strong></div></div><div style="display:flex;align-items:center;justify-content:space-between;margin-top:18px;padding-top:12px;border-top:1px solid var(--border-subtle)"><span style="color:var(--text-secondary);font-size:10px">Итоговая конверсия</span><strong style="font-size:20px;letter-spacing:-.04em">11,5%</strong></div></div></article></div>
+        <div class="analytics-grid secondary"><article class="panel"><div class="panel-head"><div><span class="panel-kicker">ЭФФЕКТИВНЫЕ КАНАЛЫ</span><h2>Источники кандидатов</h2></div><button class="button-text" type="button" data-action="source-detail">Все источники →</button></div><div class="panel-body"><div class="source-bars"><div class="source-row"><span>Рекомендации</span><div class="conversion-track"><span style="width:82%"></span></div><strong>38</strong></div><div class="source-row"><span>Карьерный сайт</span><div class="conversion-track"><span style="width:71%"></span></div><strong>31</strong></div><div class="source-row"><span>Работный сайт</span><div class="conversion-track"><span style="width:56%"></span></div><strong>24</strong></div><div class="source-row"><span>Сообщества</span><div class="conversion-track"><span style="width:33%"></span></div><strong>14</strong></div></div></div></article><article class="panel"><div class="panel-head"><div><span class="panel-kicker">КОМАНДА</span><h2>Найм по HR</h2></div><span class="status-chip neutral">Сентябрь</span></div><div class="panel-body"><div class="agenda-list"><div class="agenda-row"><span class="avatar" style="width:28px;height:28px;font-size:9px">АС</span><span class="agenda-main"><strong>Анна Смирнова</strong><small>Подбор инженеров</small></span><span class="status-chip success">6 выходов</span></div><div class="agenda-row"><span class="avatar teal" style="width:28px;height:28px;font-size:9px">ОТ</span><span class="agenda-main"><strong>Олег Ткаченко</strong><small>Продажи и поддержка</small></span><span class="status-chip info">5 выходов</span></div><div class="agenda-row"><span class="avatar amber" style="width:28px;height:28px;font-size:9px">МК</span><span class="agenda-main"><strong>Марина Ковалёва</strong><small>Массовый подбор</small></span><span class="status-chip violet">6 выходов</span></div></div></div></article></div>
+      </section>
+      <section class="view" data-view="templates" aria-labelledby="templatesTitle" hidden>
+        <div class="page-heading"><div class="heading-copy"><div class="concept-label">ЗНАНИЯ И ДОКУМЕНТЫ</div><h1 id="templatesTitle">Шаблоны и материалы</h1><p class="page-subtitle">Готовые инструменты для аккуратного и последовательного найма.</p></div><div class="heading-actions"><button class="button" type="button" data-action="upload-template"><svg class="icon icon-sm"><use href="#i-file"/></svg>Загрузить материал</button></div></div>
+        <div class="form-layout"><article class="panel wizard-panel"><div class="panel-head"><div><span class="panel-kicker">МАСТЕР СОЗДАНИЯ</span><h2>Новый список документов</h2></div><span class="status-chip info">Черновик</span></div><div class="wizard-steps" aria-label="Этапы создания списка"><div class="wizard-step" data-wizard-indicator="1" aria-current="step"><span class="wizard-step-number">1</span><span>Основное</span></div><div class="wizard-step" data-wizard-indicator="2"><span class="wizard-step-number">2</span><span>Документы</span></div><div class="wizard-step" data-wizard-indicator="3"><span class="wizard-step-number">3</span><span>Проверка</span></div></div>
+          <div class="wizard-content" data-wizard-panel="1"><h2>Как назовём список?</h2><p>Название будет видно рекрутеру и новому сотруднику.</p><div class="form-grid"><div class="field full"><label for="listName">Название списка</label><input class="input" id="listName" type="text" value="Оформление нового сотрудника" placeholder="Например, выход в офис"></div><div class="field"><label for="listRole">Для кого</label><select class="select" id="listRole"><option>Все новые сотрудники</option><option>Инженерная команда</option><option>Менеджеры по продажам</option></select></div><div class="field"><label for="listDue">Срок выполнения</label><select class="select" id="listDue"><option>До первого рабочего дня</option><option>В течение 3 дней</option><option>В течение недели</option></select></div><div class="field full"><label for="listNote">Подсказка сотруднику</label><textarea class="textarea" id="listNote" placeholder="Добавьте приветствие или инструкции">Пожалуйста, подготовьте документы до первого рабочего дня. Если нужна помощь — напишите своему HR.</textarea><span class="field-note">Можно изменить перед отправкой кандидату.</span></div></div></div>
+          <div class="wizard-content" data-wizard-panel="2" hidden><h2>Выберите документы</h2><p>Список будет отправлен сотруднику после подтверждения выхода.</p><div class="checkbox-list"><label class="check-row"><input type="checkbox" checked><span>Паспортные данные<small>Основной документ для оформления</small></span></label><label class="check-row"><input type="checkbox" checked><span>СНИЛС и ИНН<small>Данные для кадровой службы</small></span></label><label class="check-row"><input type="checkbox" checked><span>Банковские реквизиты<small>Для перечисления заработной платы</small></span></label><label class="check-row"><input type="checkbox"><span>Документ об образовании<small>По требованию вакансии</small></span></label></div></div>
+          <div class="wizard-content" data-wizard-panel="3" hidden><h2>Проверьте перед сохранением</h2><p>Все настройки можно будет поправить позднее.</p><div class="detail-grid"><div class="detail-item"><small>Название</small><strong id="reviewName">Оформление нового сотрудника</strong></div><div class="detail-item"><small>Кому</small><strong id="reviewRole">Все новые сотрудники</strong></div><div class="detail-item"><small>Документов выбрано</small><strong id="reviewDocs">3 документа</strong></div><div class="detail-item"><small>Срок</small><strong>До первого рабочего дня</strong></div></div><span class="status-chip success">Готово к сохранению</span></div>
+          <div class="wizard-footer"><small><span data-current-step>Шаг 1</span> из 3 · сохранение автоматически</small><div style="display:flex;gap:7px"><button class="button button-small" type="button" data-wizard-back disabled>Назад</button><button class="button button-primary button-small" type="button" data-wizard-next>Продолжить <svg class="icon icon-sm"><use href="#i-arrow"/></svg></button></div></div></article>
+          <div style="display:grid;gap:15px"><article class="panel"><div class="panel-head"><div><span class="panel-kicker">ПОПУЛЯРНОЕ</span><h2>Материалы для команды</h2></div><span class="status-chip neutral">12</span></div><div class="panel-body"><div class="material-list"><div class="material-row"><span class="file-icon">DOC</span><span class="material-copy"><strong>Скрипт первого звонка</strong><small>Общение с кандидатом · 4 стр.</small></span><button class="icon-button" type="button" data-action="open-material" aria-label="Открыть скрипт первого звонка"><svg class="icon icon-sm"><use href="#i-arrow"/></svg></button></div><div class="material-row"><span class="file-icon">PDF</span><span class="material-copy"><strong>Памятка нового сотрудника</strong><small>Онбординг · обновлено 25.09</small></span><button class="icon-button" type="button" data-action="open-material" aria-label="Открыть памятку нового сотрудника"><svg class="icon icon-sm"><use href="#i-arrow"/></svg></button></div><div class="material-row"><span class="file-icon">XLS</span><span class="material-copy"><strong>KPI команды подбора</strong><small>Аналитика · шаблон</small></span><button class="icon-button" type="button" data-action="open-material" aria-label="Открыть KPI команды подбора"><svg class="icon icon-sm"><use href="#i-arrow"/></svg></button></div></div></div></article><article class="panel"><div class="panel-head"><div><span class="panel-kicker">ПОДСКАЗКА</span><h2>Меньше рутины — больше внимания</h2></div><span class="kpi-mark"><svg class="icon icon-sm"><use href="#i-bolt"/></svg></span></div><div class="panel-body"><p style="margin:0;color:var(--text-secondary);font-size:11px;line-height:1.6">Объединяйте типовые документы в списки, а материалы для интервью держите рядом с профилями кандидатов.</p><button class="button-text" style="margin-top:12px" type="button" data-action="learn-more">Как работает библиотека →</button></div></article></div>
+        </div>
+      </section>
+      <section class="view" data-view="calendar" aria-labelledby="calendarTitle" hidden>
+        <div class="page-heading"><div class="heading-copy"><div class="concept-label">ПЛАНИРОВАНИЕ ВСТРЕЧ</div><h1 id="calendarTitle">Календарь</h1><p class="page-subtitle">События подбора команды · 28 сентября — 2 октября 2026.</p></div><div class="heading-actions"><button class="button" type="button" data-action="calendar-today">Сегодня</button><button class="button button-primary" type="button" data-action="new-event"><svg class="icon icon-sm"><use href="#i-plus"/></svg>Новое событие</button></div></div>
+        <div class="calendar-toolbar"><div class="segmented" role="group" aria-label="Вид календаря"><button type="button" aria-pressed="true" data-calendar-view="week">Неделя</button><button type="button" aria-pressed="false" data-calendar-view="day">День</button></div><span class="page-subtitle">← &nbsp; 28 сентября — 2 октября 2026 &nbsp; →</span></div>
+        <div class="week-grid" aria-label="Календарь на неделю"><div class="week-day"><div class="week-day-head"><small>Пн</small><strong>28</strong></div><article class="calendar-event interview"><time>10:00–10:45</time><strong>Интервью с HR</strong><small>Ксения Павлова</small></article><article class="calendar-event"><time>15:30–16:00</time><strong>Первичный звонок</strong><small>Денис Соколов</small></article></div><div class="week-day"><div class="week-day-head"><small>Вт</small><strong>29</strong></div><article class="calendar-event"><time>11:00–11:30</time><strong>Обратная связь</strong><small>Екатерина Орлова</small></article><article class="calendar-event offer"><time>14:00–14:30</time><strong>Обсуждение оффера</strong><small>Артём Егоров</small></article></div><div class="week-day"><div class="week-day-head"><small>Ср</small><strong>30</strong></div><article class="calendar-event interview"><time>12:00–13:00</time><strong>Техническое интервью</strong><small>Анна Иванова</small></article></div><div class="week-day today"><div class="week-day-head"><small>Чт · сегодня</small><strong>2</strong></div><article class="calendar-event interview"><time>10:30–11:15</time><strong>Техническое интервью</strong><small>Илья Морозов · «Полёт»</small></article><article class="calendar-event"><time>13:00–13:30</time><strong>Знакомство с командой</strong><small>Баев Константин</small></article><article class="calendar-event offer"><time>16:15–16:45</time><strong>Финальный звонок</strong><small>Анна Иванова</small></article></div><div class="week-day"><div class="week-day-head"><small>Пт</small><strong>3</strong></div><article class="calendar-event"><time>09:30–10:00</time><strong>Синхронизация по вакансии</strong><small>Игорь Белов</small></article><article class="calendar-event interview"><time>15:00–16:00</time><strong>Интервью с руководителем</strong><small>Полина Фёдорова</small></article></div></div>
+      </section>
+    </main>
+  </div>
+</div>
+<div class="palette-layer" id="paletteLayer" hidden><div class="modal-backdrop" data-close-palette></div><section class="palette" role="dialog" aria-modal="true" aria-labelledby="paletteTitle"><div class="palette-search"><svg class="icon"><use href="#i-search"/></svg><input id="paletteInput" type="search" autocomplete="off" aria-label="Поиск по разделам и кандидатам" placeholder="Куда перейти или кого найти?"><kbd>ESC</kbd></div><h2 id="paletteTitle" class="palette-caption">БЫСТРЫЕ ДЕЙСТВИЯ</h2><div class="palette-results" id="paletteResults"></div><div class="palette-footer"><span>↑ ↓ навигация</span><span>↵ открыть</span><span>Esc закрыть</span></div></section></div>
+<div class="dialog-layer" id="newCandidateLayer" hidden><div class="modal-backdrop" data-close-new-candidate></div><section class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="newCandidateTitle"><div class="dialog-head"><div><h2 id="newCandidateTitle">Новый кандидат</h2><p>Создайте карточку и добавьте её в воронку.</p></div><button class="icon-button" type="button" data-close-new-candidate aria-label="Закрыть"><span aria-hidden="true">×</span></button></div><form class="dialog-form" id="newCandidateForm"><div class="field"><label for="newName">ФИО</label><input class="input" id="newName" required placeholder="Например, Анна Иванова"></div><div class="field"><label for="newVacancy">Вакансия</label><select class="select" id="newVacancy"><option>Backend-разработчик (Python)</option><option>Продуктовый дизайнер</option><option>Менеджер по продажам B2B</option><option>Специалист поддержки</option></select></div><div class="field"><label for="newContact">Электронная почта</label><input class="input" id="newContact" type="email" placeholder="name@example.com"></div><div class="dialog-actions"><button class="button" type="button" data-close-new-candidate>Отмена</button><button class="button button-primary" type="submit">Создать карточку</button></div></form></section></div>
+<div class="toast-region" id="toastRegion" role="status" aria-live="polite" aria-relevant="additions"></div>
+<script>
+(() => {
+  const pageNames = {queue:'Моя очередь',candidates:'Кандидаты',funnel:'Воронка кандидатов',calendar:'Календарь',analytics:'Аналитика',templates:'Шаблоны и материалы'};
+  const routeItems = [
+    {type:'route',title:'Моя очередь',detail:'Задачи и сводка на сегодня',route:'queue',icon:'#i-inbox'},
+    {type:'route',title:'Кандидаты',detail:'Поиск по базе и карточки соискателей',route:'candidates',icon:'#i-users'},
+    {type:'route',title:'Воронка кандидатов',detail:'Этапы подбора и Kanban',route:'funnel',icon:'#i-layers'},
+    {type:'route',title:'Календарь',detail:'Звонки и собеседования',route:'calendar',icon:'#i-calendar'},
+    {type:'route',title:'Аналитика',detail:'Конверсия, сроки и источники',route:'analytics',icon:'#i-chart'},
+    {type:'route',title:'Шаблоны и материалы',detail:'Документы и библиотека команды',route:'templates',icon:'#i-file'}
+  ];
+  const paletteCandidates = [
+    {type:'candidate',title:'Анна Иванова',detail:'Backend-разработчик · Москва',query:'anna ivanova backend mосква'},
+    {type:'candidate',title:'Баев Константин',detail:'Инженер по тестированию · Санкт-Петербург',query:'баев константин qa'},
+    {type:'candidate',title:'Полина Фёдорова',detail:'Продуктовый дизайнер · Казань',query:'полина фёдорова дизайнер'},
+    {type:'candidate',title:'Илья Морозов',detail:'Backend-разработчик · Москва',query:'илья морозов python'},
+    {type:'candidate',title:'Мария Волкова',detail:'Менеджер по продажам · Екатеринбург',query:'мария волкова продажи'}
+  ];
+  const allPaletteItems = [...routeItems,...paletteCandidates];
+  const $ = (selector,root=document) => root.querySelector(selector);
+  const $$ = (selector,root=document) => [...root.querySelectorAll(selector)];
+  const paletteLayer = $('#paletteLayer'), paletteInput = $('#paletteInput'), paletteResults = $('#paletteResults');
+  const newCandidateLayer = $('#newCandidateLayer');
+  let activePaletteIndex = 0;
+  let selectedCandidate = {name:'Анна Иванова',title:'Backend-разработчик (Python)',city:'Москва',stage:'Техническое интервью',initials:'АИ',email:'anna.ivanova@example.com'};
+  let previousFocus = null;
+  const safeStore = {get(key){try{return localStorage.getItem(key)}catch{return null}},set(key,value){try{localStorage.setItem(key,value)}catch{}}};
+
+  function navigate(route) {
+    const safeRoute = pageNames[route] ? route : 'queue';
+    if (location.hash === '#/' + safeRoute) renderRoute();
+    else location.hash = '#/' + safeRoute;
+  }
+  function renderRoute() {
+    let route = location.hash.replace(/^#\/?/,'');
+    if (!pageNames[route]) route = 'queue';
+    $$('.view').forEach(view => { const active = view.dataset.view === route; view.hidden = !active; view.classList.toggle('active',active); });
+    $$('[data-route-link]').forEach(link => { if (link.dataset.routeLink === route) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current'); });
+    $('#currentSection').textContent = pageNames[route];
+    document.title = 'HR Manager — Bento Showcase · ' + pageNames[route];
+    if (route === 'queue' || route === 'analytics') animateCounts();
+    if (route === 'candidates') { const first = $('.candidate-open'); if (first && !$('#drawerName').dataset.userSelected) selectCandidate(first); }
+    window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+  }
+  function animateCounts() {
+    $$('[data-count]').forEach(node => {
+      if (node.dataset.animated === 'true') return;
+      node.dataset.animated = 'true';
+      const target = Number(node.dataset.count || 0);
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = target.toLocaleString('ru-RU'); return; }
+      const start = performance.now(), duration = 620;
+      const tick = now => { const progress = Math.min(1,(now-start)/duration); const eased = 1-Math.pow(1-progress,3); node.textContent = Math.round(target*eased).toLocaleString('ru-RU'); if (progress < 1) requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    });
+  }
+  function showToast(title,detail='Действие выполнено в демонстрационном макете.') {
+    const toast = document.createElement('div'); toast.className = 'toast';
+    const mark = document.createElement('span'); mark.className='toast-mark'; mark.setAttribute('aria-hidden','true'); mark.textContent='✓';
+    const copy = document.createElement('span'); const strong=document.createElement('strong'); strong.textContent=title; const small=document.createElement('small'); small.textContent=detail; copy.append(strong,small); toast.append(mark,copy); $('#toastRegion').append(toast);
+    window.setTimeout(()=>{toast.classList.add('leaving');window.setTimeout(()=>toast.remove(),220)},3100);
+  }
+  function openPalette() { previousFocus=document.activeElement; paletteLayer.hidden=false; paletteInput.value=''; renderPalette(''); window.setTimeout(()=>paletteInput.focus(),30); }
+  function closePalette() { paletteLayer.hidden=true; if(previousFocus && previousFocus.focus) previousFocus.focus(); }
+  function renderPalette(query) {
+    const normalized=query.trim().toLocaleLowerCase('ru');
+    const results=allPaletteItems.filter(item=>(item.title+' '+item.detail+' '+(item.query||'')).toLocaleLowerCase('ru').includes(normalized));
+    paletteResults.replaceChildren(); activePaletteIndex=0;
+    if(!results.length){const empty=document.createElement('div');empty.className='palette-empty';empty.textContent='Ничего не найдено. Попробуйте изменить запрос.';paletteResults.append(empty);return;}
+    const routes=results.filter(item=>item.type==='route'), candidates=results.filter(item=>item.type==='candidate');
+    const appendGroup=(label,items)=>{if(!items.length)return;const heading=document.createElement('div');heading.className='palette-caption';heading.textContent=label;paletteResults.append(heading);items.forEach(item=>{const button=document.createElement('button');button.type='button';button.className='palette-item';button.dataset.paletteType=item.type;button.dataset.paletteValue=item.route||item.title;button.setAttribute('aria-selected','false');button.innerHTML='<span class="palette-item-icon"><svg class="icon icon-sm" aria-hidden="true"><use href="'+item.icon+'"/></svg></span><span class="palette-item-text"><strong></strong><small></small></span><kbd>↵</kbd>';$('.palette-item-text strong',button).textContent=item.title;$('.palette-item-text small',button).textContent=item.detail;button.addEventListener('click',()=>choosePaletteItem(item));paletteResults.append(button);});};
+    appendGroup('Разделы',routes);appendGroup('Кандидаты',candidates);updatePaletteSelection();
+  }
+  function updatePaletteSelection(){const buttons=$$('.palette-item',paletteResults);buttons.forEach((button,i)=>button.setAttribute('aria-selected',String(i===activePaletteIndex)));}
+  function choosePaletteItem(item){closePalette();if(item.type==='route')navigate(item.route);else{navigate('candidates');const row=$$('.candidate-open').find(button=>button.dataset.name===item.title);if(row)selectCandidate(row);showToast('Открыта карточка кандидата',item.title+' · '+item.detail.split(' · ')[0]);}}
+  function selectCandidate(button){
+    if(!button)return;
+    const d=button.dataset;
+    selectedCandidate={name:d.name,title:d.title,city:d.city,stage:d.stage,initials:d.initials,email:d.email};
+    $('#drawerName').textContent=d.name;
+    $('#drawerName').dataset.userSelected='true';
+    $('#drawerAvatar').textContent=d.initials;
+    $('#drawerSub').textContent='Карточка кандидата · создана 18.09.2026';
+    setCandidateTab('overview');
+  }
+  function candidateStatusClass(stage){
+    if(stage.includes('Оффер')||stage==='Выход')return 'success';
+    if(stage.toLocaleLowerCase('ru').includes('интервью')||stage==='Собеседование')return 'info';
+    if(stage==='Отклонён')return 'danger';
+    if(stage==='Новый отклик')return 'neutral';
+    return 'violet';
+  }
+  function setCandidateTab(tab){
+    $$('.drawer-tab').forEach(btn=>{const active=btn.dataset.tab===tab;btn.setAttribute('aria-selected',String(active));btn.tabIndex=active?0:-1;});
+    const body=$('#candidateTabBody');
+    const candidate=selectedCandidate;
+    if(tab==='overview'){
+      body.innerHTML='<div class="profile-summary"><div><h3 class="profile-title">'+escapeText(candidate.title)+'</h3><p class="profile-position">'+escapeText(candidate.city)+' · рекомендация</p></div><span class="status-chip '+candidateStatusClass(candidate.stage)+'">'+escapeText(candidate.stage)+'</span></div><div class="detail-grid"><div class="detail-item"><small>Электронная почта</small><strong>'+escapeText(candidate.email)+'</strong></div><div class="detail-item"><small>Телефон</small><strong>+7 900 000-21-34</strong></div><div class="detail-item"><small>Ожидания</small><strong>190 000 ₽</strong></div><div class="detail-item"><small>Ответственная</small><strong>Анна Смирнова</strong></div></div><div class="drawer-section-title">Последняя активность</div><div class="timeline"><div class="timeline-entry"><span class="timeline-dot">✓</span><span><strong>Следующий шаг: '+escapeText(candidate.stage)+'</strong><small>Сегодня · Анна Смирнова</small></span></div><div class="timeline-entry"><span class="timeline-dot">↗</span><span><strong>Профиль обновлён</strong><small>30.09.2026 · Анна Смирнова</small></span></div></div><div style="display:flex;gap:8px;margin-top:17px"><button class="button button-primary button-small" type="button" data-action="message"><svg class="icon icon-sm"><use href="#i-mail"/></svg>Написать</button><button class="button button-small" type="button" data-action="schedule">Назначить событие</button></div>';
+    }else if(tab==='messages'){
+      body.innerHTML='<div class="drawer-section-title" style="margin-top:0">Последняя переписка</div><div class="timeline"><div class="timeline-entry"><span class="timeline-dot">А</span><span><strong>Анна Смирнова · сегодня, 09:12</strong><small>Добрый день, '+escapeText(candidate.name)+'! Подтверждаю следующий этап — '+escapeText(candidate.stage)+'.</small></span></div><div class="timeline-entry"><span class="timeline-dot">К</span><span><strong>'+escapeText(candidate.name)+' · вчера, 18:40</strong><small>Спасибо, буду на связи. До встречи!</small></span></div></div><button class="button button-primary button-small" style="margin-top:18px" type="button" data-action="message">Написать сообщение</button>';
+    }else if(tab==='documents'){
+      body.innerHTML='<div class="drawer-section-title" style="margin-top:0">Документы кандидата</div><div class="material-list"><div class="material-row"><span class="file-icon">PDF</span><span class="material-copy"><strong>Резюме · '+escapeText(candidate.name)+'.pdf</strong><small>Загружено 18.09.2026 · 248 КБ</small></span><button class="icon-button" type="button" data-action="open-material" aria-label="Открыть документ"><svg class="icon icon-sm"><use href="#i-arrow"/></svg></button></div><div class="material-row"><span class="file-icon">DOC</span><span class="material-copy"><strong>Оценка интервью</strong><small>Создано 30.09.2026 · заполнено на 80%</small></span><button class="icon-button" type="button" data-action="open-material" aria-label="Открыть оценку"><svg class="icon icon-sm"><use href="#i-arrow"/></svg></button></div></div>';
+    }else if(tab==='attachments'){
+      body.innerHTML='<div class="drawer-section-title" style="margin-top:0">Вложения</div><div class="empty-note" style="border:1px dashed var(--border-strong);border-radius:var(--radius-lg)">Перетащите файл сюда или <button class="button-text" type="button" data-action="upload-template">выберите на устройстве</button><br><small>PDF, DOCX или изображение · до 20 МБ</small></div>';
+    }else{
+      body.innerHTML='<div class="drawer-section-title" style="margin-top:0">История перемещений</div><div class="timeline"><div class="timeline-entry"><span class="timeline-dot">3</span><span><strong>'+escapeText(candidate.stage)+'</strong><small>01.10.2026 · обновлено Анной Смирновой</small></span></div><div class="timeline-entry"><span class="timeline-dot">2</span><span><strong>Первичный контакт</strong><small>20.09.2026 · Анна Смирнова</small></span></div><div class="timeline-entry"><span class="timeline-dot">1</span><span><strong>Новый отклик</strong><small>18.09.2026 · карьерный сайт</small></span></div></div>';
+    }
+  }
+  function escapeText(value){const node=document.createElement('span');node.textContent=value;return node.innerHTML;}
+  function closeNewCandidate(){newCandidateLayer.hidden=true;if(previousFocus&&previousFocus.isConnected)previousFocus.focus();}
+  function openNewCandidate(){previousFocus=document.activeElement;newCandidateLayer.hidden=false;window.setTimeout(()=>$('#newName').focus(),25);}
+  function updateKanbanCounts(){ $$('.kanban-column').forEach(col=>{$('.kanban-count',col).textContent=$$('.kanban-card',col).length;}); }
+  function moveCard(card,targetColumn){if(!card||!targetColumn)return;const old=card.closest('.kanban-column');targetColumn.querySelector('.kanban-cards').append(card);const stage=targetColumn.dataset.stage;const labels={"Отклик":"Отклик","Первичный контакт":"Связались","Собеседование":"Собеседование","Оффер":"Оффер","Выход":"Выход"};$('.kanban-card-foot small',card).textContent='Перемещён · '+new Date().toLocaleDateString('ru-RU');card.dataset.stage=stage;updateKanbanCounts();showToast('Этап кандидата обновлён',card.dataset.cardName+' · '+labels[stage]);if(old)old.classList.remove('drag-target');}
+
+  document.addEventListener('click',event=>{
+    const open=event.target.closest('[data-open-palette]');if(open){openPalette();return;}
+    const closePal=event.target.closest('[data-close-palette]');if(closePal){closePalette();return;}
+    const openNew=event.target.closest('[data-open-new-candidate]');if(openNew){openNewCandidate();return;}
+    if(event.target.closest('[data-close-new-candidate]')){closeNewCandidate();return;}
+    const routeLink=event.target.closest('[data-route-link]');if(routeLink){return;}
+    const candidate=event.target.closest('.candidate-open');if(candidate){selectCandidate(candidate);return;}
+    const tab=event.target.closest('[data-tab]');if(tab){setCandidateTab(tab.dataset.tab);return;}
+    const period=event.target.closest('[data-period]');if(period){$$('[data-period]',period.parentElement).forEach(btn=>btn.setAttribute('aria-pressed',String(btn===period)));const days=period.dataset.period;const line=$('#chartLine'),fill=$('#chartFill');if(line&&fill){const paths={"7":"M35 140 C90 130 105 126 145 118 S210 121 245 94 S310 102 350 74 S420 82 455 60 S540 47 610 30","30":"M35 145 C75 133 85 123 120 129 S175 105 204 111 S260 80 290 93 S340 65 372 76 S430 54 458 60 S515 38 544 49 S580 28 610 34","90":"M35 155 C75 147 100 131 135 139 S200 109 230 117 S280 84 315 96 S375 65 410 75 S470 45 500 53 S560 32 610 25"};const d=paths[days]||paths['30'];line.setAttribute('d',d);fill.setAttribute('d',d+' L610 160 L35 160Z');}return;}
+    const analyticsPeriod=event.target.closest('[data-analytics-period]');if(analyticsPeriod){$$('[data-analytics-period]',analyticsPeriod.parentElement).forEach(btn=>btn.setAttribute('aria-pressed',String(btn===analyticsPeriod)));showToast('Период обновлён','Показаны метрики за '+(analyticsPeriod.dataset.analyticsPeriod==='7'?'7 дней':analyticsPeriod.dataset.analyticsPeriod==='90'?'квартал':'30 дней'));return;}
+    const calendarView=event.target.closest('[data-calendar-view]');if(calendarView){$$('[data-calendar-view]',calendarView.parentElement).forEach(btn=>btn.setAttribute('aria-pressed',String(btn===calendarView)));showToast('Вид календаря изменён',calendarView.textContent+' · демонстрационный режим');return;}
+    const complete=event.target.closest('[data-complete]');if(complete){const row=complete.closest('.task-row'),done=!row.classList.contains('task-done');row.classList.toggle('task-done',done);complete.textContent=done?'Отменить':'Готово';complete.setAttribute('aria-pressed',String(done));showToast(done?'Задача выполнена':'Задача возвращена в очередь',row.querySelector('.task-copy strong').textContent);return;}
+    const action=event.target.closest('[data-action]');if(action){const kind=action.dataset.action;
+      if(kind==='refresh'){const skeleton=$('#skeleton'),view=$('[data-view="queue"]');skeleton.hidden=false;view.classList.add('is-loading-content');window.setTimeout(()=>{skeleton.hidden=true;view.classList.remove('is-loading-content');showToast('Данные обновлены','Задачи и показатели синхронизированы только что.');},850);}
+      else if(kind==='notifications'){action.querySelector('.notification-dot')?.remove();action.setAttribute('aria-label','Уведомления');showToast('Все уведомления просмотрены','Новых уведомлений пока нет.');}
+      else if(kind==='export')showToast('Отчёт подготовлен','Список сформирован в CSV — в рабочей версии начнётся скачивание.');
+      else if(kind==='filters')showToast('Фильтры готовы','Выберите этап, ответственного или источник в панели фильтров.');
+      else if(kind==='message')showToast('Сообщение готово к отправке','Открылся бы канал связи с выбранным кандидатом.');
+      else if(kind==='schedule'||kind==='new-event')showToast('Новое событие','Выберите кандидата и время встречи в календаре.');
+      else if(kind==='calendar-today')showToast('Сегодня · 2 октября','Календарь показывает текущую рабочую неделю.');
+      else if(kind==='load-more')showToast('Список загружен','Это демо-список из 12 синтетических профилей.');
+      else if(kind==='upload-template')showToast('Выбор файла','Загрузка файлов отключена в HTML-мокапе.');
+      else if(kind==='open-material')showToast('Предпросмотр материала','Файл открылся бы во встроенном просмотрщике.');
+      else if(kind==='learn-more'||kind==='source-detail')showToast('Подсказка','Библиотека и отчёты подключаются к общим данным продукта.');
+      else if(kind==='user-menu'||kind==='candidate-more')showToast('Меню действий','Дополнительные действия доступны в продукте.');
+      else if(kind==='move-card'){const card=action.closest('.kanban-card'),column=card.closest('.kanban-column'),next=column.nextElementSibling;if(next)moveCard(card,next);else showToast('Последний этап','Кандидат уже готовится к выходу.');}
+      return;
+    }
+  });
+  document.addEventListener('click',event=>{const theme=event.target.closest('[data-theme-toggle]');if(theme){const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;safeStore.set('hrm-agent3-theme',next);theme.title='Тема: '+(next==='dark'?'тёмная':'светлая');theme.setAttribute('aria-label','Переключить светлую или тёмную тему');theme.innerHTML='<svg class="icon"><use href="'+(next==='dark'?'#i-sun':'#i-moon')+'"/></svg>';showToast('Тема изменена',next==='dark'?'Тёмная тема':'Светлая тема');return;}
+    const density=event.target.closest('[data-density-toggle]');if(density){const next=document.documentElement.dataset.density==='compact'?'comfortable':'compact';document.documentElement.dataset.density=next;density.setAttribute('aria-pressed',String(next==='compact'));$('[data-density-label]').textContent=next==='compact'?'Компактно':'Плотность';safeStore.set('hrm-agent3-density',next);showToast('Плотность обновлена',next==='compact'?'Компактная таблица и короткие строки':'Комфортные отступы и высота строк');return;}
+    const fonts=event.target.closest('[data-font-toggle]');if(fonts){const enabled=document.documentElement.dataset.systemFonts!=='true';document.documentElement.dataset.systemFonts=String(enabled);fonts.setAttribute('aria-pressed',String(enabled));safeStore.set('hrm-agent3-system-fonts',String(enabled));showToast('Шрифт обновлён',enabled?'Системный шрифтовой стек':'Шрифтовой стек концепции');}
+  });
+  function applyWizardStep(step){
+    document.documentElement.dataset.wizardStep=String(step);
+    $$('[data-wizard-panel]').forEach(panel=>panel.hidden=Number(panel.dataset.wizardPanel)!==step);
+    $$('[data-wizard-indicator]').forEach(indicator=>{
+      const value=Number(indicator.dataset.wizardIndicator);
+      indicator.classList.toggle('is-done',value<step);
+      if(value===step)indicator.setAttribute('aria-current','step');
+      else indicator.removeAttribute('aria-current');
+    });
+    $('[data-current-step]').textContent='Шаг '+step;
+    $('[data-wizard-back]').disabled=step===1;
+    const next=$('[data-wizard-next]');
+    next.innerHTML=step===3?'Сохранить список <svg class="icon icon-sm"><use href="#i-check"/></svg>':'Продолжить <svg class="icon icon-sm"><use href="#i-arrow"/></svg>';
+    if(step===3){
+      $('#reviewName').textContent=$('#listName').value||'Список документов';
+      $('#reviewRole').textContent=$('#listRole').value;
+      const count=$$('.wizard-content[data-wizard-panel="2"] input:checked').length;
+      $('#reviewDocs').textContent=count+' '+(count===1?'документ':count>=2&&count<=4?'документа':'документов');
+    }
+  }
+  document.addEventListener('click',event=>{
+    if(event.target.closest('[data-wizard-next]')){
+      const step=Number(document.documentElement.dataset.wizardStep||1);
+      if(step<3){applyWizardStep(step+1);}
+      else{
+        showToast('Список документов сохранён','«'+($('#listName').value||'Новый список')+'» добавлен в библиотеку.');
+        applyWizardStep(1);
+      }
+      return;
+    }
+    if(event.target.closest('[data-wizard-back]')){
+      const step=Number(document.documentElement.dataset.wizardStep||1);
+      if(step>1)applyWizardStep(step-1);
+    }
+  });
+  $('#newCandidateForm').addEventListener('submit',event=>{event.preventDefault();const name=$('#newName').value.trim();if(!name)return;closeNewCandidate();event.target.reset();showToast('Карточка создана',name+' добавлен(а) в этап «Новый отклик».');});
+  $('#candidateFilter').addEventListener('input',event=>{const query=event.target.value.toLocaleLowerCase('ru');let visible=0;$$('#candidateRows tr').forEach(row=>{const match=row.textContent.toLocaleLowerCase('ru').includes(query);row.hidden=!match;if(match)visible++;});$('.table-footer span').textContent='Найдено: '+visible+' из 12 кандидатов';});
+  paletteInput.addEventListener('input',()=>renderPalette(paletteInput.value));
+  paletteInput.addEventListener('keydown',event=>{const buttons=$$('.palette-item',paletteResults);if(event.key==='ArrowDown'){event.preventDefault();activePaletteIndex=(activePaletteIndex+1)%Math.max(buttons.length,1);updatePaletteSelection();}else if(event.key==='ArrowUp'){event.preventDefault();activePaletteIndex=(activePaletteIndex-1+Math.max(buttons.length,1))%Math.max(buttons.length,1);updatePaletteSelection();}else if(event.key==='Enter'&&buttons.length){event.preventDefault();buttons[activePaletteIndex].click();}});
+  document.addEventListener('keydown',event=>{
+    if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){
+      event.preventDefault();paletteLayer.hidden?openPalette():closePalette();return;
+    }
+    const tab=event.target.closest&&event.target.closest('.drawer-tab');
+    if(tab&&['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){
+      event.preventDefault();const tabs=$$('.drawer-tab');let index=tabs.indexOf(tab);
+      if(event.key==='ArrowRight')index=(index+1)%tabs.length;
+      else if(event.key==='ArrowLeft')index=(index-1+tabs.length)%tabs.length;
+      else if(event.key==='Home')index=0;else index=tabs.length-1;
+      tabs[index].focus();setCandidateTab(tabs[index].dataset.tab);return;
+    }
+    if(event.key==='Tab'){
+      const layer=!paletteLayer.hidden?paletteLayer:!newCandidateLayer.hidden?newCandidateLayer:null;
+      if(layer){const focusable=$$('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',layer).filter(el=>el.getClientRects().length);const first=focusable[0],last=focusable[focusable.length-1];if(first&&last){if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}}
+    }
+    if(event.key==='Escape'){if(!paletteLayer.hidden)closePalette();if(!newCandidateLayer.hidden)closeNewCandidate();}
+  });
+  $$('.kanban-card').forEach(card=>{card.addEventListener('dragstart',event=>{event.dataTransfer.setData('text/plain',card.dataset.cardName);event.dataTransfer.effectAllowed='move';card.setAttribute('aria-grabbed','true');});card.addEventListener('dragend',()=>{card.removeAttribute('aria-grabbed');$$('.kanban-column').forEach(col=>col.classList.remove('drag-target'));});});
+  $$('.kanban-column').forEach(column=>{column.addEventListener('dragover',event=>{event.preventDefault();column.classList.add('drag-target');event.dataTransfer.dropEffect='move';});column.addEventListener('dragleave',event=>{if(!column.contains(event.relatedTarget))column.classList.remove('drag-target');});column.addEventListener('drop',event=>{event.preventDefault();const name=event.dataTransfer.getData('text/plain');const card=$$('.kanban-card').find(item=>item.dataset.cardName===name);if(card&&card.closest('.kanban-column')!==column)moveCard(card,column);});});
+  const initialTheme=safeStore.get('hrm-agent3-theme'), initialDensity=safeStore.get('hrm-agent3-density'), initialFonts=safeStore.get('hrm-agent3-system-fonts');
+  if(initialTheme){document.documentElement.dataset.theme=initialTheme;const themeButton=$('[data-theme-toggle]');themeButton.title='Тема: '+(initialTheme==='dark'?'тёмная':'светлая');themeButton.innerHTML='<svg class="icon"><use href="'+(initialTheme==='dark'?'#i-sun':'#i-moon')+'"/></svg>'; }
+  if(initialDensity){document.documentElement.dataset.density=initialDensity;const button=$('[data-density-toggle]');button.setAttribute('aria-pressed',String(initialDensity==='compact'));$('[data-density-label]').textContent=initialDensity==='compact'?'Компактно':'Плотность';}
+  if(initialFonts){document.documentElement.dataset.systemFonts=initialFonts;$('[data-font-toggle]').setAttribute('aria-pressed',initialFonts);}
+  const currentConcept=document.documentElement.dataset.concept;$$('[data-concept-link]').forEach(link=>{if(link.dataset.conceptLink===currentConcept)link.setAttribute('aria-current','page');});
+  window.addEventListener('hashchange',renderRoute);if(!location.hash)history.replaceState(null,'','#/queue');renderRoute();
+})();
+</script>
+</body>
+</html>
