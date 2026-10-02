@@ -75,7 +75,11 @@
 
 /* ---------- Table ---------- */
 
-.table-wrap {
+/* Имя согласовано с мокапом (bento-arctic.html): там класс называется
+   .bento-table-scroll и описывает прокрутку таблицы, а материал карточки
+   задаёт прод. Одно имя на мокап и прод — чтобы следующий редизайн не
+   затёр фон, рамку и скругление таблиц кандидатов, пользователей и правил. */
+.bento-table-scroll {
   background: var(--surface-raised);
   border: 1px solid var(--border-subtle);
   border-radius: var(--card-radius);

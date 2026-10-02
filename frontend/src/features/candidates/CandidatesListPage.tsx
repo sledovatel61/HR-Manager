@@ -299,7 +299,7 @@ export default function CandidatesListPage({
       )}
 
       {!loading && !error && items.length > 0 && (
-        <div className="table-wrap">
+        <div className="bento-table-scroll">
           <table className="candidates-table">
             <thead>
               <tr>

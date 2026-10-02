@@ -979,7 +979,7 @@ export function MyRulesPage() {
             />
           )}
           {history.rows !== null && !history.error && history.rows.length > 0 && (
-            <div className="table-wrap">
+            <div className="bento-table-scroll">
               <table className="document-table">
                 <thead>
                   <tr>
