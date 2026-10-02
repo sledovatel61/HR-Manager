@@ -21,7 +21,7 @@
 .library-subtitle {
   margin: 0;
   max-width: 640px;
-  color: var(--text-muted, #5b6472);
+  color: var(--text-secondary);
 }
 
 .library-toolbar {
@@ -36,14 +36,14 @@
   align-items: center;
   gap: 8px;
   max-width: 480px;
-  border: 1px solid var(--border-color, #d4d9e0);
+  border: 1px solid var(--border-default);
   border-radius: 10px;
   padding: 8px 12px;
-  background: #fff;
+  background: var(--surface-raised);
 }
 
 .library-search:focus-within {
-  outline: 2px solid var(--focus-ring, #4c6ef5);
+  outline: 2px solid var(--focus-ring-color);
   outline-offset: 1px;
 }
 
@@ -62,9 +62,9 @@
 }
 
 .library-chip {
-  border: 1px solid var(--border-color, #d4d9e0);
-  background: #fff;
-  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: var(--surface-raised);
+  border-radius: var(--chip-radius);
   padding: 6px 14px;
   font: inherit;
   font-size: 13px;
@@ -72,17 +72,17 @@
 }
 
 .library-chip:hover {
-  border-color: var(--border-strong, #9aa4b2);
+  border-color: var(--border-strong);
 }
 
 .library-chip.is-active {
-  background: var(--accent-solid, #4c6ef5);
-  border-color: var(--accent-solid, #4c6ef5);
-  color: #fff;
+  background: var(--accent-default);
+  border-color: var(--accent-default);
+  color: var(--text-on-accent);
 }
 
 .library-chip:focus-visible {
-  outline: 2px solid var(--focus-ring, #4c6ef5);
+  outline: 2px solid var(--focus-ring-color);
   outline-offset: 2px;
 }
 
@@ -102,7 +102,7 @@
 .library-recent-link {
   border: none;
   background: none;
-  color: var(--accent-solid, #4c6ef5);
+  color: var(--accent-default);
   text-decoration: underline;
   cursor: pointer;
   font: inherit;
@@ -111,7 +111,7 @@
 }
 
 .library-recent-link:focus-visible {
-  outline: 2px solid var(--focus-ring, #4c6ef5);
+  outline: 2px solid var(--focus-ring-color);
   outline-offset: 2px;
 }
 
@@ -127,10 +127,10 @@
   flex-direction: column;
   justify-content: space-between;
   gap: 12px;
-  border: 1px solid var(--border-color, #d4d9e0);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
   padding: 16px;
-  background: #fff;
+  background: var(--surface-raised);
 }
 
 .library-card-title {
@@ -151,12 +151,12 @@
 }
 
 .library-card-open:hover {
-  color: var(--accent-solid, #4c6ef5);
+  color: var(--accent-default);
   text-decoration: underline;
 }
 
 .library-card-open:focus-visible {
-  outline: 2px solid var(--focus-ring, #4c6ef5);
+  outline: 2px solid var(--focus-ring-color);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -164,7 +164,7 @@
 .library-card-summary {
   margin: 0 0 10px;
   font-size: 14px;
-  color: var(--text-muted, #5b6472);
+  color: var(--text-secondary);
 }
 
 .library-card-meta {
@@ -174,7 +174,7 @@
   gap: 6px;
   margin: 0;
   font-size: 12px;
-  color: var(--text-muted, #5b6472);
+  color: var(--text-secondary);
 }
 
 .library-card-actions {
@@ -201,10 +201,10 @@
 
 .library-view-document {
   max-width: 760px;
-  border: 1px solid var(--border-color, #d4d9e0);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
   padding: 24px 28px;
-  background: #fff;
+  background: var(--surface-raised);
 }
 
 .library-view-title {
@@ -232,10 +232,10 @@
 
 .library-view-note {
   margin-top: 18px;
-  border: 1px dashed var(--border-strong, #9aa4b2);
+  border: 1px dashed var(--border-strong);
   border-radius: 10px;
   padding: 12px 16px;
-  background: var(--surface-muted, #f7f8fa);
+  background: var(--surface-sunken);
 }
 
 .library-view-note h3 {
@@ -257,15 +257,15 @@
 .template-summary {
   margin: 4px 0 0;
   font-size: 14px;
-  color: var(--text-muted, #5b6472);
+  color: var(--text-secondary);
 }
 
 .template-body-preview {
-  border: 1px solid var(--border-color, #d4d9e0);
-  border-radius: 10px;
-  padding: 16px 18px;
-  background: #fff;
-  line-height: 1.5;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-4);
+  background: var(--surface-app);
+  line-height: var(--line-height-relaxed);
   max-height: 420px;
   overflow: auto;
 }

@@ -9,11 +9,11 @@
 }
 
 .template-card {
-  border: 1px solid var(--border-color, #dce1e5);
+  border: 1px solid var(--border-default);
   border-radius: 10px;
   padding: 16px 18px;
   margin: 14px 0;
-  background: var(--surface, #fff);
+  background: var(--surface-raised);
 }
 
 .template-card-head {
@@ -29,7 +29,7 @@
 }
 
 .template-meta {
-  color: var(--text-secondary, #5b6b73);
+  color: var(--text-secondary);
   font-size: var(--text-size-sm, 13px);
   margin: 2px 0;
 }
@@ -44,7 +44,7 @@
 
 .templates-intro {
   margin: 0 0 4px;
-  color: var(--text-secondary, #5b6b73);
+  color: var(--text-secondary);
   font-size: var(--text-size-sm, 13px);
 }
 
@@ -69,7 +69,7 @@
 }
 
 .template-dates {
-  color: var(--text-tertiary, #8a97a0);
+  color: var(--text-tertiary);
 }
 
 .template-actions {
@@ -88,7 +88,7 @@
 
 .templates-table th,
 .templates-table td {
-  border-bottom: 1px solid var(--border-subtle, #e6ebee);
+  border-bottom: 1px solid var(--border-subtle);
   padding: 8px 10px;
   text-align: left;
   vertical-align: top;
@@ -96,12 +96,12 @@
 }
 
 .templates-table th {
-  color: var(--text-secondary, #5b6b73);
+  color: var(--text-secondary);
   font-weight: var(--font-weight-medium, 500);
 }
 
 .template-tokens {
-  color: var(--text-secondary, #5b6b73);
+  color: var(--text-secondary);
   max-width: 260px;
 }
 
@@ -120,19 +120,19 @@
 .template-form input,
 .template-form select,
 .template-form textarea {
-  border: 1px solid var(--border-strong, #aebbc2);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   padding: 9px;
   font: inherit;
   color: inherit;
-  background: var(--surface, #fff);
+  background: var(--surface-raised);
   width: 100%;
   box-sizing: border-box;
 }
 
 .template-body {
   white-space: pre-wrap;
-  background: var(--surface-muted, #f7f9fa);
+  background: var(--surface-sunken);
   border-radius: 8px;
   padding: 12px;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -148,9 +148,9 @@
 }
 
 .template-token-picker button {
-  border: 1px dashed var(--border-strong, #aebbc2);
+  border: 1px dashed var(--border-strong);
   border-radius: 999px;
-  background: var(--surface-muted, #f7f9fa);
+  background: var(--surface-sunken);
   padding: 3px 9px;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
@@ -195,19 +195,19 @@
   font: inherit;
   font-size: 13px;
   text-align: left;
-  color: var(--text-strong, inherit);
-  background: #f3f5f8;
-  border: 1px solid #d8dee7;
+  color: var(--text-primary);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   cursor: pointer;
 }
 
 .template-token-picker button:hover {
-  background: #e8edf4;
+  background: var(--surface-hover);
 }
 
 .template-token-picker button:focus-visible {
-  outline: 2px solid #2f6fed;
+  outline: 2px solid var(--focus-ring-color);
   outline-offset: 2px;
 }
 
@@ -218,13 +218,13 @@
 
 .template-token-syntax summary {
   cursor: pointer;
-  color: #4a5567;
+  color: var(--text-secondary);
 }
 
 .template-token-syntax code {
   padding: 1px 4px;
   font-size: 12px;
-  background: #f3f5f8;
+  background: var(--surface-sunken);
   border-radius: 4px;
 }
 
@@ -232,15 +232,15 @@
   width: 100%;
   padding: 8px;
   font: inherit;
-  border: 1px dashed #b6c0cf;
+  border: 1px dashed var(--border-strong);
   border-radius: 8px;
-  background: #fafbfd;
+  background: var(--surface-app);
 }
 
 .template-form-error {
   margin: 0 0 12px;
   font-size: 13px;
-  color: #b42318;
+  color: var(--status-danger-fg);
 }
 
 .template-review-note {
@@ -248,8 +248,8 @@
   padding: 8px 10px;
   font-size: 12.5px;
   line-height: 1.45;
-  color: #7a4a06;
-  background: #fff7e6;
-  border-left: 3px solid #f0a020;
+  color: var(--status-warning-fg);
+  background: var(--status-warning-bg);
+  border-left: 3px solid var(--status-warning-fg);
   border-radius: 4px;
 }

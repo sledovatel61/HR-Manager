@@ -10,10 +10,11 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  background: var(--surface-app);
+  background: var(--surface-raised);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
+  box-shadow: var(--card-shadow);
 }
 
 .list-toolbar-row {
@@ -41,7 +42,8 @@
   align-items: center;
   gap: var(--space-2);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--search-radius);
+  background: var(--surface-app);
   padding: 0 var(--space-3);
   height: var(--control-height-md);
   background: var(--surface-app);
@@ -74,9 +76,10 @@
 /* ---------- Table ---------- */
 
 .table-wrap {
-  background: var(--surface-app);
+  background: var(--surface-raised);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
   overflow-x: auto;
 }
 
@@ -90,9 +93,11 @@
 .candidates-table th {
   text-align: left;
   padding: var(--space-3) var(--space-4);
+  background: var(--table-head-bg);
   color: var(--text-tertiary);
   font-size: var(--text-size-xs);
   font-weight: var(--font-weight-medium);
+  letter-spacing: 0.02em;
   border-bottom: 1px solid var(--border-subtle);
   white-space: nowrap;
 }
@@ -110,6 +115,10 @@
 
 .candidates-table tbody tr:hover {
   background: var(--surface-hover);
+}
+
+.candidates-table tbody tr:focus-within {
+  background: var(--surface-selected);
 }
 
 .row-name {
@@ -253,21 +262,21 @@
 }
 
 .channel-card {
-  border: 1px solid var(--border-color, #d9d9d9);
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  background: var(--surface-muted, #fafafa);
+  background: var(--surface-sunken);
 }
 
 .channel-card-allowed {
-  border-color: #4caf7d;
+  border-color: var(--status-success-fg);
 }
 
 .channel-card-forbidden {
-  border-color: #d9534f;
+  border-color: var(--status-danger-fg);
 }
 
 .channel-card-head {
@@ -284,7 +293,7 @@
 .channel-card-target,
 .channel-card-consent {
   font-size: 13px;
-  color: var(--text-muted, #666);
+  color: var(--text-secondary);
 }
 
 .channel-card-actions {
@@ -295,7 +304,7 @@
 }
 
 .channel-invite {
-  border-top: 1px dashed var(--border-color, #d9d9d9);
+  border-top: 1px dashed var(--border-default);
   padding-top: 8px;
   display: flex;
   flex-direction: column;
@@ -312,7 +321,7 @@
   font-size: 12px;
   padding: 6px 8px;
   border-radius: 6px;
-  background: var(--surface-muted, #f0f0f0);
+  background: var(--surface-sunken);
 }
 
 .messages-compose {
@@ -329,19 +338,19 @@
 .documents-input {
   font: inherit;
   padding: 8px 10px;
-  border: 1px solid var(--border-color, #d9d9d9);
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   resize: vertical;
 }
 
 .message-preview {
-  border: 1px solid var(--border-color, #d9d9d9);
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  background: var(--surface-muted, #fafafa);
+  background: var(--surface-sunken);
 }
 
 .message-preview-title {
@@ -367,7 +376,7 @@
 }
 
 .message-item {
-  border: 1px solid var(--border-color, #d9d9d9);
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   padding: 10px 12px;
   display: flex;
@@ -388,10 +397,10 @@
 
 .message-item-meta {
   font-size: 12px;
-  color: var(--text-muted, #666);
+  color: var(--text-secondary);
 }
 
 .message-item-error {
-  font-size: 12px;
-  color: #d9534f;
+  font-size: var(--text-size-xs);
+  color: var(--status-danger-fg);
 }
