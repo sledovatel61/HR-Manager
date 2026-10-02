@@ -491,6 +491,8 @@ def test_position_normalized_stays_in_sync_with_position(
     # повторы сохраняются как есть — нормализация живёт в отдельной колонке.
     assert created.json()["position"] == "Монтажник   РЭА"
     stored = db_session.get(Candidate, candidate_id)
+    # mypy: get() отдаёт Candidate | None — сужаем тип явно, а не через ignore.
+    assert stored is not None
     assert stored.position_normalized == "монтажник рэа"
 
     # Фильтр находит карточку по нормальной записи должности.
