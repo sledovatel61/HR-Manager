@@ -144,19 +144,32 @@ describe("CandidatesListPage", () => {
   });
 
   it("paginates server-side with next/prev", async () => {
-    vi.mocked(api.listCandidates)
-      .mockResolvedValueOnce({
-        items: Array.from({ length: 20 }, (_, i) => candidate({ id: `id-${i}`, full_name: `Кандидат ${i}` })),
-        total: 25,
-        limit: 20,
-        offset: 0,
-      })
-      .mockResolvedValueOnce({
-        items: Array.from({ length: 5 }, (_, i) => candidate({ id: `id-${20 + i}`, full_name: `Кандидат ${20 + i}` })),
+    // Запрос подсказок должностей (limit 100) — отдельная ветка: он не должен
+    // съедать страницы списка.
+    vi.mocked(api.listCandidates).mockImplementation(async (query) => {
+      if (query?.limit === 100) {
+        return { items: [], total: 0, limit: 100, offset: 0 };
+      }
+      const offset = query?.offset ?? 0;
+      if (offset === 0) {
+        return {
+          items: Array.from({ length: 20 }, (_, i) =>
+            candidate({ id: `id-${i}`, full_name: `Кандидат ${i}` }),
+          ),
+          total: 25,
+          limit: 20,
+          offset: 0,
+        };
+      }
+      return {
+        items: Array.from({ length: 5 }, (_, i) =>
+          candidate({ id: `id-${20 + i}`, full_name: `Кандидат ${20 + i}` }),
+        ),
         total: 25,
         limit: 20,
         offset: 20,
-      });
+      };
+    });
     renderPage();
 
     expect(await screen.findByText("Кандидат 0")).toBeInTheDocument();

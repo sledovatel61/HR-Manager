@@ -55,6 +55,15 @@ function candidate(stage: CandidateStage, id = "44444444-4444-4444-4444-44444444
   };
 }
 
+/** Only per-column requests (have `stage`) — the board also asks once for the
+ *  position-filter suggestions. */
+function columnCalls() {
+  return vi
+    .mocked(api.listCandidates)
+    .mock.calls.map(([query]) => query)
+    .filter((query) => query?.stage !== undefined);
+}
+
 function renderKanban() {
   return render(
     <ToastProvider>
@@ -153,12 +162,13 @@ describe("KanbanPage", () => {
     renderKanban();
 
     expect(await screen.findByText("Кандидат new-0")).toBeInTheDocument();
-    // 11 columns × first pages were requested — bounded, per-column paging.
-    expect(vi.mocked(api.listCandidates)).toHaveBeenCalledTimes(11);
+    // Besides the column pages the board makes one request for the
+    // «Должность» filter suggestions — count only per-column paging.
+    expect(columnCalls()).toHaveLength(11);
 
     await userEvent.click(screen.getByRole("button", { name: "Показать ещё (5)" }));
-    await waitFor(() => expect(vi.mocked(api.listCandidates)).toHaveBeenCalledTimes(12));
-    expect(vi.mocked(api.listCandidates).mock.calls.at(-1)?.[0]).toMatchObject({
+    await waitFor(() => expect(columnCalls()).toHaveLength(12));
+    expect(columnCalls().at(-1)).toMatchObject({
       stage: "new",
       offset: 20,
     });
