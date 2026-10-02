@@ -698,19 +698,25 @@ def test_reimport_same_file_creates_no_duplicates(client: TestClient, db_session
 
     first = _confirm(client, _fixture_bytes(), csrf)
     assert first.status_code == 200
+    first_body = first.json()
     candidates_after_first = db_session.scalar(select(func.count()).select_from(Candidate))
     entries_after_first = db_session.scalar(select(func.count()).select_from(ScheduleEntry))
-    assert candidates_after_first == first.json()["created"]
-    assert entries_after_first == first.json()["service_created"]
+    assert candidates_after_first == first_body["created"]
+    assert entries_after_first == first_body["service_created"]
 
     second = _confirm(client, _fixture_bytes(), csrf)
     assert second.status_code == 200
     body = second.json()
     assert body["created"] == 0
+    assert body["matched"] == 0
+    assert body["updated"] == 0
     assert body["service_created"] == 0
+    assert body["skipped"] >= first_body["created"] + first_body["service_created"]
     assert body["rows_added"] == 0
     assert body["rows_updated"] == 0
-    assert body["rows_unchanged"] == first.json()["rows_added"]
+    assert body["rows_unchanged"] == first_body["rows_added"]
+    assert body["skipped"] == len(body["rows"])
+    assert all(row["result"] == "skipped" for row in body["rows"])
     assert body["active_people"] == first.json()["active_people"]
     assert db_session.scalar(select(func.count()).select_from(Candidate)) == candidates_after_first
     assert db_session.scalar(select(func.count()).select_from(ScheduleEntry)) == entries_after_first

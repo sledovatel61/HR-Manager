@@ -1511,14 +1511,25 @@ async def confirm_work_schedule_import(
         candidate_link = old.candidate_id if old is not None else None
         entry_link = old.entry_id if old is not None else None
         owner_id = old.owner_user_id if old is not None else None
+        linked_entry = (
+            db.get(ScheduleEntry, old.entry_id)
+            if old is not None and old.entry_id is not None
+            else None
+        )
+        unchanged_mapping = (
+            sync_status == "unchanged"
+            and old is not None
+            and (
+                (action == "match" and target is not None and target.id == old.candidate_id)
+                or (action == "service" and linked_entry is not None and linked_entry.is_active)
+            )
+        )
         reason: str | None = None
 
         if action == "skip":
-            if old is not None and old.entry_id is not None:
-                old_entry = db.get(ScheduleEntry, old.entry_id)
-                if old_entry is not None:
-                    old_entry.is_active = False
-                    old_entry.updated_at = now
+            if linked_entry is not None:
+                linked_entry.is_active = False
+                linked_entry.updated_at = now
             if row_type == "error" or row.parse_error is not None:
                 counters["errors"] += 1
                 result_label = "error"
@@ -1531,6 +1542,21 @@ async def confirm_work_schedule_import(
                 linked = db.get(Candidate, candidate_link)
                 if linked is not None and linked.owner_user_id is not None:
                     owner_id = linked.owner_user_id
+        elif unchanged_mapping:
+            # An unchanged source mapping is a no-op. In particular, repeated
+            # rows may point at one candidate; replaying them would toggle its
+            # fields on every identical import even though the final source
+            # snapshot is unchanged.
+            counters["skipped"] += 1
+            result_label = "skipped"
+            reason = "строка не изменилась; существующая связь сохранена"
+            if action == "match":
+                assert target is not None
+                candidate_link = target.id
+                owner_id = target.owner_user_id
+            else:
+                assert linked_entry is not None
+                entry_link = linked_entry.id
         elif action == "create":
             batch_candidate = created_by_name.get(row.name_normalized)
             if batch_candidate is not None:
