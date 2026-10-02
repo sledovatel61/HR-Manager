@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bento Showcase — выбор палитры</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 40px 28px 56px; background: #f6f6f9; color: #14121f;
+         font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+  h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -.02em; }
+  p.sub { margin: 0 0 28px; color: #5b5670; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #6c6585; margin: 34px 0 14px; }
+  .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  a.card { display: block; text-decoration: none; color: inherit; background: #fff; border: 1px solid #e6e3f0;
+           border-radius: 16px; padding: 18px; box-shadow: 0 1px 2px rgba(20,18,31,.05); transition: .18s; }
+  a.card:hover { transform: translateY(-3px); box-shadow: 0 14px 30px -14px rgba(20,18,31,.3); border-color: #cfc9e6; }
+  .swatch { height: 92px; border-radius: 12px; margin-bottom: 14px; position: relative; overflow: hidden; }
+  .swatch i { position: absolute; width: 58%; height: 120%; border-radius: 50%; filter: blur(26px); opacity: .75; display: block; }
+  .name { font-weight: 650; letter-spacing: -.01em; }
+  .meta { color: #6c6585; font-size: 13px; margin-top: 3px; }
+  .dots { display: flex; gap: 6px; margin-top: 12px; }
+  .dots span { width: 22px; height: 22px; border-radius: 7px; border: 1px solid rgba(0,0,0,.06); }
+  code { background: #f0eef8; padding: 1px 6px; border-radius: 6px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<h1>Bento Showcase — 4 палитры</h1>
+<p class="sub">Один и тот же макет, меняется только цвет. Открывайте и сравнивайте; переключатель темы — в шапке (солнце/луна),
+плотность и системные шрифты — на вкладке «Настройки», командная палитра — <code>Ctrl</code>+<code>K</code>.</p>
+
+<h2>Варианты Bento (выбрать один)</h2>
+<div class="grid">
+  <a class="card" href="bento-showcase.html">
+    <div class="swatch" style="background:#f4f3fb"><i style="background:#8b7aff;left:-6%;top:-12%"></i><i style="background:#f0abfc;right:-8%;top:6%"></i><i style="background:#5eead4;left:26%;bottom:-40%"></i></div>
+    <div class="name">Оригинал · Violet</div>
+    <div class="meta">bento-showcase.html — фиолетовый акцент #6d5ef8</div>
+    <div class="dots"><span style="background:#6d5ef8"></span><span style="background:#9333ea"></span><span style="background:#db2777"></span><span style="background:#14b8a6"></span></div>
+  </a>
+  <a class="card" href="bento-emerald.html">
+    <div class="swatch" style="background:#f1f7f4"><i style="background:#6ee7b7;left:-6%;top:-12%"></i><i style="background:#bef264;right:-8%;top:6%"></i><i style="background:#67e8f9;left:26%;bottom:-40%"></i></div>
+    <div class="name">Изумруд · Emerald</div>
+    <div class="meta">bento-emerald.html — акцент #047857, спокойный «зелёный завод»</div>
+    <div class="dots"><span style="background:#047857"></span><span style="background:#036a4f"></span><span style="background:#065f46"></span><span style="background:#0e7490"></span></div>
+  </a>
+  <a class="card" href="bento-coral.html">
+    <div class="swatch" style="background:#fdf5f3"><i style="background:#fda4af;left:-6%;top:-12%"></i><i style="background:#fcd34d;right:-8%;top:6%"></i><i style="background:#f9a8d4;left:26%;bottom:-40%"></i></div>
+    <div class="name">Коралл · Coral</div>
+    <div class="meta">bento-coral.html — акцент #be123c, тёплый и заметный</div>
+    <div class="dots"><span style="background:#be123c"></span><span style="background:#9f1239"></span><span style="background:#881337"></span><span style="background:#c2410c"></span></div>
+  </a>
+  <a class="card" href="bento-arctic.html">
+    <div class="swatch" style="background:#f2f7fd"><i style="background:#7dd3fc;left:-6%;top:-12%"></i><i style="background:#a5b4fc;right:-8%;top:6%"></i><i style="background:#67e8f9;left:26%;bottom:-40%"></i></div>
+    <div class="name">Лазурь · Arctic blue</div>
+    <div class="meta">bento-arctic.html — акцент #0b6bcb, классический корпоративный</div>
+    <div class="dots"><span style="background:#0b6bcb"></span><span style="background:#0369a1"></span><span style="background:#075985"></span><span style="background:#0891b2"></span></div>
+  </a>
+</div>
+
+<h2>Остальные направления (для справки)</h2>
+<div class="grid">
+  <a class="card" href="bold-editorial.html"><div class="name">№5 Bold Editorial</div><div class="meta">журнальная типографика, жёсткая сетка</div></a>
+  <a class="card" href="clay-tactile.html"><div class="name">Clay Tactile</div><div class="meta">мягкие объёмные плитки, тёплая глина</div></a>
+  <a class="card" href="blueprint-cad.html"><div class="name">Blueprint CAD</div><div class="meta">чертёжная сетка, моно-лейблы, точность</div></a>
+  <a class="card" href="IMPLEMENTATION_PLAN.md"><div class="name">План внедрения</div><div class="meta">IMPLEMENTATION_PLAN.md</div></a>
+</div>
+</body>
+</html>
