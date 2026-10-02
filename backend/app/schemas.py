@@ -318,8 +318,8 @@ class CandidateOut(BaseModel):
     source: CandidateSource
     position: str
     stage: CandidateStage
-    owner_user_id: UUID
-    owner_username: str
+    owner_user_id: UUID | None
+    owner_username: str | None
     start_date: date | None = None
     start_time: time | None = None
     start_organization: str | None = None

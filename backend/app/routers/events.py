@@ -343,16 +343,17 @@ def create_event(
 
     # The scheduled event is an analytics fact; the responsible HR at fact
     # time is the candidate owner (the assignee is a manager/admin).
-    record_fact(
-        db,
-        fact_type=AnalyticsFactType.EVENT_CREATED,
-        candidate_id=event.candidate_id,
-        owner_user_id=candidate.owner_user_id,
-        fact_at=event.created_at,
-        fact_subtype=event.type.value,
-        source=candidate.source.value,
-        event_id=event.id,
-    )
+    if candidate.owner_user_id is not None:
+        record_fact(
+            db,
+            fact_type=AnalyticsFactType.EVENT_CREATED,
+            candidate_id=event.candidate_id,
+            owner_user_id=candidate.owner_user_id,
+            fact_at=event.created_at,
+            fact_subtype=event.type.value,
+            source=candidate.source.value,
+            event_id=event.id,
+        )
 
     history = EventHistory(
         event_id=event.id,
@@ -647,7 +648,7 @@ def update_event(
                 )
 
     # Completing an event is an analytics fact (same single transaction).
-    if new_status == EventStatus.COMPLETED:
+    if new_status == EventStatus.COMPLETED and locked.candidate.owner_user_id is not None:
         record_fact(
             db,
             fact_type=AnalyticsFactType.EVENT_COMPLETED,

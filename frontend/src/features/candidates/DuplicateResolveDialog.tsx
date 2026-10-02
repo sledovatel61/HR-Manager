@@ -44,7 +44,7 @@ export function DuplicateResolveDialog({
           <li key={item.id} className="duplicate-item">
             <span className="duplicate-name">{item.full_name}</span>
             <StageChip stage={item.stage} size="sm" />
-            <span className="duplicate-owner">Ответственный: {item.owner_username}</span>
+            <span className="duplicate-owner">Ответственный: {item.owner_username ?? "Не назначен"}</span>
             <Button variant="secondary" size="sm" onClick={() => onOpenMatch(item.id)}>
               Открыть
             </Button>

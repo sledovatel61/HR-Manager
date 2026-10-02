@@ -41,6 +41,7 @@ from app.models import (
     CandidateStage,
     CandidateTermination,
     CandidateTransfer,
+    ScheduleImportRow,
     User,
     UserRole,
 )
@@ -515,7 +516,7 @@ def update_candidate(
 
     # Stage transitions are analytics facts: recorded in the SAME transaction
     # as the update and the audit events (single commit, all-or-nothing).
-    if stage_changed:
+    if stage_changed and candidate.owner_user_id is not None:
         record_fact(
             db,
             fact_type=AnalyticsFactType.STAGE_CHANGED,
@@ -678,16 +679,17 @@ def add_interaction(
 
     # The responsible HR at fact time is the candidate owner (not the author,
     # who may be a manager acting on behalf of the HR).
-    record_fact(
-        db,
-        fact_type=AnalyticsFactType.INTERACTION_ADDED,
-        candidate_id=candidate.id,
-        owner_user_id=candidate.owner_user_id,
-        fact_at=interaction.created_at,
-        fact_subtype=interaction.type.value,
-        source=candidate.source.value,
-        interaction_id=interaction.id,
-    )
+    if candidate.owner_user_id is not None:
+        record_fact(
+            db,
+            fact_type=AnalyticsFactType.INTERACTION_ADDED,
+            candidate_id=candidate.id,
+            owner_user_id=candidate.owner_user_id,
+            fact_at=interaction.created_at,
+            fact_subtype=interaction.type.value,
+            source=candidate.source.value,
+            interaction_id=interaction.id,
+        )
 
     # Interaction comments may contain personal data — they are never logged
     # or written into audit details; only type + candidate id are recorded.
@@ -768,6 +770,13 @@ def transfer_candidate(
             detail="HR может передавать только своих кандидатов.",
         )
 
+    if candidate.owner_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Кандидат пока не назначен HR-менеджеру; используйте ручное назначение в импорте."
+            ),
+        )
     new_owner = _resolve_new_owner(db, candidate, payload.new_owner_user_id)
 
     # Lock the candidate row and re-read its current state (populate_existing
@@ -790,6 +799,11 @@ def transfer_candidate(
             status_code=status.HTTP_409_CONFLICT,
             detail="Ответственный кандидата уже изменился; обновите данные и повторите.",
         )
+    if locked.owner_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Кандидат пока не назначен HR-менеджеру; обновите список.",
+        )
 
     transfer = CandidateTransfer(
         candidate_id=candidate.id,
@@ -800,6 +814,13 @@ def transfer_candidate(
     )
     locked.owner_user_id = new_owner.id
     locked.updated_at = utc_now()
+    for source_row in db.scalars(
+        select(ScheduleImportRow).where(
+            ScheduleImportRow.candidate_id == locked.id,
+            ScheduleImportRow.is_active.is_(True),
+        )
+    ).all():
+        source_row.owner_user_id = new_owner.id
     db.add(transfer)
     db.flush()  # transfer.id for the notification dedupe key
     # Phase 8: the handover notification joins the SAME transaction — a
@@ -923,15 +944,16 @@ def create_termination(
     db.add(termination)
     db.flush()  # termination.id for the ledger fact below
 
-    record_fact(
-        db,
-        fact_type=AnalyticsFactType.TERMINATED,
-        candidate_id=candidate.id,
-        owner_user_id=candidate.owner_user_id,
-        fact_at=termination.terminated_at,
-        source=candidate.source.value,
-        termination_id=termination.id,
-    )
+    if candidate.owner_user_id is not None:
+        record_fact(
+            db,
+            fact_type=AnalyticsFactType.TERMINATED,
+            candidate_id=candidate.id,
+            owner_user_id=candidate.owner_user_id,
+            fact_at=termination.terminated_at,
+            source=candidate.source.value,
+            termination_id=termination.id,
+        )
 
     _audit_candidate(
         db,

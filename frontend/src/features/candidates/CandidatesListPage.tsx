@@ -262,7 +262,7 @@ export default function CandidatesListPage({
                     <StageChip stage={candidate.stage} size="sm" />
                   </td>
                   <td>{SOURCE_LABELS[candidate.source]}</td>
-                  {canSeeAll && <td>{candidate.owner_username}</td>}
+                  {canSeeAll && <td>{candidate.owner_username ?? "Не назначен"}</td>}
                   <td>{formatDate(candidate.updated_at)}</td>
                   <td className="row-actions">
                     {isDeleted ? (

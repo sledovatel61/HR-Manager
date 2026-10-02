@@ -24,7 +24,7 @@ RUN_INTEGRATION = os.environ.get("TEST_DATABASE_URL") is not None
 # non-integration test below fails the moment a migration is added without
 # bumping this, so the drift is caught in the fast job rather than only in
 # «Backend integration tests (PostgreSQL)».
-HEAD_REVISION = "0020"
+HEAD_REVISION = "0021"
 EXPECTED_TABLES = {
     "users",
     "user_sessions",

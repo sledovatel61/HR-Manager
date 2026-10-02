@@ -1,6 +1,7 @@
 import type {
   LicenseStatus,
   AccessGrant,
+  ActiveScheduleImportRows,
   AdminChannels,
   CandidateChannels,
   CandidateEmailConfirmation,
@@ -66,6 +67,8 @@ import type {
   ScheduleEntry,
   ScheduleEntryCreateInput,
   ScheduleEntryUpdateInput,
+  ScheduleImportAssignmentInput,
+  ScheduleImportAssignmentResult,
   User,
   UserListItems,
   UserUpdateInput,
@@ -1340,6 +1343,56 @@ export async function exportWorkScheduleXlsx(
   const disposition = response.headers.get("content-disposition") ?? "";
   const match = /filename="?([^";]+)"?/.exec(disposition);
   return { blob: await response.blob(), filename: match?.[1] ?? "work-schedule.xlsx" };
+}
+
+
+/** Актуальные строки последнего подтверждённого импорта (только с правами на всю таблицу). */
+export async function listActiveScheduleImportRows(): Promise<ActiveScheduleImportRows> {
+  return request<ActiveScheduleImportRows>("/work-schedule/import/rows");
+}
+
+/** Назначить или снять ответственность с одной/нескольких строк текущего импорта. */
+export async function assignScheduleImportRows(
+  input: ScheduleImportAssignmentInput
+): Promise<ScheduleImportAssignmentResult> {
+  return request<ScheduleImportAssignmentResult>("/work-schedule/import/assignments", {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+/** Скачать полный актуальный набор исходных строк, включая людей без даты/ответственного. */
+export async function exportCurrentScheduleImportXlsx(): Promise<WorkScheduleExport> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/work-schedule/import/export.xlsx`, {
+      method: "GET",
+      headers: {
+        Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      },
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError(0, "Сеть недоступна: не удалось связаться с сервером.");
+  }
+  if (response.status === 401) emitUnauthorized();
+  if (!response.ok) {
+    let rawDetail: unknown = null;
+    try {
+      const data: unknown = await response.json();
+      if (data && typeof data === "object" && "detail" in data) {
+        rawDetail = (data as { detail: unknown }).detail;
+      }
+    } catch {
+      // non-JSON error body — keep the generic message
+    }
+    const detail =
+      typeof rawDetail === "string" ? rawDetail : `Ошибка выгрузки (${response.status}).`;
+    throw new ApiError(response.status, detail, rawDetail);
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+  return { blob: await response.blob(), filename: match?.[1] ?? "current-work-schedule.xlsx" };
 }
 
 /** Создать служебную строку графика («Увольнение 13:00–14:00», «перевод»). */

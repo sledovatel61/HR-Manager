@@ -13,6 +13,9 @@ vi.mock("../../api", async (importOriginal) => {
     fetchWorkScheduleSuggestions: vi.fn(),
     listHrUsers: vi.fn(),
     exportWorkScheduleXlsx: vi.fn(),
+    listActiveScheduleImportRows: vi.fn(),
+    assignScheduleImportRows: vi.fn(),
+    exportCurrentScheduleImportXlsx: vi.fn(),
     updateCandidate: vi.fn(),
     createScheduleEntry: vi.fn(),
     updateScheduleEntry: vi.fn(),
@@ -93,10 +96,18 @@ function listing(items: WorkScheduleRow[]): WorkScheduleList {
   };
 }
 
-function renderPage() {
+const MANAGER: User = {
+  ...HR,
+  id: "33333333-3333-4333-8333-333333333333",
+  username: "boss",
+  full_name: "Руководитель",
+  role: "manager",
+};
+
+function renderPage(user: User = HR) {
   return render(
     <ToastProvider>
-      <SchedulePage user={HR} onOpenCandidate={vi.fn()} />
+      <SchedulePage user={user} onOpenCandidate={vi.fn()} />
     </ToastProvider>
   );
 }
@@ -113,6 +124,139 @@ beforeEach(() => {
   vi.mocked(api.exportWorkScheduleXlsx).mockResolvedValue({
     blob: new Blob(["x"]),
     filename: "work-schedule.xlsx",
+  });
+  vi.mocked(api.listActiveScheduleImportRows).mockResolvedValue({
+    import_id: null,
+    file_name: null,
+    imported_at: null,
+    active_people: 0,
+    can_assign: false,
+    rows: [],
+  });
+  vi.mocked(api.assignScheduleImportRows).mockResolvedValue({
+    updated: 0,
+    owner_user_id: null,
+    owner_name: null,
+  });
+  vi.mocked(api.exportCurrentScheduleImportXlsx).mockResolvedValue({
+    blob: new Blob(["source"]),
+    filename: "current-work-schedule.xlsx",
+  });
+});
+
+
+describe("SchedulePage — назначение HR исходным строкам", () => {
+  const rows = [
+    {
+      row_key: "source-undated",
+      row_order: 0,
+      sheet_row: 8,
+      row_type: "person" as const,
+      full_name: "Недатова Ирина Петровна",
+      entry_date: null,
+      time_from: null,
+      time_to: null,
+      organization: null,
+      department: null,
+      position: "Кладовщик",
+      candidate_id: null,
+      owner_user_id: null,
+      owner_name: null,
+      schedule_ready: false,
+      sync_status: "added" as const,
+    },
+    {
+      row_key: "source-dated",
+      row_order: 1,
+      sheet_row: 10,
+      row_type: "person" as const,
+      full_name: "Датова Мария Ивановна",
+      entry_date: "2026-08-10",
+      time_from: "09:15:00",
+      time_to: null,
+      organization: "ООО Авион",
+      department: null,
+      position: "Грузчик",
+      candidate_id: "candidate-1",
+      owner_user_id: "hr-owner",
+      owner_name: "HR Ответственный",
+      schedule_ready: true,
+      sync_status: "unchanged" as const,
+    },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(api.listActiveScheduleImportRows).mockResolvedValue({
+      import_id: "import-current",
+      file_name: "график.xlsx",
+      imported_at: "2026-10-02T12:00:00Z",
+      active_people: 2,
+      can_assign: true,
+      rows,
+    });
+    vi.mocked(api.listHrUsers).mockResolvedValue({
+      items: [
+        {
+          id: "hr-owner",
+          username: "hr-owner",
+          full_name: "HR Ответственный",
+          role: "hr",
+          is_active: true,
+        },
+      ],
+      total: 1,
+    });
+    vi.mocked(api.assignScheduleImportRows).mockResolvedValue({
+      updated: 1,
+      owner_user_id: "hr-owner",
+      owner_name: "HR Ответственный",
+    });
+  });
+
+  it("показывает не назначенного человека без даты и назначает его одним действием", async () => {
+    const user = userEvent.setup();
+    renderPage(MANAGER);
+
+    expect(await screen.findByText(/2 человек · график.xlsx/)).toBeInTheDocument();
+    expect(screen.getByText("Недатова Ирина Петровна")).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: /Дата не указана/ })).toBeInTheDocument();
+    expect(
+      screen.getByText("Не назначен", { selector: "span.schedule-unassigned" })
+    ).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Ответственный HR для строки 8" }),
+      "hr-owner"
+    );
+    await waitFor(() =>
+      expect(api.assignScheduleImportRows).toHaveBeenCalledWith({
+        row_keys: ["source-undated"],
+        owner_user_id: "hr-owner",
+      })
+    );
+  });
+
+  it("массово назначает выбранные строки и предлагает экспорт актуального набора", async () => {
+    const user = userEvent.setup();
+    renderPage(MANAGER);
+
+    await screen.findByText(/2 человек · график.xlsx/);
+    await user.click(screen.getByRole("checkbox", { name: "Выбрать всех людей" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Ответственный HR для выбранных строк" }),
+      "__unassigned__"
+    );
+    await user.click(screen.getByRole("button", { name: "Назначить выбранным (2)" }));
+
+    await waitFor(() =>
+      expect(api.assignScheduleImportRows).toHaveBeenCalledWith({
+        row_keys: ["source-undated", "source-dated"],
+        owner_user_id: null,
+      })
+    );
+    expect(
+      screen.getByRole("button", { name: "Экспортировать актуальную таблицу" })
+    ).toBeInTheDocument();
   });
 });
 

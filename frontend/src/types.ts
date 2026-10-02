@@ -214,8 +214,8 @@ export interface Candidate {
   email: string | null;
   source: CandidateSource;
   position: string;
-  owner_user_id: string;
-  owner_username: string;
+  owner_user_id: string | null;
+  owner_username: string | null;
   stage: CandidateStage;
   /** Phase 18: «Выход на работу» — дата/время и место выхода (ISO date/time). */
   start_date: string | null;
@@ -1269,6 +1269,8 @@ export type ScheduleEntryUpdateInput = Partial<ScheduleEntryCreateInput>;
 // --- Импорт графика выхода из Excel ------------------------------------------
 
 export type ImportRowKind = "candidate" | "service" | "skip";
+export type ImportSourceRowType = "person" | "service" | "skip" | "error";
+export type ImportSyncStatus = "added" | "updated" | "unchanged" | "missing";
 export type ImportSuggestedAction = "create" | "match" | "service" | "skip";
 export type ImportDecisionAction = "create" | "match" | "service" | "skip";
 
@@ -1287,7 +1289,7 @@ export interface ImportMatchInfo {
 export interface ImportRowPreview {
   row_index: number;
   sheet_row: number;
-  entry_date: string;
+  entry_date: string | null;
   full_name: string | null;
   time_display: string;
   time_from: string | null;
@@ -1300,10 +1302,16 @@ export interface ImportRowPreview {
   /** Маскированный телефон («+7 ••• •••-••-29») — только для сверки. */
   phone_masked: string | null;
   kind: ImportRowKind;
+  row_type: ImportSourceRowType;
   name_confidence: "full" | "partial" | null;
   suggested_action: ImportSuggestedAction;
   match: ImportMatchInfo | null;
   match_options: ImportMatchInfo[];
+  candidate_id: string | null;
+  source_row_key: string | null;
+  owner_user_id: string | null;
+  owner_name: string | null;
+  schedule_ready: boolean;
   already_imported: boolean;
   warnings: string[];
   parse_error: string | null;
@@ -1349,6 +1357,7 @@ export interface ImportRowResult {
   candidate_id: string | null;
   entry_id: string | null;
   reason: string | null;
+  sync_status?: ImportSyncStatus | null;
 }
 
 /** Итог подтверждённого импорта + санитизированный CSV-отчёт. */
@@ -1360,8 +1369,52 @@ export interface WorkScheduleImportResult {
   service_created: number;
   skipped: number;
   errors: number;
+  rows_added: number;
+  rows_updated: number;
+  rows_unchanged: number;
+  rows_missing: number;
+  active_people: number;
   rows: ImportRowResult[];
   report_csv: string;
+}
+
+export interface ActiveScheduleImportRow {
+  row_key: string;
+  row_order: number;
+  sheet_row: number;
+  row_type: ImportSourceRowType;
+  full_name: string | null;
+  entry_date: string | null;
+  time_from: string | null;
+  time_to: string | null;
+  organization: string | null;
+  department: string | null;
+  position: string | null;
+  candidate_id: string | null;
+  owner_user_id: string | null;
+  owner_name: string | null;
+  schedule_ready: boolean;
+  sync_status: ImportSyncStatus;
+}
+
+export interface ActiveScheduleImportRows {
+  import_id: string | null;
+  file_name: string | null;
+  imported_at: string | null;
+  active_people: number;
+  can_assign: boolean;
+  rows: ActiveScheduleImportRow[];
+}
+
+export interface ScheduleImportAssignmentInput {
+  row_keys: string[];
+  owner_user_id: string | null;
+}
+
+export interface ScheduleImportAssignmentResult {
+  updated: number;
+  owner_user_id: string | null;
+  owner_name: string | null;
 }
 
 // --- Вложения кандидата: анкеты (.docx) и сканы (.pdf) -----------------------

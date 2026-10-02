@@ -401,7 +401,7 @@ function InfoTab({ candidate, stageBusy, onChangeStage, onSaved, onOpenCandidate
             </div>
             <div className="detail-row">
               <dt>Ответственный</dt>
-              <dd>{candidate.owner_username}</dd>
+              <dd>{candidate.owner_username ?? "Не назначен"}</dd>
             </div>
           </dl>
           <Button variant="secondary" icon="edit" onClick={startEditing}>

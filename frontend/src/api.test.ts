@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   DuplicateCandidateError,
+  assignScheduleImportRows,
+  exportCurrentScheduleImportXlsx,
+  listActiveScheduleImportRows,
   createCandidate,
   createCandidateInteraction,
   deleteCandidate,
@@ -82,6 +85,59 @@ describe("API client", () => {
   it("reads the CSRF cookie", () => {
     document.cookie = "hrm_csrf=zzz; path=/";
     expect(readCsrfCookie()).toBe("zzz");
+  });
+});
+
+describe("Current schedule import API", () => {
+  it("reads active source rows and sends single/bulk assignment with CSRF", async () => {
+    document.cookie = "hrm_csrf=schedule-token; path=/";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          import_id: "import-1",
+          file_name: "schedule.xlsx",
+          imported_at: "2026-10-02T12:00:00Z",
+          active_people: 1,
+          can_assign: true,
+          rows: [],
+        })
+      )
+      .mockResolvedValueOnce(
+        Response.json({ updated: 2, owner_user_id: "hr-1", owner_name: "HR One" })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listActiveScheduleImportRows();
+    await assignScheduleImportRows({ row_keys: ["row-1", "row-2"], owner_user_id: "hr-1" });
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`${API_BASE}/work-schedule/import/rows`);
+    expect(fetchMock.mock.calls[1][1]?.method).toBe("PATCH");
+    expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string)).toEqual({
+      row_keys: ["row-1", "row-2"],
+      owner_user_id: "hr-1",
+    });
+    expect(
+      (fetchMock.mock.calls[1][1]?.headers as Record<string, string>)["X-CSRF-Token"]
+    ).toBe("schedule-token");
+  });
+
+  it("downloads the current source workbook and reads its filename", async () => {
+    const fetchMock = stubFetch(
+      new Response("xlsx-bytes", {
+        status: 200,
+        headers: { "content-disposition": 'attachment; filename="current.xlsx"' },
+      })
+    );
+
+    const result = await exportCurrentScheduleImportXlsx();
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      `${API_BASE}/work-schedule/import/export.xlsx`
+    );
+    expect(fetchMock.mock.calls[0][1]?.method).toBe("GET");
+    expect(result.filename).toBe("current.xlsx");
+    expect(await result.blob.text()).toBe("xlsx-bytes");
   });
 });
 

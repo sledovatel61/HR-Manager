@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
+  assignScheduleImportRows,
+  exportCurrentScheduleImportXlsx,
   exportWorkScheduleXlsx,
   fetchWorkScheduleSuggestions,
+  listActiveScheduleImportRows,
   listHrUsers,
   listWorkSchedule,
   updateCandidate,
@@ -17,6 +20,8 @@ import { Icon } from "../../design-system/icons/Icon";
 import {
   CANDIDATE_STAGE_ORDER,
   STAGE_LABELS,
+  type ActiveScheduleImportRows,
+  type ActiveScheduleImportRow,
   type CandidateStage,
   type ScheduleRowKind,
   type User,
@@ -107,6 +112,249 @@ function groupByDay(items: WorkScheduleRow[]) {
     rows,
     starts: rows.filter((row) => row.kind === "candidate").length,
   }));
+}
+
+
+function formatImportDate(value: string | null): string {
+  if (!value) return "Дата не указана";
+  const [year, month, day] = value.split("-");
+  return `${day}.${month}.${year}`;
+}
+
+function displayImportTime(row: ActiveScheduleImportRow): string {
+  if (!row.time_from) return "Время не указано";
+  const start = row.time_from.slice(0, 5);
+  return row.time_to ? `${start}–${row.time_to.slice(0, 5)}` : start;
+}
+
+function ScheduleImportAssignments({ refreshKey }: { refreshKey: number }) {
+  const { pushToast } = useToast();
+  const [snapshot, setSnapshot] = useState<ActiveScheduleImportRows | null>(null);
+  const [directory, setDirectory] = useState<UserListItem[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bulkOwner, setBulkOwner] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const current = await listActiveScheduleImportRows();
+      setSnapshot(current);
+      setSelected([]);
+    } catch {
+      setSnapshot(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load, refreshKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listHrUsers()
+      .then((page) => {
+        if (!cancelled) setDirectory(page.items);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const people = useMemo(
+    () => snapshot?.rows.filter((row) => row.row_type === "person") ?? [],
+    [snapshot]
+  );
+
+  const applyAssignment = async (rowKeys: string[], ownerValue: string) => {
+    if (!ownerValue || saving || rowKeys.length === 0) return;
+    setSaving(true);
+    try {
+      const result = await assignScheduleImportRows({
+        row_keys: rowKeys,
+        owner_user_id: ownerValue === "__unassigned__" ? null : ownerValue,
+      });
+      pushToast(
+        "success",
+        result.updated === 0
+          ? "Назначение не изменилось."
+          : `Обновлено назначений: ${result.updated}. Изменение записано в аудит.`
+      );
+      setBulkOwner("");
+      await load();
+    } catch (caught) {
+      pushToast(
+        "danger",
+        caught instanceof ApiError ? caught.message : "Не удалось назначить ответственного."
+      );
+    } finally {
+      setSaving(false);
+      setSavingKey(null);
+    }
+  };
+
+  const assignOne = (row: ActiveScheduleImportRow, ownerValue: string) => {
+    if (ownerValue === (row.owner_user_id ?? "__unassigned__")) return;
+    setSavingKey(row.row_key);
+    void applyAssignment([row.row_key], ownerValue);
+  };
+
+  const assignSelected = () => {
+    void applyAssignment(selected, bulkOwner);
+  };
+
+  const exportCurrent = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const { blob, filename } = await exportCurrentScheduleImportXlsx();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      pushToast("success", `Экспортировано людей: ${snapshot?.active_people ?? 0}.`);
+    } catch (caught) {
+      pushToast(
+        "danger",
+        caught instanceof ApiError ? caught.message : "Не удалось выгрузить актуальную таблицу."
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  if (loading || !snapshot?.import_id || !snapshot.can_assign) return null;
+
+  return (
+    <section className="schedule-import-assignments no-print" aria-labelledby="schedule-import-rows-title">
+      <header className="schedule-import-assignments-head">
+        <div>
+          <h2 id="schedule-import-rows-title">Люди из последнего импорта</h2>
+          <p>
+            {snapshot.active_people} человек · {snapshot.file_name ?? "исходная таблица"}. Строки без даты и кандидата тоже сохранены.
+          </p>
+        </div>
+        <Button icon="download" onClick={() => void exportCurrent()} loading={exporting}>
+          Экспортировать актуальную таблицу
+        </Button>
+      </header>
+
+      {people.length > 0 && (
+        <>
+          <div className="schedule-import-bulk-actions">
+            <label className="schedule-checkbox">
+              <input
+                type="checkbox"
+                aria-label="Выбрать всех людей"
+                checked={selected.length === people.length && people.length > 0}
+                onChange={(event) =>
+                  setSelected(event.target.checked ? people.map((row) => row.row_key) : [])
+                }
+              />
+              Выбрать всех ({people.length})
+            </label>
+            <SelectInput
+              aria-label="Ответственный HR для выбранных строк"
+              value={bulkOwner}
+              onChange={(event) => setBulkOwner(event.target.value)}
+            >
+              <option value="">Выберите HR для массового назначения</option>
+              <option value="__unassigned__">Снять назначение</option>
+              {directory.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.full_name || item.username}
+                </option>
+              ))}
+            </SelectInput>
+            <Button
+              size="sm"
+              onClick={assignSelected}
+              loading={saving && savingKey === null}
+              disabled={selected.length === 0 || !bulkOwner || saving}
+            >
+              Назначить выбранным ({selected.length})
+            </Button>
+          </div>
+
+          <div className="schedule-import-table-wrap">
+            <table className="schedule-table schedule-import-current-table">
+              <thead>
+                <tr>
+                  <th scope="col">Выбор</th>
+                  <th scope="col">Строка</th>
+                  <th scope="col">ФИО</th>
+                  <th scope="col">Дата / время</th>
+                  <th scope="col">Должность</th>
+                  <th scope="col">Состояние</th>
+                  <th scope="col">Ответственный HR</th>
+                </tr>
+              </thead>
+              <tbody>
+                {people.map((row) => (
+                  <tr key={row.row_key}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Выбрать строку ${row.sheet_row}`}
+                        checked={selected.includes(row.row_key)}
+                        onChange={(event) =>
+                          setSelected((current) =>
+                            event.target.checked
+                              ? [...current, row.row_key]
+                              : current.filter((key) => key !== row.row_key)
+                          )
+                        }
+                      />
+                    </td>
+                    <td>{row.sheet_row}</td>
+                    <td>{row.full_name || "Без ФИО"}</td>
+                    <td>
+                      {formatImportDate(row.entry_date)}
+                      <br />
+                      {displayImportTime(row)}
+                    </td>
+                    <td>{row.position || "—"}</td>
+                    <td>{row.schedule_ready ? "Готов к графику" : "Не готов: нет даты"}</td>
+                    <td>
+                      {row.owner_name ? (
+                        <span>{row.owner_name}</span>
+                      ) : (
+                        <span className="schedule-unassigned">Не назначен</span>
+                      )}
+                      <SelectInput
+                        aria-label={`Ответственный HR для строки ${row.sheet_row}`}
+                        value={row.owner_user_id ?? "__unassigned__"}
+                        disabled={saving}
+                        onChange={(event) => assignOne(row, event.target.value)}
+                      >
+                        <option value="__unassigned__">Не назначен</option>
+                        {directory.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.full_name || item.username}
+                          </option>
+                        ))}
+                      </SelectInput>
+                      {savingKey === row.row_key && <span className="schedule-import-saving">Сохраняем…</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
+  );
 }
 
 /**
@@ -599,7 +847,7 @@ export default function SchedulePage({ user, onOpenCandidate }: SchedulePageProp
                             </Button>
                           </div>
                         </td>
-                        <td>{row.owner_username ?? "—"}</td>
+                        <td>{row.owner_username ?? "Не назначен"}</td>
                         <td />
                       </tr>
                     ) : (
@@ -634,7 +882,7 @@ export default function SchedulePage({ user, onOpenCandidate }: SchedulePageProp
                         <td>{row.position || "—"}</td>
                         <td>{row.shift ?? "—"}</td>
                         <td>{row.comment ?? "—"}</td>
-                        <td>{row.owner_username ?? "—"}</td>
+                        <td>{row.owner_username ?? "Не назначен"}</td>
                         <td className="no-print">
                           {canEditRow(row) ? (
                             <IconButton
@@ -668,6 +916,8 @@ export default function SchedulePage({ user, onOpenCandidate }: SchedulePageProp
           ))}
         </div>
       )}
+
+      <ScheduleImportAssignments refreshKey={reloadTick} />
 
       {entryModal && (
         <ScheduleEntryModal

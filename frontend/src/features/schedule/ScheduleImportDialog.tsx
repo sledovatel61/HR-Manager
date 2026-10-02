@@ -41,7 +41,8 @@ function effectiveDecision(
   return { action: row.suggested_action, candidate_id: null };
 }
 
-function formatDay(iso: string): string {
+function formatDay(iso: string | null): string {
+  if (!iso) return "—";
   const [year, month, day] = iso.split("-");
   return `${day}.${month}.${year}`;
 }
@@ -223,7 +224,7 @@ export function ScheduleImportDialog({ onClose, onImported }: ScheduleImportDial
       <Button
         onClick={() => void confirm()}
         loading={confirming}
-        disabled={!preview || previewing || importableCount === 0 || unresolvedMatches > 0}
+        disabled={!preview || previewing || unresolvedMatches > 0}
       >
         {preview ? `Подтвердить импорт (${importableCount})` : "Подтвердить импорт"}
       </Button>
@@ -259,6 +260,15 @@ export function ScheduleImportDialog({ onClose, onImported }: ScheduleImportDial
             </li>
             <li>
               Ошибок: <strong>{result.errors}</strong>
+            </li>
+            <li>
+              Актуальных людей: <strong>{result.active_people}</strong>
+            </li>
+            <li>
+              Строк добавлено / обновлено / без изменений / отсутствует:{" "}
+              <strong>
+                {result.rows_added} / {result.rows_updated} / {result.rows_unchanged} / {result.rows_missing}
+              </strong>
             </li>
           </ul>
           <div className="schedule-import-result-actions">
@@ -341,10 +351,12 @@ export function ScheduleImportDialog({ onClose, onImported }: ScheduleImportDial
                   <thead>
                     <tr>
                       <th scope="col">Строка</th>
+                      <th scope="col">Тип</th>
                       <th scope="col">Дата</th>
                       <th scope="col">Время</th>
                       <th scope="col">ФИО / текст</th>
                       <th scope="col">Организация · Отдел · Должность</th>
+                      <th scope="col">Состояние / ответственный</th>
                       <th scope="col">Действие</th>
                       <th scope="col">Примечания</th>
                     </tr>
@@ -356,6 +368,15 @@ export function ScheduleImportDialog({ onClose, onImported }: ScheduleImportDial
                       return (
                         <tr key={row.row_index} className={needsAttention(row) ? "is-attention" : ""}>
                           <td>{row.sheet_row}</td>
+                          <td>
+                            {row.row_type === "person"
+                              ? "Человек"
+                              : row.row_type === "service"
+                                ? "Служебная"
+                                : row.row_type === "error"
+                                  ? "Ошибка"
+                                  : "Пропуск"}
+                          </td>
                           <td>{formatDay(row.entry_date)}</td>
                           <td>{row.time_display || "—"}</td>
                           <td>
@@ -370,6 +391,13 @@ export function ScheduleImportDialog({ onClose, onImported }: ScheduleImportDial
                               .join(" · ") || "—"}
                           </td>
                           <td>
+                            {row.schedule_ready ? "Готов к графику" : "Нет даты / не готов"}
+                            <br />
+                            <span className={row.owner_user_id ? "" : "schedule-unassigned"}>
+                              {row.owner_name ?? "Не назначен"}
+                            </span>
+                          </td>
+                          <td>
                             <select
                               aria-label={`Действие для строки ${row.sheet_row}`}
                               value={decision.action}
@@ -378,11 +406,13 @@ export function ScheduleImportDialog({ onClose, onImported }: ScheduleImportDial
                               }
                             >
                               <option value="skip">{ACTION_LABELS.skip}</option>
-                              {row.full_name && <option value="create">{ACTION_LABELS.create}</option>}
-                              {candidates.length > 0 && (
+                              {row.kind === "candidate" && row.full_name && row.parse_error === null && (
+                                <option value="create">{ACTION_LABELS.create}</option>
+                              )}
+                              {row.kind === "candidate" && row.parse_error === null && candidates.length > 0 && (
                                 <option value="match">{ACTION_LABELS.match}</option>
                               )}
-                              {(row.full_name || row.comment) && (
+                              {row.parse_error === null && (row.full_name || row.comment) && (
                                 <option value="service">{ACTION_LABELS.service}</option>
                               )}
                             </select>

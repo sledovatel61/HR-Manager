@@ -46,6 +46,8 @@ MAX_IMPORT_BYTES = 5 * 1024 * 1024
 MAX_IMPORT_ROWS = 5000
 #: Сколько колонок справа от комментария просматривается на телефоны/примечания.
 MAX_EXTRA_COLUMNS = 8
+#: Максимум сохраняемых колонок исходного листа (не зависит от форматирования справа).
+MAX_SOURCE_COLUMNS = 64
 #: Шапка ищется в первых строках листа.
 HEADER_SCAN_ROWS = 30
 
@@ -152,7 +154,7 @@ class ParsedScheduleRow:
 
     row_index: int  # порядковый номер среди распознанных строк (стабильный ключ)
     sheet_row: int  # номер строки в Excel (для отчёта)
-    entry_date: date
+    entry_date: date | None
     raw_name: str | None
     name_normalized: str
     time_from: time | None
@@ -169,6 +171,7 @@ class ParsedScheduleRow:
     name_confidence: NameConfidence | None
     warnings: tuple[str, ...] = ()
     parse_error: str | None = None
+    source_values: tuple[object, ...] = ()
 
 
 @dataclass
@@ -177,6 +180,8 @@ class ParsedScheduleSheet:
 
     sheet_title: str
     header_row: int
+    headers: list[str | None] = field(default_factory=list)
+    columns: dict[str, int | None] = field(default_factory=dict)
     rows: list[ParsedScheduleRow] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -184,7 +189,7 @@ class ParsedScheduleSheet:
     def days(self) -> list[date]:
         seen: list[date] = []
         for row in self.rows:
-            if row.entry_date not in seen:
+            if row.entry_date is not None and row.entry_date not in seen:
                 seen.append(row.entry_date)
         return seen
 
@@ -398,12 +403,22 @@ def parse_time_value(
         return TimeParse(None, None, "", None, None, ())
 
     if isinstance(value, datetime):
+        cell_date = value.date()
         if value.hour or value.minute:
             clock = value.time().replace(second=0, microsecond=0)
-            return TimeParse(clock, None, clock.strftime("%H:%M"), None, None, ())
+            date_override = cell_date if block_date is None or cell_date != block_date else None
+            return TimeParse(
+                clock,
+                None,
+                clock.strftime("%H:%M"),
+                date_override,
+                None,
+                (f"дата из ячейки времени: {cell_date.strftime('%d.%m.%Y')}",)
+                if date_override is not None
+                else (),
+            )
         # Дата в колонке времени: дубль блока или перенос на другую дату.
-        cell_date = value.date()
-        if block_date is not None and cell_date != block_date:
+        if block_date is None or cell_date != block_date:
             return TimeParse(
                 None,
                 None,
@@ -453,14 +468,6 @@ def _parse_time_text(text: str, *, block_date: date | None, context_year: int | 
     date_override: date | None = None
     warnings: list[str] = []
 
-    interval = _TIME_RANGE_RE.search(remainder)
-    if interval:
-        start = _make_time(int(interval.group(1)), int(interval.group(2)))
-        end = _make_time(int(interval.group(3)), int(interval.group(4)))
-        if start is not None and end is not None and end >= start:
-            display = f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')}"
-            return TimeParse(start, end, display, None, None, ())
-
     date_match = _DATE_PREFIX_RE.search(remainder)
     if date_match:
         day, month = int(date_match.group(1)), int(date_match.group(2))
@@ -468,7 +475,9 @@ def _parse_time_text(text: str, *, block_date: date | None, context_year: int | 
             year = _resolve_year(date_match.group(3), context_year)
             found = _safe_date(day, month, year)
             rest = _DATE_PREFIX_RE.sub("", remainder, count=1).strip(" \tкК.,")
-            has_more_time = _TIME_RE.search(rest) is not None
+            has_more_time = (
+                _TIME_RE.search(rest) is not None or _TIME_RANGE_RE.search(rest) is not None
+            )
             if found is not None and has_more_time:
                 remainder = rest
                 if block_date is None or found != block_date:
@@ -484,6 +493,14 @@ def _parse_time_text(text: str, *, block_date: date | None, context_year: int | 
                         warnings.append(f"дата из текста: {found.strftime('%d.%m.%Y')}")
                     return TimeParse(None, None, "", date_override, None, tuple(warnings))
                 # Иначе даём _TIME_RE распознать её как время ниже.
+
+    interval = _TIME_RANGE_RE.search(remainder)
+    if interval:
+        start = _make_time(int(interval.group(1)), int(interval.group(2)))
+        end = _make_time(int(interval.group(3)), int(interval.group(4)))
+        if start is not None and end is not None and end >= start:
+            display = f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')}"
+            return TimeParse(start, end, display, date_override, None, tuple(warnings))
 
     clock_match = _TIME_RE.search(remainder)
     if clock_match:
@@ -649,6 +666,7 @@ class _HeaderMap:
     department_col: int | None
     position_col: int | None
     comment_col: int | None
+    owner_col: int | None
 
 
 def _find_header(sheet: Worksheet) -> _HeaderMap | None:
@@ -663,7 +681,7 @@ def _find_header(sheet: Worksheet) -> _HeaderMap | None:
                 texts[cell.column] = cleaned.casefold()
         name_col = None
         time_col = None
-        organization_col = department_col = position_col = comment_col = None
+        organization_col = department_col = position_col = comment_col = owner_col = None
         for column, text in texts.items():
             if name_col is None and "фио" in text:
                 name_col = column
@@ -677,6 +695,10 @@ def _find_header(sheet: Worksheet) -> _HeaderMap | None:
                 position_col = column
             elif comment_col is None and "коммент" in text:
                 comment_col = column
+            elif owner_col is None and (
+                "ответствен" in text or "hr-менедж" in text or "hr менедж" in text
+            ):
+                owner_col = column
         row_number = row[0].row if row else None
         if name_col is not None and time_col is not None and row_number is not None:
             return _HeaderMap(
@@ -687,6 +709,7 @@ def _find_header(sheet: Worksheet) -> _HeaderMap | None:
                 department_col=department_col,
                 position_col=position_col,
                 comment_col=comment_col,
+                owner_col=owner_col,
             )
     return None
 
@@ -725,7 +748,26 @@ def parse_sheet(sheet: Worksheet) -> ParsedScheduleSheet | None:
     if header is None:
         return None
 
-    result = ParsedScheduleSheet(sheet_title=sheet.title, header_row=header.header_row)
+    source_columns = min(sheet.max_column or 1, MAX_SOURCE_COLUMNS)
+    result = ParsedScheduleSheet(
+        sheet_title=sheet.title,
+        header_row=header.header_row,
+        headers=[
+            _clean_text(sheet.cell(row=header.header_row, column=column).value) or None
+            for column in range(1, source_columns + 1)
+        ],
+        columns={
+            "name": header.name_col,
+            "time": header.time_col,
+            "organization": header.organization_col,
+            "department": header.department_col,
+            "position": header.position_col,
+            "comment": header.comment_col,
+            "owner": header.owner_col,
+        },
+    )
+    if (sheet.max_column or 1) > MAX_SOURCE_COLUMNS:
+        result.warnings.append(f"Сохранены первые {MAX_SOURCE_COLUMNS} колонок исходного листа.")
     current_date: date | None = None
     max_row = sheet.max_row or header.header_row
     parsed = 0
@@ -789,10 +831,14 @@ def _parse_data_row(
     *,
     name_value: object,
 ) -> ParsedScheduleRow | None:
-    """Одна строка с данными (или пустой слот с временем)."""
+    """Parse one source row without requiring it to be schedule-ready."""
 
     warnings: list[str] = []
     row_index = len(result.rows) + 1
+    source_values = tuple(
+        sheet.cell(row=sheet_row, column=column).value
+        for column in range(1, len(result.headers) + 1)
+    )
 
     raw_name = _clean_text(name_value)
     organization = _clean_text(_cell(sheet, sheet_row, header.organization_col)) or None
@@ -801,32 +847,14 @@ def _parse_data_row(
     comment = _clean_text(_cell(sheet, sheet_row, header.comment_col)) or None
     time_value = _cell(sheet, sheet_row, header.time_col)
 
-    # Пустой слот: нет ФИО (только время или реквизиты) — не импортируется.
     if not raw_name:
         if time_value is None and organization is None and department is None and position is None:
             return None
+        warning = "пустой слот без ФИО — пропускается"
+        error = None
         if current_date is None:
-            return ParsedScheduleRow(
-                row_index=row_index,
-                sheet_row=sheet_row,
-                entry_date=date.today(),
-                raw_name=None,
-                name_normalized="",
-                time_from=None,
-                time_to=None,
-                time_display="",
-                organization=None,
-                department=None,
-                position=None,
-                shift=None,
-                comment=None,
-                phone_display=None,
-                phone_normalized=None,
-                kind="skip",
-                name_confidence=None,
-                warnings=("нет ФИО",),
-                parse_error="Строка до первой даты-блока и без ФИО.",
-            )
+            warning = "нет ФИО и не указана дата выхода"
+            error = "Строка до первой даты-блока и без ФИО."
         return ParsedScheduleRow(
             row_index=row_index,
             sheet_row=sheet_row,
@@ -845,44 +873,30 @@ def _parse_data_row(
             phone_normalized=None,
             kind="skip",
             name_confidence=None,
-            warnings=("пустой слот без ФИО — пропускается",),
+            warnings=(warning,),
+            parse_error=error,
+            source_values=source_values,
         )
+
+    kind, confidence, paren_note = classify_name(raw_name)
+    display_name = _PAREN_NOTE_RE.sub(" ", raw_name)
+    display_name = re.sub(r"\s+", " ", display_name).strip()
+    if kind == "skip":
+        warnings.append("значение в колонке ФИО не похоже на имя — строка пропускается")
 
     context_year = current_date.year if current_date else None
     parsed_time = parse_time_value(time_value, block_date=current_date, context_year=context_year)
     warnings.extend(parsed_time.warnings)
-
     entry_date = parsed_time.date_override or current_date
-    if entry_date is None:
-        return ParsedScheduleRow(
-            row_index=row_index,
-            sheet_row=sheet_row,
-            entry_date=date.today(),
-            raw_name=raw_name,
-            name_normalized=normalize_full_name(raw_name),
-            time_from=parsed_time.time_from,
-            time_to=parsed_time.time_to,
-            time_display=parsed_time.display,
-            organization=_clip(organization, MAX_ORGANIZATION, warnings, "организация"),
-            department=_clip(department, MAX_DEPARTMENT, warnings, "отдел"),
-            position=_clip(position, MAX_POSITION, warnings, "должность"),
-            shift=None,
-            comment=_clip(comment, MAX_COMMENT, warnings, "комментарий"),
-            phone_display=None,
-            phone_normalized=None,
-            kind="skip",
-            name_confidence="partial",
-            warnings=tuple(warnings),
-            parse_error="Строка находится до первой строки с датой — некуда привязать.",
-        )
+    if entry_date is None and kind in ("candidate", "service"):
+        warnings.append("не указана дата выхода — строка сохранена без записи графика")
 
-    # Телефон и «уехавшие» вправо примечания: колонки после комментариев
-    # (в реальных файлах телефон и заметки стоят где попало — до 8 колонок).
+    # Телефон и «уехавшие» вправо примечания собираются из колонок после
+    # комментария. Исходные значения отдельно остаются в source_values для
+    # нормализованного экспорта и ручной проверки.
     extra_texts: list[str] = []
     phone_digits: str | None = None
     start_col = (header.comment_col or header.position_col or header.time_col) + 1
-    # Колонка комментария иногда сама содержит телефон (значением целиком):
-    # проверяем сырую ячейку, чтобы «89281223412.0» не стал текстом с точкой.
     comment_raw = _cell(sheet, sheet_row, header.comment_col)
     comment_phone = _looks_like_phone(comment_raw)
     if comment_phone is not None:
@@ -898,26 +912,20 @@ def _parse_data_row(
             continue
         extra_texts.append(_clean_text(value))
 
-    # Скобочные пометки ФИО («(перевод)») и не распознанный текст времени
-    # присоединяются к комментарию — данные не теряются.
-    kind, confidence, paren_note = classify_name(raw_name)
-    display_name = _PAREN_NOTE_RE.sub(" ", raw_name)
-    display_name = re.sub(r"\s+", " ", display_name).strip()
-    if kind == "skip":
-        warnings.append("значение в колонке ФИО не похоже на имя — строка пропускается")
-
     comment_parts: list[str] = []
     for part in (comment, *extra_texts, paren_note, parsed_time.comment_addition):
         cleaned_part = (part or "").strip()
-        # Повторы не дублируем («после мед осмотра» бывает и в комментарии,
-        # и в не распознанном времени).
-        if cleaned_part and cleaned_part.casefold() not in {p.casefold() for p in comment_parts}:
+        if cleaned_part and cleaned_part.casefold() not in {
+            item.casefold() for item in comment_parts
+        }:
             comment_parts.append(cleaned_part)
     full_comment = "; ".join(comment_parts) or None
-
     shift, full_comment = extract_shift(full_comment)
-
     phone_display = format_phone_display(phone_digits) if phone_digits else None
+
+    parse_error = None
+    if kind == "skip" and entry_date is None:
+        parse_error = "Не удалось определить строку человека/служебную строку и дату."
 
     return ParsedScheduleRow(
         row_index=row_index,
@@ -938,6 +946,8 @@ def _parse_data_row(
         kind=kind,
         name_confidence=confidence,
         warnings=tuple(warnings),
+        parse_error=parse_error,
+        source_values=source_values,
     )
 
 
@@ -1100,22 +1110,47 @@ def build_row_matches(
     return result
 
 
-def make_row_key(row: ParsedScheduleRow, *, kind_override: str | None = None) -> str:
-    """Устойчивый ключ строки: повторный импорт того же файла не плодит дубли.
+def row_identity_key(row: ParsedScheduleRow, *, kind_override: str | None = None) -> str:
+    """Hash the source identity, deliberately excluding editable schedule data.
 
-    Ключ считается только от содержания строки (дата, нормализованное имя,
-    время, тип) — не от номера строки в файле, поэтому он одинаков при
-    повторной загрузке того же графика и при пересчёте на подтверждении.
+    A phone is the strongest available identity for a person; otherwise the
+    normalized name is used. Service rows use their normalized title. Rows
+    without a meaningful name are keyed by their source cells and Excel row.
+    A reconciliation step adds an occurrence number for repeated identities.
     """
 
-    kind = kind_override or ("service" if row.kind == "service" else "candidate")
-    basis = "|".join(
-        (
-            row.entry_date.isoformat(),
-            kind,
-            row.name_normalized,
-            row.time_from.isoformat() if row.time_from else "",
-            row.time_to.isoformat() if row.time_to else "",
+    if kind_override is not None:
+        kind = kind_override
+    elif row.kind == "candidate":
+        kind = "person"
+    else:
+        kind = row.kind
+    if kind == "person":
+        identity = (
+            f"phone:{row.phone_normalized}"
+            if row.phone_normalized
+            else f"name:{row.name_normalized}"
         )
-    )
-    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+    elif kind == "service":
+        identity = f"title:{row.name_normalized}"
+    else:
+        source = "|".join(_clean_text(value) for value in row.source_values)
+        identity = f"row:{row.sheet_row}:{source or row.name_normalized}"
+    return hashlib.sha256(f"{kind}|{identity}".encode()).hexdigest()
+
+
+def make_row_key(
+    row: ParsedScheduleRow,
+    *,
+    kind_override: str | None = None,
+    occurrence: int = 0,
+) -> str:
+    """Stable source-row key; changing date/time does not change the key.
+
+    ``occurrence`` distinguishes duplicate names/phones in the same source
+    sheet. Physical row numbers are used only as a final fallback for rows
+    that have no identity fields; they are not part of a person's normal key.
+    """
+
+    identity = row_identity_key(row, kind_override=kind_override)
+    return hashlib.sha256(f"{identity}|{occurrence}".encode()).hexdigest()

@@ -168,7 +168,7 @@ export function TransferDialog({ open, candidate, onClose, onDone }: TransferDia
           </div>
           <div className="transfer-summary-row">
             <span className="transfer-summary-label">Текущий ответственный</span>
-            <span className="transfer-summary-value">{candidate.owner_username}</span>
+            <span className="transfer-summary-value">{candidate.owner_username ?? "Не назначен"}</span>
           </div>
           <div className="transfer-summary-row">
             <span className="transfer-summary-label">Новый ответственный</span>

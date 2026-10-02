@@ -510,7 +510,11 @@ def queue_candidate_message_all_channels(
 def _display_timezone(db: Session, candidate: Candidate, settings: Settings) -> str:
     """Candidates have no own preference: interviews are presented in the
     responsible HR's timezone (fallback: the system default)."""
-    preference = db.get(NotificationPreference, candidate.owner_user_id)
+    preference = (
+        db.get(NotificationPreference, candidate.owner_user_id)
+        if candidate.owner_user_id is not None
+        else None
+    )
     if preference is not None and preference.timezone:
         return preference.timezone
     return settings.notification_default_timezone
