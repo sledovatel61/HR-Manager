@@ -1,14 +1,13 @@
-"""Pydantic-схемы импорта графика выхода из Excel.
+"""Pydantic contracts for the schedule import and its current source rows.
 
-Два шага: ``превью`` (разбор и сопоставление без записи) и ``подтверждение``
-(явные действия по строкам, атомарная запись). Личные данные в превью
-маскируются (телефон), отчёт об ошибках отдаётся в ответе — файл на сервере
-не сохраняется ни на одном шаге.
+The source person, a Candidate card, a ScheduleEntry and service/invalid rows
+are separate concepts. Import previews expose their association without
+requiring a person to be immediately converted into a dated schedule entry.
 """
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, datetime, time
 from typing import Literal
 from uuid import UUID
 
@@ -17,6 +16,8 @@ from pydantic import BaseModel, Field
 from app.models import CandidateStage
 
 RowKind = Literal["candidate", "service", "skip"]
+SourceRowType = Literal["person", "service", "skip", "error"]
+ImportSyncStatus = Literal["added", "updated", "unchanged", "missing"]
 SuggestedAction = Literal["create", "match", "service", "skip"]
 DecisionAction = Literal["create", "match", "service", "skip"]
 MatchReason = Literal["exact_name", "phone", "partial"]
@@ -24,23 +25,21 @@ RowResult = Literal["created", "matched", "updated", "service", "skipped", "erro
 
 
 class ImportMatchInfo(BaseModel):
-    """Кандидат из картотеки, найденный для строки импорта."""
+    """Candidate from the card catalog suggested for a source person row."""
 
     candidate_id: UUID
     full_name: str = Field(max_length=200)
     stage: CandidateStage
     reason: MatchReason
-    # phone/точное совпадение с единственным кандидатом — сопоставление
-    # надёжное; только ФИО — требует подтверждения пользователем.
     confident: bool
 
 
 class ImportRowPreview(BaseModel):
-    """Одна строка в превью: что распознано и что предлагается сделать."""
+    """One parsed source row, even when it cannot yet become a schedule row."""
 
     row_index: int
     sheet_row: int
-    entry_date: date
+    entry_date: date | None = None
     full_name: str | None = None
     time_display: str = ""
     time_from: time | None = None
@@ -52,10 +51,16 @@ class ImportRowPreview(BaseModel):
     comment: str | None = None
     phone_masked: str | None = None
     kind: RowKind
+    row_type: SourceRowType
     name_confidence: Literal["full", "partial"] | None = None
     suggested_action: SuggestedAction
     match: ImportMatchInfo | None = None
     match_options: list[ImportMatchInfo] = Field(default_factory=list)
+    candidate_id: UUID | None = None
+    source_row_key: str | None = None
+    owner_user_id: UUID | None = None
+    owner_name: str | None = None
+    schedule_ready: bool = False
     already_imported: bool = False
     warnings: list[str] = Field(default_factory=list)
     parse_error: str | None = None
@@ -74,7 +79,7 @@ class ImportPreviewSummary(BaseModel):
 
 
 class WorkScheduleImportPreview(BaseModel):
-    """Ответ «проверить без сохранения»."""
+    """Read-only preview; no database writes occur on this endpoint."""
 
     file_name: str
     file_sha256: str
@@ -86,7 +91,7 @@ class WorkScheduleImportPreview(BaseModel):
 
 
 class ImportRowDecision(BaseModel):
-    """Явное действие пользователя по одной строке превью."""
+    """Explicit action for one parsed row in a confirmed import."""
 
     row_index: int = Field(ge=1)
     action: DecisionAction
@@ -94,7 +99,7 @@ class ImportRowDecision(BaseModel):
 
 
 class ImportDecisions(BaseModel):
-    """Payload подтверждения (JSON-поле ``decisions`` в multipart-запросе)."""
+    """Multipart JSON payload used by the import confirmation endpoint."""
 
     decisions: list[ImportRowDecision] = Field(default_factory=list)
 
@@ -109,10 +114,11 @@ class ImportRowResult(BaseModel):
     candidate_id: UUID | None = None
     entry_id: UUID | None = None
     reason: str | None = None
+    sync_status: ImportSyncStatus | None = None
 
 
 class WorkScheduleImportResult(BaseModel):
-    """Итог подтверждённого импорта + отчёт (санитизированный CSV)."""
+    """Import action results plus the source-set synchronization counts."""
 
     import_id: UUID
     created: int
@@ -121,5 +127,51 @@ class WorkScheduleImportResult(BaseModel):
     service_created: int
     skipped: int
     errors: int
+    rows_added: int = 0
+    rows_updated: int = 0
+    rows_unchanged: int = 0
+    rows_missing: int = 0
+    active_people: int = 0
     rows: list[ImportRowResult] = Field(default_factory=list)
     report_csv: str
+
+
+class ActiveScheduleImportRow(BaseModel):
+    """Current source row exposed for manual assignment and status display."""
+
+    row_key: str
+    row_order: int
+    sheet_row: int
+    row_type: SourceRowType
+    full_name: str | None = None
+    entry_date: date | None = None
+    time_from: time | None = None
+    time_to: time | None = None
+    organization: str | None = None
+    department: str | None = None
+    position: str | None = None
+    candidate_id: UUID | None = None
+    owner_user_id: UUID | None = None
+    owner_name: str | None = None
+    schedule_ready: bool
+    sync_status: str
+
+
+class ActiveScheduleImportRows(BaseModel):
+    import_id: UUID | None = None
+    file_name: str | None = None
+    imported_at: datetime | None = None
+    active_people: int = 0
+    can_assign: bool = False
+    rows: list[ActiveScheduleImportRow] = Field(default_factory=list)
+
+
+class ScheduleImportAssignmentInput(BaseModel):
+    row_keys: list[str] = Field(min_length=1, max_length=5000)
+    owner_user_id: UUID | None = None
+
+
+class ScheduleImportAssignmentResult(BaseModel):
+    updated: int
+    owner_user_id: UUID | None = None
+    owner_name: str | None = None

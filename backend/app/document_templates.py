@@ -184,7 +184,7 @@ def placeholder_values(
         raise HTTPException(
             422, "Неизвестный часовой пояс. Обновите настройки уведомлений."
         ) from None
-    owner = db.get(User, candidate.owner_user_id)
+    owner = db.get(User, candidate.owner_user_id) if candidate.owner_user_id is not None else None
     created_local = ensure_aware(candidate.created_at).astimezone(zone)
     now_local = ensure_aware(now).astimezone(zone)
     return {

@@ -25,7 +25,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -338,6 +338,37 @@ def _workbook_bytes(workbook: Workbook) -> bytes:
     return buffer.getvalue()
 
 
+def _current_source_workbook(
+    *, dated_time: time = time(9, 30), include_undated: bool = True
+) -> bytes:
+    workbook, sheet = _blank_workbook()
+    sheet.append(
+        [
+            "пР",
+            "ФИО",
+            "Дата и время",
+            "Организация",
+            "Наименование отдела",
+            "должность",
+            "комментарии",
+        ]
+    )
+    if include_undated:
+        sheet.append(
+            [1, "Недатова Ирина Петровна", None, "ООО Пример", "Цех Один", "Кладовщик", None]
+        )
+    date_row = sheet.max_row + 1
+    sheet.cell(row=date_row, column=2, value=datetime.combine(DAY1, time.min))
+    sheet.merge_cells(start_row=date_row, start_column=2, end_row=date_row, end_column=7)
+    person_row = date_row + 1
+    sheet.append(
+        [2, "Датова Мария Ивановна", dated_time, "ООО Пример", "Цех Один", "Грузчик", None]
+    )
+    sheet.append([3, "Увольнение", "13:00–14:00", None, None, None, None])
+    assert sheet.max_row == person_row + 1
+    return _workbook_bytes(workbook)
+
+
 def test_unknown_format_raises_readable_error() -> None:
     workbook, sheet = _blank_workbook()
     sheet.append(["Раз", "Два", "Три"])
@@ -547,7 +578,7 @@ def test_confirm_creates_candidates_entries_and_audit(
     assert body["service_created"] == 5
     assert body["errors"] == 0
 
-    # Кандидаты созданы с честным источником и владельцем-импортёром.
+    # Импортёр остаётся автором импорта; назначение кандидатам не выставляется автоматически.
     created = list(
         db_session.scalars(
             select(Candidate).where(Candidate.source == CandidateSource.EXCEL_IMPORT)
@@ -555,9 +586,14 @@ def test_confirm_creates_candidates_entries_and_audit(
     )
     assert len(created) == body["created"]
     for candidate in created:
-        assert candidate.owner_user_id == hr.id
+        assert candidate.owner_user_id is None
         assert candidate.stage == CandidateStage.OFFER
         assert candidate.start_date is not None
+    imported_record = db_session.scalar(
+        select(ScheduleImport).order_by(ScheduleImport.created_at.desc())
+    )
+    assert imported_record is not None
+    assert imported_record.created_by_user_id == hr.id
 
     testova = next(
         candidate for candidate in created if candidate.full_name == "Тестова Анна Ивановна"
@@ -593,13 +629,14 @@ def test_confirm_creates_candidates_entries_and_audit(
     ).all()
     assert len(uvol) == 1
     assert uvol[0].time_from == time(13, 0) and uvol[0].time_to == time(14, 0)
-    assert uvol[0].author_user_id == hr.id
+    assert uvol[0].author_user_id is None
 
-    # График видит созданные выходы.
+    # A regular HR does not acquire visibility of unassigned candidates just
+    # because they uploaded the workbook; the five imported service rows remain.
     client.post("/auth/logout", headers={"X-CSRF-Token": csrf})
     _login(client, "hr1")
     schedule = client.get("/work-schedule?from=2026-08-10&to=2026-08-31").json()
-    assert schedule["total"] >= 25
+    assert schedule["total"] == body["service_created"]
 
     # Аудит: агрегат импорта без ФИО/телефонов.
     imported = db_session.scalars(
@@ -633,8 +670,10 @@ def test_reimport_same_file_creates_no_duplicates(client: TestClient, db_session
     body = second.json()
     assert body["created"] == 0
     assert body["service_created"] == 0
-    assert body["skipped"] == body["skipped"]
-    assert body["skipped"] >= 25
+    assert body["rows_added"] == 0
+    assert body["rows_updated"] == 0
+    assert body["rows_unchanged"] == first.json()["rows_added"]
+    assert body["active_people"] == first.json()["active_people"]
     assert db_session.scalar(select(func.count()).select_from(Candidate)) == candidates_after_first
     assert db_session.scalar(select(func.count()).select_from(ScheduleEntry)) == entries_after_first
 
@@ -647,6 +686,237 @@ def test_reimport_same_file_creates_no_duplicates(client: TestClient, db_session
         for row in preview["rows"]
         if row["kind"] in ("candidate", "service")
     )
+
+
+def test_current_source_rows_assignment_reimport_and_export(
+    client: TestClient, db_session: Session
+) -> None:
+    manager = make_user(db_session, username="boss", role=UserRole.MANAGER)
+    hr = make_user(db_session, username="hr-owner", role=UserRole.HR, full_name="HR Ответственный")
+    csrf = _login(client, "boss")
+    original = _current_source_workbook()
+
+    preview = _upload(client, original, csrf).json()
+    undated_preview = next(
+        row for row in preview["rows"] if row["full_name"] == "Недатова Ирина Петровна"
+    )
+    assert undated_preview["row_type"] == "person"
+    assert undated_preview["entry_date"] is None
+    assert undated_preview["schedule_ready"] is False
+
+    first = _confirm(client, original, csrf)
+    assert first.status_code == 200, first.text
+    assert first.json()["active_people"] == 2
+    assert first.json()["rows_added"] == 3
+    assert db_session.scalar(select(func.count()).select_from(ScheduleImport)) == 1
+    db_session.expire_all()
+    imported = list(
+        db_session.scalars(
+            select(Candidate).where(Candidate.source == CandidateSource.EXCEL_IMPORT)
+        ).all()
+    )
+    assert len(imported) == 2
+    assert all(candidate.owner_user_id is None for candidate in imported)
+    undated_candidate = next(
+        candidate for candidate in imported if candidate.full_name == "Недатова Ирина Петровна"
+    )
+    dated_candidate = next(
+        candidate for candidate in imported if candidate.full_name == "Датова Мария Ивановна"
+    )
+    assert undated_candidate.start_date is None
+    import_record = db_session.scalar(select(ScheduleImport))
+    assert import_record is not None and import_record.created_by_user_id == manager.id
+
+    current = client.get("/work-schedule/import/rows")
+    assert current.status_code == 200, current.text
+    current_body = current.json()
+    assert current_body["active_people"] == 2
+    assert len(current_body["rows"]) == 3
+    undated_row = next(
+        row for row in current_body["rows"] if row["full_name"] == "Недатова Ирина Петровна"
+    )
+    dated_row = next(
+        row for row in current_body["rows"] if row["full_name"] == "Датова Мария Ивановна"
+    )
+    assert undated_row["owner_name"] is None
+    assert undated_row["schedule_ready"] is False
+
+    # A regular HR cannot read/assign the full source table; managers can.
+    client.post("/auth/logout", headers={"X-CSRF-Token": csrf})
+    hr_csrf = _login(client, "hr-owner")
+    assert client.get("/work-schedule/import/rows").status_code == 403
+    denied = client.patch(
+        "/work-schedule/import/assignments",
+        json={"row_keys": [undated_row["row_key"]], "owner_user_id": str(hr.id)},
+        headers={"X-CSRF-Token": hr_csrf},
+    )
+    assert denied.status_code == 403
+
+    client.post("/auth/logout", headers={"X-CSRF-Token": hr_csrf})
+    csrf = _login(client, "boss")
+    single = client.patch(
+        "/work-schedule/import/assignments",
+        json={"row_keys": [undated_row["row_key"]], "owner_user_id": str(hr.id)},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert single.status_code == 200, single.text
+    assert single.json()["updated"] == 1
+    bulk = client.patch(
+        "/work-schedule/import/assignments",
+        json={
+            "row_keys": [undated_row["row_key"], dated_row["row_key"]],
+            "owner_user_id": str(hr.id),
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert bulk.status_code == 200, bulk.text
+    assert bulk.json()["updated"] == 1
+    db_session.expire_all()
+    assert db_session.get(Candidate, undated_candidate.id).owner_user_id == hr.id
+    assert db_session.get(Candidate, dated_candidate.id).owner_user_id == hr.id
+    assignment_audits = list(
+        db_session.scalars(
+            select(AuditEvent).where(AuditEvent.action == AuditAction.CANDIDATE_ASSIGNED)
+        ).all()
+    )
+    assert len(assignment_audits) == 2
+
+    # Updating the source time does not create duplicate candidates or erase
+    # the manually selected HR owner on either candidate.
+    updated_source = _current_source_workbook(dated_time=time(10, 15))
+    second = _confirm(client, updated_source, csrf)
+    assert second.status_code == 200, second.text
+    assert second.json()["created"] == 0
+    assert second.json()["rows_updated"] >= 1
+    db_session.expire_all()
+    assert db_session.scalar(select(func.count()).select_from(Candidate)) == 2
+    assert db_session.get(Candidate, undated_candidate.id).owner_user_id == hr.id
+    assert db_session.get(Candidate, dated_candidate.id).owner_user_id == hr.id
+    assert db_session.get(Candidate, dated_candidate.id).start_time == time(10, 15)
+    service_entry = db_session.scalar(
+        select(ScheduleEntry).where(ScheduleEntry.title == "Увольнение")
+    )
+    assert service_entry is not None
+    service_update = client.patch(
+        f"/work-schedule/entries/{service_entry.id}",
+        json={"title": "Увольнение перенесено", "time_from": "14:00:00", "time_to": "15:00:00"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert service_update.status_code == 200, service_update.text
+
+    exported = client.get("/work-schedule/import/export.xlsx")
+    assert exported.status_code == 200, exported.text
+    workbook = load_workbook(io.BytesIO(exported.content), data_only=True)
+    sheet = workbook.active
+    headers = [cell.value for cell in sheet[1]]
+    assert headers[-1] == "Ответственный HR"
+    assert not {"candidate_id", "owner_user_id", "row_key"}.intersection(headers)
+    assert [sheet.cell(row=row, column=2).value for row in range(2, 5)] == [
+        "Недатова Ирина Петровна",
+        "Датова Мария Ивановна",
+        "Увольнение перенесено",
+    ]
+    owner_column = headers.index("Ответственный HR") + 1
+    assert sheet.cell(row=2, column=owner_column).value == "HR Ответственный"
+    assert sheet.cell(row=3, column=3).value == datetime.combine(DAY1, time(10, 15))
+    assert sheet.cell(row=4, column=3).value == "10.08.2026 к 14:00–15:00"
+    workbook.close()
+
+    # Missing rows are deactivated but never physically deleted, and no longer
+    # appear in the current export. The latest-import history remains intact.
+    without_undated = _current_source_workbook(dated_time=time(10, 15), include_undated=False)
+    third = _confirm(client, without_undated, csrf)
+    assert third.status_code == 200, third.text
+    assert third.json()["rows_missing"] == 1
+    assert third.json()["active_people"] == 1
+    db_session.expire_all()
+    historical_rows = list(db_session.scalars(select(ScheduleImportRow)).all())
+    missing = next(
+        row
+        for row in historical_rows
+        if row.full_name == "Недатова Ирина Петровна" and row.sync_status == "missing"
+    )
+    assert missing.is_active is False
+    assert db_session.get(Candidate, undated_candidate.id) is not None
+    assert db_session.scalar(select(func.count()).select_from(ScheduleImport)) == 3
+    latest_rows = client.get("/work-schedule/import/rows").json()
+    assert latest_rows["active_people"] == 1
+    final_export = client.get("/work-schedule/import/export.xlsx")
+    final_sheet = load_workbook(io.BytesIO(final_export.content), data_only=True).active
+    assert final_sheet.max_row == 3  # header + one person + one service row
+
+
+def test_manual_candidate_mapping_is_preserved_on_reimport(
+    client: TestClient, db_session: Session
+) -> None:
+    make_user(db_session, username="boss", role=UserRole.MANAGER)
+    hr = make_user(db_session, username="hr-owner", role=UserRole.HR)
+    existing = make_candidate(db_session, owner=hr, full_name="Датова Мария Ивановна")
+    csrf = _login(client, "boss")
+    payload = _current_source_workbook(include_undated=False)
+    preview = _upload(client, payload, csrf).json()
+    target_row = next(row for row in preview["rows"] if row["kind"] == "candidate")
+    result = _confirm(
+        client,
+        payload,
+        csrf,
+        [
+            {
+                "row_index": target_row["row_index"],
+                "action": "match",
+                "candidate_id": str(existing.id),
+            }
+        ],
+    )
+    assert result.status_code == 200, result.text
+    db_session.expire_all()
+    snapshots = list(
+        db_session.scalars(
+            select(ScheduleImportRow).where(ScheduleImportRow.is_active.is_(True))
+        ).all()
+    )
+    mapped = next(row for row in snapshots if row.row_type == "person")
+    assert mapped.candidate_id == existing.id
+
+    changed = _current_source_workbook(dated_time=time(11, 5), include_undated=False)
+    repeated = _confirm(client, changed, csrf)
+    assert repeated.status_code == 200, repeated.text
+    db_session.expire_all()
+    assert db_session.scalar(select(func.count()).select_from(Candidate)) == 1
+    assert db_session.get(Candidate, existing.id).start_time == time(11, 5)
+    latest = list(
+        db_session.scalars(
+            select(ScheduleImportRow).where(ScheduleImportRow.is_active.is_(True))
+        ).all()
+    )
+    assert next(row for row in latest if row.row_type == "person").candidate_id == existing.id
+
+
+def test_importing_hr_can_resync_its_unassigned_source_candidate(
+    client: TestClient, db_session: Session
+) -> None:
+    make_user(db_session, username="hr1", role=UserRole.HR)
+    csrf = _login(client, "hr1")
+    first = _confirm(client, _current_source_workbook(include_undated=False), csrf)
+    assert first.status_code == 200, first.text
+    candidate = db_session.scalar(
+        select(Candidate).where(Candidate.source == CandidateSource.EXCEL_IMPORT)
+    )
+    assert candidate is not None and candidate.owner_user_id is None
+
+    changed = _confirm(
+        client,
+        _current_source_workbook(dated_time=time(10, 45), include_undated=False),
+        csrf,
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["created"] == 0
+    db_session.expire_all()
+    refreshed = db_session.get(Candidate, candidate.id)
+    assert refreshed is not None
+    assert refreshed.owner_user_id is None
+    assert refreshed.start_time == time(10, 45)
+    assert db_session.scalar(select(func.count()).select_from(Candidate)) == 1
 
 
 def test_confirm_matches_existing_candidate_and_updates(
@@ -732,13 +1002,14 @@ def test_hr_does_not_match_foreign_candidates(client: TestClient, db_session: Se
 
     response = _confirm(client, _fixture_bytes(), csrf)
     assert response.status_code == 200
-    mine = db_session.scalars(
+    imported = db_session.scalars(
         select(Candidate).where(
             Candidate.full_name == "Тестова Анна Ивановна",
-            Candidate.owner_user_id == hr1.id,
+            Candidate.source == CandidateSource.EXCEL_IMPORT,
         )
     ).all()
-    assert len(mine) == 1
+    assert len(imported) == 1
+    assert imported[0].owner_user_id is None
     _ = hr1
 
 

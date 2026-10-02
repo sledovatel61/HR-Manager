@@ -299,7 +299,7 @@
 }
 
 .schedule-import-table {
-  min-width: 920px;
+  min-width: 1180px;
   font-size: var(--font-sm);
 }
 
@@ -342,4 +342,75 @@
   display: flex;
   gap: var(--space-3);
   justify-content: flex-end;
+}
+
+/* Current imported source rows: ownership is independent of schedule readiness. */
+.schedule-import-assignments {
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.schedule-import-assignments-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.schedule-import-assignments-head h2 {
+  margin: 0;
+  font-size: var(--text-size-lg);
+}
+
+.schedule-import-assignments-head p {
+  margin: var(--space-1) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-size-sm);
+}
+
+.schedule-import-bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.schedule-import-bulk-actions .select-input {
+  min-width: 240px;
+}
+
+.schedule-import-current-table {
+  min-width: 820px;
+}
+
+.schedule-import-current-table select {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-2);
+}
+
+.schedule-unassigned {
+  display: inline-block;
+  color: var(--text-warning, #93370d);
+  font-weight: var(--font-weight-medium);
+}
+
+.schedule-import-saving {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-size-xs);
+}
+
+@media (max-width: 760px) {
+  .schedule-import-assignments-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }

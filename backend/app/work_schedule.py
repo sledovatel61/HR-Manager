@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Iterable, Sequence
-from datetime import date, time
+from datetime import date, datetime, time
 from typing import Any, cast
 from uuid import UUID
 
@@ -41,8 +41,11 @@ from sqlalchemy.orm import Session
 from app.models import (
     AccessGrantScope,
     Candidate,
+    CandidateSource,
     CandidateStage,
     ScheduleEntry,
+    ScheduleImport,
+    ScheduleImportRow,
     User,
     UserRole,
 )
@@ -220,12 +223,28 @@ def build_rows(
         candidate_stmt = candidate_stmt.where(Candidate.owner_user_id == owner_id)
 
     candidates_with_dates = list(db.scalars(candidate_stmt).all())
-    # Кандидаты без даты выхода в графике не участвуют: график — про конкретный
-    # день. Если дата была очищена в карточке, кандидат исчезает из графика,
-    # но остальные поля места работы сохраняются.
-    candidates_with_dates = [item for item in candidates_with_dates if item.start_date is not None]
+    # Imported candidates whose source row disappeared from the latest master
+    # remain in the candidate database, but do not leak back into the current
+    # schedule after their source row was marked inactive.
+    active_import_candidate_ids = set(
+        db.scalars(
+            select(ScheduleImportRow.candidate_id).where(
+                ScheduleImportRow.is_active.is_(True),
+                ScheduleImportRow.row_type == "person",
+                ScheduleImportRow.candidate_id.is_not(None),
+            )
+        ).all()
+    )
+    # Candidates without a date cannot be placed in a dated day block. They
+    # remain visible in the separate current-import rows and in its Excel.
+    candidates_with_dates = [
+        item
+        for item in candidates_with_dates
+        if item.start_date is not None
+        and (item.source != CandidateSource.EXCEL_IMPORT or item.id in active_import_candidate_ids)
+    ]
 
-    entry_stmt = select(ScheduleEntry)
+    entry_stmt = select(ScheduleEntry).where(ScheduleEntry.is_active.is_(True))
     if date_from is not None:
         entry_stmt = entry_stmt.where(ScheduleEntry.entry_date >= date_from)
     if date_to is not None:
@@ -432,6 +451,282 @@ def format_time_range(entry: ScheduleEntry) -> str:
 
 
 # --- Excel ------------------------------------------------------------------
+
+
+def _decode_source_cell(value: object) -> object:
+    """Restore the small tagged JSON values kept from the imported sheet."""
+
+    if not isinstance(value, dict) or "__type__" not in value:
+        return value
+    raw = str(value.get("value", ""))
+    kind = value.get("__type__")
+    try:
+        if kind == "datetime":
+            return datetime.fromisoformat(raw)
+        if kind == "date":
+            return date.fromisoformat(raw)
+        if kind == "time":
+            return time.fromisoformat(raw)
+    except ValueError:
+        return raw
+    return raw
+
+
+def build_import_source_xlsx(
+    db: Session,
+    import_record: ScheduleImport,
+    rows: Sequence[ScheduleImportRow],
+) -> bytes:
+    """Build a normalized copy of the latest source table, not a DB dump.
+
+    Source columns and their order are retained, current work fields are
+    refreshed from the linked candidate, and an HR-responsible column is
+    populated (or appended). Every active person row is exported even when
+    there is no date, candidate match, or owner yet.
+    """
+
+    workbook = Workbook()
+    sheet = cast(Worksheet, workbook.active)
+    title = (import_record.sheet_title or "График выхода")[:31] or "График выхода"
+    sheet.title = title
+
+    headers = list(import_record.source_headers or [])
+    columns = dict(import_record.source_columns or {})
+    if not headers:
+        # Backward-compatible normalized schema for provenance created before
+        # source columns were retained (pre-0021 installations).
+        headers = [
+            "№",
+            "ФИО",
+            "Дата и время",
+            "Организация",
+            "Отдел",
+            "Должность",
+            "Смена / комментарий",
+        ]
+        columns = {
+            "name": 2,
+            "time": 3,
+            "organization": 4,
+            "department": 5,
+            "position": 6,
+            "comment": 7,
+            "owner": 8,
+        }
+    max_column = max(
+        [len(headers), *(value for value in columns.values() if isinstance(value, int))],
+        default=0,
+    )
+    max_column = max(1, max_column)
+    if len(headers) < max_column:
+        headers.extend([None] * (max_column - len(headers)))
+    owner_column = columns.get("owner")
+    if not isinstance(owner_column, int) or owner_column < 1:
+        owner_column = max_column + 1
+        headers.append("Ответственный HR")
+        max_column += 1
+    elif owner_column > len(headers):
+        headers.extend([None] * (owner_column - len(headers)))
+        headers[owner_column - 1] = "Ответственный HR"
+        max_column = max(max_column, owner_column)
+    else:
+        # Keep a user-provided heading if one exists; otherwise name the added
+        # responsibility column clearly in the source position.
+        if not headers[owner_column - 1]:
+            headers[owner_column - 1] = "Ответственный HR"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="1F4E79")
+    thin = Side(style="thin", color="B7B7B7")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for index in range(1, max_column + 1):
+        cell = sheet.cell(row=1, column=index)
+        header_value = headers[index - 1] if index <= len(headers) else None
+        _write_text(cell, header_value or "")
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = border
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        sheet.column_dimensions[get_column_letter(index)].width = (
+            18 if index > 9 else _EXCEL_WIDTHS[index - 1]
+        )
+    sheet.row_dimensions[1].height = 30
+
+    name_column = columns.get("name")
+    time_column = columns.get("time")
+    organization_column = columns.get("organization")
+    department_column = columns.get("department")
+    position_column = columns.get("position")
+    comment_column = columns.get("comment")
+
+    candidate_ids = {row.candidate_id for row in rows if row.candidate_id is not None}
+    candidates = (
+        {
+            candidate.id: candidate
+            for candidate in db.scalars(
+                select(Candidate).where(Candidate.id.in_(candidate_ids))
+            ).all()
+        }
+        if candidate_ids
+        else {}
+    )
+    entry_ids = {row.entry_id for row in rows if row.entry_id is not None}
+    entries = (
+        {
+            entry.id: entry
+            for entry in db.scalars(
+                select(ScheduleEntry).where(ScheduleEntry.id.in_(entry_ids))
+            ).all()
+        }
+        if entry_ids
+        else {}
+    )
+    owner_ids = {row.owner_user_id for row in rows if row.owner_user_id is not None}
+    owner_ids.update(
+        candidate.owner_user_id
+        for candidate in candidates.values()
+        if candidate.owner_user_id is not None
+    )
+    owners = (
+        {user.id: user for user in db.scalars(select(User).where(User.id.in_(owner_ids))).all()}
+        if owner_ids
+        else {}
+    )
+
+    output_row = 2
+    for source in sorted(rows, key=lambda item: (item.row_order, item.sheet_row, str(item.id))):
+        if source.row_type not in ("person", "service"):
+            continue
+        values: list[object] = [
+            _decode_source_cell(value) for value in (source.source_values or [])
+        ]
+        if len(values) < max_column:
+            values.extend([None] * (max_column - len(values)))
+        elif len(values) > max_column:
+            values = values[:max_column]
+        candidate = candidates.get(source.candidate_id) if source.candidate_id else None
+        linked_entry = entries.get(source.entry_id) if source.entry_id else None
+        current_entry = (
+            linked_entry
+            if source.row_type == "service" and linked_entry is not None and linked_entry.is_active
+            else None
+        )
+
+        def set_value(
+            target_values: list[object],
+            column: object,
+            value: object,
+            *,
+            overwrite_empty: bool = True,
+        ) -> None:
+            if not isinstance(column, int) or column < 1 or column > max_column:
+                return
+            if not overwrite_empty and value is None:
+                return
+            target_values[column - 1] = value
+
+        # Keep the source spelling for people. Linked service entries may be
+        # edited from the schedule page, so export their live title and fields.
+        if source.row_type == "service" and current_entry is not None:
+            set_value(values, name_column, current_entry.title)
+        elif source.full_name:
+            set_value(values, name_column, source.full_name)
+
+        effective_date = (
+            candidate.start_date
+            if candidate is not None
+            else current_entry.entry_date
+            if current_entry is not None
+            else source.entry_date
+        )
+        effective_time = (
+            candidate.start_time
+            if candidate is not None
+            else current_entry.time_from
+            if current_entry is not None
+            else source.time_from
+        )
+        effective_time_to = current_entry.time_to if current_entry is not None else source.time_to
+        if effective_date is not None and effective_time_to is not None:
+            start_text = effective_time.strftime("%H:%M") if effective_time else "—"
+            time_value: object = (
+                f"{effective_date.strftime('%d.%m.%Y')} к {start_text}–"
+                f"{effective_time_to.strftime('%H:%M')}"
+            )
+        elif effective_date is not None:
+            time_value = datetime.combine(effective_date, effective_time or time.min)
+        else:
+            time_value = effective_time
+        set_value(values, time_column, time_value)
+
+        organization = (
+            candidate.start_organization
+            if candidate is not None
+            else current_entry.organization
+            if current_entry is not None
+            else source.organization
+        )
+        department = (
+            candidate.start_department
+            if candidate is not None
+            else current_entry.department
+            if current_entry is not None
+            else source.department
+        )
+        position = candidate.position if candidate is not None else (source.position or "")
+        set_value(values, organization_column, organization)
+        set_value(values, department_column, department)
+        set_value(values, position_column, position)
+
+        current_comment = (
+            candidate.start_comment
+            if candidate is not None
+            else current_entry.comment
+            if current_entry is not None
+            else source.comment
+        )
+        if current_comment is not None:
+            shift = candidate.shift if candidate is not None else source.shift
+            comment_value = "; ".join(part for part in (shift, current_comment) if part)
+            set_value(values, comment_column, comment_value)
+        elif current_entry is not None:
+            set_value(values, comment_column, "")
+        # An originally populated comment cell may be a phone number. Leave it
+        # intact when the parsed comment is empty; raw phone/notes columns are
+        # otherwise kept in their original positions.
+
+        owner_id = (
+            candidate.owner_user_id
+            if candidate is not None and candidate.owner_user_id is not None
+            else source.owner_user_id
+        )
+        owner = owners.get(owner_id) if owner_id is not None else None
+        owner_name = (owner.full_name or owner.username) if owner is not None else ""
+        set_value(values, owner_column, owner_name)
+
+        for column, cell_value in enumerate(values, start=1):
+            cell = sheet.cell(row=output_row, column=column)
+            _write_text(cell, cell_value)
+            cell.border = border
+            if column == time_column and isinstance(cell_value, datetime):
+                cell.number_format = (
+                    "dd.mm.yyyy hh:mm" if cell_value.time() != time.min else "dd.mm.yyyy"
+                )
+            if column == time_column and isinstance(cell_value, time):
+                cell.number_format = "hh:mm"
+        output_row += 1
+
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = f"A1:{get_column_letter(max_column)}{max(1, output_row - 1)}"
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    if sheet.sheet_properties.pageSetUpPr is not None:
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
 
 
 def _write_text(cell: Any, value: Any) -> None:

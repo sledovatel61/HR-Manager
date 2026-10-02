@@ -135,6 +135,8 @@ class AuditAction(StrEnum):
     # импорта (сколько создано/сопоставлено/обновлено/пропущено). Содержимое
     # файла и ПДн в аудит не попадают — только счётчики и отпечаток файла.
     WORK_SCHEDULE_IMPORTED = "work_schedule_imported"
+    WORK_SCHEDULE_ROW_ASSIGNED = "schedule_row_assigned"
+    CANDIDATE_ASSIGNED = "candidate_assigned"
     # Calendar events (roadmap phase: events and calendar).
     EVENT_CREATED = "event_created"
     EVENT_UPDATED = "event_updated"
@@ -538,8 +540,11 @@ class Candidate(Base):
         nullable=False,
     )
     position: Mapped[str] = mapped_column(String(200), nullable=False, default="")
-    owner_user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    # Candidates imported from the source schedule stay unassigned until a
+    # manager explicitly allocates them. Regular candidate creation still
+    # defaults to the creating user in the API.
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
     )
     stage: Mapped[CandidateStage] = mapped_column(
         Enum(
@@ -580,7 +585,7 @@ class Candidate(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
-    owner: Mapped[User] = relationship(foreign_keys=[owner_user_id])
+    owner: Mapped[User | None] = relationship(foreign_keys=[owner_user_id])
     interactions: Mapped[list["CandidateInteraction"]] = relationship(
         back_populates="candidate", cascade="all, delete-orphan"
     )
@@ -595,9 +600,9 @@ class Candidate(Base):
         return self.deleted_at is not None
 
     @property
-    def owner_username(self) -> str:
+    def owner_username(self) -> str | None:
         """Username of the responsible user (lazy relationship access)."""
-        return self.owner.username if self.owner is not None else ""
+        return self.owner.username if self.owner is not None else None
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Candidate id={self.id} stage={self.stage} owner_id={self.owner_user_id}>"
@@ -2546,6 +2551,9 @@ class ScheduleEntry(Base):
     organization: Mapped[str | None] = mapped_column(String(120), nullable=True)
     department: Mapped[str | None] = mapped_column(String(120), nullable=True)
     comment: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Imported service rows are retained for history but hidden from the
+    # current schedule after they disappear from the latest workbook.
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     author_user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -2566,12 +2574,12 @@ class ScheduleEntry(Base):
 
 
 class ScheduleImport(Base):
-    """Один подтверждённый импорт графика выхода из Excel (агрегат пачки).
+    """Одна подтверждённая версия исходной таблицы и результат синхронизации.
 
-    Хранит только счётчики и отпечаток файла (SHA-256): содержимое строк,
-    ФИО и телефоны сюда не попадают. ``created_by_user_id`` при деактивации
-    пользователя обнуляется (``ON DELETE SET NULL``), история импортов
-    сохраняется.
+    Файл не хранится: в агрегате сохраняются лишь метаданные импорта, схема
+    листа и счётчики синхронизации. Рабочие значения строк находятся в
+    ``schedule_import_rows`` для построения актуального Excel и повторного
+    сопоставления.
     """
 
     __tablename__ = "schedule_imports"
@@ -2584,6 +2592,11 @@ class ScheduleImport(Base):
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     file_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     sheet_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    header_row: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_headers: Mapped[list[str | None]] = mapped_column(JSON, nullable=False, default=list)
+    source_columns: Mapped[dict[str, int | None]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
     rows_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_candidates: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     matched_candidates: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -2591,6 +2604,11 @@ class ScheduleImport(Base):
     service_entries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     skipped_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_added: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_unchanged: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_missing: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active_people: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -2603,19 +2621,24 @@ class ScheduleImport(Base):
 
 
 class ScheduleImportRow(Base):
-    """Строка подтверждённого импорта: устойчивый ключ + результат.
+    """Построчный снимок актуальной/исторической версии исходного листа.
 
-    ``row_key`` — детерминированный SHA-256 от содержимого строки (дата,
-    нормализованное ФИО/название, время): повторный импорт того же файла
-    находит уже импортированные ключи и не создаёт дубликаты. ``candidate_id``
-    и ``entry_id`` связывают ключ с созданной/сопоставленной сущностью; при
-    удалении сущности связь обнуляется, но сам факт импорта остаётся.
+    ``row_key`` — стабильный идентификатор исходной строки, не содержащий
+    изменяемые дату и время. Несколько импортов сохраняют историю снимков;
+    только строки последнего набора имеют ``is_active=True``. Данные и тип
+    строки хранятся отдельно от кандидата и записи графика.
     """
 
     __tablename__ = "schedule_import_rows"
     __table_args__ = (
         UniqueConstraint("import_id", "row_key", name="uq_schedule_import_rows_key"),
         Index("ix_schedule_import_rows_row_key", "row_key"),
+        Index("ix_schedule_import_rows_active_order", "is_active", "row_order"),
+        Index("ix_schedule_import_rows_identity", "source_identity"),
+        CheckConstraint(
+            "row_type IN ('person', 'service', 'skip', 'error')",
+            name="ck_schedule_import_rows_type_valid",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
@@ -2623,18 +2646,61 @@ class ScheduleImportRow(Base):
         ForeignKey("schedule_imports.id", ondelete="CASCADE"), nullable=False
     )
     row_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_identity: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     sheet_row: Mapped[int] = mapped_column(Integer, nullable=False)
-    result: Mapped[str] = mapped_column(String(16), nullable=False)
+    row_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    row_type: Mapped[str] = mapped_column(String(16), nullable=False, default="person")
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    sync_status: Mapped[str] = mapped_column(String(16), nullable=False, default="added")
+    decision: Mapped[str] = mapped_column(String(16), nullable=False, default="skip")
+    # Keep the legacy result column for audit/report compatibility.
+    result: Mapped[str] = mapped_column(String(16), nullable=False, default="skipped")
+    missing_in_import_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("schedule_imports.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Snapshot values from the source row, kept for normalized export and
+    # identity resolution. The original workbook itself is never stored.
+    source_values: Mapped[list[object] | None] = mapped_column(JSON, nullable=True)
+    full_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    name_normalized: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    time_from: Mapped[time | None] = mapped_column(Time, nullable=True)
+    time_to: Mapped[time | None] = mapped_column(Time, nullable=True)
+    organization: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    department: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    position: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    shift: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    comment: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    phone_normalized: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    schedule_ready: Mapped[bool] = mapped_column(default=False, nullable=False)
+    parse_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    warnings: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+
     candidate_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
     )
     entry_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("schedule_entries.id", ondelete="SET NULL"), nullable=True
     )
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
 
+    candidate: Mapped[Candidate | None] = relationship(foreign_keys=[candidate_id])
+    entry: Mapped[ScheduleEntry | None] = relationship(foreign_keys=[entry_id])
+    owner: Mapped[User | None] = relationship(foreign_keys=[owner_user_id])
+
+    @property
+    def owner_name(self) -> str | None:
+        if self.owner is None:
+            return None
+        return self.owner.full_name or self.owner.username
+
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return f"<ScheduleImportRow key={self.row_key[:8]}… result={self.result}>"
+        return f"<ScheduleImportRow key={self.row_key[:8]}… type={self.row_type}>"
 
 
 # Вложения в карточке кандидата: анкеты (.docx) и сканы (.pdf). Это сознательное

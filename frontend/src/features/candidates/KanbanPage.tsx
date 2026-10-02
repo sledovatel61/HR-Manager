@@ -393,7 +393,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
                       )}
                       <div className="kanban-card-foot">
                         {canSeeAll && (
-                          <span className="kanban-card-owner">{candidate.owner_username}</span>
+                          <span className="kanban-card-owner">{candidate.owner_username ?? "Не назначен"}</span>
                         )}
                         <label className="kanban-move-label" htmlFor={`move-${candidate.id}`}>
                           Перенести в этап

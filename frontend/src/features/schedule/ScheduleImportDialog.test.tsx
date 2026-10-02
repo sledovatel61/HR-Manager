@@ -37,10 +37,16 @@ function row(overrides: Partial<ImportRowPreview>): ImportRowPreview {
     comment: null,
     phone_masked: null,
     kind: "candidate",
+    row_type: "person",
     name_confidence: "full",
     suggested_action: "create",
     match: null,
     match_options: [],
+    candidate_id: null,
+    source_row_key: null,
+    owner_user_id: null,
+    owner_name: null,
+    schedule_ready: true,
     already_imported: false,
     warnings: [],
     parse_error: null,
@@ -122,6 +128,7 @@ const SERVICE_ROW = row({
   sheet_row: 20,
   full_name: "Увольнение",
   kind: "service",
+  row_type: "service",
   name_confidence: null,
   time_display: "13:00–14:00",
   time_from: "13:00:00",
@@ -144,6 +151,9 @@ const ERROR_ROW = row({
   full_name: "Битова Ирина",
   time_display: "",
   time_from: null,
+  kind: "skip",
+  row_type: "error",
+  schedule_ready: false,
   suggested_action: "skip",
   parse_error: "Не удалось разобрать время «после мед осмотра»",
 });
@@ -195,6 +205,28 @@ describe("Импорт графика из Excel (диалог)", () => {
     expect(api.confirmWorkScheduleImport).not.toHaveBeenCalled();
   });
 
+  it("keeps a person with no date/time visible as an unassigned source row", async () => {
+    const undated = row({
+      full_name: "Недатова Ирина Петровна",
+      entry_date: null,
+      time_display: "",
+      time_from: null,
+      schedule_ready: false,
+      owner_user_id: null,
+      owner_name: null,
+    });
+    vi.mocked(api.previewWorkScheduleImport).mockResolvedValue(preview([undated]));
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.upload(screen.getByLabelText("Файл графика (.xlsx)"), XLSX_FILE);
+
+    expect(await screen.findByText("Недатова Ирина Петровна")).toBeInTheDocument();
+    expect(screen.getByText(/Нет даты \/ не готов/)).toBeInTheDocument();
+    expect(screen.getByText("Не назначен", { selector: "span.schedule-unassigned" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Подтвердить импорт/ })).toBeEnabled();
+  });
+
   it("отклоняет файл не в формате .xlsx без обращения к серверу", async () => {
     // applyAccept: false — jsdom не фильтрует по accept, проверяем свою валидацию.
     const user = userEvent.setup({ applyAccept: false });
@@ -244,6 +276,11 @@ describe("Импорт графика из Excel (диалог)", () => {
       service_created: 1,
       skipped: 2,
       errors: 0,
+      rows_added: 6,
+      rows_updated: 0,
+      rows_unchanged: 0,
+      rows_missing: 0,
+      active_people: 3,
       rows: [],
       report_csv: "Строка;Дата;Время;ФИО;Действие;Результат;Кандидат;Причина",
     });
