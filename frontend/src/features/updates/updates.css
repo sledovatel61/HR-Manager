@@ -15,17 +15,17 @@
   border-radius: 999px;
   font-size: 0.85rem;
   background: rgba(148, 163, 184, 0.14);
-  color: var(--text-muted, #64748b);
+  color: var(--text-secondary);
 }
 
 .update-pill.ok {
   background: rgba(52, 211, 153, 0.12);
-  color: var(--ok, #15803d);
+  color: var(--status-success-fg);
 }
 
 .update-pill.warn {
   background: rgba(251, 191, 36, 0.14);
-  color: var(--checking, #b45309);
+  color: var(--status-warning-fg);
 }
 
 .update-facts {
@@ -41,7 +41,7 @@
 }
 
 .update-facts dt {
-  color: var(--text-muted, #6b7280);
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -51,7 +51,7 @@
 }
 
 .update-sha {
-  color: var(--text-muted, #6b7280);
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -65,11 +65,11 @@
 }
 
 .update-result.ok {
-  color: var(--success, #15803d);
+  color: var(--status-success-fg);
 }
 
 .update-result.warn {
-  color: var(--danger, #b91c1c);
+  color: var(--status-danger-fg);
 }
 
 .update-actions {
