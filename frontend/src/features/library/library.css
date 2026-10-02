@@ -37,7 +37,7 @@
   gap: 8px;
   max-width: 480px;
   border: 1px solid var(--border-default);
-  border-radius: 10px;
+  border-radius: var(--search-radius);
   padding: 8px 12px;
   background: var(--surface-raised);
 }
@@ -127,10 +127,28 @@
   flex-direction: column;
   justify-content: space-between;
   gap: 12px;
-  border: 1px solid var(--border-default);
-  border-radius: 12px;
-  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
   background: var(--surface-raised);
+  box-shadow: var(--card-shadow);
+  transition: box-shadow var(--duration-fast) var(--easing-standard),
+    transform var(--duration-fast) var(--easing-standard);
+}
+
+.library-card:hover {
+  box-shadow: var(--card-hover-shadow);
+  transform: var(--card-hover-transform);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .library-card {
+    transition: none;
+  }
+
+  .library-card:hover {
+    transform: none;
+  }
 }
 
 .library-card-title {
@@ -201,10 +219,11 @@
 
 .library-view-document {
   max-width: 760px;
-  border: 1px solid var(--border-default);
-  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--card-radius);
   padding: 24px 28px;
   background: var(--surface-raised);
+  box-shadow: var(--card-shadow);
 }
 
 .library-view-title {

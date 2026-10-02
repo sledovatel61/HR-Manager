@@ -10,10 +10,11 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  background: var(--surface-app);
+  background: var(--surface-raised);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
+  box-shadow: var(--card-shadow);
 }
 
 .calendar-nav {
@@ -59,9 +60,10 @@
 }
 
 .calendar-table-wrap {
-  background: var(--surface-app);
+  background: var(--surface-raised);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
   overflow-x: auto;
 }
 
@@ -187,10 +189,11 @@
 }
 
 .calendar-panel {
-  background: var(--surface-app);
+  background: var(--surface-raised);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--card-radius);
   padding: var(--space-3);
+  box-shadow: var(--card-shadow);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
