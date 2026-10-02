@@ -437,6 +437,31 @@ def test_filter_by_stage_and_source(client: TestClient, db_session: Session) -> 
     assert combined.json()["total"] == 0
 
 
+def test_filter_by_position(client: TestClient, db_session: Session) -> None:
+    """Должность — свободный текст: фильтр сравнивает без учёта регистра."""
+    hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    _seed_candidates(db_session, hr)
+    client.post("/auth/login", json={"username": "hr1", "password": FIXTURE_PASSWORD})
+
+    dev = client.get("/candidates?position=dev")
+    assert dev.json()["total"] == 2
+    assert {item["position"] for item in dev.json()["items"]} == {"dev"}
+
+    qa = client.get("/candidates?position=qa")
+    assert qa.json()["total"] == 1
+    assert qa.json()["items"][0]["full_name"] == "Борисова Анна"
+
+    # Регистр не важен.
+    assert client.get("/candidates?position=DEV").json()["total"] == 2
+    # Комбинируется с остальными фильтрами.
+    assert client.get("/candidates?position=dev&stage=offer").json()["total"] == 1
+    assert client.get("/candidates?position=dev&stage=new").json()["total"] == 1
+    # Нет совпадений — пусто, а не всё подряд.
+    assert client.get("/candidates?position=монтажник").json()["total"] == 0
+    # Пустое значение — фильтр не применяется.
+    assert client.get("/candidates?position=").json()["total"] == 3
+
+
 def test_sorting_by_stage_follows_funnel_order(client: TestClient, db_session: Session) -> None:
     hr = make_user(db_session, username="hr1", role=UserRole.HR)
     _seed_candidates(db_session, hr)

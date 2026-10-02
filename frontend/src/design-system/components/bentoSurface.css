@@ -168,7 +168,7 @@
 @media (prefers-reduced-transparency: reduce) {
   .sidebar,
   .topbar,
-  .drawer,
+  .drawer-panel,
   .modal-panel,
   .toast {
     backdrop-filter: none;
