@@ -12,6 +12,8 @@
   TypeScript, сессии/CSRF, RBAC, аудит, CI и Docker Compose.
 - Кандидаты, передача ответственности, Kanban и карточка, события и календарь,
   воспроизводимая аналитика и CSV.
+- Импорт/синхронизация графика выхода, ручное назначение HR и актуальный XLSX
+  описаны в [`schedule-import.md`](schedule-import.md).
 - Эксплуатационный контур: шифрованные backup, restore drill, health/metrics,
   production overlay, HTTPS proxy, deploy/rollback.
 - Phase 8: внутренние уведомления, личные напоминания, PostgreSQL

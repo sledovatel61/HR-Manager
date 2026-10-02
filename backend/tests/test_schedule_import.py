@@ -31,6 +31,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AnalyticsFact,
     AuditAction,
     AuditEvent,
     Candidate,
@@ -42,7 +43,7 @@ from app.models import (
     UserRole,
 )
 from app.routers.auth import reset_login_limiter
-from app.routers.work_schedule import _build_report_csv
+from app.routers.work_schedule import _build_report_csv, _source_row_changed
 from app.schedule_import import (
     DEFAULT_UPLOAD_FILE_NAME,
     LookupCandidate,
@@ -473,6 +474,43 @@ def test_row_key_is_stable_and_content_based() -> None:
         assert make_row_key(other) != make_row_key(first)
 
 
+def test_legacy_backfill_without_source_cells_does_not_mark_identical_row_updated() -> None:
+    row = next(
+        item
+        for item in parse_schedule_workbook(_current_source_workbook(include_undated=False)).rows
+        if item.kind == "candidate"
+    )
+    legacy = ScheduleImportRow(
+        import_id=uuid4(),
+        row_key=make_row_key(row),
+        source_identity=make_row_key(row),
+        sheet_row=row.sheet_row,
+        row_order=row.row_index,
+        row_type="person",
+        is_active=True,
+        sync_status="added",
+        decision="create",
+        result="created",
+        source_values=[],
+        full_name=row.raw_name,
+        name_normalized=row.name_normalized,
+        entry_date=row.entry_date,
+        time_from=row.time_from,
+        time_to=row.time_to,
+        organization=row.organization,
+        department=row.department,
+        position=row.position,
+        shift=row.shift,
+        comment=row.comment,
+        phone=row.phone_display,
+        phone_normalized=row.phone_normalized,
+        schedule_ready=row.entry_date is not None,
+        parse_error=row.parse_error,
+        warnings=list(row.warnings),
+    )
+    assert _source_row_changed(row, legacy) is False
+
+
 def test_build_row_matches_exact_phone_partial_and_multi() -> None:
     rows = parse_schedule_workbook(_fixture_bytes()).rows
     exact = next(row for row in rows if row.raw_name == "Тестова Анна Ивановна")
@@ -717,6 +755,14 @@ def test_current_source_rows_assignment_reimport_and_export(
     )
     assert len(imported) == 2
     assert all(candidate.owner_user_id is None for candidate in imported)
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(AnalyticsFact)
+            .where(AnalyticsFact.candidate_id.in_([candidate.id for candidate in imported]))
+        )
+        == 0
+    )
     undated_candidate = next(
         candidate for candidate in imported if candidate.full_name == "Недатова Ирина Петровна"
     )
@@ -772,14 +818,27 @@ def test_current_source_rows_assignment_reimport_and_export(
     assert bulk.status_code == 200, bulk.text
     assert bulk.json()["updated"] == 1
     db_session.expire_all()
-    assert db_session.get(Candidate, undated_candidate.id).owner_user_id == hr.id
-    assert db_session.get(Candidate, dated_candidate.id).owner_user_id == hr.id
+    assigned_undated = db_session.get(Candidate, undated_candidate.id)
+    assigned_dated = db_session.get(Candidate, dated_candidate.id)
+    assert assigned_undated is not None
+    assert assigned_dated is not None
+    assert assigned_undated.owner_user_id == hr.id
+    assert assigned_dated.owner_user_id == hr.id
     assignment_audits = list(
         db_session.scalars(
             select(AuditEvent).where(AuditEvent.action == AuditAction.CANDIDATE_ASSIGNED)
         ).all()
     )
     assert len(assignment_audits) == 2
+    # Assigning an owner is auditable but does not create a backdated analytics fact.
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(AnalyticsFact)
+            .where(AnalyticsFact.candidate_id.in_([undated_candidate.id, dated_candidate.id]))
+        )
+        == 0
+    )
 
     # Updating the source time does not create duplicate candidates or erase
     # the manually selected HR owner on either candidate.
@@ -790,9 +849,13 @@ def test_current_source_rows_assignment_reimport_and_export(
     assert second.json()["rows_updated"] >= 1
     db_session.expire_all()
     assert db_session.scalar(select(func.count()).select_from(Candidate)) == 2
-    assert db_session.get(Candidate, undated_candidate.id).owner_user_id == hr.id
-    assert db_session.get(Candidate, dated_candidate.id).owner_user_id == hr.id
-    assert db_session.get(Candidate, dated_candidate.id).start_time == time(10, 15)
+    resynced_undated = db_session.get(Candidate, undated_candidate.id)
+    resynced_dated = db_session.get(Candidate, dated_candidate.id)
+    assert resynced_undated is not None
+    assert resynced_dated is not None
+    assert resynced_undated.owner_user_id == hr.id
+    assert resynced_dated.owner_user_id == hr.id
+    assert resynced_dated.start_time == time(10, 15)
     service_entry = db_session.scalar(
         select(ScheduleEntry).where(ScheduleEntry.title == "Увольнение")
     )
@@ -807,7 +870,7 @@ def test_current_source_rows_assignment_reimport_and_export(
     exported = client.get("/work-schedule/import/export.xlsx")
     assert exported.status_code == 200, exported.text
     workbook = load_workbook(io.BytesIO(exported.content), data_only=True)
-    sheet = workbook.active
+    sheet = cast(Worksheet, workbook.active)
     headers = [cell.value for cell in sheet[1]]
     assert headers[-1] == "Ответственный HR"
     assert not {"candidate_id", "owner_user_id", "row_key"}.intersection(headers)
@@ -842,7 +905,9 @@ def test_current_source_rows_assignment_reimport_and_export(
     latest_rows = client.get("/work-schedule/import/rows").json()
     assert latest_rows["active_people"] == 1
     final_export = client.get("/work-schedule/import/export.xlsx")
-    final_sheet = load_workbook(io.BytesIO(final_export.content), data_only=True).active
+    final_sheet = cast(
+        Worksheet, load_workbook(io.BytesIO(final_export.content), data_only=True).active
+    )
     assert final_sheet.max_row == 3  # header + one person + one service row
 
 
@@ -883,7 +948,9 @@ def test_manual_candidate_mapping_is_preserved_on_reimport(
     assert repeated.status_code == 200, repeated.text
     db_session.expire_all()
     assert db_session.scalar(select(func.count()).select_from(Candidate)) == 1
-    assert db_session.get(Candidate, existing.id).start_time == time(11, 5)
+    resynced_existing = db_session.get(Candidate, existing.id)
+    assert resynced_existing is not None
+    assert resynced_existing.start_time == time(11, 5)
     latest = list(
         db_session.scalars(
             select(ScheduleImportRow).where(ScheduleImportRow.is_active.is_(True))

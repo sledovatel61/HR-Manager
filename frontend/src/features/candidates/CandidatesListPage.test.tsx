@@ -93,6 +93,19 @@ describe("CandidatesListPage", () => {
     expect(await screen.findByText("Кандидаты не найдены")).toBeInTheDocument();
   });
 
+  it("shows an explicit unassigned label in the manager candidate list", async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue({
+      items: [candidate({ owner_user_id: null, owner_username: null })],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+    renderPage("all", MANAGER);
+
+    const table = await screen.findByRole("table");
+    expect(within(table).getByText("Не назначен")).toBeInTheDocument();
+  });
+
   it("shows an error with retry when the request fails", async () => {
     vi.mocked(api.listCandidates).mockRejectedValueOnce(new api.ApiError(500, "Сбой сервера"));
     renderPage();

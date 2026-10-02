@@ -189,14 +189,16 @@ export function CandidateDrawer({
               label="Удалить кандидата"
               onClick={() => setDeleteOpen(true)}
             />
-            <Button
-              variant="secondary"
-              size="sm"
-              icon="arrow-right-left"
-              onClick={() => setTransferOpen(true)}
-            >
-              Передать
-            </Button>
+            {candidate.owner_user_id !== null && (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="arrow-right-left"
+                onClick={() => setTransferOpen(true)}
+              >
+                Передать
+              </Button>
+            )}
           </>
         ) : undefined
       }
