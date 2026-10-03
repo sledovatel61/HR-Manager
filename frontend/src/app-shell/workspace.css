@@ -170,7 +170,7 @@
   height: 32px;
   border-radius: var(--radius-full);
   background: var(--accent-subtle);
-  color: var(--accent-default);
+  color: var(--accent-on-subtle);
   font-size: var(--text-size-xs);
   font-weight: var(--font-weight-semibold);
 }
@@ -285,7 +285,7 @@
 
 .topbar-settings.is-active {
   background: var(--accent-subtle);
-  color: var(--accent-default);
+  color: var(--accent-on-subtle);
 }
 
 .topbar-settings:focus-visible {
@@ -338,7 +338,7 @@
   justify-content: center;
   width: 32px;
   height: 32px;
-  color: var(--accent-default);
+  color: var(--accent-on-subtle);
   background: var(--accent-subtle);
   border-radius: var(--radius-lg);
 }

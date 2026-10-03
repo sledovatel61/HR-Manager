@@ -40,5 +40,5 @@
 
 .tab-item.is-active .tab-count {
   background: var(--accent-subtle);
-  color: var(--accent-default);
+  color: var(--accent-on-subtle);
 }
