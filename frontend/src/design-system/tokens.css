@@ -126,6 +126,11 @@
   /* Акцентный текст на заливке --accent-subtle: в светлой теме это тот же
      --accent-default, в тёмной — на тон светлее (см. тёмный блок ниже). */
   --accent-on-subtle: var(--accent-default);
+  /* accent-500 на более плотной заливке --surface-selected-hover даёт
+     3.88:1 — ниже AA. accent-700 (#075985) даёт 5.56:1. Меняется только цвет
+     текста на hover, сама заливка и базовое состояние не трогаются.
+     Пересчёт — python3 scripts/measure-contrast.py. */
+  --accent-on-subtle-hover: var(--palette-accent-700);
   --accent-hover: var(--palette-accent-600);
   --accent-pressed: var(--palette-accent-700);
   --accent-subtle: var(--palette-accent-50);
@@ -321,6 +326,7 @@
      accent-300 (#7dd3fc) даёт запас; отдельный токен, чтобы не светлел акцент
      кнопок и ссылок. Пересчёт — python3 scripts/measure-contrast.py. */
   --accent-on-subtle: var(--palette-accent-300);
+  --accent-on-subtle-hover: var(--palette-accent-300);
   --accent-hover: var(--palette-accent-300);
   --accent-pressed: var(--palette-accent-200);
   /* Та же логика, что у --surface-selected: осветляющая cyan-подложка съедала

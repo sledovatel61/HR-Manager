@@ -60,6 +60,7 @@ TEXTS = [
     "--text-link",
     "--accent-default",
     "--accent-on-subtle",
+    "--accent-on-subtle-hover",
 ]
 
 # ---------------------------------------------------------------------------
@@ -94,6 +95,26 @@ PAIR_EVIDENCE = {
     ("--surface-selected", "--accent-default"): (
         "button.css:144 .icon-btn-ghost.is-active"
     ),
+    ("--accent-subtle", "--accent-default"): (
+        "queue.css:217-228 .queue-link (базовое состояние кнопки "
+        "«Непрочитанных уведомлений», рендерится MyQueuePage.tsx:275)"
+    ),
+    ("--surface-selected-hover", "--accent-on-subtle-hover"): (
+        "queue.css:232 .queue-link:hover — фон --surface-selected-hover, цвет из "
+        "того же правила; базовый цвет — :228 (MyQueuePage.tsx:275). До правки "
+        "здесь был --accent-default и пара давала 3.88:1 в светлой теме"
+    ),
+    ("--surface-hover", "--text-primary"): (
+        "button.css:80 .btn-secondary:hover, :137 .icon-btn-ghost:hover; "
+        "toast.css:60 .toast-close:hover; workspace.css:212, :278; "
+        "documentTemplates.css:203"
+    ),
+    ("--surface-pressed", "--text-primary"): (
+        "candidates.css:215 .filter-chip-remove:hover"
+    ),
+    ("--surface-sunken", "--text-primary"): (
+        "calendar.css:284; documentTemplates.css:148, :190"
+    ),
     ("--accent-subtle", "--accent-on-subtle"): (
         "candidates.css:151-152 фильтр-чип; workspace.css:172-173 .topbar-avatar; "
         "workspace.css:287-288 .topbar-settings.is-active; workspace.css:341-342 "
@@ -120,23 +141,30 @@ PAIR_EVIDENCE = {
 # Пары, которых в вёрстке нет, с командой, доказывающей отсутствие.
 # Ключ — (состояние, текст) или (состояние, None) для «ни с каким текстом».
 ABSENT_EVIDENCE = {
-    ("--surface-selected-hover", None): (
-        "grep -rn 'var(--surface-selected-hover)' frontend/src → единственное "
-        "использование: queue.css:235 .queue-link:hover, цвет — --accent-default"
-    ),
     ("--surface-sidebar-active", None): (
         "grep -rn 'var(--surface-sidebar-active)' frontend/src → 0 вхождений, "
         "активный пункт навигации красится --nav-active-bg (workspace.css:86)"
-    ),
-    ("--surface-disabled", None): (
-        "grep -rn 'var(--surface-disabled)' frontend/src → только неактивные "
-        "элементы; WCAG 1.4.3 освобождает неактивные контролы"
     ),
     ("--surface-pressed", "--text-tertiary"): (
         "--surface-pressed используется в button.css:73, :86 и candidates.css:218 — "
         "везде с --text-primary"
     ),
 }
+
+
+def blank_comments(text: str) -> str:
+    """Выкинуть комментарии, сохранив номера строк.
+
+    Комментарий вида «--accent-subtle: в светлой теме …» иначе парсится как
+    объявление и затирает настоящее значение токена; просто вырезать его нельзя
+    — поехали бы номера строк в аудите.
+    """
+    return re.sub(
+        r"/\*.*?\*/",
+        lambda m: "\n" * m.group(0).count("\n"),
+        text,
+        flags=re.S,
+    )
 
 
 def extract_block(text: str, selector: str) -> dict[str, str]:
@@ -151,7 +179,7 @@ def extract_block(text: str, selector: str) -> dict[str, str]:
     # Комментарии выкидываем: иначе строка комментария вида
     # «--accent-subtle: в светлой теме …» парсится как объявление и затирает
     # настоящее значение токена.
-    body = re.sub(r"/\*.*?\*/", "", text[start:end], flags=re.S)
+    body = blank_comments(text[start:end])
     return dict(re.findall(r"(--[a-z0-9-]+)\s*:\s*([^;]+);", body))
 
 
@@ -223,6 +251,134 @@ def contrast(a, b) -> float:
     return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 
 
+# ---------------------------------------------------------------------------
+# --audit: механический поиск пар «состояние × цвет текста» в вёрстке.
+#
+# PAIR_EVIDENCE ведётся руками, а руки ошибаются — один раз это уже случилось:
+# запись в «отсутствующих» сама называла существующую пару. Этот режим достаёт
+# пары из CSS: правило, задающее фон состояния, и цвет текста, который на этом
+# фоне окажется — из того же правила либо из базового правила того же селектора
+# (`.queue-link:hover` наследует цвет от `.queue-link`).
+# ---------------------------------------------------------------------------
+STATE_SELECTORS = (
+    ":hover",
+    ":active",
+    ":focus",
+    ":focus-within",
+    ":focus-visible",
+    ".is-active",
+    ".is-editing",
+    ".is-current",
+    ".is-selected",
+)
+
+
+def _strip_state(selector: str) -> str:
+    """Базовый селектор: `.queue-link:hover` -> `.queue-link`."""
+    base = selector.strip()
+    for suffix in STATE_SELECTORS:
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+    return base
+
+
+def audit_pairs(src_dir: Path) -> list[tuple[str, str, str, str]]:
+    """[(состояние, текст, где фон, где цвет)] — по правилам CSS."""
+    rules: dict[str, list[tuple[dict[str, str], str, int, int]]] = {}
+    bodies: dict[str, str] = {}
+    for path in sorted(src_dir.rglob("*.css")):
+        rel = str(path.relative_to(src_dir))
+        body = blank_comments(path.read_text(encoding="utf-8"))
+        bodies[rel] = body
+        for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", body):
+            selector = " ".join(match.group(1).split())
+            if selector.startswith("@"):
+                continue
+            decls = dict(
+                (name.strip(), value.strip())
+                for name, value in (
+                    part.split(":", 1)
+                    for part in match.group(2).split(";")
+                    if ":" in part
+                )
+            )
+            line = body[: match.start()].count("\n") + 1
+            rules.setdefault(selector, []).append(
+                (decls, str(path.relative_to(src_dir)), line, match.start())
+            )
+
+    def token(value: str, prefix: str) -> str | None:
+        found = re.search(r"var\((--" + prefix + r"[a-z0-9-]*)\)", value or "")
+        return found.group(1) if found else None
+
+    def decl_line(rel_path: str, start_offset: int, prop: str) -> int:
+        """Номер строки объявления, а не начала правила."""
+        body = bodies[rel_path]
+        segment = body[start_offset : start_offset + 400]
+        found = re.search(r"(?:^|[;\s])" + prop + r"\s*:", segment)
+        if not found:
+            return body[:start_offset].count("\n") + 1
+        return body[: start_offset + found.start()].count("\n") + 1
+
+    def color_of(selector: str, seen: frozenset[str] = frozenset()) -> tuple[str, str, int] | None:
+        for decls, path, line, _offset in rules.get(selector, []):
+            colour = token(decls.get("color", ""), "")
+            if colour and colour.startswith("--"):
+                return colour, path, line
+        base = _strip_state(selector)
+        if base != selector and base not in seen and base in rules:
+            return color_of(base, seen | {selector})
+        return None
+
+    pairs: list[tuple[str, str, str, str]] = []
+    for selector, entries in rules.items():
+        for decls, path, line, offset in entries:
+            for prop in ("background", "background-color"):
+                surface = token(decls.get(prop, ""), "")
+                # Базовые поверхности (--surface-app, -raised, …) в гейте и так:
+                # на них лежит любой текст. Интересуют только состояния
+                # (None в STATE_SURFACES — это «без состояния», его тоже нет).
+                if not surface:
+                    continue
+                if surface not in STATE_SURFACES and surface != "--accent-subtle":
+                    continue
+                colour = token(decls.get("color", ""), "")
+                where_colour = f"{path}:{decl_line(path, offset, 'color')}"
+                if not colour:
+                    inherited = color_of(selector)
+                    if inherited:
+                        colour, cpath, cline = inherited
+                        where_colour = (
+                            f"{cpath}:{cline} (наследуется от {_strip_state(selector)})"
+                        )
+                if colour:
+                    pairs.append(
+                        (surface, colour, f"{path}:{decl_line(path, offset, prop)}", where_colour)
+                    )
+    return sorted(set(pairs))
+
+
+def print_audit() -> int:
+    src = ROOT / "frontend/src"
+    known = set(PAIR_EVIDENCE)
+    print("Пара «фон состояния × цвет текста», найденная в CSS:")
+    print("(✔ — в PAIR_EVIDENCE, ⃠ — освобождена по WCAG, ✖ — не в гейте)")
+    missing = 0
+    for surface, colour, where_bg, where_fg in audit_pairs(src):
+        if (surface, colour) in EXEMPT:
+            mark = "⃠"
+        elif (surface, colour) in known:
+            mark = "✔"
+        else:
+            mark = "✖"
+            missing += 1
+        print(f"  {mark} {surface} + {colour}")
+        print(f"      фон: {where_bg}")
+        print(f"      цвет: {where_fg}")
+    print(f"\nНе в гейте: {missing}")
+    return 1 if missing else 0
+
+
 def grep_command(pair: tuple[str, str | None]) -> str:
     """Команда, которой проверяется, что пара встречается в вёрстке."""
     state, text = pair
@@ -232,6 +388,14 @@ def grep_command(pair: tuple[str, str | None]) -> str:
 
 
 DEFAULT_ABSENT = "правила, задающие состояние и этот цвет текста вместе, не найдены"
+
+# WCAG 1.4.3 освобождает неактивные контролы — такие пары не провал, а豁免.
+EXEMPT = {
+    ("--surface-disabled", "--text-disabled"): (
+        "WCAG 1.4.3: неактивные элементы не обязаны проходить по контрасту "
+        "(field.css:65 .text-input:disabled)"
+    ),
+}
 
 
 def main() -> int:
@@ -323,4 +487,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--audit" in sys.argv:
+        sys.exit(print_audit())
     sys.exit(main())
