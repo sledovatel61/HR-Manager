@@ -280,7 +280,7 @@ export function UsersPage({ currentUser }: { currentUser: User }) {
           </Button>
         </div>
 
-        <div className="table-wrap">
+        <div className="bento-table-scroll">
           <table className="users-table" aria-label="Список пользователей">
             <thead>
               <tr>

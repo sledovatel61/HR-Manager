@@ -14,7 +14,7 @@
 .attachments-hint,
 .attachments-note {
   margin: 0;
-  color: var(--color-text-muted, #5b6472);
+  color: var(--text-tertiary);
   font-size: 0.8125rem;
   line-height: 1.45;
 }
@@ -27,7 +27,7 @@
 }
 
 .attachments-quota {
-  color: var(--color-text-muted, #5b6472);
+  color: var(--text-tertiary);
   font-size: 0.8125rem;
 }
 
@@ -48,7 +48,7 @@
   margin: 0;
   padding: 0.5rem 0.625rem;
   border-radius: 6px;
-  background: var(--color-surface-subtle, #eef4ee);
+  background: var(--surface-sunken);
   font-size: 0.8125rem;
 }
 
@@ -56,14 +56,14 @@
   margin: 0;
   padding: 0.5rem 0.625rem;
   border-radius: 6px;
-  background: var(--color-danger-subtle, #fdecec);
-  color: var(--color-danger, #b42318);
+  background: var(--status-danger-bg);
+  color: var(--status-danger-fg);
   font-size: 0.8125rem;
 }
 
 .attachments-empty {
   margin: 0;
-  color: var(--color-text-muted, #5b6472);
+  color: var(--text-tertiary);
   font-size: 0.875rem;
 }
 
@@ -82,7 +82,7 @@
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.625rem 0.75rem;
-  border: 1px solid var(--color-border, #dfe3e8);
+  border: 1px solid var(--border-default);
   border-radius: 8px;
 }
 
@@ -100,7 +100,7 @@
 }
 
 .attachments-meta {
-  color: var(--color-text-muted, #5b6472);
+  color: var(--text-tertiary);
   font-size: 0.75rem;
 }
 

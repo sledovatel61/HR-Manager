@@ -2,7 +2,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border-radius: var(--radius-full);
+  border-radius: var(--chip-radius);
   border: 1px solid transparent;
   font-weight: var(--font-weight-medium);
   white-space: nowrap;

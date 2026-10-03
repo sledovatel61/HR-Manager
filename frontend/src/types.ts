@@ -247,6 +247,8 @@ export interface CandidateListQuery {
   query?: string;
   stage?: CandidateStage;
   source?: CandidateSource;
+  /** Free-text position (no vacancy directory exists — see backlog §7.1). */
+  position?: string;
   owner_id?: string;
   /** Scope the listing to soft-deleted candidates (the trash view). */
   include_deleted?: boolean;

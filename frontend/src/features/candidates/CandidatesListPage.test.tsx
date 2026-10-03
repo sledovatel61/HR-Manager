@@ -57,6 +57,28 @@ function candidate(overrides: Partial<Candidate> = {}): Candidate {
   };
 }
 
+/** Подсказки должностей приходят отдельным запросом (limit 100) — без них
+ *  в селекте будет только «Все должности». */
+function listWithPositions(positions: string[], rows: Candidate[] = []) {
+  vi.mocked(api.listCandidates).mockImplementation(async (query) => {
+    if (query?.limit === 100) {
+      return {
+        items: positions.map((position, index) =>
+          candidate({ id: `s-${index}`, full_name: `Подсказка ${index}`, position }),
+        ),
+        total: positions.length,
+        limit: 100,
+        offset: 0,
+      };
+    }
+    return { items: rows, total: rows.length, limit: query?.limit ?? 20, offset: query?.offset ?? 0 };
+  });
+}
+
+function lastListQuery() {
+  return vi.mocked(api.listCandidates).mock.calls.at(-1)?.[0];
+}
+
 function renderPage(mode: "queue" | "all" | "deleted" = "queue", user: User = HR) {
   return render(
     <ToastProvider>
@@ -117,8 +139,8 @@ describe("CandidatesListPage", () => {
     expect(await screen.findByText("Петров Пётр Петрович")).toBeInTheDocument();
   });
 
-  it("debounces search and passes query/stage/source to the API", async () => {
-    vi.mocked(api.listCandidates).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+  it("debounces search and passes query/stage/source/position to the API", async () => {
+    listWithPositions(["Монтажник РЭА", "Инженер"]);
     const user = userEvent.setup();
     renderPage();
 
@@ -138,25 +160,85 @@ describe("CandidatesListPage", () => {
 
     await user.selectOptions(screen.getByLabelText("Источник"), "referral");
     await waitFor(() => {
-      const lastCall = vi.mocked(api.listCandidates).mock.calls.at(-1)?.[0];
-      expect(lastCall).toMatchObject({ source: "referral" });
+      expect(lastListQuery()).toMatchObject({ source: "referral" });
     });
+
+    await user.selectOptions(screen.getByLabelText("Должность"), "Монтажник РЭА");
+    await waitFor(() => {
+      expect(lastListQuery()).toMatchObject({ position: "Монтажник РЭА" });
+    });
+    // Фильтр не подменяет остальные — они едут в том же запросе.
+    expect(lastListQuery()).toMatchObject({ query: "петров", stage: "offer", source: "referral" });
+  });
+
+  it("shows the active chip for the position and clears it with its own button", async () => {
+    listWithPositions(["Монтажник РЭА", "Инженер"]);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.selectOptions(await screen.findByLabelText("Должность"), "Монтажник РЭА");
+    const chip = await screen.findByLabelText("Активные фильтры");
+    expect(within(chip).getByText("Монтажник РЭА")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Сбросить фильтр «Должность»" }));
+
+    await waitFor(() => {
+      expect(lastListQuery()?.position).toBeUndefined();
+    });
+    expect(screen.queryByLabelText("Активные фильтры")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Должность")).toHaveValue("");
+  });
+
+  it("treats «Все должности» as no filter and resets the position with the common button", async () => {
+    listWithPositions(["Монтажник РЭА", "Инженер"]);
+    const user = userEvent.setup();
+    renderPage();
+
+    const select = await screen.findByLabelText("Должность");
+    // Пустое значение = «Все должности»: параметр вообще не уходит на сервер.
+    await waitFor(() => {
+      expect(lastListQuery()?.position).toBeUndefined();
+    });
+
+    await user.selectOptions(select, "Монтажник РЭА");
+    await waitFor(() => {
+      expect(lastListQuery()).toMatchObject({ position: "Монтажник РЭА" });
+    });
+
+    await user.click(screen.getByRole("button", { name: "Сбросить фильтры" }));
+    await waitFor(() => {
+      expect(lastListQuery()?.position).toBeUndefined();
+    });
+    expect(select).toHaveValue("");
   });
 
   it("paginates server-side with next/prev", async () => {
-    vi.mocked(api.listCandidates)
-      .mockResolvedValueOnce({
-        items: Array.from({ length: 20 }, (_, i) => candidate({ id: `id-${i}`, full_name: `Кандидат ${i}` })),
-        total: 25,
-        limit: 20,
-        offset: 0,
-      })
-      .mockResolvedValueOnce({
-        items: Array.from({ length: 5 }, (_, i) => candidate({ id: `id-${20 + i}`, full_name: `Кандидат ${20 + i}` })),
+    // Запрос подсказок должностей (limit 100) — отдельная ветка: он не должен
+    // съедать страницы списка.
+    vi.mocked(api.listCandidates).mockImplementation(async (query) => {
+      if (query?.limit === 100) {
+        return { items: [], total: 0, limit: 100, offset: 0 };
+      }
+      const offset = query?.offset ?? 0;
+      if (offset === 0) {
+        return {
+          items: Array.from({ length: 20 }, (_, i) =>
+            candidate({ id: `id-${i}`, full_name: `Кандидат ${i}` }),
+          ),
+          total: 25,
+          limit: 20,
+          offset: 0,
+        };
+      }
+      return {
+        items: Array.from({ length: 5 }, (_, i) =>
+          candidate({ id: `id-${20 + i}`, full_name: `Кандидат ${20 + i}` }),
+        ),
         total: 25,
         limit: 20,
         offset: 20,
-      });
+      };
+    });
     renderPage();
 
     expect(await screen.findByText("Кандидат 0")).toBeInTheDocument();

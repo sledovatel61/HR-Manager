@@ -380,9 +380,7 @@ def test_reimport_is_idempotent_on_postgres(pg_client: TestClient, pg_db: Sessio
     )
     assert latest_import is not None and latest_import.id != first_import.id
     active_rows = list(
-        pg_db.scalars(
-            select(ScheduleImportRow).where(ScheduleImportRow.is_active.is_(True))
-        ).all()
+        pg_db.scalars(select(ScheduleImportRow).where(ScheduleImportRow.is_active.is_(True))).all()
     )
     assert len(active_rows) == len(first_links)
     assert {row.import_id for row in active_rows} == {latest_import.id}

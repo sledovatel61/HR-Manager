@@ -15,6 +15,7 @@ Integration mirrors run against real PostgreSQL in
 ``tests/test_integration_candidates.py``.
 """
 
+import uuid
 from collections.abc import Iterator
 
 import httpx
@@ -377,7 +378,7 @@ def _seed_candidates(db_session: Session, hr: User) -> None:
         phone="+7 111 111-11-11",
         email="a.abramov@example.com",
         source=CandidateSource.SITE,
-        position="dev",
+        position="Монтажник РЭА",
         stage=CandidateStage.NEW,
     )
     make_candidate(
@@ -387,7 +388,7 @@ def _seed_candidates(db_session: Session, hr: User) -> None:
         phone="+7 222 222-22-22",
         email="a.borisova@example.com",
         source=CandidateSource.REFERRAL,
-        position="qa",
+        position="Контролёр ОТК",
         stage=CandidateStage.INTERVIEW_SCHEDULED,
     )
     make_candidate(
@@ -397,7 +398,7 @@ def _seed_candidates(db_session: Session, hr: User) -> None:
         phone="+7 333 333-33-33",
         email="s.volkov@example.com",
         source=CandidateSource.EVENT,
-        position="dev",
+        position="Монтажник РЭА",
         stage=CandidateStage.OFFER,
     )
 
@@ -435,6 +436,79 @@ def test_filter_by_stage_and_source(client: TestClient, db_session: Session) -> 
 
     combined = client.get("/candidates?source=referral&stage=offer")
     assert combined.json()["total"] == 0
+
+
+def test_filter_by_position(client: TestClient, db_session: Session) -> None:
+    """Должность — свободный текст: фильтр сравнивает без учёта регистра."""
+    hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    _seed_candidates(db_session, hr)
+    client.post("/auth/login", json={"username": "hr1", "password": FIXTURE_PASSWORD})
+
+    # Кириллица: сравнение приводит Python (casefold), а не SQL lower() —
+    # иначе на SQLite и на PostgreSQL с локалью C фильтр не находил бы ничего.
+    montazhnik = client.get("/candidates?position=Монтажник РЭА")
+    assert montazhnik.json()["total"] == 2
+    assert {item["position"] for item in montazhnik.json()["items"]} == {"Монтажник РЭА"}
+
+    qa = client.get("/candidates?position=Контролёр ОТК")
+    assert qa.json()["total"] == 1
+    assert qa.json()["items"][0]["full_name"] == "Борисова Анна"
+
+    # Регистр не важен.
+    assert client.get("/candidates?position=МОНТАЖНИК РЭА").json()["total"] == 2
+    # Лишние пробелы по краям и внутри — тоже.
+    assert client.get("/candidates?position=%20Монтажник%20%20РЭА%20").json()["total"] == 2
+    # Комбинируется с остальными фильтрами.
+    assert client.get("/candidates?position=Монтажник РЭА&stage=offer").json()["total"] == 1
+    assert client.get("/candidates?position=Монтажник РЭА&stage=new").json()["total"] == 1
+    # Нет совпадений — пусто, а не всё подряд.
+    assert client.get("/candidates?position=монтажник").json()["total"] == 0
+    # Пустое значение — фильтр не применяется.
+    assert client.get("/candidates?position=").json()["total"] == 3
+
+
+def test_position_normalized_stays_in_sync_with_position(
+    client: TestClient, db_session: Session
+) -> None:
+    """Нормализованная должность обновляется вместе с должностью.
+
+    Колонка — деталь реализации фильтра, поэтому её легко забыть в новом
+    месте: этот тест ловит именно такое расхождение (фильтр молча перестал бы
+    находить отредактированные карточки).
+    """
+    make_user(db_session, username="hr1", role=UserRole.HR)
+    login = client.post("/auth/login", json={"username": "hr1", "password": FIXTURE_PASSWORD})
+    csrf = _csrf(login)
+
+    created = client.post(
+        "/candidates",
+        json=_candidate_payload(position="  Монтажник   РЭА  "),
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201, created.text
+    candidate_id = uuid.UUID(created.json()["id"])
+    # Поля приходят уже без пробелов по краям (валидация pydantic), внутренние
+    # повторы сохраняются как есть — нормализация живёт в отдельной колонке.
+    assert created.json()["position"] == "Монтажник   РЭА"
+    stored = db_session.get(Candidate, candidate_id)
+    # mypy: get() отдаёт Candidate | None — сужаем тип явно, а не через ignore.
+    assert stored is not None
+    assert stored.position_normalized == "монтажник рэа"
+
+    # Фильтр находит карточку по нормальной записи должности.
+    assert client.get("/candidates?position=Монтажник РЭА").json()["total"] == 1
+
+    patched = client.patch(
+        f"/candidates/{candidate_id}",
+        json={"position": "Регулировщик РЭА"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert patched.status_code == 200, patched.text
+    db_session.refresh(stored)
+    assert stored.position_normalized == "регулировщик рэа"
+    # Старая должность больше не находится, новая — находится.
+    assert client.get("/candidates?position=Монтажник РЭА").json()["total"] == 0
+    assert client.get("/candidates?position=регулировщик РЭА").json()["total"] == 1
 
 
 def test_sorting_by_stage_follows_funnel_order(client: TestClient, db_session: Session) -> None:
@@ -640,7 +714,7 @@ def test_candidate_lifecycle_is_audited(client: TestClient, db_session: Session)
         json=_candidate_payload(owner_user_id=str(hr.id)),
         headers={"X-CSRF-Token": csrf},
     )
-    candidate_id = created.json()["id"]
+    candidate_id = uuid.UUID(created.json()["id"])
     client.patch(
         f"/candidates/{candidate_id}",
         json={"stage": "offer"},

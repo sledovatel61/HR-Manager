@@ -1,0 +1,221 @@
+/**
+ * Bento Showcase — «материал» направления (палитра «Лазурь»).
+ *
+ * Источник значений: design/mockups/bento-arctic.html (акцент #0b6bcb) и
+ * design-review/BENTO_SHOWCASE_REVIEW.md.
+ *
+ * Разделение ответственности:
+ *   • tokens.css  — семантика (--surface-*, --text-*, --accent-*);
+ *   • этот файл   — материальные переменные направления: mesh-подложка,
+ *     стекло, spring-анимации, категориальные цвета диаграмм, материал
+ *     карточек и хрома.
+ *
+ * Компоненты по-прежнему обязаны использовать семантические токены; переменные
+ * отсюда — материальные уточнения поверх них (тень карточки, радиус кнопки,
+ * подсветка активного пункта навигации).
+ *
+ * Новых классов этот файл не вводит: mesh рисуется на .workspace::before,
+ * анимация подключается точечно в CSS экранов.
+ */
+
+:root {
+  /* ---------- mesh-подложка ---------- */
+  --blob-1: #7dd3fc;
+  --blob-2: #a5b4fc;
+  --blob-3: #67e8f9;
+  --mesh-opacity: 0.5;
+
+  /* ---------- категориальные цвета диаграмм ----------
+     Это НЕ статусы: шесть различимых оттенков для рядов данных. Значения
+     подобраны под акцент палитры (info — циан, а не синий, чтобы не сливаться
+     с акцентом #0b6bcb). */
+  --cat-indigo-1: #4f46e5;
+  --cat-indigo-2: #818cf8;
+  --cat-violet-1: #7e22ce;
+  --cat-violet-2: #c084fc;
+  --cat-success-1: #047857;
+  --cat-success-2: #34d399;
+  --cat-info-1: #0e7490;
+  --cat-info-2: #22d3ee;
+  --cat-warning-1: #b45309;
+  --cat-warning-2: #fbbf24;
+  --cat-neutral-1: #475569;
+  --cat-neutral-2: #94a3b8;
+
+  /* ---------- материал карточек ---------- */
+  --card-radius: var(--radius-xl);
+  --card-padding: var(--space-4);
+  --card-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset, var(--shadow-2);
+  --card-hover-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset, var(--shadow-3);
+  --card-hover-transform: translateY(-2px);
+
+  /* ---------- элементы управления ---------- */
+  --btn-radius: var(--radius-lg);
+  --btn-shadow: var(--shadow-1);
+  --btn-primary-shadow: 0 2px 10px -2px rgba(11, 107, 203, 0.45);
+  --chip-radius: var(--radius-full);
+  --search-radius: var(--radius-lg);
+
+  /* ---------- хром ---------- */
+  --topbar-bg: rgba(255, 255, 255, 0.72);
+  --drawer-bg: rgba(255, 255, 255, 0.88);
+  --toast-bg: rgba(255, 255, 255, 0.9);
+  --table-head-bg: rgba(11, 31, 51, 0.03);
+  --skeleton-bg: linear-gradient(
+    90deg,
+    rgba(11, 31, 51, 0.05) 0%,
+    rgba(11, 31, 51, 0.1) 40%,
+    rgba(11, 31, 51, 0.05) 80%
+  );
+  --spark-color: var(--accent-default);
+
+  /* ---------- навигация ---------- */
+  --nav-icon: var(--text-tertiary);
+  --nav-radius: var(--radius-lg);
+  --nav-active-bg: var(--accent-subtle);
+  --nav-active-fg: var(--accent-on-subtle);
+  --nav-active-shadow: var(--shadow-1);
+  --nav-marker: var(--accent-default);
+  --nav-badge-bg: var(--accent-subtle);
+  --nav-badge-fg: var(--accent-default);
+
+  /* ---------- бренд и метрики ---------- */
+  --brand-mark-bg: var(--accent-gradient-soft);
+  --brand-mark-fg: var(--text-on-accent);
+  --kpi-cols: repeat(12, minmax(0, 1fr));
+  --kpi-value-size: 30px;
+  --dash-gap: var(--space-4);
+}
+
+[data-theme="dark"] {
+  /* Пятна заметно темнее светлых (#7dd3fc/#a5b4fc/#67e8f9): в тёмной теме
+     подложка просвечивает сквозь полупрозрачные карточки, и на cyan-600
+     третичный текст падал до 4.17:1 — ниже AA 4.5:1. Прозрачность подложки от
+     этого не страдает: --mesh-opacity тот же 0.4, меняется только сам тон.
+     Пересчёт — python3 scripts/measure-contrast.py */
+  --blob-1: #075985;
+  --blob-2: #3730a3;
+  --blob-3: #155e75;
+  --mesh-opacity: 0.4;
+
+  --cat-indigo-1: #6366f1;
+  --cat-indigo-2: #a5b4fc;
+  --cat-violet-1: #a855f7;
+  --cat-violet-2: #d8b4fe;
+  --cat-success-1: #10b981;
+  --cat-success-2: #6ee7b7;
+  --cat-info-1: #06b6d4;
+  --cat-info-2: #67e8f9;
+  --cat-warning-1: #f59e0b;
+  --cat-warning-2: #fcd34d;
+  --cat-neutral-1: #64748b;
+  --cat-neutral-2: #cbd5e1;
+
+  --card-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset, var(--shadow-2);
+  --card-hover-shadow: 0 1px 0 rgba(255, 255, 255, 0.1) inset, var(--shadow-3);
+
+  --btn-primary-shadow: 0 2px 10px -2px rgba(2, 132, 199, 0.55);
+
+  --topbar-bg: rgba(8, 21, 36, 0.6);
+  --drawer-bg: rgba(10, 24, 40, 0.88);
+  --toast-bg: rgba(10, 24, 40, 0.9);
+  --table-head-bg: rgba(255, 255, 255, 0.03);
+  --skeleton-bg: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.05) 0%,
+    rgba(255, 255, 255, 0.12) 40%,
+    rgba(255, 255, 255, 0.05) 80%
+  );
+}
+
+/* ---------- Mesh-подложка ----------
+   Три радиальных пятна под всем интерфейсом. Сознательно без filter: blur():
+   градиент с мягким переходом в transparent визуально эквивалентен размытому
+   пятну из мокапа, но не создаёт полноэкранный compositing-слой и не тратит
+   GPU на каждом кадре (ограничение из IMPLEMENTATION_PLAN: стекло и размытие
+   только там, где они дают заметный эффект). */
+.workspace::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: var(--mesh-opacity);
+  background:
+    radial-gradient(46vw 46vw at 6% -8%, var(--blob-1), transparent 70%),
+    radial-gradient(40vw 40vw at 96% 26%, var(--blob-2), transparent 68%),
+    radial-gradient(44vw 44vw at 38% 108%, var(--blob-3), transparent 70%);
+}
+
+/* Интерфейс всегда выше подложки. z-index работает и без position, потому что
+   это flex-элемент (CSS Flexbox: z-index applies to flex items) — а position
+   здесь задавать нельзя: правило перебило бы position: sticky у .sidebar в
+   продакшен-сборке (порядок файлов там другой, специфичность равная). */
+.workspace > * {
+  z-index: 1;
+}
+
+/* ---------- Spring-анимация появления ----------
+   Используется точечно (плитки KPI, карточки сводки), не на всём подряд. */
+@keyframes bento-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- Доступность ---------- */
+
+/* Полупрозрачные панели: при системном запрете прозрачности стекло
+   отключается, панели становятся плотными. */
+@media (prefers-reduced-transparency: reduce) {
+  .sidebar,
+  .topbar,
+  .drawer-panel,
+  .modal-panel,
+  .toast {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--surface-raised);
+  }
+
+  .workspace::before {
+    display: none;
+  }
+}
+
+/* Повышенная контрастность: убираем полупрозрачность поверхностей и
+   усиливаем границы — rgba-фоны карточек иначе могут схлопнуться
+   с подложкой и «потерять» край. */
+@media (prefers-contrast: more) {
+  :root {
+    --surface-app: #ffffff;
+    --surface-raised: #ffffff;
+    --surface-glass: #ffffff;
+    --surface-sunken: #e5eef9;
+    --border-subtle: rgba(11, 31, 51, 0.35);
+    --border-default: rgba(11, 31, 51, 0.55);
+    --border-strong: rgba(11, 31, 51, 0.75);
+    --mesh-opacity: 0.2;
+  }
+
+  [data-theme="dark"] {
+    --surface-app: #0b1f33;
+    --surface-raised: #14293c;
+    --surface-glass: #0b1f33;
+    --surface-sunken: #061423;
+    --border-subtle: rgba(255, 255, 255, 0.35);
+    --border-default: rgba(255, 255, 255, 0.55);
+    --border-strong: rgba(255, 255, 255, 0.75);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace::before {
+    animation: none;
+  }
+}

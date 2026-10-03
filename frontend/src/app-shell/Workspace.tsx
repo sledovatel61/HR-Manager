@@ -20,6 +20,7 @@ import { UpdateChannelPage } from "../features/updates/UpdateChannelPage";
 import { AdminPage } from "../features/admin/AdminPage";
 import { LicensePage } from "../features/license/LicensePage";
 import { SetupWizard } from "../features/notifications/SetupWizard";
+import MyQueuePage from "../features/queue/MyQueuePage";
 import { SettingsHub } from "./SettingsHub";
 import { SETTINGS_SECTIONS } from "./settingsGroups";
 import { SECTION_META, sectionsForRole } from "./workspaceSections";
@@ -158,6 +159,14 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
         </header>
 
         <main id="main-content" className="workspace-content" tabIndex={-1}>
+          {/* «Моя очередь»: сначала сводка дня, ниже — рабочий список
+              кандидатов в режиме queue (как и раньше). */}
+          {activeSection === "queue" && (
+            <MyQueuePage
+              onOpenCandidate={openCandidate}
+              onOpenNotifications={() => navigate("notifications")}
+            />
+          )}
           {activeSection === "calendar" && (
             <CalendarPage user={user} onOpenCandidate={openCandidate} />
           )}

@@ -68,6 +68,7 @@ from app.utils import (
     normalize_email,
     normalize_full_name,
     normalize_phone,
+    normalize_position,
     user_agent,
     utc_now,
 )
@@ -176,6 +177,7 @@ def _build_list_query(
     stage: CandidateStage | None,
     owner_id: UUID | None,
     source: CandidateSource | None,
+    position: str | None = None,
     include_deleted: bool = False,
 ) -> Select[tuple[Candidate]]:
     """Shared filter builder for list/count queries."""
@@ -206,6 +208,14 @@ def _build_list_query(
         conditions.append(Candidate.stage == stage)
     if source is not None:
         conditions.append(Candidate.source == source)
+    # Должность — свободный текст (справочника вакансий в проекте нет),
+    # поэтому сравниваем нормализованные значения: регистр и лишние пробелы
+    # не должны менять результат. Приведение делает Python (casefold), а не
+    # SQL lower() — иначе фильтр по кириллице зависел бы от локали БД.
+    if position is not None:
+        cleaned_position = normalize_position(position)
+        if cleaned_position:
+            conditions.append(Candidate.position_normalized == cleaned_position)
     # HRs are always scoped to themselves; managers/admins may filter by owner.
     if owner_id is not None and user.role != UserRole.HR:
         conditions.append(Candidate.owner_user_id == owner_id)
@@ -292,6 +302,7 @@ def list_candidates(
     stage: CandidateStage | None = Query(default=None),
     owner_id: UUID | None = Query(default=None),
     source: CandidateSource | None = Query(default=None),
+    position: str | None = Query(default=None, max_length=200),
     include_deleted: bool = Query(default=False),
     sort: str = Query(default="created_at"),
     direction: str = Query(default="desc", pattern="^(asc|desc)$"),
@@ -304,6 +315,8 @@ def list_candidates(
 
     * search matches full name (case-insensitive) plus normalized phone and
       email;
+    * ``position`` filters by the free-text position (case-insensitive exact
+      match — there is no vacancy directory, the value comes from the data);
     * HRs always see only their own candidates regardless of ``owner_id``;
       managers/admins may filter by owner;
     * soft-deleted candidates are excluded by default;
@@ -316,6 +329,7 @@ def list_candidates(
         stage=stage,
         owner_id=owner_id,
         source=source,
+        position=position,
         include_deleted=include_deleted,
     )
 
@@ -368,6 +382,7 @@ def create_candidate(
         email_normalized=normalize_email(email),
         source=payload.source,
         position=payload.position,
+        position_normalized=normalize_position(payload.position),
         owner_user_id=owner.id,
         stage=CandidateStage.NEW,
         stage_position=CANDIDATE_STAGE_POSITION[CandidateStage.NEW],
@@ -458,6 +473,7 @@ def update_candidate(
         changes.append(f"source={payload.source.value}")
     if payload.position is not None and payload.position != candidate.position:
         candidate.position = payload.position
+        candidate.position_normalized = normalize_position(payload.position)
         changes.append("position")
 
     # --- Phase 18: «Выход на работу» -------------------------------------

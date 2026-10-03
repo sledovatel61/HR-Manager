@@ -3,11 +3,12 @@
   max-width: 1100px;
 }
 .document-panel {
-  border: 1px solid var(--border-color, #dce1e5);
-  border-radius: 10px;
-  padding: 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
   margin: 16px 0;
-  background: var(--surface, #fff);
+  background: var(--surface-raised);
+  box-shadow: var(--card-shadow);
 }
 .document-form {
   display: grid;
@@ -22,12 +23,13 @@
 .document-form input,
 .document-form select,
 .document-form textarea {
-  border: 1px solid #aebbc2;
-  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--btn-radius);
   padding: 9px;
   font: inherit;
   color: inherit;
-  background: white;
+  /* Не white: в тёмной теме белое поле на тёмном фоне. */
+  background: var(--surface-app);
 }
 .document-form label:has(input[type="checkbox"]) {
   display: flex;
@@ -42,10 +44,10 @@
 .documents-page button,
 .document-panel button {
   padding: 8px 12px;
-  border: 1px solid #99aaa5;
-  border-radius: 6px;
-  background: #f4f8f6;
-  color: #194d3d;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--btn-radius);
+  background: var(--status-success-bg);
+  color: var(--status-success-fg);
   cursor: pointer;
   font: inherit;
 }
@@ -62,8 +64,14 @@
 .document-table th,
 .document-table td {
   padding: 10px;
-  border-bottom: 1px solid #dce1e5;
+  border-bottom: 1px solid var(--border-subtle);
   text-align: left;
+}
+
+.document-table th {
+  background: var(--table-head-bg);
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
 }
 .document-panel pre {
   white-space: pre-wrap;
@@ -71,7 +79,7 @@
 }
 .document-panel :focus-visible,
 .documents-page :focus-visible {
-  outline: 3px solid #307cbe;
+  outline: 2px solid var(--focus-ring-color);
   outline-offset: 3px;
 }
 
@@ -84,7 +92,7 @@
   padding: var(--space-2) var(--space-3);
   border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--surface-raised, #fff);
+  background: var(--surface-raised);
   color: var(--text-primary);
   cursor: pointer;
   font: inherit;
@@ -120,12 +128,12 @@
 
 .documents-intro {
   margin: 0 0 4px;
-  color: var(--text-secondary, #5b6b73);
+  color: var(--text-secondary);
   font-size: var(--text-size-sm, 13px);
 }
 
 .document-meta {
-  color: var(--text-tertiary, #8a97a0);
+  color: var(--text-tertiary);
   font-size: var(--text-size-xs, 12px);
   margin: 2px 0;
 }
@@ -167,7 +175,7 @@
   align-items: center;
   gap: 10px;
   padding-bottom: 8px;
-  color: var(--text-secondary, #5b6b73);
+  color: var(--text-secondary);
   font-size: var(--text-size-sm, 13px);
   white-space: nowrap;
 }
@@ -207,9 +215,9 @@
 }
 
 .rule-preview {
-  border: 1px solid var(--border-color, #dce1e5);
+  border: 1px solid var(--border-default);
   border-radius: 10px;
-  background: var(--surface-muted, #f4f8f6);
+  background: var(--surface-sunken);
   padding: 14px 16px;
   display: grid;
   gap: 8px;
@@ -227,7 +235,7 @@
 
 .rule-preview-missing {
   margin: 0;
-  color: var(--text-secondary, #5b6b73);
+  color: var(--text-secondary);
   border-left: 3px solid var(--accent-default);
   padding-left: 8px;
 }
@@ -239,22 +247,22 @@
 
 .rule-preview-timing {
   margin: 0;
-  color: var(--text-secondary, #5b6b73);
+  color: var(--text-secondary);
 }
 
 .rule-preview-text {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  background: var(--surface, #fff);
-  border: 1px solid var(--border-color, #dce1e5);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   padding: 8px 10px;
   font-size: var(--text-size-xs, 12px);
 }
 
 .rule-howto {
-  border-top: 1px solid var(--border-color, #dce1e5);
+  border-top: 1px solid var(--border-default);
   padding-top: 8px;
 }
 
@@ -268,7 +276,7 @@
   padding-left: 18px;
   display: grid;
   gap: 4px;
-  color: var(--text-secondary, #5b6b73);
+  color: var(--text-secondary);
 }
 
 /* UX feedback 2026-09-29, block F: recovery hint under an empty list picker. */

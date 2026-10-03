@@ -15,19 +15,35 @@
 
   /* ---------- Raw palette (not for direct component use) ---------- */
   --palette-white: #ffffff;
-  --palette-slate-25: #fbfbfd;
-  --palette-slate-50: #f6f7f9;
-  --palette-slate-100: #eef0f3;
-  --palette-slate-150: #e6e8ed;
-  --palette-slate-200: #dde0e6;
-  --palette-slate-300: #c4c9d4;
-  --palette-slate-400: #9aa1b2;
-  --palette-slate-500: #717889;
-  --palette-slate-600: #545b6b;
-  --palette-slate-700: #3b4150;
-  --palette-slate-800: #262b37;
-  --palette-slate-900: #171a22;
-  --palette-slate-950: #0d0f15;
+
+  /* Нейтральная шкала палитры «Лазурь» — холодный серо-синий, тонирован
+     под акцент (значения перенесены из design/mockups/bento-arctic.html). */
+  --palette-slate-25: #fbfdff;
+  --palette-slate-50: #f2f7fd;
+  --palette-slate-100: #e5eef9;
+  --palette-slate-150: #d8e5f5;
+  --palette-slate-200: #c5d9ef;
+  --palette-slate-300: #9fbddc;
+  --palette-slate-400: #6f95bb;
+  --palette-slate-500: #4e6b85;
+  --palette-slate-600: #3a5570;
+  --palette-slate-700: #24425c;
+  --palette-slate-800: #14293c;
+  --palette-slate-900: #0b1f33;
+  --palette-slate-950: #061423;
+
+  /* Акцентная шкала «Лазурь». Семантический акцент строится ТОЛЬКО из неё:
+     --palette-indigo-* оставлен статусу «индиго» (status-indigo), чтобы
+     будущий компонент с var(--palette-indigo-500) не получил акцент темы. */
+  --palette-accent-50: #e8f2fd;
+  --palette-accent-100: #cadffa;
+  --palette-accent-200: #bae6fd;
+  --palette-accent-300: #7dd3fc;
+  --palette-accent-400: #38bdf8;
+  --palette-accent-500: #0b6bcb;
+  --palette-accent-600: #0369a1;
+  --palette-accent-700: #075985;
+  --palette-accent-900: #08365c;
 
   --palette-indigo-50: #eef1ff;
   --palette-indigo-100: #dde3ff;
@@ -71,18 +87,21 @@
 
   /* ---------- Semantic: surfaces ---------- */
   --surface-canvas: var(--palette-slate-50);
-  --surface-app: var(--palette-white);
-  --surface-raised: var(--palette-white);
-  --surface-sunken: var(--palette-slate-25);
-  --surface-overlay: rgba(13, 15, 21, 0.48);
-  --surface-hover: var(--palette-slate-100);
-  --surface-pressed: var(--palette-slate-150);
-  --surface-selected: var(--palette-indigo-50);
-  --surface-selected-hover: var(--palette-indigo-100);
-  --surface-disabled: var(--palette-slate-100);
-  --surface-sidebar: var(--palette-slate-900);
-  --surface-sidebar-hover: rgba(255, 255, 255, 0.06);
-  --surface-sidebar-active: rgba(255, 255, 255, 0.1);
+  /* Bento: панели полупрозрачные — это даёт стеклянный слой поверх
+     mesh-подложки. Непрозрачность теряется только в prefers-contrast. */
+  --surface-app: rgba(255, 255, 255, 0.78);
+  --surface-raised: rgba(255, 255, 255, 0.86);
+  --surface-sunken: rgba(11, 31, 51, 0.035);
+  --surface-glass: rgba(255, 255, 255, 0.72);
+  --surface-overlay: rgba(6, 20, 35, 0.48);
+  --surface-hover: rgba(11, 31, 51, 0.05);
+  --surface-pressed: rgba(11, 31, 51, 0.09);
+  --surface-selected: var(--palette-accent-50);
+  --surface-selected-hover: var(--palette-accent-100);
+  --surface-disabled: rgba(11, 31, 51, 0.04);
+  --surface-sidebar: var(--surface-glass);
+  --surface-sidebar-hover: rgba(11, 31, 51, 0.05);
+  --surface-sidebar-active: var(--palette-accent-50);
 
   /* ---------- Semantic: text ---------- */
   --text-primary: var(--palette-slate-900);
@@ -90,24 +109,42 @@
   --text-tertiary: var(--palette-slate-500);
   --text-disabled: var(--palette-slate-400);
   --text-inverse: var(--palette-white);
-  --text-link: var(--palette-indigo-600);
+  --text-link: var(--palette-accent-600);
   --text-on-accent: var(--palette-white);
-  --text-sidebar: rgba(255, 255, 255, 0.86);
-  --text-sidebar-muted: rgba(255, 255, 255, 0.56);
+  --text-sidebar: var(--text-secondary);
+  --text-sidebar-muted: var(--text-tertiary);
 
   /* ---------- Semantic: borders ---------- */
-  --border-subtle: var(--palette-slate-150);
-  --border-default: var(--palette-slate-200);
-  --border-strong: var(--palette-slate-300);
-  --border-focus: var(--palette-indigo-500);
-  --border-sidebar: rgba(255, 255, 255, 0.08);
+  --border-subtle: rgba(11, 31, 51, 0.09);
+  --border-default: rgba(11, 31, 51, 0.14);
+  --border-strong: rgba(11, 31, 51, 0.24);
+  --border-focus: var(--palette-accent-500);
+  --border-sidebar: rgba(11, 31, 51, 0.08);
 
   /* ---------- Semantic: accent / brand ---------- */
-  --accent-default: var(--palette-indigo-600);
-  --accent-hover: var(--palette-indigo-700);
-  --accent-pressed: var(--palette-indigo-900);
-  --accent-subtle: var(--palette-indigo-50);
-  --accent-subtle-border: var(--palette-indigo-100);
+  --accent-default: var(--palette-accent-500);
+  /* Акцентный текст на заливке --accent-subtle: в светлой теме это тот же
+     --accent-default, в тёмной — на тон светлее (см. тёмный блок ниже). */
+  --accent-on-subtle: var(--accent-default);
+  /* accent-500 на более плотной заливке --surface-selected-hover даёт
+     3.88:1 — ниже AA. accent-700 (#075985) даёт 5.56:1. Меняется только цвет
+     текста на hover, сама заливка и базовое состояние не трогаются.
+     Пересчёт — python3 scripts/measure-contrast.py. */
+  --accent-on-subtle-hover: var(--palette-accent-700);
+  --accent-hover: var(--palette-accent-600);
+  --accent-pressed: var(--palette-accent-700);
+  --accent-subtle: var(--palette-accent-50);
+  --accent-subtle-border: var(--palette-accent-100);
+
+  /* Градиенты направления Bento.
+     --accent-gradient — декоративный (бренд-марка, mesh, шапки карточек):
+       под текстом не используется, самый светлый конец #0284c7 даёт 4.09:1
+       с белым, поэтому текста на нём быть не должно.
+     --accent-gradient-soft — под белый текст: оба конца ≥ 5.2:1. */
+  --accent-gradient: linear-gradient(135deg, #075985 0%, #0b6bcb 55%, #0284c7 100%);
+  --accent-gradient-soft: linear-gradient(135deg, #075985 0%, #0b6bcb 100%);
+  --glass-blur: 18px;
+  --glass-saturate: 160%;
 
   /* ---------- Semantic: status/feedback ---------- */
   --status-info-fg: var(--palette-indigo-700);
@@ -143,7 +180,7 @@
   --status-indigo-border: var(--palette-indigo-100);
 
   /* ---------- Focus ring ---------- */
-  --focus-ring-color: var(--palette-indigo-500);
+  --focus-ring-color: var(--palette-accent-500);
   --focus-ring: 0 0 0 2px var(--surface-app), 0 0 0 4px var(--focus-ring-color);
 
   /* ---------- Spacing scale (4px base) ---------- */
@@ -168,10 +205,12 @@
   --radius-full: 999px;
 
   /* ---------- Shadows / elevation ---------- */
-  --shadow-1: 0 1px 2px rgba(13, 15, 21, 0.06);
-  --shadow-2: 0 2px 8px rgba(13, 15, 21, 0.08);
-  --shadow-3: 0 8px 24px rgba(13, 15, 21, 0.12);
-  --shadow-4: 0 16px 48px rgba(13, 15, 21, 0.18);
+  /* Тени тонированы под палитру (tint 8, 45, 80) — в Bento они читаются
+     мягче нейтральных серых на холодном фоне. */
+  --shadow-1: 0 1px 2px rgba(8, 45, 80, 0.06);
+  --shadow-2: 0 2px 8px rgba(8, 45, 80, 0.08);
+  --shadow-3: 0 8px 24px -6px rgba(8, 45, 80, 0.14);
+  --shadow-4: 0 16px 48px -12px rgba(8, 45, 80, 0.2);
 
   /* ---------- Typography ---------- */
   --font-sans:
@@ -216,6 +255,8 @@
   --easing-standard: cubic-bezier(0.2, 0.0, 0, 1);
   --easing-decelerate: cubic-bezier(0, 0, 0.2, 1);
   --easing-accelerate: cubic-bezier(0.4, 0, 1, 1);
+  /* Пружина Bento — только для декоративного появления карточек/оверлеев. */
+  --easing-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
   /* ---------- Z-index layers ---------- */
   --z-base: 0;
@@ -233,38 +274,68 @@
   color-scheme: dark;
 
   --surface-canvas: var(--palette-slate-950);
-  --surface-app: var(--palette-slate-900);
-  --surface-raised: var(--palette-slate-800);
-  --surface-sunken: #14161d;
+
+  /* Базовые поверхности — белая подложка: они поднимают фон над canvas, и это
+     то самое «стекло» направления. */
+  --surface-app: rgba(255, 255, 255, 0.06);
+  --surface-raised: rgba(255, 255, 255, 0.09);
+  --surface-glass: rgba(255, 255, 255, 0.055);
   --surface-overlay: rgba(0, 0, 0, 0.6);
-  --surface-hover: rgba(255, 255, 255, 0.06);
-  --surface-pressed: rgba(255, 255, 255, 0.1);
-  --surface-selected: rgba(79, 94, 234, 0.18);
-  --surface-selected-hover: rgba(79, 94, 234, 0.28);
-  --surface-disabled: rgba(255, 255, 255, 0.06);
-  --surface-sidebar: #0a0b10;
-  --surface-sidebar-hover: rgba(255, 255, 255, 0.06);
-  --surface-sidebar-active: rgba(255, 255, 255, 0.1);
+  --surface-sidebar: rgba(255, 255, 255, 0.05);
 
-  --text-primary: var(--palette-slate-50);
-  --text-secondary: var(--palette-slate-300);
-  --text-tertiary: var(--palette-slate-400);
-  --text-disabled: var(--palette-slate-600);
-  --text-inverse: var(--palette-slate-900);
-  --text-link: var(--palette-indigo-300);
-  --text-sidebar: rgba(255, 255, 255, 0.88);
-  --text-sidebar-muted: rgba(255, 255, 255, 0.5);
+  /* Состояния — затемняющие, а не осветляющие. В тёмной теме любая белая
+     подложка состояния поднимает фон под текстом, а бюджет AA уже выбран
+     базовыми поверхностями и mesh-пятном: при --surface-hover 0.08 вторичный
+     текст на строке таблицы давал 4.03:1, при --surface-pressed 0.12 — 3.61:1.
+     Затемнение решает это разом и не трогает иерархию текста
+     (пересчёт — python3 scripts/measure-contrast.py). */
+  --surface-hover: rgba(6, 20, 35, 0.10);
+  --surface-pressed: rgba(6, 20, 35, 0.18);
+  --surface-sunken: rgba(6, 20, 35, 0.12);
+  --surface-disabled: rgba(6, 20, 35, 0.1);
+  --surface-sidebar-hover: rgba(6, 20, 35, 0.1);
 
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --border-default: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 255, 255, 0.2);
+  /* Выделение — не осветление, а сдвиг в индиго: так оно видно по тону и не
+     съедает контраст. На cyan-подложке (rgba(56,189,248,0.18)) третичный текст
+     давал 3.58:1, акцентный на .icon-btn-ghost.is-active — 3.22:1. */
+  --surface-selected: rgba(30, 58, 138, 0.45);
+  --surface-selected-hover: rgba(30, 58, 138, 0.62);
+  --surface-sidebar-active: rgba(30, 58, 138, 0.45);
+
+  --text-primary: #e9f2fb;
+  --text-secondary: #a6c2dc;
+  /* #8fb0cd не проходил AA (4.10:1 на карточке, лежащей поверх самого светлого
+     mesh-пятна) — осветлён до #9dbfda (4.82:1 в худшем случае). Пересчёт с
+     композитингом canvas → пятно → стекло → текст:
+     python3 scripts/measure-contrast.py */
+  --text-tertiary: #9dbfda;
+  --text-disabled: #6d8fae;
+  --text-inverse: var(--palette-slate-950);
+  --text-link: var(--palette-accent-300);
+  --text-on-accent: #06263a;
+  --text-sidebar: var(--text-secondary);
+  --text-sidebar-muted: var(--text-tertiary);
+
+  --border-subtle: rgba(255, 255, 255, 0.09);
+  --border-default: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.24);
   --border-sidebar: rgba(255, 255, 255, 0.08);
 
-  --accent-default: var(--palette-indigo-500);
-  --accent-hover: var(--palette-indigo-300);
-  --accent-pressed: var(--palette-indigo-100);
-  --accent-subtle: rgba(79, 94, 234, 0.16);
-  --accent-subtle-border: rgba(79, 94, 234, 0.32);
+  --accent-default: var(--palette-accent-400);
+  /* accent-400 (#38bdf8) на заливке --accent-subtle даёт 4.43:1 — ниже AA.
+     accent-300 (#7dd3fc) даёт запас; отдельный токен, чтобы не светлел акцент
+     кнопок и ссылок. Пересчёт — python3 scripts/measure-contrast.py. */
+  --accent-on-subtle: var(--palette-accent-300);
+  --accent-on-subtle-hover: var(--palette-accent-300);
+  --accent-hover: var(--palette-accent-300);
+  --accent-pressed: var(--palette-accent-200);
+  /* Та же логика, что у --surface-selected: осветляющая cyan-подложка съедала
+     контраст (акцентный текст на ней — 4.43:1), поэтому заливка уходит в
+     индиго. */
+  --accent-subtle: rgba(30, 58, 138, 0.45);
+  --accent-subtle-border: rgba(56, 189, 248, 0.4);
+  --accent-gradient: linear-gradient(135deg, #7dd3fc 0%, #38bdf8 55%, #22d3ee 100%);
+  --accent-gradient-soft: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
 
   --status-info-bg: rgba(79, 94, 234, 0.16);
   --status-info-fg: var(--palette-indigo-300);
@@ -298,7 +369,7 @@
   --status-indigo-fg: #a6b3ff;
   --status-indigo-border: rgba(79, 94, 234, 0.36);
 
-  --focus-ring-color: var(--palette-indigo-300);
+  --focus-ring-color: var(--palette-accent-300);
   --focus-ring: 0 0 0 2px var(--surface-app), 0 0 0 4px var(--focus-ring-color);
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);

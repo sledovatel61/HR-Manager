@@ -26,6 +26,7 @@ import { CandidateDrawer } from "./CandidateDrawer";
 import { CandidateFormModal } from "./CandidateFormModal";
 import { formatDate } from "./format";
 import { useCandidatesList } from "./useCandidatesList";
+import { usePositionOptions } from "./usePositionOptions";
 import "./candidates.css";
 
 const PAGE_SIZE = 20;
@@ -56,6 +57,7 @@ export default function CandidatesListPage({
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState<CandidateStage | "">("");
   const [source, setSource] = useState<CandidateSource | "">("");
+  const [position, setPosition] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [sort, setSort] = useState<SortField>("updated_at");
   const [direction, setDirection] = useState<"asc" | "desc">("desc");
@@ -68,6 +70,7 @@ export default function CandidatesListPage({
       query: query || undefined,
       stage: (stage || undefined) as CandidateStage | undefined,
       source: (source || undefined) as CandidateSource | undefined,
+      position: position || undefined,
       owner_id: canSeeAll && ownerId ? ownerId : undefined,
       include_deleted: isDeleted,
       sort,
@@ -75,10 +78,41 @@ export default function CandidatesListPage({
       limit: PAGE_SIZE,
       offset,
     }),
-    [query, stage, source, ownerId, canSeeAll, isDeleted, sort, direction, offset]
+    [query, stage, source, position, ownerId, canSeeAll, isDeleted, sort, direction, offset]
   );
 
   const { items, total, loading, error, reload } = useCandidatesList(queryObject);
+  const positionOptions = usePositionOptions({
+    owner_id: canSeeAll && ownerId ? ownerId : undefined,
+    include_deleted: isDeleted,
+  });
+
+  const activeFilters = useMemo(
+    () => [
+      stage && { key: "stage", label: "Этап", value: STAGE_LABELS[stage] },
+      source && { key: "source", label: "Источник", value: SOURCE_LABELS[source] },
+      position && { key: "position", label: "Должность", value: position },
+      canSeeAll && ownerId && { key: "owner", label: "Ответственный", value: ownerId },
+    ].filter(Boolean) as { key: string; label: string; value: string }[],
+    [stage, source, position, ownerId, canSeeAll]
+  );
+
+  const resetFilters = () => {
+    setQuery("");
+    setStage("");
+    setSource("");
+    setPosition("");
+    setOwnerId("");
+    setOffset(0);
+  };
+
+  const clearFilter = (key: string) => {
+    if (key === "stage") setStage("");
+    if (key === "source") setSource("");
+    if (key === "position") setPosition("");
+    if (key === "owner") setOwnerId("");
+    setOffset(0);
+  };
 
   useEffect(() => {
     if (openCandidateId) {
@@ -159,6 +193,26 @@ export default function CandidatesListPage({
             )}
           </Field>
 
+          <Field label="Должность">
+            {(id) => (
+              <SelectInput
+                id={id}
+                value={position}
+                onChange={(event) => {
+                  setPosition(event.target.value);
+                  setOffset(0);
+                }}
+              >
+                <option value="">Все должности</option>
+                {positionOptions.positions.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </SelectInput>
+            )}
+          </Field>
+
           {canSeeAll && (
             <OwnerFilter
               value={ownerId}
@@ -199,7 +253,33 @@ export default function CandidatesListPage({
               </div>
             )}
           </Field>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={resetFilters}
+            disabled={activeFilters.length === 0 && !query}
+          >
+            Сбросить фильтры
+          </Button>
         </div>
+
+        {activeFilters.length > 0 && (
+          <div className="filter-chips" aria-label="Активные фильтры">
+            {activeFilters.map((filter) => (
+              <span key={filter.key} className="filter-chip">
+                <span className="filter-chip-label">{filter.label}:</span> {filter.value}
+                <button
+                  type="button"
+                  className="filter-chip-remove"
+                  aria-label={`Сбросить фильтр «${filter.label}»`}
+                  onClick={() => clearFilter(filter.key)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {loading && <SkeletonRows rows={6} columns={6} />}
@@ -219,7 +299,7 @@ export default function CandidatesListPage({
       )}
 
       {!loading && !error && items.length > 0 && (
-        <div className="table-wrap">
+        <div className="bento-table-scroll">
           <table className="candidates-table">
             <thead>
               <tr>

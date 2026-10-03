@@ -10,9 +10,9 @@
   width: 36px;
   height: 36px;
   border-radius: 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-default);
   background: transparent;
-  color: var(--text);
+  color: var(--text-primary);
   cursor: pointer;
 }
 
@@ -28,8 +28,8 @@
   height: 18px;
   padding: 0 5px;
   border-radius: 999px;
-  background: var(--accent);
-  color: #08111f;
+  background: var(--accent-default);
+  color: var(--text-on-accent);
   font-size: 0.7rem;
   font-weight: 700;
   display: flex;
@@ -42,8 +42,8 @@
   top: calc(100% + 10px);
   right: 0;
   width: min(360px, 92vw);
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
   border-radius: 14px;
   box-shadow: 0 16px 48px rgba(2, 8, 23, 0.6);
   z-index: 40;
@@ -55,7 +55,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-default);
   font-size: 0.85rem;
   font-weight: 600;
 }
@@ -94,7 +94,7 @@
 
 .bell-item-body {
   font-size: 0.78rem;
-  color: var(--muted);
+  color: var(--text-tertiary);
   margin: 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -104,7 +104,7 @@
 
 .bell-item-time {
   font-size: 0.7rem;
-  color: var(--muted);
+  color: var(--text-tertiary);
   white-space: nowrap;
 }
 
@@ -112,7 +112,7 @@
   display: flex;
   gap: 8px;
   padding: 10px 14px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-default);
 }
 
 /* --- Shared layout for the three sections ---------------------------------- */
@@ -144,8 +144,8 @@
   gap: 12px;
   align-items: flex-start;
   padding: 14px 16px;
-  background: linear-gradient(180deg, var(--panel), #0e1729);
-  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
 }
 
@@ -165,14 +165,14 @@
 
 .notif-card-body {
   margin: 0 0 6px;
-  color: var(--muted);
+  color: var(--text-tertiary);
   font-size: 0.85rem;
   white-space: pre-wrap;
 }
 
 .notif-card-meta {
   font-size: 0.72rem;
-  color: var(--muted);
+  color: var(--text-tertiary);
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
@@ -190,7 +190,7 @@
   gap: 10px;
   align-items: center;
   padding: 10px 12px;
-  border: 1px dashed var(--border);
+  border: 1px dashed var(--border-default);
   border-radius: 10px;
   font-size: 0.82rem;
 }
@@ -201,7 +201,7 @@
   align-items: center;
   justify-content: center;
   font-size: 0.85rem;
-  color: var(--muted);
+  color: var(--text-tertiary);
 }
 
 /* --- Reminder form ---------------------------------------------------------- */
@@ -211,8 +211,8 @@
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
   padding: 14px 16px;
-  background: linear-gradient(180deg, var(--panel), #0e1729);
-  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
 }
 
@@ -224,8 +224,8 @@
 
 .pref-card {
   padding: 16px;
-  background: linear-gradient(180deg, var(--panel), #0e1729);
-  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
   display: flex;
   flex-direction: column;
@@ -250,10 +250,10 @@
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-default);
   border-radius: 999px;
   background: transparent;
-  color: var(--text);
+  color: var(--text-primary);
   font-size: 0.8rem;
   cursor: pointer;
 }
@@ -273,9 +273,9 @@
 
 .queue-card {
   padding: 12px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
-  background: var(--panel);
+  background: var(--surface-raised);
   text-align: center;
 }
 
@@ -286,7 +286,7 @@
 
 .queue-card-label {
   font-size: 0.75rem;
-  color: var(--muted);
+  color: var(--text-tertiary);
 }
 
 .channel-row {
@@ -294,9 +294,9 @@
   justify-content: space-between;
   align-items: center;
   padding: 10px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-default);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--surface-raised);
   font-size: 0.85rem;
 }
 
@@ -310,10 +310,10 @@
   font-weight: 600;
 }
 
-.status-pill.ok { background: rgba(52, 211, 153, 0.12); color: var(--ok); }
-.status-pill.warn { background: rgba(251, 191, 36, 0.12); color: var(--checking); }
-.status-pill.bad { background: rgba(248, 113, 113, 0.12); color: var(--bad); }
-.status-pill.neutral { background: rgba(147, 163, 189, 0.12); color: var(--muted); }
+.status-pill.ok { background: rgba(52, 211, 153, 0.12); color: var(--status-success-fg); }
+.status-pill.warn { background: rgba(251, 191, 36, 0.12); color: var(--status-warning-fg); }
+.status-pill.bad { background: rgba(248, 113, 113, 0.12); color: var(--status-danger-fg); }
+.status-pill.neutral { background: rgba(147, 163, 189, 0.12); color: var(--text-tertiary); }
 
 @media (max-width: 640px) {
   .bell-popover {
@@ -342,7 +342,7 @@
 .link-code-block {
   margin-top: 12px;
   padding: 12px 14px;
-  border: 1px dashed var(--border);
+  border: 1px dashed var(--border-default);
   border-radius: 10px;
   background: rgba(147, 163, 189, 0.06);
 }
@@ -367,7 +367,7 @@
   align-items: flex-start;
   margin-top: 12px;
   padding: 10px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-default);
   border-radius: 10px;
   background: rgba(147, 163, 189, 0.06);
   font-size: 0.85rem;
@@ -424,5 +424,5 @@
 
 .reminder-candidate-list button:hover,
 .reminder-candidate-list button:focus-visible {
-  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
+  background: var(--surface-hover);
 }
