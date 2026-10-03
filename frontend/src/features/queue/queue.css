@@ -233,6 +233,9 @@
 
 .queue-link:hover {
   background: var(--surface-selected-hover);
+  /* Зачем свой цвет: accent-500 на этой заливке даёт 3.88:1 (светлая тема) —
+     ниже AA. Заливка плотнее базовой, поэтому текст на ней темнее. */
+  color: var(--accent-on-subtle-hover);
 }
 
 @media (prefers-reduced-motion: reduce) {
