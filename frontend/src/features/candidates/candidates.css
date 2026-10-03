@@ -149,7 +149,7 @@
   height: 28px;
   border-radius: var(--radius-full);
   background: var(--accent-subtle);
-  color: var(--accent-default);
+  color: var(--accent-on-subtle);
   font-size: 10px;
   font-weight: var(--font-weight-semibold);
   flex-shrink: 0;
@@ -189,7 +189,7 @@
   border-radius: var(--chip-radius);
   border: 1px solid var(--accent-subtle-border);
   background: var(--accent-subtle);
-  color: var(--accent-default);
+  color: var(--accent-on-subtle);
   font-size: var(--text-size-xs);
   font-weight: var(--font-weight-medium);
 }

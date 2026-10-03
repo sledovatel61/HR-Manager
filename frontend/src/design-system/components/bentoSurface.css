@@ -73,7 +73,7 @@
   --nav-icon: var(--text-tertiary);
   --nav-radius: var(--radius-lg);
   --nav-active-bg: var(--accent-subtle);
-  --nav-active-fg: var(--accent-default);
+  --nav-active-fg: var(--accent-on-subtle);
   --nav-active-shadow: var(--shadow-1);
   --nav-marker: var(--accent-default);
   --nav-badge-bg: var(--accent-subtle);
@@ -88,15 +88,14 @@
 }
 
 [data-theme="dark"] {
-  /* Пятна на тон темнее светлых (#0284c7/#4f46e5/#0891b2 → sky-700/indigo-700/
-     cyan-700): в тёмной теме подложка просвечивает сквозь полупрозрачные
-     карточки, и на cyan-600 третичный текст падал до 4.17:1 — ниже AA 4.5:1.
-     Прозрачность подложки от этого не пострадала: --mesh-opacity тот же 0.4,
-     меняется только насыщенность самого пятна. Пересчёт —
-     python3 scripts/measure-contrast.py */
-  --blob-1: #0369a1;
-  --blob-2: #4338ca;
-  --blob-3: #0e7490;
+  /* Пятна заметно темнее светлых (#7dd3fc/#a5b4fc/#67e8f9): в тёмной теме
+     подложка просвечивает сквозь полупрозрачные карточки, и на cyan-600
+     третичный текст падал до 4.17:1 — ниже AA 4.5:1. Прозрачность подложки от
+     этого не страдает: --mesh-opacity тот же 0.4, меняется только сам тон.
+     Пересчёт — python3 scripts/measure-contrast.py */
+  --blob-1: #075985;
+  --blob-2: #3730a3;
+  --blob-3: #155e75;
   --mesh-opacity: 0.4;
 
   --cat-indigo-1: #6366f1;

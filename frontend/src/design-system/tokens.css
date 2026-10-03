@@ -123,6 +123,9 @@
 
   /* ---------- Semantic: accent / brand ---------- */
   --accent-default: var(--palette-accent-500);
+  /* Акцентный текст на заливке --accent-subtle: в светлой теме это тот же
+     --accent-default, в тёмной — на тон светлее (см. тёмный блок ниже). */
+  --accent-on-subtle: var(--accent-default);
   --accent-hover: var(--palette-accent-600);
   --accent-pressed: var(--palette-accent-700);
   --accent-subtle: var(--palette-accent-50);
@@ -266,19 +269,33 @@
   color-scheme: dark;
 
   --surface-canvas: var(--palette-slate-950);
+
+  /* Базовые поверхности — белая подложка: они поднимают фон над canvas, и это
+     то самое «стекло» направления. */
   --surface-app: rgba(255, 255, 255, 0.06);
   --surface-raised: rgba(255, 255, 255, 0.09);
-  --surface-sunken: rgba(255, 255, 255, 0.03);
   --surface-glass: rgba(255, 255, 255, 0.055);
   --surface-overlay: rgba(0, 0, 0, 0.6);
-  --surface-hover: rgba(255, 255, 255, 0.08);
-  --surface-pressed: rgba(255, 255, 255, 0.12);
-  --surface-selected: rgba(56, 189, 248, 0.18);
-  --surface-selected-hover: rgba(56, 189, 248, 0.28);
-  --surface-disabled: rgba(255, 255, 255, 0.04);
   --surface-sidebar: rgba(255, 255, 255, 0.05);
-  --surface-sidebar-hover: rgba(255, 255, 255, 0.08);
-  --surface-sidebar-active: rgba(56, 189, 248, 0.18);
+
+  /* Состояния — затемняющие, а не осветляющие. В тёмной теме любая белая
+     подложка состояния поднимает фон под текстом, а бюджет AA уже выбран
+     базовыми поверхностями и mesh-пятном: при --surface-hover 0.08 вторичный
+     текст на строке таблицы давал 4.03:1, при --surface-pressed 0.12 — 3.61:1.
+     Затемнение решает это разом и не трогает иерархию текста
+     (пересчёт — python3 scripts/measure-contrast.py). */
+  --surface-hover: rgba(6, 20, 35, 0.10);
+  --surface-pressed: rgba(6, 20, 35, 0.18);
+  --surface-sunken: rgba(6, 20, 35, 0.12);
+  --surface-disabled: rgba(6, 20, 35, 0.1);
+  --surface-sidebar-hover: rgba(6, 20, 35, 0.1);
+
+  /* Выделение — не осветление, а сдвиг в индиго: так оно видно по тону и не
+     съедает контраст. На cyan-подложке (rgba(56,189,248,0.18)) третичный текст
+     давал 3.58:1, акцентный на .icon-btn-ghost.is-active — 3.22:1. */
+  --surface-selected: rgba(30, 58, 138, 0.45);
+  --surface-selected-hover: rgba(30, 58, 138, 0.62);
+  --surface-sidebar-active: rgba(30, 58, 138, 0.45);
 
   --text-primary: #e9f2fb;
   --text-secondary: #a6c2dc;
@@ -300,9 +317,16 @@
   --border-sidebar: rgba(255, 255, 255, 0.08);
 
   --accent-default: var(--palette-accent-400);
+  /* accent-400 (#38bdf8) на заливке --accent-subtle даёт 4.43:1 — ниже AA.
+     accent-300 (#7dd3fc) даёт запас; отдельный токен, чтобы не светлел акцент
+     кнопок и ссылок. Пересчёт — python3 scripts/measure-contrast.py. */
+  --accent-on-subtle: var(--palette-accent-300);
   --accent-hover: var(--palette-accent-300);
   --accent-pressed: var(--palette-accent-200);
-  --accent-subtle: rgba(56, 189, 248, 0.18);
+  /* Та же логика, что у --surface-selected: осветляющая cyan-подложка съедала
+     контраст (акцентный текст на ней — 4.43:1), поэтому заливка уходит в
+     индиго. */
+  --accent-subtle: rgba(30, 58, 138, 0.45);
   --accent-subtle-border: rgba(56, 189, 248, 0.4);
   --accent-gradient: linear-gradient(135deg, #7dd3fc 0%, #38bdf8 55%, #22d3ee 100%);
   --accent-gradient-soft: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
