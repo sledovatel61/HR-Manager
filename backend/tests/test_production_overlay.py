@@ -136,6 +136,25 @@ def test_backup_service_has_no_ports_in_production(prod_overlay: dict[str, Any])
     assert prod_overlay["services"]["backup"]["ports"] == []
 
 
+def test_backup_image_bakes_the_whole_migration_chain() -> None:
+    """The restore drill migrates the restored database *inside the image*.
+
+    ``app/backup_runner.py`` runs ``alembic upgrade head`` with
+    ``alembic_dir`` defaulting to the parent of ``app/`` — i.e. ``/app`` in the
+    container (``RunnerConfig.from_settings``), where ``Dockerfile.backup``
+    copies ``backend/alembic``. An image built before a migration existed
+    cannot resolve a newer backup and the drill dies with
+    «Can't locate revision identified by '<rev>'» — a stale image, not a
+    broken migration. This test keeps the COPY (and its breadth) in place.
+    """
+    dockerfile = BACKUP_DOCKERFILE.read_text()
+    assert "COPY backend/alembic.ini ./" in dockerfile
+    assert "COPY backend/alembic ./alembic" in dockerfile
+    # Nothing narrows the copy to a revision range (no .dockerignore-style
+    # filter inside the Dockerfile).
+    assert "COPY backend/alembic/versions" not in dockerfile
+
+
 def test_prod_backend_does_not_auto_migrate(prod_overlay: dict[str, Any]) -> None:
     command = prod_overlay["services"]["backend"]["command"]
     assert "uvicorn" in str(command)

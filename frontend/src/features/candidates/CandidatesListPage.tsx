@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   deleteCandidate,
@@ -53,6 +53,10 @@ export default function CandidatesListPage({
 }: CandidatesListPageProps) {
   const isDeleted = mode === "deleted";
   const canSeeAll = user.role !== "hr";
+  // «Моя очередь» — личная область для всех ролей. Без этого запрос руководителя
+  // или администратора уходил без owner_id и возвращал общую базу, хотя заголовок
+  // раздела обещает моих кандидатов (то же правило, что и у сводки очереди).
+  const isMyQueue = mode === "queue";
 
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState<CandidateStage | "">("");
@@ -65,27 +69,53 @@ export default function CandidatesListPage({
   const [createOpen, setCreateOpen] = useState(false);
   const [drawerCandidateId, setDrawerCandidateId] = useState<string | null>(null);
 
+  // В «Моей очереди» ответственный по умолчанию — я; руководитель может явно
+  // переключиться на коллегу своим фильтром.
+  const scopeOwnerId = isMyQueue
+    ? ownerId || user.id
+    : canSeeAll && ownerId
+      ? ownerId
+      : undefined;
+
   const queryObject = useMemo(
     () => ({
       query: query || undefined,
       stage: (stage || undefined) as CandidateStage | undefined,
       source: (source || undefined) as CandidateSource | undefined,
       position: position || undefined,
-      owner_id: canSeeAll && ownerId ? ownerId : undefined,
+      owner_id: scopeOwnerId,
       include_deleted: isDeleted,
       sort,
       direction,
       limit: PAGE_SIZE,
       offset,
     }),
-    [query, stage, source, position, ownerId, canSeeAll, isDeleted, sort, direction, offset]
+    [
+      query,
+      stage,
+      source,
+      position,
+      scopeOwnerId,
+      isDeleted,
+      sort,
+      direction,
+      offset,
+    ]
   );
 
   const { items, total, loading, error, reload } = useCandidatesList(queryObject);
   const positionOptions = usePositionOptions({
-    owner_id: canSeeAll && ownerId ? ownerId : undefined,
+    owner_id: scopeOwnerId,
     include_deleted: isDeleted,
   });
+
+  /** Кандидат изменился — перечитываем и список, и справочник должностей:
+   *  новая или исправленная должность должна появиться в подсказках. */
+  const { reload: reloadPositions } = positionOptions;
+  const reloadWithPositions = useCallback(() => {
+    reload();
+    reloadPositions();
+  }, [reload, reloadPositions]);
 
   const activeFilters = useMemo(
     () => [
@@ -193,7 +223,10 @@ export default function CandidatesListPage({
             )}
           </Field>
 
-          <Field label="Должность">
+          <Field
+            label="Должность"
+            error={positionOptions.error ?? undefined}
+          >
             {(id) => (
               <SelectInput
                 id={id}
@@ -212,6 +245,12 @@ export default function CandidatesListPage({
               </SelectInput>
             )}
           </Field>
+
+          {positionOptions.error && (
+            <Button variant="ghost" size="sm" onClick={positionOptions.reload}>
+              Обновить должности
+            </Button>
+          )}
 
           {canSeeAll && (
             <OwnerFilter
@@ -346,9 +385,9 @@ export default function CandidatesListPage({
                   <td>{formatDate(candidate.updated_at)}</td>
                   <td className="row-actions">
                     {isDeleted ? (
-                      <RestoreAction candidate={candidate} onDone={reload} />
+                      <RestoreAction candidate={candidate} onDone={reloadWithPositions} />
                     ) : (
-                      <DeleteAction candidate={candidate} onDone={reload} />
+                      <DeleteAction candidate={candidate} onDone={reloadWithPositions} />
                     )}
                   </td>
                 </tr>
@@ -392,7 +431,7 @@ export default function CandidatesListPage({
           candidateId={drawerCandidateId}
           user={user}
           onClose={() => setDrawerCandidateId(null)}
-          onChanged={reload}
+          onChanged={reloadWithPositions}
           onOpenCandidate={(id) => setDrawerCandidateId(id)}
         />
       )}
@@ -403,7 +442,7 @@ export default function CandidatesListPage({
         onClose={() => setCreateOpen(false)}
         onCreated={(candidate) => {
           setCreateOpen(false);
-          reload();
+          reloadWithPositions();
           if (!candidate.is_deleted) setDrawerCandidateId(candidate.id);
         }}
         onOpenCandidate={(id) => setDrawerCandidateId(id)}

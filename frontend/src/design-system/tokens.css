@@ -350,7 +350,9 @@
   --status-warning-border: rgba(179, 118, 10, 0.38);
 
   --status-danger-bg: rgba(194, 59, 48, 0.2);
-  --status-danger-fg: #f18b81;
+  /* Было #f18b81: 4.32:1 на базовых поверхностях и 4.12:1 на --status-danger-bg
+     в тёмной теме — ниже AA. Тот же тон и насыщенность, светлее. */
+  --status-danger-fg: #f6a79e;
   --status-danger-border: rgba(194, 59, 48, 0.38);
 
   --status-neutral-bg: rgba(255, 255, 255, 0.08);

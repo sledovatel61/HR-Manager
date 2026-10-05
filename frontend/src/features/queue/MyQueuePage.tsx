@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { listCandidates, listEvents, unreadCount } from "../../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getQueueSummary, unreadCount } from "../../api";
 import { Button } from "../../design-system/components/Button";
 import { ErrorState } from "../../design-system/components/StateViews";
 import { Icon } from "../../design-system/icons/Icon";
@@ -7,32 +7,41 @@ import {
   CANDIDATE_STAGE_ORDER,
   EVENT_TYPE_LABELS,
   STAGE_LABELS,
-  type CalendarEvent,
-  type Candidate,
   type CandidateStage,
+  type QueueStuckCandidate,
+  type QueueSummary,
+  type QueueUpcomingEvent,
 } from "../../types";
 import "./queue.css";
 
 /**
- * «Моя очередь» — персональная сводка HR (требование заказчика §7.2).
+ * «Моя очередь» — персональная сводка (требование заказчика §7.2).
  *
- * Данные берутся только из существующих endpoint'ов (GET /candidates,
- * GET /events, GET /notifications/unread-count); новых полей и API не
- * заведено. Все показатели считаются на клиенте из уже загруженных данных —
- * сервер остаётся источником фактов, сводка ничего не «додумывает».
+ * Показатели считает сервер: `GET /candidates/queue/summary` агрегирует **всю**
+ * личную область видимости и отдаёт числа плюс две ограниченные выборки для
+ * карточек. Раньше экран скачивал 100 самых свежих по `updated_at` кандидатов и
+ * считал всё в браузере — но кандидат, который ждёт три недели, по определению
+ * не попадает в сотню самых свежих, поэтому «Без движения» и «Требуют внимания»
+ * систематически занижались, а плитки KPI выдавали страницу за всю очередь.
+ *
+ * Область видимости личная для всех ролей (HR, руководитель, администратор,
+ * пилот): раздел называется «Моя очередь», а не «Общая база».
+ *
+ * Завершённые и отменённые события сервер в выборку не включает: выполненное
+ * событие — не то, что требует действия.
  *
  * Экран не меняет функциональность: под сводкой продолжает работать обычный
- * список кандидатов в режиме «queue».
+ * список кандидатов в режиме «queue» (с той же персональной областью).
  */
 
-const DIRECTORY_LIMIT = 100;
-
-/** Этапы, на которых кандидат уже не «в работе». */
+/** Этапы, на которых кандидат уже не «в работе» (зеркало контракта сервера). */
 const CLOSED_STAGES: CandidateStage[] = ["hired", "started", "probation", "fired", "rejected"];
 const WORK_STAGES = CANDIDATE_STAGE_ORDER.filter((stage) => !CLOSED_STAGES.includes(stage));
 
-/** Сколько дней без движения считаем застоем. */
-const STUCK_DAYS = 3;
+/** Сколько кандидатов показываем в карточке «Требуют внимания». */
+const STUCK_CARD_LIMIT = 5;
+/** Сколько событий показываем в карточке «Ближайшие события». */
+const EVENTS_CARD_LIMIT = 6;
 
 /** Цвет полосы воронки — категориальные токены направления (--cat-*). */
 const STAGE_CAT: Record<CandidateStage, string> = {
@@ -50,23 +59,8 @@ const STAGE_CAT: Record<CandidateStage, string> = {
 };
 
 interface QueueData {
-  candidates: Candidate[];
-  events: CalendarEvent[];
+  summary: QueueSummary;
   unread: number;
-}
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-function startOfToday(): Date {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
-}
-
-function isWithinDays(iso: string | null, from: Date, days: number): boolean {
-  if (!iso) return false;
-  const value = new Date(iso).getTime();
-  if (Number.isNaN(value)) return false;
-  return value >= from.getTime() && value < from.getTime() + days * MS_PER_DAY;
 }
 
 function formatDayTime(iso: string): string {
@@ -90,32 +84,32 @@ export default function MyQueuePage({ onOpenCandidate, onOpenNotifications }: My
   const [data, setData] = useState<QueueData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** Сводка уже была загружена, но обновление не удалось: показываем отметку
+   *  об устаревших данных, а не молча старые цифры. */
+  const [stale, setStale] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  const hasData = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const today = startOfToday();
-    const week = new Date(today.getTime() + 7 * MS_PER_DAY);
-    Promise.all([
-      listCandidates({ limit: DIRECTORY_LIMIT, sort: "updated_at", direction: "desc" }),
-      listEvents({
-        from: today.toISOString(),
-        to: week.toISOString(),
-        sort: "starts_at",
-        direction: "asc",
-        limit: 20,
-      }),
-      unreadCount(),
-    ])
-      .then(([candidates, events, unread]) => {
+    Promise.all([getQueueSummary(), unreadCount()])
+      .then(([summary, unread]) => {
         if (cancelled) return;
-        setData({ candidates: candidates.items, events: events.items, unread: unread.count });
+        hasData.current = true;
+        setData({ summary, unread: unread.count });
+        setStale(false);
       })
       .catch(() => {
         if (cancelled) return;
-        setError("Не удалось загрузить сводку очереди.");
+        // Первая загрузка — состояние ошибки; повторная — отметка устаревших
+        // данных (пользователь видит, что цифры могут быть неактуальными).
+        if (hasData.current) {
+          setStale(true);
+        } else {
+          setError("Не удалось загрузить сводку очереди.");
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -128,26 +122,35 @@ export default function MyQueuePage({ onOpenCandidate, onOpenNotifications }: My
   const reload = useCallback(() => setReloadTick((tick) => tick + 1), []);
 
   const summary = useMemo(() => {
-    const candidates = data?.candidates ?? [];
-    const today = startOfToday();
-    const dayAgo = new Date(Date.now() - MS_PER_DAY);
-    const inWork = candidates.filter((item) => !CLOSED_STAGES.includes(item.stage));
-    const fresh = candidates.filter((item) => new Date(item.created_at) >= dayAgo);
-    const stuck = inWork.filter(
-      (item) => new Date(item.updated_at).getTime() < Date.now() - STUCK_DAYS * MS_PER_DAY,
-    );
-    const starts = candidates.filter((item) => isWithinDays(item.start_date, today, 7));
+    const source = data?.summary;
+    const counts = new Map(source?.by_stage.map((row) => [row.stage, row.count]) ?? []);
     const byStage = WORK_STAGES.map((stage) => ({
       stage,
       label: STAGE_LABELS[stage],
-      count: candidates.filter((item) => item.stage === stage).length,
+      count: counts.get(stage) ?? 0,
       cat: STAGE_CAT[stage],
     }));
     const maxStage = Math.max(1, ...byStage.map((row) => row.count));
-    return { total: candidates.length, inWork: inWork.length, fresh: fresh.length, stuck, starts, byStage, maxStage };
+    return {
+      total: source?.total ?? 0,
+      inWork: source?.in_work ?? 0,
+      fresh: source?.fresh ?? 0,
+      stuck: source?.stuck ?? 0,
+      starts: source?.starts ?? 0,
+      stuckSample: source?.stuck_sample ?? [],
+      // Подписи плиток берут фактические окна сервера, а не локальные константы.
+      stuckDays: source?.stuck_days ?? 3,
+      horizonDays: source?.horizon_days ?? 7,
+      byStage,
+      maxStage,
+    };
   }, [data]);
 
-  const events = data?.events ?? [];
+  const events: QueueUpcomingEvent[] = data?.summary.upcoming_events ?? [];
+  const eventsTotal = data?.summary.upcoming_events_total ?? 0;
+  const eventsTruncated = data?.summary.upcoming_events_truncated ?? false;
+  const stuckSample: QueueStuckCandidate[] = summary.stuckSample;
+  const stuckTruncated = data?.summary.stuck_sample_truncated ?? false;
 
   if (loading && !data) {
     return (
@@ -181,6 +184,19 @@ export default function MyQueuePage({ onOpenCandidate, onOpenNotifications }: My
         </Button>
       </header>
 
+      {stale && (
+        <div className="queue-stale" role="status">
+          <span>
+            Не удалось обновить сводку — показаны данные на{" "}
+            {data ? formatDayTime(data.summary.generated_at) : "—"}. Цифры могут быть
+            неактуальными.
+          </span>
+          <Button variant="secondary" size="sm" onClick={reload} disabled={loading}>
+            Повторить
+          </Button>
+        </div>
+      )}
+
       <dl className="queue-kpis">
         <div className="queue-kpi">
           <dt className="queue-kpi-label">В работе</dt>
@@ -191,12 +207,12 @@ export default function MyQueuePage({ onOpenCandidate, onOpenNotifications }: My
           <dd className="queue-kpi-value">{summary.fresh}</dd>
         </div>
         <div className="queue-kpi queue-kpi-warning">
-          <dt className="queue-kpi-label">Без движения {STUCK_DAYS}+ дня</dt>
-          <dd className="queue-kpi-value">{summary.stuck.length}</dd>
+          <dt className="queue-kpi-label">Без движения {summary.stuckDays}+ дня</dt>
+          <dd className="queue-kpi-value">{summary.stuck}</dd>
         </div>
         <div className="queue-kpi">
-          <dt className="queue-kpi-label">Выходы на неделе</dt>
-          <dd className="queue-kpi-value">{summary.starts.length}</dd>
+          <dt className="queue-kpi-label">Выходы на {summary.horizonDays} дней</dt>
+          <dd className="queue-kpi-value">{summary.starts}</dd>
         </div>
       </dl>
 
@@ -225,10 +241,10 @@ export default function MyQueuePage({ onOpenCandidate, onOpenNotifications }: My
         <article className="queue-card">
           <h3 className="queue-card-title">Ближайшие события</h3>
           {events.length === 0 ? (
-            <p className="queue-empty">На ближайшие 7 дней событий нет.</p>
+            <p className="queue-empty">На ближайшие {summary.horizonDays} дней событий нет.</p>
           ) : (
             <ul className="queue-events">
-              {events.slice(0, 6).map((event) => (
+              {events.slice(0, EVENTS_CARD_LIMIT).map((event) => (
                 <li key={event.id} className="queue-event">
                   <span className="queue-event-time">{formatDayTime(event.starts_at)}</span>
                   <span className="queue-event-body">
@@ -247,15 +263,21 @@ export default function MyQueuePage({ onOpenCandidate, onOpenNotifications }: My
               ))}
             </ul>
           )}
+          {eventsTruncated && (
+            <p className="queue-card-more">
+              Показаны первые {Math.min(events.length, EVENTS_CARD_LIMIT)} из {eventsTotal} —
+              полный список в разделе «Календарь».
+            </p>
+          )}
         </article>
 
         <article className="queue-card">
           <h3 className="queue-card-title">Требуют внимания</h3>
-          {summary.stuck.length === 0 ? (
+          {stuckSample.length === 0 ? (
             <p className="queue-empty">Все кандидаты в движении — просроченных нет.</p>
           ) : (
             <ul className="queue-stuck">
-              {summary.stuck.slice(0, 5).map((item) => (
+              {stuckSample.slice(0, STUCK_CARD_LIMIT).map((item) => (
                 <li key={item.id} className="queue-stuck-row">
                   <button
                     type="button"
@@ -270,6 +292,12 @@ export default function MyQueuePage({ onOpenCandidate, onOpenNotifications }: My
                 </li>
               ))}
             </ul>
+          )}
+          {stuckTruncated && (
+            <p className="queue-card-more">
+              Показаны {Math.min(stuckSample.length, STUCK_CARD_LIMIT)} из {summary.stuck} —
+              это самые давние, остальные видны в списке ниже.
+            </p>
           )}
           {data && data.unread > 0 && onOpenNotifications && (
             <button type="button" className="queue-link" onClick={onOpenNotifications}>
