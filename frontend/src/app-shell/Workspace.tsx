@@ -163,6 +163,7 @@ export default function Workspace({ current, onLoggedOut }: WorkspaceProps) {
               кандидатов в режиме queue (как и раньше). */}
           {activeSection === "queue" && (
             <MyQueuePage
+              user={user}
               onOpenCandidate={openCandidate}
               onOpenNotifications={() => navigate("notifications")}
             />

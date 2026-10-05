@@ -337,6 +337,149 @@ export interface QueueSummary {
   upcoming_events_truncated: boolean;
 }
 
+/** Presets of the «Моя очередь» dashboard (boundaries are computed by the
+ *  server in `timezone`, so the browser never guesses a day boundary). */
+export type QueueDashboardPeriodKey = "today" | "week" | "all";
+
+/** Query of `GET /candidates/queue/dashboard`. */
+export interface QueueDashboardQuery {
+  period?: QueueDashboardPeriodKey;
+  /** IANA timezone the period boundaries are computed in. */
+  timezone?: string;
+  /** Whose queue (manager/administrator only; HR is always pinned to self). */
+  owner_id?: string;
+  position?: string;
+  stage?: CandidateStage;
+  source?: CandidateSource;
+}
+
+/** One point of the shared bucket axis (half-open `[from, to)`). */
+export interface QueueDashboardBucket {
+  bucket: string;
+  from: string;
+  to: string;
+  label: string;
+}
+
+/** The resolved period: the server computes it, the browser only renders it. */
+export interface QueueDashboardPeriod {
+  key: string;
+  from: string;
+  to: string;
+  timezone: string;
+  bucket_size: "hour" | "day" | "month" | string;
+  /** «Всё» axis cut at 24 months: the UI must say so out loud. */
+  capped: boolean;
+  buckets: QueueDashboardBucket[];
+}
+
+/** A conversion: `rate` is `null` (not 0) when the cohort is empty. */
+export interface QueueRatio {
+  numerator: number;
+  denominator: number;
+  rate: number | null;
+}
+
+/** An average in days plus the sample it was computed from. */
+export interface QueueDuration {
+  value: number | null;
+  sample: number;
+}
+
+export interface QueueSeriesValue {
+  bucket: string;
+  value: number;
+}
+
+export interface QueueSeriesRatio {
+  bucket: string;
+  numerator: number;
+  denominator: number;
+  rate: number | null;
+}
+
+export interface QueueSeriesDuration {
+  bucket: string;
+  value: number | null;
+  sample: number;
+}
+
+/** «Динамика найма»: exits per bucket plus the hiring-time line. */
+export interface QueueHiringPoint {
+  bucket: string;
+  exits: number;
+  hired: number;
+  avg_hiring_days: number | null;
+}
+
+export interface QueueSourceCount {
+  source: string;
+  label: string;
+  count: number;
+}
+
+/** A task of «Моя очередь»: the project has no Task entity, so a task is an
+ *  active reminder assigned to the caller. */
+export interface QueueDashboardTask {
+  id: string;
+  title: string;
+  due_at: string;
+  importance: string;
+  status: string;
+  candidate_id: string | null;
+  event_id: string | null;
+}
+
+export interface QueueDashboardScope {
+  owner_id: string;
+  owner_username: string;
+  personal: boolean;
+  role: string;
+}
+
+/** The KPI row. `active_vacancies` is `null` until the project gets a vacancy
+ *  entity — the UI shows «—» with `kpi_notes.active_vacancies`, never 0. */
+export interface QueueDashboardKpis {
+  total_candidates: number;
+  in_work: number;
+  my_tasks: number;
+  overdue_tasks: number;
+  new_candidates: number;
+  interviews: number;
+  interview_conversion: QueueRatio;
+  average_hiring_days: QueueDuration;
+  active_vacancies: number | null;
+  weekly_exits: number;
+}
+
+/** `GET /candidates/queue/dashboard` — every number of the screen, aggregated
+ *  server-side over the caller's whole scope (never over a page). */
+export interface QueueDashboard {
+  scope: QueueDashboardScope;
+  period: QueueDashboardPeriod;
+  generated_at: string;
+  filters: Record<string, string | null>;
+  kpis: QueueDashboardKpis;
+  /** Why a KPI is `null` (there is no vacancy entity in the project). */
+  kpi_notes: Record<string, string>;
+  created_candidates_series: QueueSeriesValue[];
+  interview_conversion_series: QueueSeriesRatio[];
+  average_hiring_days_series: QueueSeriesDuration[];
+  hiring_dynamics: QueueHiringPoint[];
+  sources: QueueSourceCount[];
+  funnel: QueueStageCount[];
+  attention_candidates: QueueStuckCandidate[];
+  attention_candidates_total: number;
+  attention_truncated: boolean;
+  upcoming_events: QueueUpcomingEvent[];
+  upcoming_events_total: number;
+  upcoming_events_truncated: boolean;
+  tasks_due: QueueDashboardTask[];
+  tasks_overdue: QueueDashboardTask[];
+  unread_notifications: number;
+  truncated: boolean;
+}
+
 /** POST /candidates payload (confirm_duplicate allows an exact copy on 409). */
 export interface CandidateCreateInput {
   full_name: string;

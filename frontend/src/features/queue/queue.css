@@ -40,8 +40,8 @@
 .queue-kpi {
   grid-column: span 3;
   display: flex;
-  flex-direction: column-reverse;
-  justify-content: flex-end;
+  flex-direction: column;
+  justify-content: space-between;
   gap: var(--space-1);
   padding: var(--card-padding);
   border: 1px solid var(--border-subtle);
@@ -65,6 +65,21 @@
   font-size: var(--text-size-xs);
 }
 
+/* Что именно измеряет плитка: без пояснения «248» ни о чём не говорит. */
+.queue-kpi-hint {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-size-2xs);
+  line-height: var(--line-height-tight);
+}
+
+/* Обновление поверх уже показанных данных: приглушаем, но не скрываем —
+   пользователь должен видеть, что цифры сейчас пересчитаются. */
+.queue-kpis.is-refreshing {
+  opacity: 0.6;
+  transition: opacity var(--duration-fast) var(--easing-standard);
+}
+
 .queue-kpi-warning {
   border-color: var(--status-warning-border);
   background: var(--status-warning-bg);
@@ -73,7 +88,7 @@
 .queue-skeleton {
   display: block;
   grid-column: span 3;
-  height: 96px;
+  height: 112px;
   border-radius: var(--card-radius);
   background: var(--skeleton-bg);
   background-size: 400% 100%;
@@ -92,6 +107,400 @@
   .queue-skeleton {
     grid-column: span 12;
   }
+}
+
+/* --- Bento-раскладка сводки (зеркало design/mockups/bento-arctic.html) ----- */
+
+.queue-dash {
+  display: grid;
+  grid-template-columns: var(--kpi-cols);
+  gap: var(--dash-gap);
+}
+
+.queue-dash-main {
+  grid-column: span 7;
+}
+
+.queue-dash-side {
+  grid-column: span 5;
+}
+
+.queue-dash-feed {
+  grid-column: span 4;
+}
+
+.queue-dash-rail {
+  grid-column: span 5;
+}
+
+.queue-skeleton-chart {
+  grid-column: span 4;
+  height: 220px;
+}
+
+@media (max-width: 1180px) {
+  .queue-dash-main,
+  .queue-dash-side,
+  .queue-dash-feed,
+  .queue-dash-rail,
+  .queue-skeleton-chart {
+    grid-column: span 12;
+  }
+}
+
+.queue-subtitle {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-card-hint {
+  margin: calc(-1 * var(--space-1)) 0 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
+  line-height: var(--line-height-tight);
+}
+
+.queue-card-subtitle {
+  margin: var(--space-3) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+.queue-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* --- Переключатель периода -------------------------------------------------- */
+
+.queue-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--btn-radius);
+  background: var(--surface-sunken);
+}
+
+.queue-seg-btn {
+  height: calc(var(--control-height-md) - 8px);
+  padding: 0 var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-tertiary);
+  font-size: var(--text-size-sm);
+  cursor: pointer;
+}
+
+.queue-seg-btn:hover {
+  color: var(--text-primary);
+}
+
+.queue-seg-btn.is-on {
+  background: var(--surface-raised);
+  color: var(--accent-on-subtle);
+  box-shadow: var(--btn-shadow);
+  font-weight: var(--font-weight-medium);
+}
+
+/* --- Фильтры ---------------------------------------------------------------- */
+
+.queue-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  align-items: end;
+  gap: var(--space-3);
+  padding: var(--card-padding);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--card-radius);
+  background: var(--surface-raised);
+  box-shadow: var(--card-shadow);
+}
+
+.queue-filters-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* --- Графики (inline SVG) --------------------------------------------------- */
+
+.queue-chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.queue-chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.queue-chart-grid {
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+}
+
+.queue-chart-axis {
+  fill: var(--text-tertiary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-chart-line {
+  stroke: var(--accent-default);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* Пунктир — различие рядов не только по цвету. */
+.queue-chart-line-dashed {
+  stroke-dasharray: 5 4;
+}
+
+.queue-chart-area {
+  opacity: 0.9;
+}
+
+.queue-chart-dot {
+  fill: var(--accent-default);
+  stroke: var(--surface-raised);
+  stroke-width: 1.5;
+}
+
+.queue-series-info .queue-chart-line,
+.queue-series-info .queue-chart-dot {
+  stroke: var(--cat-info-1);
+  fill: var(--cat-info-1);
+}
+
+.queue-series-warning .queue-chart-line,
+.queue-series-warning .queue-chart-dot {
+  stroke: var(--cat-warning-1);
+  fill: var(--cat-warning-1);
+}
+
+.queue-series-success .queue-chart-line,
+.queue-series-success .queue-chart-dot {
+  stroke: var(--cat-success-1);
+  fill: var(--cat-success-1);
+}
+
+.queue-series-info .queue-chart-grad-from {
+  stop-color: var(--cat-info-2);
+  stop-opacity: 0.45;
+}
+
+.queue-series-info .queue-chart-grad-to {
+  stop-color: var(--cat-info-2);
+  stop-opacity: 0.02;
+}
+
+.queue-series-warning .queue-chart-grad-from {
+  stop-color: var(--cat-warning-2);
+  stop-opacity: 0.4;
+}
+
+.queue-series-warning .queue-chart-grad-to {
+  stop-color: var(--cat-warning-2);
+  stop-opacity: 0.02;
+}
+
+.queue-series-accent .queue-chart-grad-from {
+  stop-color: var(--accent-default);
+  stop-opacity: 0.35;
+}
+
+.queue-series-accent .queue-chart-grad-to {
+  stop-color: var(--accent-default);
+  stop-opacity: 0.02;
+}
+
+/* Правая ось подписана тем же цветом, что и левая.
+   Почему не цветом второго ряда (--cat-warning-1): замер
+   `python3 scripts/measure-contrast.py --pair --surface-raised --cat-warning-1`
+   даёт 4,95:1 в светлой теме и 3,71:1 в тёмной — ниже AA 4.5:1 для текста.
+   Ряд различают форма маркера, тип линии и подпись в легенде, а не цвет
+   подписей оси. */
+.queue-chart-axis-right {
+  fill: var(--text-tertiary);
+}
+
+/* Тело события: колонка «время / имя / описание» с обрезкой длинных имён. */
+.queue-event-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.queue-legend-unit {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-chart-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-size-xs);
+}
+
+.queue-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.queue-legend-marker {
+  width: 10px;
+  height: 10px;
+  background: var(--accent-default);
+}
+
+.queue-legend-marker.is-circle {
+  border-radius: var(--radius-full);
+}
+
+.queue-legend-marker.is-dashed {
+  /* Пунктирный квадрат = второй ряд: цвет дублируется формой и типом линии. */
+  background: repeating-linear-gradient(
+    90deg,
+    var(--cat-warning-1) 0 4px,
+    transparent 4px 6px
+  );
+}
+
+.queue-chart-fallback {
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
+}
+
+.queue-chart-fallback > summary {
+  cursor: pointer;
+  color: var(--text-link);
+}
+
+.queue-chart-table {
+  width: 100%;
+  margin-top: var(--space-2);
+  border-collapse: collapse;
+  font-size: var(--text-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-chart-table caption {
+  text-align: left;
+  color: var(--text-tertiary);
+  padding-bottom: var(--space-1);
+}
+
+.queue-chart-table th,
+.queue-chart-table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.queue-chart-table th[scope="row"],
+.queue-chart-table th:first-child {
+  text-align: left;
+}
+
+/* --- Источники -------------------------------------------------------------- */
+
+.queue-bars {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+}
+
+.queue-bar-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 40%) 1fr 48px;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-size-xs);
+}
+
+.queue-bar-label {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-bar-track {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.queue-bar-fill {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(135deg, var(--cat-info-1), var(--cat-info-2));
+}
+
+.queue-bar-value {
+  text-align: right;
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Задачи ----------------------------------------------------------------- */
+
+.queue-tasks {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+}
+
+.queue-task {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-size-sm);
+}
+
+.queue-task-time {
+  color: var(--text-tertiary);
+  font-size: var(--text-size-2xs);
+  font-variant-numeric: tabular-nums;
+  min-width: 42px;
+}
+
+.queue-task-title {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* --- Карточки -------------------------------------------------------------- */
@@ -268,5 +677,11 @@
 
   .queue-skeleton {
     animation: none;
+  }
+
+  .queue-kpis.is-refreshing {
+    /* Без мигания прозрачностью: просто переключение состояния. */
+    transition: none;
+    opacity: 0.75;
   }
 }
