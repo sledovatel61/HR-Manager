@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import ColumnElement, Select, func, or_, select
 from sqlalchemy.orm import Session
 
+from app import queue_dashboard as dashboard
 from app.analytics_ledger import record_fact
 from app.assignees import resolve_assignee
 from app.audit import record_event
@@ -65,6 +66,7 @@ from app.schemas import (
     InteractionCreate,
     InteractionList,
     InteractionOut,
+    QueueDashboard,
     QueueStageCount,
     QueueStuckCandidate,
     QueueSummary,
@@ -613,6 +615,64 @@ def queue_summary(
         upcoming_events_total=events_total,
         upcoming_events_truncated=events_total > len(upcoming_events),
     )
+
+
+@router.get(
+    "/queue/dashboard",
+    response_model=QueueDashboard,
+    summary="Dashboard aggregates for «Моя очередь» (period, KPI, series)",
+)
+def queue_dashboard(
+    period: str = Query(
+        default="week",
+        pattern="^(today|week|all)$",
+        description="Период: today (по часам), week (по дням), all (по месяцам)",
+    ),
+    timezone: str = Query(
+        default=dashboard.DEFAULT_DASHBOARD_TIMEZONE,
+        description="IANA таймзона, в которой считаются границы периода",
+    ),
+    owner_id: UUID | None = Query(
+        default=None, description="Чья очередь (руководитель/администратор); HR — всегда своя"
+    ),
+    position: str | None = Query(default=None, max_length=200),
+    stage: CandidateStage | None = Query(default=None),
+    source: CandidateSource | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> QueueDashboard:
+    """Analytics cards of «Моя очередь»: KPI, series, sources, tasks, funnel.
+
+    Why an endpoint and not a bigger client: every series here is an aggregate
+    over the caller's whole scope. Shipping the raw rows to the browser would
+    reintroduce exactly the defect the summary fixed — a page of candidates
+    presented as the whole queue — and would move period/timezone arithmetic
+    into the client, where it cannot be tested by the API suite.
+
+    Scope: personal for every role (HR, manager, administrator, pilot); a
+    manager or an administrator may pass ``owner_id`` to look at a colleague,
+    an HR cannot widen the scope at all. Filters (``position``/``stage``/
+    ``source``) apply to the current attributes of the candidate, i.e. the
+    same values the list screen filters on.
+
+    A metric the data model cannot express is returned as ``null`` with a note
+    in ``kpi_notes`` (there is no vacancy entity, so «активные вакансии» is
+    ``null`` rather than a fabricated zero).
+    """
+    payload = dashboard.build_dashboard(
+        db,
+        user=user,
+        period=period,
+        timezone=timezone,
+        owner_id=owner_id,
+        position=position,
+        stage=stage,
+        source=source,
+    )
+    tasks = payload.pop("tasks")
+    payload["tasks_due"] = tasks["due"]
+    payload["tasks_overdue"] = tasks["overdue"]
+    return QueueDashboard(**payload)
 
 
 @router.post(

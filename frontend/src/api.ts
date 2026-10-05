@@ -77,6 +77,8 @@ import type {
   WorkScheduleImportPreview,
   WorkScheduleImportResult,
   WorkScheduleList,
+  QueueDashboard,
+  QueueDashboardQuery,
   QueueSummary,
   WorkScheduleQuery,
   WorkScheduleSuggestions,
@@ -425,6 +427,30 @@ export async function getQueueSummary(
   if (params.sample_limit !== undefined) search.set("sample_limit", String(params.sample_limit));
   const suffix = search.toString();
   return request<QueueSummary>(`/candidates/queue/summary${suffix ? `?${suffix}` : ""}`);
+}
+
+/**
+ * «Моя очередь» dashboard: KPI, series, sources, tasks and the personal
+ * blocks — aggregated by the server over the caller's whole scope.
+ *
+ * Why not a raw list: every series here is an aggregate over *all* candidates
+ * in scope. Counting them in the browser would mean shipping the queue and
+ * would silently turn one page into the whole queue (the defect the summary
+ * endpoint fixed). Periods and timezone boundaries are computed by the server
+ * as well, so the API is reproducible from tests.
+ */
+export async function getQueueDashboard(
+  params: QueueDashboardQuery = {},
+): Promise<QueueDashboard> {
+  const search = new URLSearchParams();
+  if (params.period !== undefined) search.set("period", params.period);
+  if (params.timezone !== undefined) search.set("timezone", params.timezone);
+  if (params.owner_id !== undefined) search.set("owner_id", params.owner_id);
+  if (params.position !== undefined) search.set("position", params.position);
+  if (params.stage !== undefined) search.set("stage", params.stage);
+  if (params.source !== undefined) search.set("source", params.source);
+  const suffix = search.toString();
+  return request<QueueDashboard>(`/candidates/queue/dashboard${suffix ? `?${suffix}` : ""}`);
 }
 
 /**

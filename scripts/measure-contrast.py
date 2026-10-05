@@ -166,8 +166,8 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         "«Непрочитанных уведомлений» (фон :250, цвет :251), рендерится "
         "MyQueuePage.tsx:303",
         refs=(
-            ("features/queue/queue.css", 250, "--accent-subtle"),
-            ("features/queue/queue.css", 251, "--accent-default"),
+            ("features/queue/queue.css", 659, "--accent-subtle"),
+            ("features/queue/queue.css", 660, "--accent-default"),
         ),
     ),
     ("--surface-selected-hover", "--accent-on-subtle-hover"): Evidence(
@@ -175,8 +175,8 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         ":251 (MyQueuePage.tsx:303). До правки здесь был --accent-default, и пара "
         "давала 3.88:1 в светлой теме",
         refs=(
-            ("features/queue/queue.css", 258, "--surface-selected-hover"),
-            ("features/queue/queue.css", 261, "--accent-on-subtle-hover"),
+            ("features/queue/queue.css", 667, "--surface-selected-hover"),
+            ("features/queue/queue.css", 670, "--accent-on-subtle-hover"),
         ),
     ),
     ("--surface-hover", "--text-primary"): Evidence(
@@ -256,8 +256,8 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         "queue.css:130-142 .queue-stale — баннер «сводка устарела», рендерится "
         "MyQueuePage.tsx; фон и цвет заданы в одном правиле (:139, :140)",
         refs=(
-            ("features/queue/queue.css", 139, "--status-warning-bg"),
-            ("features/queue/queue.css", 140, "--text-primary"),
+            ("features/queue/queue.css", 548, "--status-warning-bg"),
+            ("features/queue/queue.css", 549, "--text-primary"),
         ),
     ),
     ("--status-warning-bg", "--status-warning-fg"): Evidence(

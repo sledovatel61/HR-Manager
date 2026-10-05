@@ -436,6 +436,162 @@ class QueueSummary(BaseModel):
     upcoming_events_truncated: bool
 
 
+class QueueRatio(BaseModel):
+    """A conversion: how many of the cohort did it, and the percentage.
+
+    ``rate`` is ``None`` (not ``0``) when the cohort is empty — an empty
+    denominator is «нет данных», not «ноль процентов».
+    """
+
+    numerator: int
+    denominator: int
+    rate: float | None = None
+
+
+class QueueDuration(BaseModel):
+    """An average duration in days plus the sample it was computed from.
+
+    ``value`` is ``None`` when there is nothing to average; ``sample`` lets
+    the card say «по N нанятым» instead of showing a bare number.
+    """
+
+    value: float | None = None
+    sample: int = 0
+
+
+class QueueBucket(BaseModel):
+    """One point of the shared bucket axis (half-open ``[from, to)``)."""
+
+    bucket: str
+    from_: datetime = Field(alias="from")
+    to: datetime
+    label: str
+
+
+class QueuePeriod(BaseModel):
+    """The resolved period: presets are computed server-side, then echoed."""
+
+    key: str
+    from_: datetime = Field(alias="from")
+    to: datetime
+    timezone: str
+    bucket_size: str
+    capped: bool = False
+    buckets: list[QueueBucket]
+
+
+class QueueDashboardScope(BaseModel):
+    """Whose queue was aggregated and whether it is the caller's own."""
+
+    owner_id: UUID
+    owner_username: str
+    personal: bool
+    role: str
+
+
+class QueueSeriesValue(BaseModel):
+    bucket: str
+    value: int
+
+
+class QueueSeriesRatio(BaseModel):
+    bucket: str
+    numerator: int
+    denominator: int
+    rate: float | None = None
+
+
+class QueueSeriesDuration(BaseModel):
+    bucket: str
+    value: float | None = None
+    sample: int = 0
+
+
+class QueueHiringPoint(BaseModel):
+    """«Динамика найма»: exits per bucket plus the hiring-time line."""
+
+    bucket: str
+    exits: int
+    hired: int
+    avg_hiring_days: float | None = None
+
+
+class QueueSourceCount(BaseModel):
+    """New candidates per source inside the period (rows only for real data)."""
+
+    source: str
+    label: str
+    count: int
+
+
+class QueueDashboardTask(BaseModel):
+    """A task card.
+
+    The project has no separate «task» entity: a task is an **active
+    reminder** assigned to the caller (``Reminder.assignee_user_id``), which
+    is what «Моя очередь» has always shown as work to do.
+    """
+
+    id: UUID
+    title: str
+    due_at: datetime
+    importance: str
+    status: str
+    candidate_id: UUID | None = None
+    event_id: UUID | None = None
+
+
+class QueueDashboardKpis(BaseModel):
+    """The KPI row. A metric the data model cannot express is ``None``."""
+
+    total_candidates: int = 0
+    in_work: int = 0
+    my_tasks: int
+    overdue_tasks: int
+    new_candidates: int
+    interviews: int
+    interview_conversion: QueueRatio
+    average_hiring_days: QueueDuration
+    active_vacancies: int | None = None
+    weekly_exits: int
+
+
+class QueueDashboard(BaseModel):
+    """«Моя очередь» dashboard: aggregates, series and the personal blocks.
+
+    Every number is computed server-side over the **whole** scope of the
+    caller — never over a page of candidates and never over a ``limit``. The
+    series share one bucket axis (``period.buckets``) so the charts line up
+    with each other and with the period header.
+
+    ``kpi_notes`` explains a metric that is ``None``: an empty card is always
+    «нет данных» with a reason, never a fabricated zero.
+    """
+
+    scope: QueueDashboardScope
+    period: QueuePeriod
+    generated_at: datetime
+    filters: dict[str, str | None] = Field(default_factory=dict)
+    kpis: QueueDashboardKpis
+    kpi_notes: dict[str, str] = Field(default_factory=dict)
+    created_candidates_series: list[QueueSeriesValue] = Field(default_factory=list)
+    interview_conversion_series: list[QueueSeriesRatio] = Field(default_factory=list)
+    average_hiring_days_series: list[QueueSeriesDuration] = Field(default_factory=list)
+    hiring_dynamics: list[QueueHiringPoint] = Field(default_factory=list)
+    sources: list[QueueSourceCount] = Field(default_factory=list)
+    funnel: list[QueueStageCount] = Field(default_factory=list)
+    attention_candidates: list[QueueStuckCandidate] = Field(default_factory=list)
+    attention_candidates_total: int = 0
+    attention_truncated: bool = False
+    upcoming_events: list[QueueUpcomingEvent] = Field(default_factory=list)
+    upcoming_events_total: int = 0
+    upcoming_events_truncated: bool = False
+    tasks_due: list[QueueDashboardTask] = Field(default_factory=list)
+    tasks_overdue: list[QueueDashboardTask] = Field(default_factory=list)
+    unread_notifications: int = 0
+    truncated: bool = False
+
+
 class DuplicateCandidateDetail(BaseModel):
     """409 body when a similar candidate exists (``PRODUCT_SPEC.md`` §4)."""
 
