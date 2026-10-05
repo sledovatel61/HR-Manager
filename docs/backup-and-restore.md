@@ -109,6 +109,52 @@ Backup содержит персональные данные и **являет�
 Результат (успех/провал, файл, таблицы, миграции, health) пишется в
 `BACKUP_STATE_FILE` (`last_drill`) и в audit log.
 
+### Образ backup и цепочка миграций (читать перед раскаткой миграции)
+
+Drill выполняет шаг 3 (`alembic upgrade head`) **внутри образа backup**:
+`RunnerConfig.from_settings` берёт `alembic_dir` по умолчанию — родителя
+каталога `app/`, то есть `/app`, куда `backend/Dockerfile.backup` копирует
+`backend/alembic`. Поэтому образ обязан знать **все** ревизии, вплоть до
+той, которой помечен восстанавливаемый backup.
+
+Если образ собран до появления миграции, drill падает ещё до проверки
+таблиц:
+
+```
+alembic upgrade failed (exit 1): … Can't locate revision identified by '0021'
+```
+
+Это **устаревший образ**, а не дефект миграции: цепочка в репозитории цела,
+её не знает закэшированный слой `COPY backend/alembic`.
+
+Диагностика (только чтение, live-БД не затрагивается):
+
+```bash
+# цепочка в репозитории:
+cd backend && python -m alembic heads        # → 0022 (head)
+cd backend && python -m alembic history | wc -l
+
+# цепочка внутри образа:
+docker compose -f infra/docker-compose.yml run --rm --no-deps --entrypoint sh backup \
+  -c 'ls /app/alembic/versions | tail -3; python -m alembic heads'
+# Ожидаемо: 0022_candidate_position_normalized.py и «0022 (head)».
+```
+
+Пересборка и тренаж (данные не удаляются: `backups` — именованный том,
+live-БД только читается `pg_dump`, восстановление идёт в отдельную базу):
+
+```bash
+docker compose -f infra/docker-compose.yml build --no-cache backup
+docker compose -f infra/docker-compose.yml up -d --no-deps backup
+make backup-check     # целостность последнего backup
+make backup-drill     # восстановление в hr_manager_restore_drill + миграции + /health
+```
+
+Порядок при раскатке миграции: сначала собрать и поднять новый образ
+backup, затем `infra/scripts/migrate.sh up` на live-БД, затем
+`make backup-drill` — тогда и старый (помеченный предыдущей ревизией) и
+новый backup проходят тренаж.
+
 ## Проверка свежести и целостности
 
 - `/ops/backup-health` — 200 только если: есть опубликованный backup,

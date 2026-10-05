@@ -342,6 +342,100 @@ class CandidateList(BaseModel):
     offset: int
 
 
+class CandidatePositionOption(BaseModel):
+    """One distinct free-text position within the requested scope.
+
+    ``count`` is the number of candidates whose ``position`` normalizes to this
+    value: «Монтажник РЭА», «монтажник рэа» and «  Монтажник РЭА » are a
+    single option, exactly like the filter itself sees them.
+    """
+
+    position: str
+    count: int
+
+
+class CandidatePositionList(BaseModel):
+    """Distinct positions for the «Должность» filter.
+
+    ``total`` is the number of distinct positions in the scope (ignoring
+    ``limit``); ``truncated`` tells the client that fewer options than exist
+    were returned, so the dropdown can say so instead of silently shortening
+    the list.
+    """
+
+    items: list[CandidatePositionOption]
+    total: int
+    limit: int
+    truncated: bool
+
+
+class QueueStageCount(BaseModel):
+    """One funnel row of the «Моя очередь» summary (0 when empty)."""
+
+    stage: CandidateStage
+    count: int
+
+
+class QueueStuckCandidate(BaseModel):
+    """Bounded card for «Требуют внимания» (a stale candidate)."""
+
+    id: UUID
+    full_name: str
+    position: str
+    stage: CandidateStage
+    updated_at: datetime
+
+
+class QueueUpcomingEvent(BaseModel):
+    """Bounded card for «Ближайшие события» (never terminal — see below)."""
+
+    id: UUID
+    candidate_id: UUID
+    candidate_full_name: str
+    type: EventType
+    title: str
+    status: EventStatus
+    starts_at: datetime
+    ends_at: datetime | None = None
+
+
+class QueueSummary(BaseModel):
+    """«Моя очередь»: server-side aggregates over the whole personal scope.
+
+    Every counter covers **all** candidates of the caller — not a page of them
+    — because the KPI tiles and the funnel must not present a window as the
+    whole queue. The lists (``stuck_sample``, ``upcoming_events``) are bounded
+    samples for the cards only; their full counts are ``stuck`` and
+    ``upcoming_events_total``.
+
+    Scope is personal for every role (``owner_user_id == caller``), including
+    manager, administrator and the pilot account: the section is called «Моя
+    очередь», so a manager's queue holds their own candidates, not the shared
+    base. Soft-deleted candidates never count. Windows are UTC instants (the
+    server never converts to the browser's timezone — same rule as
+    ``app/analytics.py``).
+    """
+
+    owner_id: UUID
+    owner_username: str
+    personal: bool = True
+    generated_at: datetime
+    total: int
+    in_work: int
+    fresh: int
+    stuck: int
+    starts: int
+    stuck_days: int
+    horizon_days: int
+    closed_stages: list[str]
+    by_stage: list[QueueStageCount]
+    stuck_sample: list[QueueStuckCandidate]
+    stuck_sample_truncated: bool
+    upcoming_events: list[QueueUpcomingEvent]
+    upcoming_events_total: int
+    upcoming_events_truncated: bool
+
+
 class DuplicateCandidateDetail(BaseModel):
     """409 body when a similar candidate exists (``PRODUCT_SPEC.md`` §4)."""
 

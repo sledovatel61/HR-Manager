@@ -50,6 +50,10 @@ STATE_SURFACES = [
     # Заливка «акцент-чипов»: на ней лежит акцентный текст
     # (candidates.css:151-152, workspace.css:172-173, tabs.css:43-44).
     "--accent-subtle",
+    # Заливки статусных плашек и баннеров: на них лежит обычный текст
+    # (queue.css .queue-stale, statusChip.css:20, stateViews.css:23-24).
+    "--status-warning-bg",
+    "--status-danger-bg",
 ]
 TEXTS = [
     "--text-primary",
@@ -61,6 +65,10 @@ TEXTS = [
     "--accent-default",
     "--accent-on-subtle",
     "--accent-on-subtle-hover",
+    # Статусные тексты: .field-error (field.css:24), .status-chip-danger
+    # (statusChip.css:22), .toast-danger svg (toast.css:42).
+    "--status-warning-fg",
+    "--status-danger-fg",
 ]
 
 # ---------------------------------------------------------------------------
@@ -131,6 +139,19 @@ PAIR_EVIDENCE = {
     ),
     ("--surface-sidebar-hover", "--text-primary"): (
         "workspace.css:81 .sidebar-link:hover, цвет — :82"
+    ),
+    ("--status-warning-bg", "--text-primary"): (
+        "queue.css .queue-stale — баннер «сводка устарела» (MyQueuePage.tsx); "
+        "цвет задан в том же правиле"
+    ),
+    ("--status-warning-bg", "--status-warning-fg"): (
+        "design-system/components/statusChip.css:20 .status-chip-amber; "
+        "design-system/components/stateViews.css:24 .state-view-warning; "
+        "features/license/license.css:15-17"
+    ),
+    ("--status-danger-bg", "--status-danger-fg"): (
+        "design-system/components/statusChip.css:22 .status-chip-danger; "
+        "design-system/components/stateViews.css:23 .state-view-danger"
     ),
     ("--surface-sidebar-active", "--text-primary"): (
         "токен объявлен в tokens.css, но как фон нигде не используется: "

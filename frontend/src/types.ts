@@ -258,6 +258,85 @@ export interface CandidateListQuery {
   offset?: number;
 }
 
+/** Scope of the distinct-position directory (same rules as the list). */
+export interface PositionOptionsQuery {
+  /** Managers/admins may narrow the scope to one owner; HR is always own. */
+  owner_id?: string;
+  /** Switch to the soft-deleted view (the trash tab). */
+  include_deleted?: boolean;
+  /** Server-side ceiling on the number of options (default 500). */
+  limit?: number;
+}
+
+/** One distinct free-text position with the number of candidates behind it. */
+export interface CandidatePositionOption {
+  position: string;
+  count: number;
+}
+
+export interface CandidatePositionList {
+  items: CandidatePositionOption[];
+  /** Distinct positions in the scope, ignoring `limit`. */
+  total: number;
+  limit: number;
+  /** True when fewer options than exist were returned. */
+  truncated: boolean;
+}
+
+/** One funnel row of the «Моя очередь» summary (zero-filled when empty). */
+export interface QueueStageCount {
+  stage: CandidateStage;
+  count: number;
+}
+
+/** Bounded card of «Требуют внимания» (a candidate without movement). */
+export interface QueueStuckCandidate {
+  id: string;
+  full_name: string;
+  position: string;
+  stage: CandidateStage;
+  updated_at: string;
+}
+
+/** Statuses a «Ближайшие события» card can carry: the server excludes the
+ *  terminal ones (completed/cancelled), so only these two can arrive. */
+export type QueueEventStatus = Extract<CalendarEventStatus, "scheduled" | "postponed">;
+
+/** Bounded card of «Ближайшие события» (never completed/cancelled). */
+export interface QueueUpcomingEvent {
+  id: string;
+  candidate_id: string;
+  candidate_full_name: string;
+  type: CalendarEventType;
+  title: string;
+  status: QueueEventStatus;
+  starts_at: string;
+  ends_at: string | null;
+}
+
+/** «Моя очередь»: aggregates over the whole personal scope + small samples. */
+export interface QueueSummary {
+  owner_id: string;
+  owner_username: string;
+  personal: boolean;
+  generated_at: string;
+  total: number;
+  in_work: number;
+  fresh: number;
+  stuck: number;
+  starts: number;
+  stuck_days: number;
+  horizon_days: number;
+  /** Stages that mean «не в работе» (mirrors the server contract). */
+  closed_stages: string[];
+  by_stage: QueueStageCount[];
+  stuck_sample: QueueStuckCandidate[];
+  stuck_sample_truncated: boolean;
+  upcoming_events: QueueUpcomingEvent[];
+  upcoming_events_total: number;
+  upcoming_events_truncated: boolean;
+}
+
 /** POST /candidates payload (confirm_duplicate allows an exact copy on 409). */
 export interface CandidateCreateInput {
   full_name: string;

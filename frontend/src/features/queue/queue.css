@@ -125,6 +125,29 @@
   font-size: var(--text-size-sm);
 }
 
+/* Отметка об устаревших данных: сводка уже была показана, но повторный запрос
+   не удался. Молча показывать старые цифры нельзя — поэтому баннер. */
+.queue-stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--card-padding);
+  border: 1px solid var(--status-warning-border);
+  border-radius: var(--card-radius);
+  background: var(--status-warning-bg);
+  color: var(--text-primary);
+  font-size: var(--text-size-sm);
+}
+
+/* «Показаны первые N из M» — выборка для карточки ограничена сервером. */
+.queue-card-more {
+  margin: var(--space-3) 0 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
+}
+
 /* --- Воронка --------------------------------------------------------------- */
 
 .queue-funnel {

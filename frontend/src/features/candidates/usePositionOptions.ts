@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { listCandidates } from "../../api";
-import type { CandidateListQuery } from "../../types";
-
-/** Server caps a single page at 100 rows — this is the ceiling for the
- *  suggestion list, not for the filter itself (filtering is server-side). */
-const DIRECTORY_PAGE_SIZE = 100;
+import { listPositionOptions } from "../../api";
+import type { PositionOptionsQuery } from "../../types";
 
 export interface PositionOptions {
   positions: string[];
   loading: boolean;
+  /** Текст ошибки загрузки справочника; null — справочник загружен. */
+  error: string | null;
   reload: () => void;
 }
 
@@ -16,45 +14,43 @@ export interface PositionOptions {
  * Distinct positions for the «Должность» filter.
  *
  * A vacancy directory does not exist in the project: `Candidate.position` is
- * free text (see `CandidateFormModal`). So the option list is collected from
- * the data the user can already see, in the same RBAC scope as the list
- * itself, and the filter itself is applied by the server — picking
- * «монтажник» leaves only монтажник applications on every page, not just on
- * the page currently loaded.
+ * free text (see `CandidateFormModal`), so the options come from the data the
+ * user may see. The list is built by the server: `GET /candidates/positions`
+ * groups the **whole** visible scope by the normalized position, so a value
+ * that only exists in row 5 000 is selectable too.
+ *
+ * Before this endpoint existed the options were collected from one page of
+ * `GET /candidates` (100 rows) — the filter is a `<select>` without free
+ * input, so anything beyond that page simply could not be chosen.
+ *
+ * The filter itself has always been server-side: picking «монтажник» leaves
+ * only монтажник applications on every page, not just on the loaded one.
  */
-export function usePositionOptions(scope: CandidateListQuery): PositionOptions {
+export function usePositionOptions(scope: PositionOptionsQuery = {}): PositionOptions {
   // Только параметры области видимости: текст поиска и пагинация в подсказки
   // не попадают, иначе список должностей сужался бы вместе с фильтрами.
   const ownerId = scope.owner_id;
   const includeDeleted = scope.include_deleted ?? false;
   const [positions, setPositions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    listCandidates({
-      owner_id: ownerId,
-      include_deleted: includeDeleted,
-      limit: DIRECTORY_PAGE_SIZE,
-      offset: 0,
-    })
+    setError(null);
+    listPositionOptions({ owner_id: ownerId, include_deleted: includeDeleted })
       .then((page) => {
         if (cancelled) return;
-        const unique = Array.from(
-          new Set(
-            page.items
-              .map((candidate) => candidate.position.trim())
-              .filter((value) => value.length > 0),
-          ),
-        ).sort((a, b) => a.localeCompare(b, "ru"));
-        setPositions(unique);
+        // Порядок и дедупликация — на сервере (нормализация: регистр и
+        // пробелы), поэтому клиент больше ничего не сортирует.
+        setPositions(page.items.map((item) => item.position));
       })
       .catch(() => {
-        // Список подсказок — не критичная функция: неудача просто оставляет
-        // поле без вариантов (фильтр по-прежнему доступен).
-        if (!cancelled) setPositions([]);
+        if (cancelled) return;
+        setPositions([]);
+        setError("Не удалось загрузить список должностей.");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -65,5 +61,5 @@ export function usePositionOptions(scope: CandidateListQuery): PositionOptions {
   }, [ownerId, includeDeleted, reloadTick]);
 
   const reload = useCallback(() => setReloadTick((tick) => tick + 1), []);
-  return { positions, loading, reload };
+  return { positions, loading, error, reload };
 }

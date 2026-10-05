@@ -10,6 +10,7 @@ vi.mock("../../api", async (importOriginal) => {
   return {
     ...original,
     listCandidates: vi.fn(),
+    listPositionOptions: vi.fn(),
     listHrUsers: vi.fn(),
     deleteCandidate: vi.fn(),
     restoreCandidate: vi.fn(),
@@ -57,27 +58,40 @@ function candidate(overrides: Partial<Candidate> = {}): Candidate {
   };
 }
 
-/** Подсказки должностей приходят отдельным запросом (limit 100) — без них
- *  в селекте будет только «Все должности». */
+/** Подсказки должностей приходят отдельным запросом — без них в селекте будет
+ *  только «Все должности». */
 function listWithPositions(positions: string[], rows: Candidate[] = []) {
-  vi.mocked(api.listCandidates).mockImplementation(async (query) => {
-    if (query?.limit === 100) {
-      return {
-        items: positions.map((position, index) =>
-          candidate({ id: `s-${index}`, full_name: `Подсказка ${index}`, position }),
-        ),
-        total: positions.length,
-        limit: 100,
-        offset: 0,
-      };
-    }
-    return { items: rows, total: rows.length, limit: query?.limit ?? 20, offset: query?.offset ?? 0 };
+  vi.mocked(api.listPositionOptions).mockResolvedValue({
+    items: positions.map((position, index) => ({ position, count: index + 1 })),
+    total: positions.length,
+    limit: 500,
+    truncated: false,
   });
+  vi.mocked(api.listCandidates).mockResolvedValue({
+    items: rows,
+    total: rows.length,
+    limit: 20,
+    offset: 0,
+  });
+}
+
+function lastPositionScope() {
+  return vi.mocked(api.listPositionOptions).mock.calls.at(-1)?.[0];
 }
 
 function lastListQuery() {
   return vi.mocked(api.listCandidates).mock.calls.at(-1)?.[0];
 }
+
+beforeEach(() => {
+  // Справочник должностей по умолчанию пуст: экраны им не заняты.
+  vi.mocked(api.listPositionOptions).mockResolvedValue({
+    items: [],
+    total: 0,
+    limit: 500,
+    truncated: false,
+  });
+});
 
 function renderPage(mode: "queue" | "all" | "deleted" = "queue", user: User = HR) {
   return render(
@@ -213,12 +227,7 @@ describe("CandidatesListPage", () => {
   });
 
   it("paginates server-side with next/prev", async () => {
-    // Запрос подсказок должностей (limit 100) — отдельная ветка: он не должен
-    // съедать страницы списка.
     vi.mocked(api.listCandidates).mockImplementation(async (query) => {
-      if (query?.limit === 100) {
-        return { items: [], total: 0, limit: 100, offset: 0 };
-      }
       const offset = query?.offset ?? 0;
       if (offset === 0) {
         return {
@@ -281,6 +290,82 @@ describe("CandidatesListPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Восстановить" }));
     await waitFor(() => expect(api.restoreCandidate).toHaveBeenCalledWith("44444444-4444-4444-4444-444444444444"));
+  });
+
+  it("«Моя очередь» личная для всех ролей: список и справочник должностей идут в моей области", async () => {
+    listWithPositions(["Инженер"], [candidate()]);
+    renderPage("queue", MANAGER);
+
+    await waitFor(() => {
+      expect(lastListQuery()).toMatchObject({ owner_id: MANAGER.id });
+    });
+    // Справочник должен предлагать должности из той же области, что и список,
+    // иначе фильтр будет содержать значения, которых в списке нет.
+    expect(lastPositionScope()).toMatchObject({ owner_id: MANAGER.id });
+
+    // Общий раздел по-прежнему без фильтра по ответственному.
+    renderPage("all", MANAGER);
+    await waitFor(() => {
+      expect(lastListQuery()?.owner_id).toBeUndefined();
+    });
+    expect(lastPositionScope()?.owner_id).toBeUndefined();
+  });
+
+  it("«Моя очередь» для HR и deleted-вид не ломают область справочника", async () => {
+    listWithPositions(["Инженер"], [candidate()]);
+    renderPage("queue", HR);
+
+    await waitFor(() => {
+      expect(lastListQuery()).toMatchObject({ owner_id: HR.id });
+    });
+    expect(lastPositionScope()).toMatchObject({ owner_id: HR.id, include_deleted: false });
+
+    renderPage("deleted");
+    await waitFor(() => {
+      expect(lastListQuery()).toMatchObject({ include_deleted: true });
+    });
+    expect(lastPositionScope()).toMatchObject({ include_deleted: true });
+  });
+
+  it("показывает ошибку загрузки справочника должностей с кнопкой повтора", async () => {
+    listWithPositions(["Инженер"], [candidate()]);
+    vi.mocked(api.listPositionOptions).mockRejectedValue(new api.ApiError(500, "Сбой сервера"));
+    renderPage();
+
+    expect(await screen.findByText("Не удалось загрузить список должностей.")).toBeInTheDocument();
+
+    vi.mocked(api.listPositionOptions).mockResolvedValue({
+      items: [{ position: "Монтажник РЭА", count: 2 }],
+      total: 1,
+      limit: 500,
+      truncated: false,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Обновить должности" }));
+
+    // Список кандидатов при этом не перезапрашивался — повтор касается только
+    // справочника.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Должность")).toHaveValue("");
+    });
+    expect(screen.getByText("Монтажник РЭА")).toBeInTheDocument();
+    expect(screen.queryByText("Не удалось загрузить список должностей.")).not.toBeInTheDocument();
+  });
+
+  it("обновляет справочник должностей после удаления кандидата", async () => {
+    listWithPositions(["Инженер"], [candidate()]);
+    renderPage();
+
+    expect(await screen.findByText("Петров Пётр Петрович")).toBeInTheDocument();
+    const directoryCalls = vi.mocked(api.listPositionOptions).mock.calls.length;
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Удалить кандидата Петров Пётр Петрович" }),
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Удалить" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.listPositionOptions).mock.calls.length).toBeGreaterThan(directoryCalls);
+    });
   });
 
   it("confirms soft delete before calling the API", async () => {
