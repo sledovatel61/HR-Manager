@@ -507,7 +507,53 @@ def main() -> int:
     return 1 if problems else 0
 
 
+def print_pair(surface: str | None, text: str) -> int:
+    """Контраст одной пары в двух темах при худшей подложке.
+
+    Тем же составлением слоёв, что и гейт: canvas (+ пятно mesh) → базовая
+    поверхность → состояние → текст. Нужно, чтобы любое число в отчёте
+    воспроизводилось одной командой, а не однократным расчётом вручную:
+
+        python3 scripts/measure-contrast.py --pair --status-danger-bg --status-danger-fg
+    """
+    print(f"пара: {surface or 'без состояния'} + {text}")
+    for theme in ("light", "dark"):
+        tokens = tokens_for(theme)
+        if text not in tokens or (surface and surface not in tokens):
+            print(f"  {theme}: токен не объявлен")
+            continue
+        canvas = resolve(tokens["--surface-canvas"], tokens)[:3]
+        mesh_opacity = float(tokens.get("--mesh-opacity", "0.5"))
+        backdrops = [("canvas", canvas)]
+        for name in ("--blob-1", "--blob-2", "--blob-3"):
+            if name not in tokens:
+                continue
+            blob = resolve(tokens[name], tokens)
+            backdrops.append((name, over(blob[:3] + (blob[3] * mesh_opacity,), canvas)))
+        worst = (99.0, "")
+        for base_name in BASE_SURFACES:
+            if base_name not in tokens:
+                continue
+            for backdrop_name, backdrop in backdrops:
+                background = over(resolve(tokens[base_name], tokens), backdrop)
+                if surface:
+                    background = over(resolve(tokens[surface], tokens), background)
+                ratio = contrast(over(resolve(tokens[text], tokens), background), background)
+                if ratio < worst[0]:
+                    worst = (ratio, f"{base_name} ({backdrop_name})")
+        verdict = "ок" if worst[0] >= AA_NORMAL else "ПРОВАЛ AA"
+        print(f"  {theme}: {worst[0]:.2f}:1 ({verdict}) — худший фон {worst[1]}")
+    return 0
+
+
 if __name__ == "__main__":
     if "--audit" in sys.argv:
         sys.exit(print_audit())
+    if "--pair" in sys.argv:
+        rest = [arg for arg in sys.argv[1:] if arg != "--pair"]
+        if len(rest) != 2:
+            print("usage: measure-contrast.py --pair <фон-состояния|--text-token> <текст>", file=sys.stderr)
+            sys.exit(2)
+        surface = None if rest[0] == "-" else rest[0]
+        sys.exit(print_pair(surface, rest[1]))
     sys.exit(main())
