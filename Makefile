@@ -1,4 +1,4 @@
-.PHONY: help up down logs ps worker-logs worker-status backend-test backend-lint backend-typecheck frontend-test frontend-lint frontend-typecheck frontend-build check prod-preflight backup-now backup-check backup-drill prod-migrate prod-deploy
+.PHONY: help up down logs ps worker-logs worker-status backend-test backend-lint backend-typecheck frontend-test frontend-lint frontend-typecheck frontend-build contrast check prod-preflight backup-now backup-check backup-drill prod-migrate prod-deploy
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -42,7 +42,12 @@ frontend-typecheck: ## Run TypeScript typecheck in the frontend
 frontend-build: ## Produce a production frontend build
 	cd frontend && npm run build
 
-check: backend-lint backend-typecheck backend-test frontend-lint frontend-typecheck frontend-test frontend-build ## Run every check
+contrast: ## Contrast AA: гейт, аудит пар в вёрстке, сверка ссылок доказательств
+	python3 scripts/measure-contrast.py
+	python3 scripts/measure-contrast.py --audit
+	python3 scripts/measure-contrast.py --check-refs
+
+check: backend-lint backend-typecheck backend-test frontend-lint frontend-typecheck frontend-test frontend-build contrast ## Run every check
 
 # --- Backup / deploy operations (roadmap phase 7) ---------------------------
 

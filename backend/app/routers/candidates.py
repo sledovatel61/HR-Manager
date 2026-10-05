@@ -450,6 +450,9 @@ QUEUE_CLOSED_STAGES: tuple[CandidateStage, ...] = (
     CandidateStage.FIRED,
     CandidateStage.REJECTED,
 )
+#: Stages that still need recruiter action — the single source of truth for
+#: «в работе»: derived from the funnel order, so a stage cannot silently fall
+#: out of both sets. Both ``in_work`` and «застрявшие» count through it.
 QUEUE_WORK_STAGES: tuple[CandidateStage, ...] = tuple(
     stage for stage in CANDIDATE_STAGE_ORDER if stage not in QUEUE_CLOSED_STAGES
 )
@@ -521,7 +524,7 @@ def queue_summary(
     ).all()
     per_stage = {stage: int(count) for stage, count in stage_rows}
     total = sum(per_stage.values())
-    in_work = sum(count for stage, count in per_stage.items() if stage not in QUEUE_CLOSED_STAGES)
+    in_work = sum(per_stage.get(stage, 0) for stage in QUEUE_WORK_STAGES)
     by_stage = [
         QueueStageCount(stage=stage, count=per_stage.get(stage, 0))
         for stage in CANDIDATE_STAGE_ORDER
@@ -538,7 +541,7 @@ def queue_summary(
 
     stuck_conditions = [
         *base_conditions,
-        Candidate.stage.notin_(QUEUE_CLOSED_STAGES),
+        Candidate.stage.in_(QUEUE_WORK_STAGES),
         Candidate.updated_at < stuck_before,
     ]
     stuck = int(
