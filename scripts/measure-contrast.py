@@ -13,12 +13,26 @@ canvas, под которым нарисован mesh: три цветных п�
 
 Порог WCAG AA для обычного текста — 4.5:1. Скрипт печатает каждую пару
 «текст / фон» и худший результат по теме; ненулевой код выхода, если есть провал.
+
+Режимы:
+
+    python3 scripts/measure-contrast.py              # гейт: все пары из списка
+    python3 scripts/measure-contrast.py --audit      # пары, найденные в CSS
+    python3 scripts/measure-contrast.py --check-refs # ссылки в доказательствах
+    python3 scripts/measure-contrast.py --pair <фон> <текст>  # одна пара
+
+Первые три запускаются в CI (job «Frontend checks»): гейт ловит провал
+контраста, аудит — пары в вёрстке, которых нет в гейте, `--check-refs` —
+устаревшие ссылки в доказательствах. `--pair` — режим для отчёта: печатает
+одну пару в двух темах, чтобы любое число в тексте воспроизводилось одной
+командой. Локально то же самое: `make contrast`.
 """
 
 from __future__ import annotations
 
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +62,7 @@ STATE_SURFACES = [
     "--surface-sidebar-hover",
     "--surface-sidebar-active",
     # Заливка «акцент-чипов»: на ней лежит акцентный текст
-    # (candidates.css:151-152, workspace.css:172-173, tabs.css:43-44).
+    # (candidates.css:151-152, workspace.css:172-173, tabs.css:42-43).
     "--accent-subtle",
     # Заливки статусных плашек и баннеров: на них лежит обычный текст
     # (queue.css .queue-stale, statusChip.css:20, stateViews.css:23-24).
@@ -82,93 +96,213 @@ TEXTS = [
 # молча пропускает, а печатает отдельно — вместе с grep-командой, которой любой
 # может проверить, что их правда нет.
 # ---------------------------------------------------------------------------
-PAIR_EVIDENCE = {
-    ("--surface-hover", "--text-secondary"): (
-        "candidates.css:121 .candidates-table tbody tr:hover, цвет ячейки — :112"
+@dataclass(frozen=True)
+class Evidence:
+    """Доказательство пары: заметка для человека + ссылки для машины.
+
+    ``refs`` — тройки ``(файл от frontend/src, строка, токен)``: на этой строке
+    обязан встречаться ``var(<токен>)``. Их проверяет режим ``--check-refs``,
+    потому что ссылки в доказательствах устаревают от любой правки CSS —
+    ревью раунда 7 нашло пять таких, и доказательство, которое нельзя
+    проверить, перестаёт быть доказательством.
+    """
+
+    note: str
+    refs: tuple[tuple[str, int, str], ...] = ()
+
+
+PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
+    ("--surface-hover", "--text-secondary"): Evidence(
+        "candidates.css:121 .candidates-table tbody tr:hover — фон; цвет ячейки "
+        "наследуется от :112",
+        refs=(
+            ("features/candidates/candidates.css", 121, "--surface-hover"),
+            ("features/candidates/candidates.css", 112, "--text-secondary"),
+        ),
     ),
-    ("--surface-hover", "--text-tertiary"): (
-        "stateViews.css:18-19 .state-view-icon; calendar.css:129 .calendar-chip:hover "
-        "с .calendar-chip-time (цвет — :134)"
+    ("--surface-hover", "--text-tertiary"): Evidence(
+        "stateViews.css:12-21 .state-view-icon (фон :19, цвет :20); "
+        "calendar.css:128-131 .calendar-chip:hover (фон :130) с "
+        ".calendar-chip-time (цвет :134)",
+        refs=(
+            ("design-system/components/stateViews.css", 19, "--surface-hover"),
+            ("design-system/components/stateViews.css", 20, "--text-tertiary"),
+            ("features/calendar/calendar.css", 130, "--surface-hover"),
+            ("features/calendar/calendar.css", 134, "--text-tertiary"),
+        ),
     ),
-    ("--surface-hover", "--text-link"): (
-        "candidates.css:141 .row-name:hover .row-fullname (на фоне hover строки :121)"
+    ("--surface-hover", "--text-link"): Evidence(
+        "candidates.css:141 .row-name:hover .row-fullname — цвет; фон hover-строки "
+        "задаёт правило :121",
+        refs=(
+            ("features/candidates/candidates.css", 141, "--text-link"),
+            ("features/candidates/candidates.css", 121, "--surface-hover"),
+        ),
     ),
-    ("--surface-selected", "--text-secondary"): (
-        "candidates.css:125 tr:focus-within, цвет ячейки — :112"
+    ("--surface-selected", "--text-secondary"): Evidence(
+        "candidates.css:125 tr:focus-within — фон; цвет ячейки наследуется от :112",
+        refs=(
+            ("features/candidates/candidates.css", 125, "--surface-selected"),
+            ("features/candidates/candidates.css", 112, "--text-secondary"),
+        ),
     ),
-    ("--surface-selected", "--text-tertiary"): (
+    ("--surface-selected", "--text-tertiary"): Evidence(
         "calendar.css:108 .calendar-cell:has(.calendar-chip) → :118 .calendar-chip "
-        "→ :134 .calendar-chip-time"
+        "→ :134 .calendar-chip-time",
+        refs=(
+            ("features/calendar/calendar.css", 108, "--surface-selected"),
+            ("features/calendar/calendar.css", 134, "--text-tertiary"),
+        ),
     ),
-    ("--surface-selected", "--accent-default"): (
-        "button.css:144 .icon-btn-ghost.is-active"
+    ("--surface-selected", "--accent-default"): Evidence(
+        "button.css:143-146 .icon-btn-ghost.is-active",
+        refs=(
+            ("design-system/components/button.css", 144, "--surface-selected"),
+            ("design-system/components/button.css", 145, "--accent-default"),
+        ),
     ),
-    ("--accent-subtle", "--accent-default"): (
-        "queue.css:217-228 .queue-link (базовое состояние кнопки "
-        "«Непрочитанных уведомлений», рендерится MyQueuePage.tsx:275)"
+    ("--accent-subtle", "--accent-default"): Evidence(
+        "queue.css:242-255 .queue-link — базовое состояние кнопки "
+        "«Непрочитанных уведомлений» (фон :250, цвет :251), рендерится "
+        "MyQueuePage.tsx:303",
+        refs=(
+            ("features/queue/queue.css", 250, "--accent-subtle"),
+            ("features/queue/queue.css", 251, "--accent-default"),
+        ),
     ),
-    ("--surface-selected-hover", "--accent-on-subtle-hover"): (
-        "queue.css:232 .queue-link:hover — фон --surface-selected-hover, цвет из "
-        "того же правила; базовый цвет — :228 (MyQueuePage.tsx:275). До правки "
-        "здесь был --accent-default и пара давала 3.88:1 в светлой теме"
+    ("--surface-selected-hover", "--accent-on-subtle-hover"): Evidence(
+        "queue.css:257-262 .queue-link:hover — фон :258, цвет :261; базовый цвет — "
+        ":251 (MyQueuePage.tsx:303). До правки здесь был --accent-default, и пара "
+        "давала 3.88:1 в светлой теме",
+        refs=(
+            ("features/queue/queue.css", 258, "--surface-selected-hover"),
+            ("features/queue/queue.css", 261, "--accent-on-subtle-hover"),
+        ),
     ),
-    ("--surface-hover", "--text-primary"): (
-        "button.css:80 .btn-secondary:hover, :137 .icon-btn-ghost:hover; "
-        "toast.css:60 .toast-close:hover; workspace.css:212, :278; "
-        "documentTemplates.css:203"
+    ("--surface-hover", "--text-primary"): Evidence(
+        "button.css:81-84 .btn-secondary:hover, :139-142 .icon-btn-ghost:hover; "
+        "toast.css:61 .toast-close:hover; workspace.css:214-217, :281-284",
+        refs=(
+            ("design-system/components/button.css", 82, "--surface-hover"),
+            ("design-system/components/button.css", 83, "--text-primary"),
+            ("design-system/components/toast.css", 61, "--surface-hover"),
+            ("app-shell/workspace.css", 215, "--surface-hover"),
+            ("app-shell/workspace.css", 216, "--text-primary"),
+        ),
     ),
-    ("--surface-pressed", "--text-primary"): (
-        "candidates.css:215 .filter-chip-remove:hover"
+    ("--surface-pressed", "--text-primary"): Evidence(
+        "candidates.css:217-220 .filter-chip-remove:hover",
+        refs=(
+            ("features/candidates/candidates.css", 218, "--surface-pressed"),
+            ("features/candidates/candidates.css", 219, "--text-primary"),
+        ),
     ),
-    ("--surface-sunken", "--text-primary"): (
-        "calendar.css:284; documentTemplates.css:148, :190"
+    ("--surface-sunken", "--text-primary"): Evidence(
+        "calendar.css:287-295; documentTemplates.css:192-203",
+        refs=(
+            ("features/calendar/calendar.css", 292, "--surface-sunken"),
+            ("features/calendar/calendar.css", 293, "--text-primary"),
+            ("features/document-templates/documentTemplates.css", 199, "--surface-sunken"),
+            ("features/document-templates/documentTemplates.css", 198, "--text-primary"),
+        ),
     ),
-    ("--accent-subtle", "--accent-on-subtle"): (
+    ("--accent-subtle", "--accent-on-subtle"): Evidence(
         "candidates.css:151-152 фильтр-чип; workspace.css:172-173 .topbar-avatar; "
         "workspace.css:287-288 .topbar-settings.is-active; workspace.css:341-342 "
-        ".settings-card-icon; tabs.css:43-44 .tab-item.is-active .tab-count"
+        ".settings-card-icon; tabs.css:41-44 .tab-item.is-active .tab-count",
+        refs=(
+            ("features/candidates/candidates.css", 151, "--accent-subtle"),
+            ("features/candidates/candidates.css", 152, "--accent-on-subtle"),
+            ("app-shell/workspace.css", 172, "--accent-subtle"),
+            ("app-shell/workspace.css", 173, "--accent-on-subtle"),
+            ("design-system/components/tabs.css", 42, "--accent-subtle"),
+            ("design-system/components/tabs.css", 43, "--accent-on-subtle"),
+        ),
     ),
-    ("--surface-pressed", "--text-secondary"): (
-        "button.css:86 .btn-ghost:active, цвет — .btn-ghost :78"
+    ("--surface-pressed", "--text-secondary"): Evidence(
+        "button.css:86 .btn-ghost:active — фон; цвет — .btn-ghost :78",
+        refs=(
+            ("design-system/components/button.css", 86, "--surface-pressed"),
+            ("design-system/components/button.css", 78, "--text-secondary"),
+        ),
     ),
-    ("--surface-sunken", "--text-tertiary"): (
-        "calendar.css:99 .calendar-hour-col, цвет — :95"
+    ("--surface-sunken", "--text-tertiary"): Evidence(
+        "calendar.css:99 .calendar-hour-col — фон; цвет :95",
+        refs=(
+            ("features/calendar/calendar.css", 99, "--surface-sunken"),
+            ("features/calendar/calendar.css", 95, "--text-tertiary"),
+        ),
     ),
-    ("--surface-sunken", "--text-secondary"): (
-        "calendar.css:90 .calendar-table thead th, цвет — :87"
+    ("--surface-sunken", "--text-secondary"): Evidence(
+        "calendar.css:86-91 .calendar-table thead th (фон :90, цвет :88); "
+        "tabs.css:32-39; analytics.css:50-58",
+        refs=(
+            ("features/calendar/calendar.css", 90, "--surface-sunken"),
+            ("features/calendar/calendar.css", 88, "--text-secondary"),
+            ("design-system/components/tabs.css", 33, "--surface-sunken"),
+            ("design-system/components/tabs.css", 34, "--text-secondary"),
+            ("features/analytics/analytics.css", 55, "--surface-sunken"),
+            ("features/analytics/analytics.css", 56, "--text-secondary"),
+        ),
     ),
-    ("--surface-sidebar-hover", "--text-primary"): (
-        "workspace.css:81 .sidebar-link:hover, цвет — :82"
+    ("--surface-sidebar-hover", "--text-primary"): Evidence(
+        "workspace.css:80-83 .sidebar-link:hover (фон :81, цвет :82)",
+        refs=(
+            ("app-shell/workspace.css", 81, "--surface-sidebar-hover"),
+            ("app-shell/workspace.css", 82, "--text-primary"),
+        ),
     ),
-    ("--status-warning-bg", "--text-primary"): (
-        "queue.css .queue-stale — баннер «сводка устарела» (MyQueuePage.tsx); "
-        "цвет задан в том же правиле"
+    ("--status-warning-bg", "--text-primary"): Evidence(
+        "queue.css:130-142 .queue-stale — баннер «сводка устарела», рендерится "
+        "MyQueuePage.tsx; фон и цвет заданы в одном правиле (:139, :140)",
+        refs=(
+            ("features/queue/queue.css", 139, "--status-warning-bg"),
+            ("features/queue/queue.css", 140, "--text-primary"),
+        ),
     ),
-    ("--status-warning-bg", "--status-warning-fg"): (
-        "design-system/components/statusChip.css:20 .status-chip-amber; "
-        "design-system/components/stateViews.css:24 .state-view-warning; "
-        "features/license/license.css:15-17"
+    ("--status-warning-bg", "--status-warning-fg"): Evidence(
+        "statusChip.css:20 .status-chip-amber; stateViews.css:24 "
+        ".state-view-warning; license.css:14-18",
+        refs=(
+            ("design-system/components/statusChip.css", 20, "--status-warning-bg"),
+            ("design-system/components/statusChip.css", 20, "--status-warning-fg"),
+            ("design-system/components/stateViews.css", 24, "--status-warning-bg"),
+            ("design-system/components/stateViews.css", 24, "--status-warning-fg"),
+            ("features/license/license.css", 15, "--status-warning-bg"),
+            ("features/license/license.css", 17, "--status-warning-fg"),
+        ),
     ),
-    ("--status-danger-bg", "--status-danger-fg"): (
-        "design-system/components/statusChip.css:22 .status-chip-danger; "
-        "design-system/components/stateViews.css:23 .state-view-danger"
-    ),
-    ("--surface-sidebar-active", "--text-primary"): (
-        "токен объявлен в tokens.css, но как фон нигде не используется: "
-        "grep -rn 'var(--surface-sidebar-active)' frontend/src → 0"
+    ("--status-danger-bg", "--status-danger-fg"): Evidence(
+        "statusChip.css:22 .status-chip-danger; stateViews.css:23 .state-view-danger",
+        refs=(
+            ("design-system/components/statusChip.css", 22, "--status-danger-bg"),
+            ("design-system/components/statusChip.css", 22, "--status-danger-fg"),
+            ("design-system/components/stateViews.css", 23, "--status-danger-bg"),
+            ("design-system/components/stateViews.css", 23, "--status-danger-fg"),
+        ),
     ),
 }
 
 # Пары, которых в вёрстке нет, с командой, доказывающей отсутствие.
 # Ключ — (состояние, текст) или (состояние, None) для «ни с каким текстом».
-ABSENT_EVIDENCE = {
-    ("--surface-sidebar-active", None): (
-        "grep -rn 'var(--surface-sidebar-active)' frontend/src → 0 вхождений, "
-        "активный пункт навигации красится --nav-active-bg (workspace.css:86)"
+ABSENT_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
+    # Токен объявлен в tokens.css, но как фон не используется нигде:Pairs с ним
+    # раньше лежали в гейте, хотя в вёрстке их нет — это та же ошибка, что и с
+    # записью про «--surface-selected-hover не встречается»: доказательством
+    # отсутствия была команда grep, и она это отсутствие подтверждает.
+    ("--surface-sidebar-active", None): Evidence(
+        "grep -rn 'var(--surface-sidebar-active)' frontend/src → 0 вхождений; "
+        "активный пункт навигации красится --nav-active-bg (workspace.css:86)",
+        refs=(("app-shell/workspace.css", 86, "--nav-active-bg"),),
     ),
-    ("--surface-pressed", "--text-tertiary"): (
+    ("--surface-pressed", "--text-tertiary"): Evidence(
         "--surface-pressed используется в button.css:73, :86 и candidates.css:218 — "
-        "везде с --text-primary"
+        "везде с --text-primary, третичного текста на этой заливке нет",
+        refs=(
+            ("design-system/components/button.css", 73, "--surface-pressed"),
+            ("design-system/components/button.css", 86, "--surface-pressed"),
+            ("features/candidates/candidates.css", 218, "--surface-pressed"),
+        ),
     ),
 }
 
@@ -400,6 +534,112 @@ def print_audit() -> int:
     return 1 if missing else 0
 
 
+def _css_files() -> list[Path]:
+    return sorted((ROOT / "frontend/src").rglob("*.css"))
+
+
+def _resolve_ref(rel: str) -> Path | None:
+    """Файл по имени (в доказательствах пути пишутся сокращённо)."""
+    direct = ROOT / "frontend/src" / rel
+    if direct.is_file():
+        return direct
+    hits = [path for path in _css_files() if path.as_posix().endswith(rel)]
+    return hits[0] if hits else None
+
+
+def check_refs() -> int:
+    """Проверить ссылки в доказательствах: строка обязана содержать токен.
+
+    Зачем отдельный режим: доказательство пары — это файл и строка. Стоит
+    CSS-файлу сдвинуться, как ссылка начинает указывать не туда, а гейт при
+    этом молчит — он считает токены, а не текст. Ревью раунда 7 нашло ровно
+    это: пять ссылок указывали на строки, оставшиеся от предыдущего коммита.
+    Режим прогоняется в CI вместе с гейтом и аудитом.
+    """
+    problems = 0
+
+    def report(message: str) -> None:
+        nonlocal problems
+        problems += 1
+        print(f"  УСТАРЕЛО {message}")
+
+    print("Ссылки в доказательствах (PAIR_EVIDENCE):")
+    for (state, text), evidence in sorted(PAIR_EVIDENCE.items()):
+        covered = {state, text}
+        for rel, line, token in evidence.refs:
+            path = _resolve_ref(rel)
+            if path is None:
+                report(f"{rel}: файл не найден ({state} + {text})")
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+            if line > len(lines):
+                report(f"{rel}:{line} — за концом файла ({len(lines)} строк)")
+                continue
+            content = lines[line - 1]
+            if f"var({token})" not in content:
+                report(
+                    f"{rel}:{line} — ожидался var({token}), а там: {content.strip()[:70]}"
+                )
+            if token in covered:
+                covered.discard(token)
+        for token in sorted(covered):
+            report(f"{state} + {text}: нет ссылки, подтверждающей var({token})")
+
+    print("Ссылки в доказательствах (ABSENT_EVIDENCE):")
+    for (state, text), evidence in sorted(ABSENT_EVIDENCE.items()):
+        for rel, line, token in evidence.refs:
+            path = _resolve_ref(rel)
+            if path is None:
+                report(f"{rel}: файл не найден ({state} + {text})")
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+            if line > len(lines) or f"var({token})" not in lines[line - 1]:
+                actual = lines[line - 1].strip() if line <= len(lines) else "<за концом>"
+                report(f"{rel}:{line} — ожидался var({token}), а там: {actual[:70]}")
+        if text is None:
+            used = sum(
+                1 for path in _css_files() if f"var({state})" in path.read_text(encoding="utf-8")
+            )
+            if used:
+                report(
+                    f"{state}: заявлено «не используется как фон», но файлов с "
+                    f"var({state}) — {used}"
+                )
+        else:
+            if not _absent_for_real(state, text):
+                report(
+                    f"{state} + {text}: заявлено отсутствие, но правило найдено "
+                    f"({grep_command((state, text))})"
+                )
+
+    print("Ссылки в исключениях (EXEMPT):")
+    for (state, text), evidence in sorted(EXEMPT.items()):
+        for rel, line, token in evidence.refs:
+            path = _resolve_ref(rel)
+            if path is None:
+                report(f"{rel}: файл не найден ({state} + {text})")
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+            if line > len(lines) or f"var({token})" not in lines[line - 1]:
+                actual = lines[line - 1].strip() if line <= len(lines) else "<за концом>"
+                report(f"{rel}:{line} — ожидался var({token}), а там: {actual[:70]}")
+
+    print(f"\nИТОГО устаревших ссылок: {problems}")
+    return 1 if problems else 0
+
+
+def _absent_for_real(state: str, text: str) -> bool:
+    """Правила «состояние + текст вместе» в вёрстке нет? (логика grep_command)."""
+    for path in _css_files():
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            if f"var({text})" in line and f"var({state})" in "\n".join(
+                lines[max(0, index - 6) : index + 1]
+            ):
+                return False
+    return True
+
+
 def grep_command(pair: tuple[str, str | None]) -> str:
     """Команда, которой проверяется, что пара встречается в вёрстке."""
     state, text = pair
@@ -410,11 +650,16 @@ def grep_command(pair: tuple[str, str | None]) -> str:
 
 DEFAULT_ABSENT = "правила, задающие состояние и этот цвет текста вместе, не найдены"
 
-# WCAG 1.4.3 освобождает неактивные контролы — такие пары не провал, а豁免.
-EXEMPT = {
-    ("--surface-disabled", "--text-disabled"): (
+# WCAG 1.4.3 освобождает неактивные контролы — такие пары не провал, а
+# помеченное исключение (не «пропущенная пара»).
+EXEMPT: dict[tuple[str, str], Evidence] = {
+    ("--surface-disabled", "--text-disabled"): Evidence(
         "WCAG 1.4.3: неактивные элементы не обязаны проходить по контрасту "
-        "(field.css:65 .text-input:disabled)"
+        "(field.css:68-71 .text-input:disabled — фон :69, цвет :70)",
+        refs=(
+            ("design-system/components/field.css", 69, "--surface-disabled"),
+            ("design-system/components/field.css", 70, "--text-disabled"),
+        ),
     ),
 }
 
@@ -471,7 +716,7 @@ def main() -> int:
                                 problems += 1
                                 print(f"  ПРОВАЛ {ratio:5.2f}:1  {label}")
                                 if pair in PAIR_EVIDENCE:
-                                    print(f"           вёрстка: {PAIR_EVIDENCE[pair]}")
+                                    print(f"           вёрстка: {PAIR_EVIDENCE[pair].note}")
                         else:
                             key = pair if pair in ABSENT_EVIDENCE else (state_name, None)
                             absent[key] = min(absent.get(key, 99.0), ratio)
@@ -498,7 +743,8 @@ def main() -> int:
             for key in sorted(absent, key=lambda k: (k[0] or "", k[1] or "")):
                 state, text = key
                 what = f"{state} + {text}" if text else f"{state} + любой другой текст"
-                why = ABSENT_EVIDENCE.get(key, DEFAULT_ABSENT)
+                evidence = ABSENT_EVIDENCE.get(key)
+                why = evidence.note if evidence else DEFAULT_ABSENT
                 print(f"    {what}: {absent[key]:.2f}:1")
                 print(f"      проверка: {why.strip()}")
                 print(f"      команда:  {grep_command(key)}")
@@ -549,6 +795,8 @@ def print_pair(surface: str | None, text: str) -> int:
 if __name__ == "__main__":
     if "--audit" in sys.argv:
         sys.exit(print_audit())
+    if "--check-refs" in sys.argv:
+        sys.exit(check_refs())
     if "--pair" in sys.argv:
         rest = [arg for arg in sys.argv[1:] if arg != "--pair"]
         if len(rest) != 2:
