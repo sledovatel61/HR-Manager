@@ -70,7 +70,7 @@ STATE_SURFACES = [
     "--surface-sidebar-hover",
     "--surface-sidebar-active",
     # Заливка «акцент-чипов»: на ней лежит акцентный текст
-    # (candidates.css:151-152, workspace.css:172-173, tabs.css:42-43).
+    # (candidates.css:156-157, workspace.css:172-173, tabs.css:42-43).
     "--accent-subtle",
     # Заливки статусных плашек и баннеров: на них лежит обычный текст
     # (queue.css .queue-stale, statusChip.css:20, stateViews.css:23-24).
@@ -129,11 +129,11 @@ class Evidence:
 
 PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
     ("--surface-hover", "--text-secondary"): Evidence(
-        "candidates.css:120-121 `.candidates-table tbody tr:hover` — фон (candidates.css:121 "
+        "candidates.css:125-126 `.candidates-table tbody tr:hover` — фон (candidates.css:126 "
         "`var(--surface-hover)`); цвет ячейки наследуется от candidates.css:112 "
         "`var(--text-secondary)`",
         refs=(
-            ("features/candidates/candidates.css", 121, "--surface-hover"),
+            ("features/candidates/candidates.css", 126, "--surface-hover"),
             ("features/candidates/candidates.css", 112, "--text-secondary"),
         ),
     ),
@@ -151,20 +151,20 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         ),
     ),
     ("--surface-hover", "--text-link"): Evidence(
-        "candidates.css:140-141 `.row-name:hover .row-fullname` — цвет (candidates.css:141 "
-        "`var(--text-link)`); фон hover-строки задаёт candidates.css:120-121 "
-        "`.candidates-table tbody tr:hover` (candidates.css:121 `var(--surface-hover)`)",
+        "candidates.css:145-146 `.row-name:hover .row-fullname` — цвет (candidates.css:146 "
+        "`var(--text-link)`); фон hover-строки задаёт candidates.css:125-126 "
+        "`.candidates-table tbody tr:hover` (candidates.css:126 `var(--surface-hover)`)",
         refs=(
-            ("features/candidates/candidates.css", 141, "--text-link"),
-            ("features/candidates/candidates.css", 121, "--surface-hover"),
+            ("features/candidates/candidates.css", 146, "--text-link"),
+            ("features/candidates/candidates.css", 126, "--surface-hover"),
         ),
     ),
     ("--surface-selected", "--text-secondary"): Evidence(
-        "candidates.css:124-125 `.candidates-table tbody tr:focus-within` — фон "
-        "(candidates.css:125 `var(--surface-selected)`); цвет ячейки наследуется от "
+        "candidates.css:129-130 `.candidates-table tbody tr:focus-within` — фон "
+        "(candidates.css:130 `var(--surface-selected)`); цвет ячейки наследуется от "
         "candidates.css:112 `var(--text-secondary)`",
         refs=(
-            ("features/candidates/candidates.css", 125, "--surface-selected"),
+            ("features/candidates/candidates.css", 130, "--surface-selected"),
             ("features/candidates/candidates.css", 112, "--text-secondary"),
         ),
     ),
@@ -221,10 +221,10 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         ),
     ),
     ("--surface-pressed", "--text-primary"): Evidence(
-        "candidates.css:217-220 .filter-chip-remove:hover",
+        "candidates.css:207-225 .filter-chip-remove:hover",
         refs=(
-            ("features/candidates/candidates.css", 218, "--surface-pressed"),
-            ("features/candidates/candidates.css", 219, "--text-primary"),
+            ("features/candidates/candidates.css", 223, "--surface-pressed"),
+            ("features/candidates/candidates.css", 224, "--text-primary"),
         ),
     ),
     ("--surface-sunken", "--text-primary"): Evidence(
@@ -241,8 +241,8 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         ),
     ),
     ("--accent-subtle", "--accent-on-subtle"): Evidence(
-        "candidates.css:184-195 `.filter-chip` (фон — candidates.css:191 "
-        "`var(--accent-subtle)`, цвет — candidates.css:192 `var(--accent-on-subtle)`); "
+        "candidates.css:189-200 `.filter-chip` (фон — candidates.css:196 "
+        "`var(--accent-subtle)`, цвет — candidates.css:197 `var(--accent-on-subtle)`); "
         "workspace.css:165-173 `.topbar-avatar` (фон — workspace.css:172 "
         "`var(--accent-subtle)`, цвет — workspace.css:173 `var(--accent-on-subtle)`); "
         "workspace.css:286-288 `.topbar-settings.is-active` (фон — workspace.css:287 "
@@ -250,8 +250,8 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         "workspace.css:341 `var(--accent-on-subtle)`); tabs.css:41-44 `.tab-item.is-active "
         ".tab-count`",
         refs=(
-            ("features/candidates/candidates.css", 151, "--accent-subtle"),
-            ("features/candidates/candidates.css", 152, "--accent-on-subtle"),
+            ("features/candidates/candidates.css", 156, "--accent-subtle"),
+            ("features/candidates/candidates.css", 157, "--accent-on-subtle"),
             ("app-shell/workspace.css", 172, "--accent-subtle"),
             ("app-shell/workspace.css", 173, "--accent-on-subtle"),
             ("design-system/components/tabs.css", 42, "--accent-subtle"),
@@ -347,12 +347,12 @@ ABSENT_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         "--surface-pressed используется в button.css:72-73 "
         "`.btn-secondary:active:not(:disabled)` (фон — button.css:73 "
         "`var(--surface-pressed)`), button.css:85-87 `.btn-ghost:active:not(:disabled)` и "
-        "candidates.css:217-218 `.filter-chip-remove:hover` — везде с `var(--text-primary)`, "
+        "candidates.css:222-224 `.filter-chip-remove:hover` — везде с `var(--text-primary)`, "
         "третичного текста на этой заливке нет",
         refs=(
             ("design-system/components/button.css", 73, "--surface-pressed"),
             ("design-system/components/button.css", 86, "--surface-pressed"),
-            ("features/candidates/candidates.css", 218, "--surface-pressed"),
+            ("features/candidates/candidates.css", 223, "--surface-pressed"),
         ),
     ),
 }
