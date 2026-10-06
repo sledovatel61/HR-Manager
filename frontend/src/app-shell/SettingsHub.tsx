@@ -7,6 +7,7 @@
 import { Button } from "../design-system/components/Button";
 import { EmptyState } from "../design-system/components/StateViews";
 import { Icon } from "../design-system/icons/Icon";
+import { AppearanceControls } from "./AppearanceControls";
 import type { WorkspaceSection } from "./useWorkspaceSection";
 import {
   SETTINGS_SECTION_LABELS,
@@ -32,6 +33,7 @@ export function SettingsHub({
         автоматические правила, обновления, лицензия, доступ и контент.
         Прямые ссылки на них по-прежнему работают.
       </p>
+      <AppearanceControls />
       {groups.length === 0 ? (
         <EmptyState
           icon="settings"
