@@ -11,6 +11,7 @@ import type { CurrentUser, PilotReadiness, UserRole } from "../types";
 import { ToastProvider } from "../design-system/components/Toast";
 import { AppearanceProvider } from "./appearance";
 import Workspace from "./Workspace";
+import * as api from "../api";
 import {
   SETTINGS_GROUPS,
   SETTINGS_SECTIONS,
@@ -21,6 +22,10 @@ import { sectionsForRole } from "./workspaceSections";
 
 vi.mock("../api", async () => ({
   ...(await vi.importActual<typeof import("../api")>("../api")),
+  // Mount the real queue in its loading state, without duplicating its fixture.
+  getQueueDashboard: vi.fn(() => new Promise(() => undefined)),
+  listHrUsers: vi.fn().mockResolvedValue({ items: [] }),
+  listPositionOptions: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   logout: vi.fn().mockResolvedValue(undefined),
   onUnauthorized: vi.fn(() => () => undefined),
   unreadCount: vi.fn().mockResolvedValue({ count: 0 }),
@@ -106,6 +111,8 @@ function renderWorkspace(role: UserRole) {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  localStorage.clear();
   window.location.hash = "#/admin";
 });
 
@@ -307,5 +314,41 @@ describe("группы настроек", () => {
     for (const section of SETTINGS_SECTIONS) {
       expect(settingsGroupForSection(section)).toBeDefined();
     }
+  });
+});
+
+describe("личная очередь администратора", () => {
+  it("ставит очередь первой и сохраняет все разделы HR и административные разделы", () => {
+    const admin = sectionsForRole("admin");
+    expect(admin[0]).toBe("queue");
+    expect(new Set(admin).size).toBe(admin.length);
+    expect(sectionsForRole("hr").filter((section) => !admin.includes(section))).toEqual([]);
+    expect(admin.filter((section) => !sectionsForRole("hr").includes(section))).toEqual([
+      "candidates", "analytics", "updates", "license", "admin", "users",
+    ]);
+  });
+
+  it("не добавляет очередь руководителю без продуктового решения", () => {
+    expect(sectionsForRole("manager")).not.toContain("queue");
+  });
+
+  it.each(["", "#/queue"])("открывает реальную MyQueuePage для admin по адресу %s", async (hash) => {
+    window.location.hash = hash;
+    renderWorkspace("admin");
+    expect(await screen.findByRole("region", { name: "Моя очередь" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Моя очередь", level: 1 })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Разделы" });
+    expect(within(nav).getByRole("button", { name: "Моя очередь" })).toHaveAttribute("aria-current", "page");
+    await waitFor(() => expect(api.getQueueDashboard).toHaveBeenCalledWith(
+      expect.objectContaining({ owner_id: undefined }),
+    ));
+  });
+
+  it("позволяет открыть очередь из бокового меню администратора", async () => {
+    const user = userEvent.setup();
+    renderWorkspace("admin");
+    await user.click(within(screen.getByRole("navigation", { name: "Разделы" })).getByRole("button", { name: "Моя очередь" }));
+    expect(window.location.hash).toBe("#/queue");
+    expect(await screen.findByRole("region", { name: "Моя очередь" })).toBeInTheDocument();
   });
 });
