@@ -271,6 +271,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   const anyLoading = CANDIDATE_STAGE_ORDER.some((stage) => columns[stage].loading);
   const anyError = CANDIDATE_STAGE_ORDER.find((stage) => columns[stage].error);
   const anyItems = CANDIDATE_STAGE_ORDER.some((stage) => columns[stage].items.length > 0);
+  const totalCount = CANDIDATE_STAGE_ORDER.reduce((sum, stage) => sum + columns[stage].total, 0);
 
   const openCandidate = (id: string) => setDrawerCandidateId(id);
 
@@ -291,6 +292,17 @@ export default function KanbanPage({ user }: KanbanPageProps) {
 
   return (
     <div className="kanban-page">
+      <header className="page-head">
+        <div>
+          <div className="eyebrow">Подбор</div>
+          <p className="page-sub">
+            {totalCount > 0
+              ? `Всего на доске: ${totalCount} · перетащите карточку, чтобы сменить этап`
+              : "Доска пуста"}
+          </p>
+        </div>
+      </header>
+
       <div className="kanban-toolbar">
         <Field label="Должность" error={positionOptions.error ?? undefined}>
           {(id) => (

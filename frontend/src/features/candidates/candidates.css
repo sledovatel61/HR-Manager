@@ -96,7 +96,7 @@
 
 .candidates-table th {
   text-align: left;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--table-cell-padding-y) var(--space-4);
   background: var(--table-head-bg);
   color: var(--text-tertiary);
   font-size: var(--text-size-xs);
@@ -107,10 +107,15 @@
 }
 
 .candidates-table td {
-  padding: var(--space-2) var(--space-4);
+  padding: var(--table-cell-padding-y) var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   vertical-align: middle;
+}
+
+/* Высота строки управляется токеном плотности (data-density). */
+.candidates-table tbody tr {
+  height: var(--row-height);
 }
 
 .candidates-table tbody tr:last-child td {
