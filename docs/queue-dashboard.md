@@ -133,9 +133,10 @@ Inline SVG, без новых библиотек (в зависимостях т
 * `backend/tests/test_integration_queue_dashboard.py` — 4 теста на PostgreSQL:
   явное смещение UTC в ответе (timestamptz), `Date`-колонка `start_date`,
   `IN (…)` по нативным UUID на 120 кандидатах, правила области видимости.
-* `backend/tests/test_measure_contrast.py` — 9 тестов самого инструмента
+* `backend/tests/test_measure_contrast.py` — 10 тестов самого инструмента
   контраста: `--pair` отвергает базовую поверхность в первом аргументе
-  (иначе замер врёт, ревью раунда 8), возвращает ненулевой код при провале AA,
-  а `--check-refs` проверяет не только машинные `refs`, но и ссылки в заметках.
+  (иначе замер врёт, ревью раунда 8), возвращает ненулевой код при провале AA и
+  ошибку (2) при неизвестном токене, а `--check-refs` проверяет не только
+  машинные `refs`, но и ссылки в заметках.
 * `frontend/src/features/queue/MyQueuePage.test.tsx` — 19 тестов экрана.
 * `frontend/src/features/queue/QueueCharts.test.tsx` — 9 тестов графиков.
