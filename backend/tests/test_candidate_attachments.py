@@ -1014,3 +1014,121 @@ def test_no_test_compares_bytes_against_a_fresh_fixture_call() -> None:
         f"(строка, фикстура): {offenders}. Сохраните payload в переменную и "
         "сверяйте с ней."
     )
+
+
+@pytest.mark.parametrize("role", [UserRole.HR, UserRole.MANAGER, UserRole.ADMIN])
+def test_candidate_list_attachment_badge_is_scoped_and_tracks_soft_delete(
+    client: TestClient, db_session: Session, role: UserRole
+) -> None:
+    viewer = make_user(db_session, username="viewer", role=role)
+    other = make_user(db_session, username="other", role=UserRole.HR)
+    own = make_candidate(db_session, owner=viewer, full_name="Своя карточка")
+    foreign = make_candidate(db_session, owner=other, full_name="Чужая карточка")
+    other_headers = _auth(client, "other")
+    assert (
+        _upload(
+            client,
+            foreign,
+            filename="foreign.pdf",
+            payload=build_pdf(),
+            content_type=PDF_MIME,
+            headers=other_headers,
+        ).status_code
+        == 201
+    )
+    headers = _auth(client, "viewer")
+    response = _upload(
+        client,
+        own,
+        filename="form.pdf",
+        payload=build_pdf(),
+        content_type=PDF_MIME,
+        headers=headers,
+    )
+    assert response.status_code == 201
+    attachment_id = response.json()["id"]
+    page = client.get("/candidates").json()
+    counts = {item["id"]: item["attachment_count"] for item in page["items"]}
+    assert counts[str(own.id)] == 1
+    if role == UserRole.HR:
+        assert str(foreign.id) not in counts
+    else:
+        assert counts[str(foreign.id)] == 1
+    for item in page["items"]:
+        assert "content" not in item
+        assert "filename" not in item
+    assert (
+        client.delete(
+            f"/candidates/{own.id}/attachments/{attachment_id}", headers=headers
+        ).status_code
+        == 200
+    )
+    own_row = next(
+        item for item in client.get("/candidates").json()["items"] if item["id"] == str(own.id)
+    )
+    assert own_row["attachment_count"] == 0
+    assert (
+        _upload(
+            client,
+            own,
+            filename="form.pdf",
+            payload=build_pdf(),
+            content_type=PDF_MIME,
+            headers=headers,
+        ).status_code
+        == 201
+    )
+    assert client.delete(f"/candidates/{own.id}", headers=headers).status_code == 200
+    deleted = client.get("/candidates?include_deleted=true").json()["items"]
+    assert next(item for item in deleted if item["id"] == str(own.id))["attachment_count"] == 0
+
+
+def test_list_counts_are_page_local_and_use_one_metadata_query(
+    client: TestClient, db_session: Session
+) -> None:
+    from sqlalchemy import event
+
+    owner = make_user(db_session, username="page-owner", role=UserRole.HR)
+    headers = _auth(client, "page-owner")
+    candidates = [
+        make_candidate(db_session, owner=owner, full_name=f"Кандидат {i}") for i in range(3)
+    ]
+    for index, candidate in enumerate(candidates):
+        for number in range(index):
+            response = _upload(
+                client,
+                candidate,
+                filename=f"form-{number}.pdf",
+                payload=build_pdf(),
+                content_type=PDF_MIME,
+                headers=headers,
+            )
+            assert response.status_code == 201
+    statements: list[str] = []
+
+    def record(
+        _conn: Any, _cursor: Any, statement: str, _params: Any, _context: Any, _many: Any
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT") and "candidate_attachments" in statement:
+            statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        for offset in range(3):
+            statements.clear()
+            response = client.get(
+                "/candidates",
+                params={"limit": 1, "offset": offset, "sort": "full_name", "direction": "asc"},
+            )
+            assert response.status_code == 200
+            page = response.json()
+            assert page["total"] == 3
+            assert len(page["items"]) == 1
+            assert page["items"][0]["id"] == str(candidates[offset].id)
+            assert page["items"][0]["attachment_count"] == offset
+            assert len(statements) == 1
+            assert "GROUP BY" in statements[0]
+            assert "candidate_attachments.content" not in statements[0]
+    finally:
+        event.remove(engine, "before_cursor_execute", record)

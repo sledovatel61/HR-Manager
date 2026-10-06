@@ -31,23 +31,30 @@
 
 .kanban-board {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-4);
   align-items: flex-start;
-  overflow-x: auto;
+  overflow: auto;
+  width: 100%;
+  min-width: 0;
+  max-height: max(280px, calc(100dvh - 320px));
+  scrollbar-width: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior-x: contain;
   padding-bottom: var(--space-4);
 }
 
 .kanban-column {
-  flex: 0 0 264px;
+  flex: 0 0 296px;
+  width: 296px;
+  min-width: 296px;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   background: var(--surface-sunken);
   border: 1px solid var(--border-subtle);
   border-radius: var(--card-radius);
-  padding: var(--space-3);
+  padding: var(--space-4);
   min-height: 200px;
-  max-height: 72vh;
 }
 
 .kanban-column-head {
@@ -67,7 +74,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  overflow-y: auto;
 }
 
 .kanban-card {
@@ -77,7 +83,7 @@
   background: var(--surface-raised);
   border: 1px solid var(--border-default);
   border-radius: var(--card-radius);
-  padding: var(--card-padding);
+  padding: var(--space-3);
   box-shadow: var(--card-shadow);
   transition: box-shadow var(--duration-fast) var(--easing-standard),
     transform var(--duration-fast) var(--easing-standard);
@@ -226,4 +232,16 @@
 
 .kanban-active-filters .btn {
   border-radius: var(--chip-radius);
+}
+
+.kanban-page { min-width: 0; max-width: 100%; }
+.kanban-board::-webkit-scrollbar { width: 14px; height: 14px; }
+.kanban-board::-webkit-scrollbar-track { background: var(--surface-sunken); }
+.kanban-board::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--radius-full); }
+.kanban-scroll-tools { display: flex; gap: var(--space-2); justify-content: flex-end; }
+.kanban-move { width: 100%; }
+.kanban-move summary { cursor: pointer; color: var(--text-secondary); font-size: var(--text-size-xs); }
+.kanban-move[open] .kanban-move-label { display: block; margin-top: var(--space-2); }
+@media (max-width: 640px) {
+  .kanban-board { max-height: max(240px, calc(100dvh - 510px)); }
 }

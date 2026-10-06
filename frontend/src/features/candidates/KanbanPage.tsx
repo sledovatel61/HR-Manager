@@ -350,7 +350,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         )}
         <span className="kanban-hint">
           Перетащите карточку между колонками (у краёв доски список прокручивается
-          сам) или выберите этап прямо на карточке — так можно перевести кандидата
+          сам) или откройте «Перенести» на карточке — так можно перевести кандидата
           в любой этап за одно действие.
         </span>
         {positionOptions.error && (
@@ -410,7 +410,14 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         />
       )}
 
+      <div className="kanban-scroll-tools" role="group" aria-label="Прокрутка воронки">
+        <Button variant="secondary" size="sm" aria-label="Прокрутить воронку влево"
+          onClick={() => boardRef.current?.scrollBy({ left: -520, behavior: "auto" })}>← Влево</Button>
+        <Button variant="secondary" size="sm" aria-label="Прокрутить воронку вправо"
+          onClick={() => boardRef.current?.scrollBy({ left: 520, behavior: "auto" })}>Вправо →</Button>
+      </div>
       <div
+        tabIndex={0}
         className="kanban-board"
         aria-busy={busy}
         role="list"
@@ -504,29 +511,32 @@ export default function KanbanPage({ user }: KanbanPageProps) {
                         {canSeeAll && (
                           <span className="kanban-card-owner">{candidate.owner_username ?? "Не назначен"}</span>
                         )}
-                        <label className="kanban-move-label" htmlFor={`move-${candidate.id}`}>
-                          Перенести в этап
-                        </label>
-                        <SelectInput
-                          id={`move-${candidate.id}`}
-                          aria-label={`Изменить этап: ${candidate.full_name}`}
-                          className="kanban-move-select"
-                          value={candidate.stage}
-                          disabled={busy}
-                          onChange={(event) =>
-                            handleStageSelect(
-                              candidate,
-                              stage,
-                              event.target.value as CandidateStage
-                            )
-                          }
-                        >
-                          {CANDIDATE_STAGE_ORDER.map((item) => (
-                            <option key={item} value={item}>
-                              {STAGE_LABELS[item]}
-                            </option>
-                          ))}
-                        </SelectInput>
+                        <details className="kanban-move">
+                          <summary>Перенести</summary>
+                          <label className="kanban-move-label" htmlFor={`move-${candidate.id}`}>
+                            Перенести в этап
+                          </label>
+                          <SelectInput
+                            id={`move-${candidate.id}`}
+                            aria-label={`Изменить этап: ${candidate.full_name}`}
+                            className="kanban-move-select"
+                            value={candidate.stage}
+                            disabled={busy}
+                            onChange={(event) =>
+                              handleStageSelect(
+                                candidate,
+                                stage,
+                                event.target.value as CandidateStage
+                              )
+                            }
+                          >
+                            {CANDIDATE_STAGE_ORDER.map((item) => (
+                              <option key={item} value={item}>
+                                {STAGE_LABELS[item]}
+                              </option>
+                            ))}
+                          </SelectInput>
+                        </details>
                       </div>
                     </article>
                   ))}

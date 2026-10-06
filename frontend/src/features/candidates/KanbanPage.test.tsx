@@ -173,6 +173,7 @@ describe("KanbanPage", () => {
 
     await screen.findByText("Кандидат new");
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(within(newColumn).getByLabelText("Изменить этап: Кандидат new"), "offer");
 
     await waitFor(() =>
@@ -189,6 +190,7 @@ describe("KanbanPage", () => {
     await screen.findByText("Кандидат new");
     const directoryCalls = vi.mocked(api.listPositionOptions).mock.calls.length;
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(within(newColumn).getByLabelText("Изменить этап: Кандидат new"), "offer");
 
     await waitFor(() => expect(api.updateCandidate).toHaveBeenCalled());
@@ -211,6 +213,7 @@ describe("KanbanPage", () => {
 
     await screen.findByText("Кандидат new");
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(
       within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
       "hired"
@@ -305,6 +308,7 @@ describe("KanbanPage", () => {
 
     await screen.findByText("Кандидат new");
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(
       within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
       "started"
@@ -338,6 +342,7 @@ describe("KanbanPage", () => {
 
     await screen.findByText("Кандидат new");
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(
       within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
       "started"
@@ -384,6 +389,7 @@ describe("KanbanPage — длинная воронка (block C)", () => {
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
     // «Отказ» is the far end of the funnel and is nowhere near the visible
     // area — the picker reaches it without any scrolling at all.
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(
       within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
       "rejected"
@@ -459,4 +465,23 @@ describe("KanbanPage — длинная воронка (block C)", () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(board.scrollLeft).toBe(scrolled);
   });
+});
+
+
+it("scrolls the board without dragging and keeps the move control collapsed", async () => {
+  renderKanban();
+  await screen.findByText("Кандидат new");
+  const board = screen.getByRole("list", { name: "Воронка кандидатов по этапам" });
+  const scrollBy = vi.fn();
+  board.scrollBy = scrollBy;
+  expect(board).toHaveAttribute("tabindex", "0");
+  await userEvent.click(screen.getByRole("button", { name: "Прокрутить воронку вправо" }));
+  expect(scrollBy).toHaveBeenLastCalledWith({ left: 520, behavior: "auto" });
+  await userEvent.click(screen.getByRole("button", { name: "Прокрутить воронку влево" }));
+  expect(scrollBy).toHaveBeenLastCalledWith({ left: -520, behavior: "auto" });
+  const summary = screen.getByText("Перенести");
+  expect(summary.closest("details")).not.toHaveAttribute("open");
+  await userEvent.click(summary);
+  expect(summary.closest("details")).toHaveAttribute("open");
+  expect(screen.getByRole("combobox", { name: "Изменить этап: Кандидат new" })).toBeVisible();
 });

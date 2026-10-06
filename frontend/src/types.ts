@@ -208,6 +208,8 @@ export type CandidateInteractionType =
 
 /** Candidate as returned by GET /candidates… (see backend CandidateOut). */
 export interface Candidate {
+  /** GET /candidates only; optional for compatibility with older servers/detail. */
+  attachment_count?: number;
   id: string;
   full_name: string;
   phone: string | null;

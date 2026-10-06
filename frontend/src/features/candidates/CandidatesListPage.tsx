@@ -382,6 +382,11 @@ export default function CandidatesListPage({
                       </span>
                       <span>
                         <span className="row-fullname">{candidate.full_name}</span>
+                        {(candidate.attachment_count ?? 0) > 0 && (
+                          <span className="row-attachments" aria-label={`Вложений: ${candidate.attachment_count}`}>
+                            <Icon name="file-text" size={13} /> {candidate.attachment_count}
+                          </span>
+                        )}
                         {candidate.phone && <span className="row-contact">{candidate.phone}</span>}
                         {!candidate.phone && candidate.email && (
                           <span className="row-contact">{candidate.email}</span>

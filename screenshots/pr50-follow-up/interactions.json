@@ -1,0 +1,7 @@
+{
+  "fixture": "Synthetic data / real FastAPI API",
+  "nativeMouseDragPatch": 200,
+  "moveSelectPatch": 200,
+  "edgeScrollLeft": 36,
+  "reducedMotion": true
+}
