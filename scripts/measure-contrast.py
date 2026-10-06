@@ -19,13 +19,21 @@ canvas, под которым нарисован mesh: три цветных п�
     python3 scripts/measure-contrast.py              # гейт: все пары из списка
     python3 scripts/measure-contrast.py --audit      # пары, найденные в CSS
     python3 scripts/measure-contrast.py --check-refs # ссылки в доказательствах
-    python3 scripts/measure-contrast.py --pair <фон> <текст>  # одна пара
+    python3 scripts/measure-contrast.py --pair <состояние|-> <текст>  # одна пара
 
 Первые три запускаются в CI (job «Frontend checks»): гейт ловит провал
 контраста, аудит — пары в вёрстке, которых нет в гейте, `--check-refs` —
 устаревшие ссылки в доказательствах. `--pair` — режим для отчёта: печатает
 одну пару в двух темах, чтобы любое число в тексте воспроизводилось одной
-командой. Локально то же самое: `make contrast`.
+командой, и возвращает 1, если хотя бы в одной теме пара ниже AA.
+
+Первый аргумент `--pair` — **состояние** (токен из ``STATE_SURFACES``) или
+``-``, если состояния нет. Базовая поверхность в первом аргументе — ошибка
+использования: режим и так перебирает ``BASE_SURFACES`` и накладывает
+состояние вторым слоем, поэтому ``--pair --surface-raised …`` накладывал бы
+поверхность дважды и показывал провал там, где его нет. Такой вызов падает
+с кодом 2 и подсказывает честную команду. Локально то же самое:
+`make contrast`.
 """
 
 from __future__ import annotations
@@ -105,6 +113,14 @@ class Evidence:
     потому что ссылки в доказательствах устаревают от любой правки CSS —
     ревью раунда 7 нашло пять таких, и доказательство, которое нельзя
     проверить, перестаёт быть доказательством.
+
+    ``note`` — не только текст для человека: каждое упоминание
+    ``файл:строка`` (и короткое ``:строка``) в заметке обязано называть
+    литерал, который на этой строке должен быть, и ``--check-refs`` его
+    проверяет. Ревью раунда 8 нашло три ссылки, у которых номера строк
+    разошлись с кодом при зелёном гейте: машинные ``refs`` были верны, а
+    прозу никто не проверял. Правило закрывает класс: номер строки без
+    литерала считается устаревшим.
     """
 
     note: str
@@ -113,17 +129,20 @@ class Evidence:
 
 PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
     ("--surface-hover", "--text-secondary"): Evidence(
-        "candidates.css:121 .candidates-table tbody tr:hover — фон; цвет ячейки "
-        "наследуется от :112",
+        "candidates.css:120-121 `.candidates-table tbody tr:hover` — фон (candidates.css:121 "
+        "`var(--surface-hover)`); цвет ячейки наследуется от candidates.css:112 "
+        "`var(--text-secondary)`",
         refs=(
             ("features/candidates/candidates.css", 121, "--surface-hover"),
             ("features/candidates/candidates.css", 112, "--text-secondary"),
         ),
     ),
     ("--surface-hover", "--text-tertiary"): Evidence(
-        "stateViews.css:12-21 .state-view-icon (фон :19, цвет :20); "
-        "calendar.css:128-131 .calendar-chip:hover (фон :130) с "
-        ".calendar-chip-time (цвет :134)",
+        "stateViews.css:12-21 `.state-view-icon` (фон — stateViews.css:19 "
+        "`var(--surface-hover)`, цвет — stateViews.css:20 `var(--text-tertiary)`); "
+        "calendar.css:128-131 `.calendar-chip:hover` (фон — calendar.css:130 "
+        "`var(--surface-hover)`) с `.calendar-chip-time` (цвет — calendar.css:134 "
+        "`var(--text-tertiary)`)",
         refs=(
             ("design-system/components/stateViews.css", 19, "--surface-hover"),
             ("design-system/components/stateViews.css", 20, "--text-tertiary"),
@@ -132,23 +151,28 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         ),
     ),
     ("--surface-hover", "--text-link"): Evidence(
-        "candidates.css:141 .row-name:hover .row-fullname — цвет; фон hover-строки "
-        "задаёт правило :121",
+        "candidates.css:140-141 `.row-name:hover .row-fullname` — цвет (candidates.css:141 "
+        "`var(--text-link)`); фон hover-строки задаёт candidates.css:120-121 "
+        "`.candidates-table tbody tr:hover` (candidates.css:121 `var(--surface-hover)`)",
         refs=(
             ("features/candidates/candidates.css", 141, "--text-link"),
             ("features/candidates/candidates.css", 121, "--surface-hover"),
         ),
     ),
     ("--surface-selected", "--text-secondary"): Evidence(
-        "candidates.css:125 tr:focus-within — фон; цвет ячейки наследуется от :112",
+        "candidates.css:124-125 `.candidates-table tbody tr:focus-within` — фон "
+        "(candidates.css:125 `var(--surface-selected)`); цвет ячейки наследуется от "
+        "candidates.css:112 `var(--text-secondary)`",
         refs=(
             ("features/candidates/candidates.css", 125, "--surface-selected"),
             ("features/candidates/candidates.css", 112, "--text-secondary"),
         ),
     ),
     ("--surface-selected", "--text-tertiary"): Evidence(
-        "calendar.css:108 .calendar-cell:has(.calendar-chip) → :118 .calendar-chip "
-        "→ :134 .calendar-chip-time",
+        "calendar.css:107-108 `.calendar-cell:has(.calendar-chip)` — фон (calendar.css:108 "
+        "`var(--surface-selected)`); чип — calendar.css:113-126 `.calendar-chip`; время чипа "
+        "— calendar.css:133-134 `.calendar-chip-time` (цвет — calendar.css:134 "
+        "`var(--text-tertiary)`)",
         refs=(
             ("features/calendar/calendar.css", 108, "--surface-selected"),
             ("features/calendar/calendar.css", 134, "--text-tertiary"),
@@ -162,26 +186,32 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         ),
     ),
     ("--accent-subtle", "--accent-default"): Evidence(
-        "queue.css:242-255 .queue-link — базовое состояние кнопки "
-        "«Непрочитанных уведомлений» (фон :250, цвет :251), рендерится "
-        "MyQueuePage.tsx:303",
+        "queue.css:657-670 `.queue-link` — базовое состояние кнопки «Непрочитанных "
+        "уведомлений»; фон — queue.css:665 `var(--accent-subtle)`, цвет — queue.css:666 "
+        "`var(--accent-default)`; рендерится в MyQueuePage.tsx:763 `queue-link`",
         refs=(
-            ("features/queue/queue.css", 659, "--accent-subtle"),
-            ("features/queue/queue.css", 660, "--accent-default"),
+            ("features/queue/queue.css", 665, "--accent-subtle"),
+            ("features/queue/queue.css", 666, "--accent-default"),
         ),
     ),
     ("--surface-selected-hover", "--accent-on-subtle-hover"): Evidence(
-        "queue.css:257-262 .queue-link:hover — фон :258, цвет :261; базовый цвет — "
-        ":251 (MyQueuePage.tsx:303). До правки здесь был --accent-default, и пара "
-        "давала 3.88:1 в светлой теме",
+        "queue.css:672-677 `.queue-link:hover` — фон (queue.css:673 "
+        "`var(--surface-selected-hover)`), цвет (queue.css:676 "
+        "`var(--accent-on-subtle-hover)`); базовый цвет — queue.css:666 "
+        "`var(--accent-default)`; рендер — MyQueuePage.tsx:763 `queue-link`. До правки здесь "
+        "был --accent-default, и пара давала 3.88:1 в светлой теме",
         refs=(
-            ("features/queue/queue.css", 667, "--surface-selected-hover"),
-            ("features/queue/queue.css", 670, "--accent-on-subtle-hover"),
+            ("features/queue/queue.css", 673, "--surface-selected-hover"),
+            ("features/queue/queue.css", 676, "--accent-on-subtle-hover"),
         ),
     ),
     ("--surface-hover", "--text-primary"): Evidence(
-        "button.css:81-84 .btn-secondary:hover, :139-142 .icon-btn-ghost:hover; "
-        "toast.css:61 .toast-close:hover; workspace.css:214-217, :281-284",
+        "button.css:81-84 `.btn-ghost:hover:not(:disabled)` (фон — button.css:82 "
+        "`var(--surface-hover)`, цвет — button.css:83 `var(--text-primary)`); "
+        "button.css:68-71 `.btn-secondary:hover:not(:disabled)` — фон, цвет наследуется от "
+        "button.css:65 `var(--text-primary)`; button.css:139-142 `.icon-btn-ghost:hover`; "
+        "toast.css:61 `.toast-close`; workspace.css:214-217 `.topbar-logout:hover`; "
+        "workspace.css:280-284 `.topbar-settings`",
         refs=(
             ("design-system/components/button.css", 82, "--surface-hover"),
             ("design-system/components/button.css", 83, "--text-primary"),
@@ -198,7 +228,11 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         ),
     ),
     ("--surface-sunken", "--text-primary"): Evidence(
-        "calendar.css:287-295; documentTemplates.css:192-203",
+        "calendar.css:287-295 `.event-form-readonly` (фон — calendar.css:292 "
+        "`var(--surface-sunken)`, цвет — calendar.css:293 `var(--text-primary)`); "
+        "documentTemplates.css:192-203 `.template-token-picker button` (цвет — "
+        "documentTemplates.css:198 `var(--text-primary)`, фон — documentTemplates.css:199 "
+        "`var(--surface-sunken)`)",
         refs=(
             ("features/calendar/calendar.css", 292, "--surface-sunken"),
             ("features/calendar/calendar.css", 293, "--text-primary"),
@@ -207,9 +241,14 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         ),
     ),
     ("--accent-subtle", "--accent-on-subtle"): Evidence(
-        "candidates.css:151-152 фильтр-чип; workspace.css:172-173 .topbar-avatar; "
-        "workspace.css:287-288 .topbar-settings.is-active; workspace.css:341-342 "
-        ".settings-card-icon; tabs.css:41-44 .tab-item.is-active .tab-count",
+        "candidates.css:184-195 `.filter-chip` (фон — candidates.css:191 "
+        "`var(--accent-subtle)`, цвет — candidates.css:192 `var(--accent-on-subtle)`); "
+        "workspace.css:165-173 `.topbar-avatar` (фон — workspace.css:172 "
+        "`var(--accent-subtle)`, цвет — workspace.css:173 `var(--accent-on-subtle)`); "
+        "workspace.css:286-288 `.topbar-settings.is-active` (фон — workspace.css:287 "
+        "`var(--accent-subtle)`); workspace.css:335-342 `.settings-card-icon` (цвет — "
+        "workspace.css:341 `var(--accent-on-subtle)`); tabs.css:41-44 `.tab-item.is-active "
+        ".tab-count`",
         refs=(
             ("features/candidates/candidates.css", 151, "--accent-subtle"),
             ("features/candidates/candidates.css", 152, "--accent-on-subtle"),
@@ -220,22 +259,27 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         ),
     ),
     ("--surface-pressed", "--text-secondary"): Evidence(
-        "button.css:86 .btn-ghost:active — фон; цвет — .btn-ghost :78",
+        "button.css:85-87 `.btn-ghost:active:not(:disabled)` — фон (button.css:86 "
+        "`var(--surface-pressed)`); цвет — button.css:78 `var(--text-secondary)`",
         refs=(
             ("design-system/components/button.css", 86, "--surface-pressed"),
             ("design-system/components/button.css", 78, "--text-secondary"),
         ),
     ),
     ("--surface-sunken", "--text-tertiary"): Evidence(
-        "calendar.css:99 .calendar-hour-col — фон; цвет :95",
+        "calendar.css:93-99 `.calendar-hour-col` — фон (calendar.css:99 "
+        "`var(--surface-sunken)`); цвет (calendar.css:95 `var(--text-tertiary)`)",
         refs=(
             ("features/calendar/calendar.css", 99, "--surface-sunken"),
             ("features/calendar/calendar.css", 95, "--text-tertiary"),
         ),
     ),
     ("--surface-sunken", "--text-secondary"): Evidence(
-        "calendar.css:86-91 .calendar-table thead th (фон :90, цвет :88); "
-        "tabs.css:32-39; analytics.css:50-58",
+        "calendar.css:86-91 `.calendar-table thead th` (фон — calendar.css:90 "
+        "`var(--surface-sunken)`, цвет — calendar.css:88 `var(--text-secondary)`); "
+        "tabs.css:32-39 `.tab-count` (фон — tabs.css:33 `var(--surface-sunken)`); "
+        "analytics.css:50-58 `.analytics-empty-note` (фон — analytics.css:55 "
+        "`var(--surface-sunken)`), форма analytics.css:50-58 `.analytics-empty-note`",
         refs=(
             ("features/calendar/calendar.css", 90, "--surface-sunken"),
             ("features/calendar/calendar.css", 88, "--text-secondary"),
@@ -246,23 +290,26 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         ),
     ),
     ("--surface-sidebar-hover", "--text-primary"): Evidence(
-        "workspace.css:80-83 .sidebar-link:hover (фон :81, цвет :82)",
+        "workspace.css:80-83 `.sidebar-link:hover` (фон — workspace.css:81 "
+        "`var(--surface-sidebar-hover)`, цвет — workspace.css:82 `var(--text-primary)`)",
         refs=(
             ("app-shell/workspace.css", 81, "--surface-sidebar-hover"),
             ("app-shell/workspace.css", 82, "--text-primary"),
         ),
     ),
     ("--status-warning-bg", "--text-primary"): Evidence(
-        "queue.css:130-142 .queue-stale — баннер «сводка устарела», рендерится "
-        "MyQueuePage.tsx; фон и цвет заданы в одном правиле (:139, :140)",
+        "queue.css:545-557 `.queue-stale` — баннер «сводка устарела», рендерится "
+        "MyQueuePage.tsx; фон — queue.css:554 `var(--status-warning-bg)`, цвет — "
+        "queue.css:555 `var(--text-primary)`",
         refs=(
-            ("features/queue/queue.css", 548, "--status-warning-bg"),
-            ("features/queue/queue.css", 549, "--text-primary"),
+            ("features/queue/queue.css", 554, "--status-warning-bg"),
+            ("features/queue/queue.css", 555, "--text-primary"),
         ),
     ),
     ("--status-warning-bg", "--status-warning-fg"): Evidence(
-        "statusChip.css:20 .status-chip-amber; stateViews.css:24 "
-        ".state-view-warning; license.css:14-18",
+        "statusChip.css:20 `.status-chip-amber`; stateViews.css:24 `.state-view-warning`; "
+        "license.css:14-18 `.license-alert--warn` (фон — license.css:15 "
+        "`var(--status-warning-bg)`, цвет — license.css:17 `var(--status-warning-fg)`)",
         refs=(
             ("design-system/components/statusChip.css", 20, "--status-warning-bg"),
             ("design-system/components/statusChip.css", 20, "--status-warning-fg"),
@@ -291,13 +338,17 @@ ABSENT_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
     # записью про «--surface-selected-hover не встречается»: доказательством
     # отсутствия была команда grep, и она это отсутствие подтверждает.
     ("--surface-sidebar-active", None): Evidence(
-        "grep -rn 'var(--surface-sidebar-active)' frontend/src → 0 вхождений; "
-        "активный пункт навигации красится --nav-active-bg (workspace.css:86)",
+        "grep -rn 'var(--surface-sidebar-active)' frontend/src → 0 вхождений; активный пункт "
+        "навигации красится --nav-active-bg (workspace.css:85-88 `.sidebar-link.is-active` — "
+        "фон workspace.css:86 `var(--nav-active-bg)`)",
         refs=(("app-shell/workspace.css", 86, "--nav-active-bg"),),
     ),
     ("--surface-pressed", "--text-tertiary"): Evidence(
-        "--surface-pressed используется в button.css:73, :86 и candidates.css:218 — "
-        "везде с --text-primary, третичного текста на этой заливке нет",
+        "--surface-pressed используется в button.css:72-73 "
+        "`.btn-secondary:active:not(:disabled)` (фон — button.css:73 "
+        "`var(--surface-pressed)`), button.css:85-87 `.btn-ghost:active:not(:disabled)` и "
+        "candidates.css:217-218 `.filter-chip-remove:hover` — везде с `var(--text-primary)`, "
+        "третичного текста на этой заливке нет",
         refs=(
             ("design-system/components/button.css", 73, "--surface-pressed"),
             ("design-system/components/button.css", 86, "--surface-pressed"),
@@ -538,6 +589,86 @@ def _css_files() -> list[Path]:
     return sorted((ROOT / "frontend/src").rglob("*.css"))
 
 
+
+# --- Проверка прозы в заметках -------------------------------------------------
+# Ревью раунда 8: --check-refs проверял только машинные refs, а номера строк,
+# записанные в тексте заметки, не проверял никто — и три из них указывали мимо
+# (queue.css:242-255 вместо 651-664 и т.п.). Класс дефекта закрывается здесь:
+# каждая ссылка «файл:строка» в заметке обязана назвать литерал, который на
+# этой строке должен быть, и он проверяется механически. Голое число без
+# литерала — не доказательство, а украшение: такое сообщается как устаревшее.
+NOTE_REF_RE = re.compile(
+    # Полная ссылка «файл:строка» либо короткая «:строка» — вторая относится к
+    # последнему названному в заметке файлу. Двоеточие короткой формы не может
+    # стоять после цифры или точки: «5.61:1» — это отношение контраста, а не
+    # номер строки.
+    r"(?:(?P<file>[A-Za-z0-9_./-]+\.(?:css|tsx|ts|py))(?<!\d):|(?<![\d.,]):)"
+    r"(?P<start>\d+)(?:-(?P<end>\d+))?"
+)
+# Что считается ожидаемым текстом сразу после ссылки: код в бэктиках либо
+# селектор/токен (`.queue-link`, `#id`, `--token`, `var(--token)`).
+NOTE_ANCHOR_RE = re.compile(r"\s*(?:`(?P<code>[^`]+)`|(?P<token>[.#][\w-]+|--[\w-]+|var\(--[\w-]+\)))")
+
+
+def note_refs(note: str) -> list[tuple[str, int, int, str]]:
+    """Ссылки ``файл:строка[-строка]`` (и короткие ``:строка``) с литералом.
+
+    Короткая форма относится к последнему названному файлу — так заметки и
+    пишутся («фон :250, цвет :251»). Ожидаемый литерал — код в бэктиках или
+    селектор/токен сразу после ссылки; без него ссылка непроверяема, и это
+    сообщается как устаревшее.
+    """
+    found: list[tuple[str, int, int, str]] = []
+    current = ""
+    for match in NOTE_REF_RE.finditer(note):
+        if match.group("file"):
+            current = match.group("file")
+        anchor = NOTE_ANCHOR_RE.match(note[match.end() : match.end() + 80])
+        literal = (anchor.group("code") or anchor.group("token")) if anchor else ""
+        found.append(
+            (
+                current,
+                int(match.group("start")),
+                int(match.group("end") or match.group("start")),
+                literal,
+            )
+        )
+    return found
+
+
+def all_evidence() -> list[tuple[str, Evidence]]:
+    """Все доказательства с человекочитаемой подписью пары."""
+    out: list[tuple[str, Evidence]] = []
+    for (state, text), evidence in sorted(PAIR_EVIDENCE.items()):
+        out.append((f"{state} + {text}", evidence))
+    for (state, text), evidence in sorted(ABSENT_EVIDENCE.items()):
+        out.append((f"нет пары: {state} + {text}", evidence))
+    for (state, text), evidence in sorted(EXEMPT.items()):
+        out.append((f"исключение: {state} + {text}", evidence))
+    return out
+
+
+def _resolve_note_ref(rel: str) -> Path | None:
+    """Файл из заметки: и вёрстка, и скрипты, и по короткому имени.
+
+    Заметки пишут пути кратко — ``queue.css``, ``MyQueuePage.tsx``,
+    ``scripts/measure-contrast.py``, — поэтому после ROOT и frontend/src
+    ищем по суффиксу пути среди файлов с расширением ссылки.
+    """
+    direct = ROOT / rel
+    if direct.is_file():
+        return direct
+    src = ROOT / "frontend/src" / rel
+    if src.is_file():
+        return src
+    hits = sorted(
+        path
+        for path in (ROOT / "frontend/src").rglob(f"*{Path(rel).name}")
+        if path.is_file() and path.as_posix().endswith(rel)
+    )
+    return hits[0] if hits else None
+
+
 def _resolve_ref(rel: str) -> Path | None:
     """Файл по имени (в доказательствах пути пишутся сокращённо)."""
     direct = ROOT / "frontend/src" / rel
@@ -553,7 +684,16 @@ def check_refs() -> int:
     Зачем отдельный режим: доказательство пары — это файл и строка. Стоит
     CSS-файлу сдвинуться, как ссылка начинает указывать не туда, а гейт при
     этом молчит — он считает токены, а не текст. Ревью раунда 7 нашло ровно
-    это: пять ссылок указывали на строки, оставшиеся от предыдущего коммита.
+    это: пять ссылок указывали на строки, оставшиеся от предыдущего коммита,
+    а ревью раунда 8 — ещё три, уже в прозе заметок. Поэтому проверяются обе
+    части доказательства:
+
+    * ``refs`` — машинные тройки ``(файл, строка, токен)``: на строке обязан
+      быть ``var(<токен>)``;
+    * ``note`` — каждое упоминание ``файл:строка`` (и короткое ``:строка``)
+      обязано называть литерал, который на этой строке есть; ссылка без
+      литерала непроверяема и считается устаревшей.
+
     Режим прогоняется в CI вместе с гейтом и аудитом.
     """
     problems = 0
@@ -612,6 +752,30 @@ def check_refs() -> int:
                     f"({grep_command((state, text))})"
                 )
 
+    print("Ссылки в заметках (prose):")
+    for label, evidence in all_evidence():
+        for rel, start, end, literal in note_refs(evidence.note):
+            path = _resolve_note_ref(rel)
+            if path is None:
+                report(f"{rel}: файл не найден — «{label}»")
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+            if start < 1 or end < start or end > len(lines):
+                report(f"{rel}:{start}-{end} — вне файла ({len(lines)} строк) — «{label}»")
+                continue
+            if not literal:
+                report(
+                    f"{rel}:{start}-{end} — ссылка без ожидаемого текста, "
+                    f'добавьте в заметку литерал: «{label}»'
+                )
+                continue
+            body = "\n".join(lines[start - 1 : end])
+            if literal not in body:
+                report(
+                    f"{rel}:{start}-{end} — ожидался {literal}, а в строках: "
+                    f"{body.strip()[:70] or '<пусто>'} — «{label}»"
+                )
+
     print("Ссылки в исключениях (EXEMPT):")
     for (state, text), evidence in sorted(EXEMPT.items()):
         for rel, line, token in evidence.refs:
@@ -654,8 +818,10 @@ DEFAULT_ABSENT = "правила, задающие состояние и это�
 # помеченное исключение (не «пропущенная пара»).
 EXEMPT: dict[tuple[str, str], Evidence] = {
     ("--surface-disabled", "--text-disabled"): Evidence(
-        "WCAG 1.4.3: неактивные элементы не обязаны проходить по контрасту "
-        "(field.css:68-71 .text-input:disabled — фон :69, цвет :70)",
+        "WCAG 1.4.3: неактивные элементы не обязаны проходить по контрасту (field.css:67-71 "
+        "`.text-input:disabled` — фон field.css:69 `var(--surface-disabled)`, цвет "
+        "field.css:70 `var(--text-disabled)`), то же правило field.css:67-71 "
+        "`.text-input:disabled`",
         refs=(
             ("design-system/components/field.css", 69, "--surface-disabled"),
             ("design-system/components/field.css", 70, "--text-disabled"),
@@ -753,20 +919,19 @@ def main() -> int:
     return 1 if problems else 0
 
 
-def print_pair(surface: str | None, text: str) -> int:
-    """Контраст одной пары в двух темах при худшей подложке.
+def measure_pair(surface: str | None, text: str) -> dict[str, tuple[float, str] | None]:
+    """Худший контраст пары «состояние + текст» в каждой теме.
 
-    Тем же составлением слоёв, что и гейт: canvas (+ пятно mesh) → базовая
-    поверхность → состояние → текст. Нужно, чтобы любое число в отчёте
-    воспроизводилось одной командой, а не однократным расчётом вручную:
-
-        python3 scripts/measure-contrast.py --pair --status-danger-bg --status-danger-fg
+    ``None`` — токен в теме не объявлен. Слои составляются так же, как в
+    гейте: canvas (+ пятно mesh) → базовая поверхность (перебираются все
+    ``BASE_SURFACES``) → состояние → текст. ``surface=None`` — состояния нет,
+    текст лежит прямо на базовой поверхности.
     """
-    print(f"пара: {surface or 'без состояния'} + {text}")
+    result: dict[str, tuple[float, str] | None] = {}
     for theme in ("light", "dark"):
         tokens = tokens_for(theme)
-        if text not in tokens or (surface and surface not in tokens):
-            print(f"  {theme}: токен не объявлен")
+        if text not in tokens or (surface is not None and surface not in tokens):
+            result[theme] = None
             continue
         canvas = resolve(tokens["--surface-canvas"], tokens)[:3]
         mesh_opacity = float(tokens.get("--mesh-opacity", "0.5"))
@@ -782,14 +947,83 @@ def print_pair(surface: str | None, text: str) -> int:
                 continue
             for backdrop_name, backdrop in backdrops:
                 background = over(resolve(tokens[base_name], tokens), backdrop)
-                if surface:
+                if surface is not None:
                     background = over(resolve(tokens[surface], tokens), background)
                 ratio = contrast(over(resolve(tokens[text], tokens), background), background)
                 if ratio < worst[0]:
                     worst = (ratio, f"{base_name} ({backdrop_name})")
-        verdict = "ок" if worst[0] >= AA_NORMAL else "ПРОВАЛ AA"
-        print(f"  {theme}: {worst[0]:.2f}:1 ({verdict}) — худший фон {worst[1]}")
-    return 0
+        result[theme] = worst
+    return result
+
+
+def pair_usage() -> str:
+    """Строка использования: первый аргумент — состояние, а не поверхность."""
+    states = ", ".join(name for name in STATE_SURFACES if name)
+    return (
+        "usage: measure-contrast.py --pair <состояние|-> <текст>\n"
+        f"  <состояние> — поверхность состояния: {states}\n"
+        "  «-» — состояния нет: текст лежит прямо на базовой поверхности.\n"
+        "  Базовая поверхность в первом аргументе — ошибка: режим сам перебирает\n"
+        f"  {', '.join(BASE_SURFACES)} и накладывает состояние вторым слоем."
+    )
+
+
+def print_pair(surface: str | None, text: str) -> int:
+    """Контраст одной пары в двух темах при худшей подложке.
+
+    Тем же составлением слоёв, что и гейт: canvas (+ пятно mesh) → базовая
+    поверхность → состояние → текст. Нужно, чтобы любое число в отчёте
+    воспроизводилось одной командой, а не однократным расчётом вручную:
+
+        python3 scripts/measure-contrast.py --pair --status-danger-bg --status-danger-fg
+        python3 scripts/measure-contrast.py --pair - --text-tertiary   # без состояния
+
+    Возвращает 1, если хотя бы в одной теме пара ниже AA: провал, который
+    напечатан, но не виден по коду выхода, нельзя поймать ни скриптом, ни CI.
+    """
+    print(f"пара: {surface or 'без состояния'} + {text}")
+    failed = False
+    for theme, measured in measure_pair(surface, text).items():
+        if measured is None:
+            print(f"  {theme}: токен не объявлен")
+            continue
+        ratio, worst_label = measured
+        verdict = "ок" if ratio >= AA_NORMAL else "ПРОВАЛ AA"
+        if ratio < AA_NORMAL:
+            failed = True
+        print(f"  {theme}: {ratio:.2f}:1 ({verdict}) — худший фон {worst_label}")
+    return 1 if failed else 0
+
+
+def print_pair_rejected(surface: str, text: str) -> int:
+    """Отказ на базовую поверхность в первом аргументе ``--pair``.
+
+    Ревью раунда 8: ``--pair --surface-raised --cat-warning-1`` накладывал
+    ``--surface-raised`` дважды (как базовую поверхность и как «состояние»),
+    фон получался плотнее реального, и замер показывал провал AA там, где его
+    нет. Правильное число — то, что печатается ниже без состояния; команда в
+    подсказке воспроизводит его одной строкой.
+    """
+    print(f"{surface} — базовая поверхность (BASE_SURFACES), а не состояние.", file=sys.stderr)
+    print(pair_usage(), file=sys.stderr)
+    print("", file=sys.stderr)
+    print(f"Честный замер для {text} — без состояния:", file=sys.stderr)
+    print(f"  python3 scripts/measure-contrast.py --pair - {text}", file=sys.stderr)
+    print(flush=True)
+    print_pair(None, text)
+    return 2
+
+
+def run_pair(args: list[str]) -> int:
+    """Разобрать аргументы ``--pair`` и либо отчитаться, либо отказать."""
+    rest = [arg for arg in args if arg != "--pair"]
+    if len(rest) != 2:
+        print(pair_usage(), file=sys.stderr)
+        return 2
+    raw_state, text = rest
+    if raw_state != "-" and raw_state not in STATE_SURFACES:
+        return print_pair_rejected(raw_state, text)
+    return print_pair(None if raw_state == "-" else raw_state, text)
 
 
 if __name__ == "__main__":
@@ -798,10 +1032,5 @@ if __name__ == "__main__":
     if "--check-refs" in sys.argv:
         sys.exit(check_refs())
     if "--pair" in sys.argv:
-        rest = [arg for arg in sys.argv[1:] if arg != "--pair"]
-        if len(rest) != 2:
-            print("usage: measure-contrast.py --pair <фон-состояния|--text-token> <текст>", file=sys.stderr)
-            sys.exit(2)
-        surface = None if rest[0] == "-" else rest[0]
-        sys.exit(print_pair(surface, rest[1]))
+        sys.exit(run_pair(sys.argv[1:]))
     sys.exit(main())
