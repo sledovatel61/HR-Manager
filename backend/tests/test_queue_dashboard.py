@@ -60,6 +60,7 @@ from app.models import (
     User,
     UserRole,
 )
+from app.routers import candidates as candidates_router
 from app.routers.candidates import QUEUE_CLOSED_STAGES
 from tests.conftest import FIXTURE_PASSWORD, make_candidate, make_event, make_user
 
@@ -77,6 +78,21 @@ def _clean_limiter() -> Iterator[None]:  # pragma: no cover - see test_candidate
     reset_login_limiter()
 
 
+@pytest.fixture(autouse=True)
+def _frozen_dashboard_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Сводка считает «сейчас» по замороженным часам.
+
+    Патчатся только часы самой сводки и соседнего ``/queue/summary`` — их
+    тест сверяет между собой, и разные часы дали бы разные ответы на один
+    вопрос. Часы сессий (``app.deps``, ``app.routers.auth``) остаются
+    настоящими, иначе сессия, выданная в марте, выглядела бы истёкшей сегодня.
+    Данные в тестах сеются через ``_now()``, то есть по той же точке, —
+    окно и данные согласованы.
+    """
+    monkeypatch.setattr(dashboard, "utc_now", lambda: FROZEN_NOW)
+    monkeypatch.setattr(candidates_router, "utc_now", lambda: FROZEN_NOW)
+
+
 # --- Помощники ----------------------------------------------------------------
 
 
@@ -85,8 +101,17 @@ def _login(client: TestClient, username: str) -> None:
     assert response.status_code == 200, response.text
 
 
+#: Замороженное «сейчас» для всего файла. Число бакетов на оси «Всё» —
+#: месяцы, и оно зависит от календарной даты прогона: 400 дней назад от
+#: 2026-10-05 — это 15 месяцев, от 2026-10-06 — уже 14. Тест с константой
+#: `15` был зелёным ровно один день и стал красным 2026-10-06 (ревью раунда 8).
+#: Поэтому часы сводки заморожены, а ожидания пересчитаны от этой даты.
+FROZEN_NOW = datetime(2026, 3, 12, 10, 0, tzinfo=UTC)
+
+
 def _now() -> datetime:
-    return datetime.now(UTC)
+    """«Сейчас» в тестах: та же замороженная точка, что и у сервера сводки."""
+    return FROZEN_NOW
 
 
 def _parse(value: str) -> datetime:
@@ -445,9 +470,35 @@ def test_all_period_is_bucketed_by_months(client: TestClient, db_session: Sessio
     payload = _dash(client, "?period=all")
 
     assert payload["period"]["bucket_size"] == "month"
-    assert len(payload["created_candidates_series"]) == 15  # 400 дней ≈ 14 месяцев + текущий
+    # Ожидание — арифметика от замороженного «сейчас» (2026-03-12), а не
+    # сегодняшняя дата: самая старая строка создана 2025-02-05, значит ось идёт
+    # от февраля 2025 до марта 2026 включительно — 14 месяцев.
+    labels = [bucket["label"] for bucket in payload["period"]["buckets"]]
+    assert labels[0] == "02.2025"
+    assert labels[-1] == "03.2026"
+    assert len(payload["created_candidates_series"]) == 14
     assert payload["kpis"]["new_candidates"] == 3
     assert sum(row["value"] for row in payload["created_candidates_series"]) == 3
+
+
+def test_all_period_bucket_count_follows_the_calendar_not_the_run_day() -> None:
+    """Граница, из-за которой тест был зелёным ровно один день.
+
+    400 дней — это 13,15 месяца, поэтому число месяцев на оси зависит от того,
+    на какое число календаря попадает «сейчас»: 05.10.2026 даёт 15 бакетов,
+    06.10.2026 — уже 14. Оба случая проверяются здесь с явным ``now``, чтобы
+    арифметика оси была зафиксирована независимо от дня прогона: CI прошёл
+    05.10.2026 и «доказал» 15, а на следующий день набор тестов стал красным.
+    """
+    for day, expected in (("2026-10-05", 15), ("2026-10-06", 14)):
+        moment = datetime.fromisoformat(day).replace(hour=10, tzinfo=UTC)
+        window = dashboard.resolve_window(
+            period="all",
+            timezone="Europe/Moscow",
+            now=moment,
+            earliest=moment - timedelta(days=400),
+        )
+        assert len(window.buckets) == expected, day
 
 
 def test_all_period_is_capped_at_two_years(client: TestClient, db_session: Session) -> None:
