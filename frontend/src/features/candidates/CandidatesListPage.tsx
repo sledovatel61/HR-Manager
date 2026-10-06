@@ -157,6 +157,25 @@ export default function CandidatesListPage({
 
   return (
     <div className="candidates-page">
+      <header className="page-head">
+        <div>
+          <div className="eyebrow">Подбор</div>
+          <p className="page-sub">
+            {total > 0 ? `Всего в списке: ${total}` : "Список пуст"}
+          </p>
+        </div>
+        <div className="page-actions">
+          <Button
+            icon="plus"
+            iconPosition="left"
+            onClick={() => setCreateOpen(true)}
+            disabled={isDeleted}
+          >
+            Добавить кандидата
+          </Button>
+        </div>
+      </header>
+
       <div className="list-toolbar">
         <div className="list-toolbar-row">
           <div className="search-box" role="search">
@@ -172,14 +191,6 @@ export default function CandidatesListPage({
               aria-label="Поиск кандидатов"
             />
           </div>
-          <Button
-            icon="plus"
-            iconPosition="left"
-            onClick={() => setCreateOpen(true)}
-            disabled={isDeleted}
-          >
-            Добавить кандидата
-          </Button>
         </div>
 
         <div className="list-toolbar-row list-filters">

@@ -12,6 +12,7 @@ vi.mock("../../api", async (importOriginal) => {
     listCandidates: vi.fn(),
     listPositionOptions: vi.fn(),
     listHrUsers: vi.fn(),
+    getCandidate: vi.fn(),
     deleteCandidate: vi.fn(),
     restoreCandidate: vi.fn(),
   };
@@ -387,5 +388,45 @@ describe("CandidatesListPage", () => {
     await waitFor(() =>
       expect(api.deleteCandidate).toHaveBeenCalledWith("44444444-4444-4444-4444-444444444444")
     );
+  });
+
+  it("opens the candidate drawer when the row name is clicked", async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue({
+      items: [candidate()],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+    vi.mocked(api.getCandidate).mockResolvedValue(candidate());
+    renderPage();
+
+    const rowName = await screen.findByRole("button", {
+      name: (accessibleName) => accessibleName.startsWith("Петров Пётр Петрович"),
+    });
+    await userEvent.click(rowName);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "Петров Пётр Петрович" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not open the drawer when a row action (delete) is clicked", async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue({
+      items: [candidate()],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+    renderPage();
+
+    await screen.findByText("Петров Пётр Петрович");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Удалить кандидата Петров Пётр Петрович" }),
+    );
+
+    // Подтверждение удаления появляется, а drawer кандидата — нет.
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

@@ -9,6 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CurrentUser, PilotReadiness, UserRole } from "../types";
 import { ToastProvider } from "../design-system/components/Toast";
+import { AppearanceProvider } from "./appearance";
 import Workspace from "./Workspace";
 import {
   SETTINGS_GROUPS,
@@ -96,9 +97,11 @@ function currentUser(role: UserRole): CurrentUser {
 
 function renderWorkspace(role: UserRole) {
   return render(
-    <ToastProvider>
-      <Workspace current={currentUser(role)} onLoggedOut={() => undefined} />
-    </ToastProvider>,
+    <AppearanceProvider>
+      <ToastProvider>
+        <Workspace current={currentUser(role)} onLoggedOut={() => undefined} />
+      </ToastProvider>
+    </AppearanceProvider>,
   );
 }
 
