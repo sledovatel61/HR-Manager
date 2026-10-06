@@ -62,6 +62,8 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
     return ["queue", "calendar", "kanban", "schedule", "deleted", ...personal, "settings"];
   }
   if (role === "admin") {
+    // Пилот: admin — надмножество HR, включая личную «Мою очередь».
+    // Backend по-прежнему проверяет права и по умолчанию отдаёт только свою очередь.
     // Диагностика запуска и обновлений — вкладка внутри «Администрирование»
     // (бывший отдельный пункт «Готовность пилота»): права прежние,
     // admin + update_channel_manage; backend перепроверяет и отвечает 403.
@@ -69,6 +71,7 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
     // «Пользователи» — управление учётными записями, строго admin-only
     // (и в навигации, и повторно внутри самой страницы).
     return [
+      "queue",
       "candidates",
       "calendar",
       "kanban",
