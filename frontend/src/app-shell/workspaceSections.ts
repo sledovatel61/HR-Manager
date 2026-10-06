@@ -87,6 +87,7 @@ function sectionsForRole(role: UserRole): WorkspaceSection[] {
     ];
   }
   return [
+    "queue",
     "candidates",
     "calendar",
     "kanban",
