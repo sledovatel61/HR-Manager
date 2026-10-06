@@ -4,6 +4,29 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HR Manager</title>
+    <script>
+      // No-flash: применяем сохранённую тему/плотность до первого рендера React,
+      // чтобы тёмная тема не «моргала» светлой при загрузке. Логика дублирует
+      // frontend/src/app-shell/appearance.tsx и должна с ней синхронизироваться.
+      (function () {
+        try {
+          var raw = localStorage.getItem("hrm-theme");
+          var theme = null, density = null;
+          if (raw) {
+            var p = JSON.parse(raw);
+            if (p && typeof p.theme === "string" && (p.theme === "light" || p.theme === "dark")) theme = p.theme;
+            if (p && typeof p.density === "string" && (p.density === "comfortable" || p.density === "compact")) density = p.density;
+          }
+          if (!theme) {
+            theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          if (!density) density = "comfortable";
+          var d = document.documentElement;
+          d.setAttribute("data-theme", theme);
+          d.setAttribute("data-density", density);
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
