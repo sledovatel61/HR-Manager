@@ -6,6 +6,7 @@
   font-weight: var(--font-weight-semibold);
   flex-shrink: 0;
   letter-spacing: -0.02em;
+  box-shadow: var(--shadow-1);
 }
 
 .avatar-sm { width: 24px; height: 24px; font-size: 10px; }

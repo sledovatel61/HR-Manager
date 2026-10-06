@@ -10,8 +10,10 @@ import {
   deleteCandidate,
   listCandidateInteractions,
   listCandidateTransfers,
+  getQueueSummary,
   listCandidates,
   listHrUsers,
+  listPositionOptions,
   login,
   logout,
   onUnauthorized,
@@ -167,6 +169,9 @@ describe("Candidates API client", () => {
       query: "петров",
       stage: "offer",
       source: "referral",
+      // «Должность» — полноценный фильтр списка: без него селект на экране
+      // выбирал значение, которое в запрос не уходило.
+      position: "Монтажник РЭА",
       owner_id: "owner-1",
       sort: "stage",
       direction: "desc",
@@ -175,8 +180,32 @@ describe("Candidates API client", () => {
     });
     const [url] = fetchMock.mock.calls[0];
     expect(String(url)).toBe(
-      `${API_BASE}/candidates?query=%D0%BF%D0%B5%D1%82%D1%80%D0%BE%D0%B2&stage=offer&source=referral&owner_id=owner-1&sort=stage&direction=desc&limit=10&offset=20`
+      `${API_BASE}/candidates?query=%D0%BF%D0%B5%D1%82%D1%80%D0%BE%D0%B2&stage=offer&source=referral` +
+        `&position=%D0%9C%D0%BE%D0%BD%D1%82%D0%B0%D0%B6%D0%BD%D0%B8%D0%BA+%D0%A0%D0%AD%D0%90` +
+        `&owner_id=owner-1&sort=stage&direction=desc&limit=10&offset=20`
     );
+  });
+
+  it("listPositionOptions asks the dedicated directory endpoint with the scope", async () => {
+    const fetchMock = stubFetch(
+      Response.json({ items: [{ position: "Инженер", count: 2 }], total: 1, limit: 500, truncated: false }),
+    );
+
+    const result = await listPositionOptions({ owner_id: "owner-1", include_deleted: true });
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe(`${API_BASE}/candidates/positions?owner_id=owner-1&include_deleted=true`);
+    expect(result.items).toEqual([{ position: "Инженер", count: 2 }]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("getQueueSummary asks the personal summary endpoint", async () => {
+    const fetchMock = stubFetch(Response.json({ items: [], total: 0 }));
+
+    await getQueueSummary({ sample_limit: 6, horizon_days: 7 });
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe(`${API_BASE}/candidates/queue/summary?horizon_days=7&sample_limit=6`);
   });
 
   it("createCandidate posts the payload and returns the candidate", async () => {

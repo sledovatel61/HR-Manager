@@ -19,19 +19,21 @@ with 409 and the matches; an explicit confirmation creates/updates anyway
 and records a dedicated audit event.
 """
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import ColumnElement, Select, func, or_, select
 from sqlalchemy.orm import Session
 
+from app import queue_dashboard as dashboard
 from app.analytics_ledger import record_fact
 from app.assignees import resolve_assignee
 from app.audit import record_event
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import (
+    CANDIDATE_STAGE_ORDER,
     CANDIDATE_STAGE_POSITION,
     AnalyticsFactType,
     AuditAction,
@@ -41,6 +43,8 @@ from app.models import (
     CandidateStage,
     CandidateTermination,
     CandidateTransfer,
+    Event,
+    EventStatus,
     ScheduleImportRow,
     User,
     UserRole,
@@ -50,6 +54,8 @@ from app.schemas import (
     CandidateCreate,
     CandidateList,
     CandidateOut,
+    CandidatePositionList,
+    CandidatePositionOption,
     CandidateTerminationCreate,
     CandidateTerminationList,
     CandidateTerminationOut,
@@ -60,6 +66,11 @@ from app.schemas import (
     InteractionCreate,
     InteractionList,
     InteractionOut,
+    QueueDashboard,
+    QueueStageCount,
+    QueueStuckCandidate,
+    QueueSummary,
+    QueueUpcomingEvent,
     TransferList,
     TransferOut,
 )
@@ -68,6 +79,7 @@ from app.utils import (
     normalize_email,
     normalize_full_name,
     normalize_phone,
+    normalize_position,
     user_agent,
     utc_now,
 )
@@ -176,6 +188,7 @@ def _build_list_query(
     stage: CandidateStage | None,
     owner_id: UUID | None,
     source: CandidateSource | None,
+    position: str | None = None,
     include_deleted: bool = False,
 ) -> Select[tuple[Candidate]]:
     """Shared filter builder for list/count queries."""
@@ -206,6 +219,14 @@ def _build_list_query(
         conditions.append(Candidate.stage == stage)
     if source is not None:
         conditions.append(Candidate.source == source)
+    # Должность — свободный текст (справочника вакансий в проекте нет),
+    # поэтому сравниваем нормализованные значения: регистр и лишние пробелы
+    # не должны менять результат. Приведение делает Python (casefold), а не
+    # SQL lower() — иначе фильтр по кириллице зависел бы от локали БД.
+    if position is not None:
+        cleaned_position = normalize_position(position)
+        if cleaned_position:
+            conditions.append(Candidate.position_normalized == cleaned_position)
     # HRs are always scoped to themselves; managers/admins may filter by owner.
     if owner_id is not None and user.role != UserRole.HR:
         conditions.append(Candidate.owner_user_id == owner_id)
@@ -292,6 +313,7 @@ def list_candidates(
     stage: CandidateStage | None = Query(default=None),
     owner_id: UUID | None = Query(default=None),
     source: CandidateSource | None = Query(default=None),
+    position: str | None = Query(default=None, max_length=200),
     include_deleted: bool = Query(default=False),
     sort: str = Query(default="created_at"),
     direction: str = Query(default="desc", pattern="^(asc|desc)$"),
@@ -304,6 +326,8 @@ def list_candidates(
 
     * search matches full name (case-insensitive) plus normalized phone and
       email;
+    * ``position`` filters by the free-text position (case-insensitive exact
+      match — there is no vacancy directory, the value comes from the data);
     * HRs always see only their own candidates regardless of ``owner_id``;
       managers/admins may filter by owner;
     * soft-deleted candidates are excluded by default;
@@ -316,6 +340,7 @@ def list_candidates(
         stage=stage,
         owner_id=owner_id,
         source=source,
+        position=position,
         include_deleted=include_deleted,
     )
 
@@ -336,6 +361,318 @@ def list_candidates(
         limit=limit,
         offset=offset,
     )
+
+
+# --- «Должность»: отдельный справочник значений -------------------------------
+
+# Ceiling on the number of distinct positions returned. The option list is
+# built server-side (GROUP BY), so the ceiling only bounds the response size:
+# a position that exists in row 4 000 is still offered, and the filter still
+# matches it. Before this endpoint existed the dropdown was filled from the
+# first page of GET /candidates (100 rows) and such a position could never be
+# selected at all — the filter is a <select> with no free input.
+_MAX_POSITION_OPTIONS = 1000
+_DEFAULT_POSITION_OPTIONS = 500
+
+
+@router.get(
+    "/positions",
+    response_model=CandidatePositionList,
+    summary="Distinct positions within the caller's scope",
+)
+def list_candidate_positions(
+    owner_id: UUID | None = Query(default=None),
+    include_deleted: bool = Query(default=False),
+    limit: int = Query(default=_DEFAULT_POSITION_OPTIONS, ge=1, le=_MAX_POSITION_OPTIONS),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CandidatePositionList:
+    """Distinct free-text positions for the «Должность» filter.
+
+    There is no vacancy directory in the project: ``Candidate.position`` is
+    free text, so the options come from the data itself. The scan happens in
+    SQL over the **whole** visible scope (``GROUP BY position_normalized``) —
+    never from one page of candidates and never in the browser.
+
+    The scope is exactly the scope of ``GET /candidates``: an HR only sees
+    positions of their own candidates, a manager/administrator may narrow the
+    scope with ``owner_id``, and ``include_deleted`` switches to the
+    soft-deleted view. Deduplication uses the same ``normalize_position`` the
+    filter uses, so an option and the filter can never disagree about case or
+    whitespace. Empty positions are not selectable and are skipped.
+
+    Sorting is done in Python on the normalized value: ``ORDER BY`` on text
+    would depend on the database collation (SQLite vs PostgreSQL order
+    Cyrillic differently), and the dropdown must look the same on both.
+    """
+    conditions = _scope_for_user(user)
+    conditions.append(
+        Candidate.deleted_at.is_not(None) if include_deleted else Candidate.deleted_at.is_(None)
+    )
+    if owner_id is not None and user.role != UserRole.HR:
+        conditions.append(Candidate.owner_user_id == owner_id)
+    conditions.append(Candidate.position_normalized != "")
+
+    grouped = (
+        select(
+            Candidate.position_normalized.label("normalized"),
+            func.count(Candidate.id).label("candidates"),
+            # Representative spelling (min is deterministic within the group).
+            func.min(Candidate.position).label("display"),
+        )
+        .where(*conditions)
+        .group_by(Candidate.position_normalized)
+        .subquery()
+    )
+    total = db.scalar(select(func.count()).select_from(grouped)) or 0
+    rows = db.execute(
+        select(grouped.c.normalized, grouped.c.candidates, grouped.c.display).limit(limit)
+    ).all()
+    ordered = sorted(rows, key=lambda row: row.normalized)
+    items = [
+        CandidatePositionOption(position=row.display, count=int(row.candidates)) for row in ordered
+    ]
+    return CandidatePositionList(
+        items=items,
+        total=int(total),
+        limit=limit,
+        truncated=int(total) > len(items),
+    )
+
+
+# --- «Моя очередь»: серверные агрегаты ---------------------------------------
+
+#: Funnel stages that mean «кандидат больше не в работе». Mirrors the closed
+#: stages of the «Моя очередь» screen in ``frontend/src/features/queue``;
+#: kept here because the aggregates are computed by the server now.
+QUEUE_CLOSED_STAGES: tuple[CandidateStage, ...] = (
+    CandidateStage.HIRED,
+    CandidateStage.STARTED,
+    CandidateStage.PROBATION,
+    CandidateStage.FIRED,
+    CandidateStage.REJECTED,
+)
+#: Stages that still need recruiter action — the single source of truth for
+#: «в работе»: derived from the funnel order, so a stage cannot silently fall
+#: out of both sets. Both ``in_work`` and «застрявшие» count through it.
+QUEUE_WORK_STAGES: tuple[CandidateStage, ...] = tuple(
+    stage for stage in CANDIDATE_STAGE_ORDER if stage not in QUEUE_CLOSED_STAGES
+)
+#: Days without movement after which an in-work candidate needs attention.
+QUEUE_STUCK_DAYS = 3
+#: Length of the «Ближайшие события» / «Выходы на неделе» window, in days.
+QUEUE_HORIZON_DAYS = 7
+#: Default size of the bounded samples (cards), well above what the cards show.
+QUEUE_SAMPLE_LIMIT = 6
+_MAX_QUEUE_SAMPLE = 100
+
+
+@router.get(
+    "/queue/summary",
+    response_model=QueueSummary,
+    summary="Personal queue summary (server-side aggregates)",
+)
+def queue_summary(
+    stuck_days: int = Query(default=QUEUE_STUCK_DAYS, ge=1, le=365),
+    horizon_days: int = Query(default=QUEUE_HORIZON_DAYS, ge=1, le=31),
+    sample_limit: int = Query(default=QUEUE_SAMPLE_LIMIT, ge=1, le=_MAX_QUEUE_SAMPLE),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> QueueSummary:
+    """«Моя очередь» in one response: full-scope aggregates + small samples.
+
+    Why this endpoint: the screen used to download the 100 most recently
+    updated candidates and count everything in the browser. A candidate who
+    has been waiting for three weeks is by definition *not* among the 100
+    freshest rows, so «Требуют внимания» and «Без движения» silently under-
+    reported, and the KPI tiles presented one page as the whole queue. Here
+    every counter is a SQL aggregate over all candidates of the caller; the
+    browser only receives numbers plus two bounded samples for the cards.
+
+    Personality: the scope is ``owner_user_id == caller`` for **every** role —
+    an HR, a manager, an administrator and the pilot account all get *their
+    own* queue, which is what the «Моя очередь» heading promises. A request
+    without ``owner_id`` used to return the shared base for a manager.
+
+    Semantics:
+
+    * ``total`` — all non-deleted candidates of the caller;
+    * ``in_work`` — the same minus the closed funnel stages;
+    * ``fresh`` — created within the last 24 hours;
+    * ``stuck`` — in work and untouched for ``stuck_days`` days;
+    * ``starts`` — ``start_date`` inside ``[today, today + horizon_days)``;
+    * ``upcoming_events`` — events of the caller's own candidates starting in
+      the same window. Terminal events (``completed`` / ``cancelled``) are
+      excluded: a finished event is not something that still needs action.
+
+    Windows are UTC instants; the server never converts to browser-local time
+    (the same rule ``app/analytics.py`` documents for the analytics period).
+    """
+    now = utc_now()
+    today = now.date()
+    horizon_end = today + timedelta(days=horizon_days)
+    stuck_before = now - timedelta(days=stuck_days)
+
+    base_conditions = [
+        # «Моя очередь» — личная для всех ролей (см. docstring).
+        Candidate.owner_user_id == user.id,
+        Candidate.deleted_at.is_(None),
+    ]
+
+    stage_rows = db.execute(
+        select(Candidate.stage, func.count(Candidate.id))
+        .where(*base_conditions)
+        .group_by(Candidate.stage)
+    ).all()
+    per_stage = {stage: int(count) for stage, count in stage_rows}
+    total = sum(per_stage.values())
+    in_work = sum(per_stage.get(stage, 0) for stage in QUEUE_WORK_STAGES)
+    by_stage = [
+        QueueStageCount(stage=stage, count=per_stage.get(stage, 0))
+        for stage in CANDIDATE_STAGE_ORDER
+    ]
+
+    def _count(*extra: ColumnElement[bool]) -> int:
+        value = db.scalar(
+            select(func.count()).select_from(Candidate).where(*base_conditions, *extra)
+        )
+        return int(value or 0)
+
+    fresh = _count(Candidate.created_at >= now - timedelta(days=1))
+    starts = _count(Candidate.start_date >= today, Candidate.start_date < horizon_end)
+
+    stuck_conditions = [
+        *base_conditions,
+        Candidate.stage.in_(QUEUE_WORK_STAGES),
+        Candidate.updated_at < stuck_before,
+    ]
+    stuck = int(
+        db.scalar(select(func.count()).select_from(Candidate).where(*stuck_conditions)) or 0
+    )
+    # Sample: the stalest first — they have been waiting the longest.
+    stuck_rows = db.scalars(
+        select(Candidate)
+        .where(*stuck_conditions)
+        .order_by(Candidate.updated_at.asc(), Candidate.id.asc())
+        .limit(sample_limit)
+    ).all()
+    stuck_sample = [
+        QueueStuckCandidate(
+            id=row.id,
+            full_name=row.full_name,
+            position=row.position,
+            stage=row.stage,
+            updated_at=row.updated_at,
+        )
+        for row in stuck_rows
+    ]
+
+    event_conditions = [
+        Candidate.owner_user_id == user.id,
+        Candidate.deleted_at.is_(None),
+        Event.starts_at >= datetime.combine(today, time(0, 0), tzinfo=now.tzinfo),
+        Event.starts_at < datetime.combine(horizon_end, time(0, 0), tzinfo=now.tzinfo),
+        # Завершённое или отменённое событие не «требует действия».
+        Event.status.notin_([EventStatus.COMPLETED, EventStatus.CANCELLED]),
+    ]
+    event_stmt = (
+        select(Event).join(Candidate, Event.candidate_id == Candidate.id).where(*event_conditions)
+    )
+    events_total = int(db.scalar(select(func.count()).select_from(event_stmt.subquery())) or 0)
+    event_rows = db.scalars(
+        event_stmt.order_by(Event.starts_at.asc(), Event.id.asc()).limit(sample_limit)
+    ).all()
+    upcoming_events = [
+        QueueUpcomingEvent(
+            id=row.id,
+            candidate_id=row.candidate_id,
+            candidate_full_name=row.candidate.full_name if row.candidate is not None else "",
+            type=row.type,
+            title=row.title,
+            status=row.status,
+            starts_at=row.starts_at,
+            ends_at=row.ends_at,
+        )
+        for row in event_rows
+    ]
+
+    return QueueSummary(
+        owner_id=user.id,
+        owner_username=user.username,
+        generated_at=now,
+        total=total,
+        in_work=in_work,
+        fresh=fresh,
+        stuck=stuck,
+        starts=starts,
+        stuck_days=stuck_days,
+        horizon_days=horizon_days,
+        closed_stages=[stage.value for stage in QUEUE_CLOSED_STAGES],
+        by_stage=by_stage,
+        stuck_sample=stuck_sample,
+        stuck_sample_truncated=stuck > len(stuck_sample),
+        upcoming_events=upcoming_events,
+        upcoming_events_total=events_total,
+        upcoming_events_truncated=events_total > len(upcoming_events),
+    )
+
+
+@router.get(
+    "/queue/dashboard",
+    response_model=QueueDashboard,
+    summary="Dashboard aggregates for «Моя очередь» (period, KPI, series)",
+)
+def queue_dashboard(
+    period: str = Query(
+        default="week",
+        pattern="^(today|week|all)$",
+        description="Период: today (по часам), week (по дням), all (по месяцам)",
+    ),
+    timezone: str = Query(
+        default=dashboard.DEFAULT_DASHBOARD_TIMEZONE,
+        description="IANA таймзона, в которой считаются границы периода",
+    ),
+    owner_id: UUID | None = Query(
+        default=None, description="Чья очередь (руководитель/администратор); HR — всегда своя"
+    ),
+    position: str | None = Query(default=None, max_length=200),
+    stage: CandidateStage | None = Query(default=None),
+    source: CandidateSource | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> QueueDashboard:
+    """Analytics cards of «Моя очередь»: KPI, series, sources, tasks, funnel.
+
+    Why an endpoint and not a bigger client: every series here is an aggregate
+    over the caller's whole scope. Shipping the raw rows to the browser would
+    reintroduce exactly the defect the summary fixed — a page of candidates
+    presented as the whole queue — and would move period/timezone arithmetic
+    into the client, where it cannot be tested by the API suite.
+
+    Scope: personal for every role (HR, manager, administrator, pilot); a
+    manager or an administrator may pass ``owner_id`` to look at a colleague,
+    an HR cannot widen the scope at all. Filters (``position``/``stage``/
+    ``source``) apply to the current attributes of the candidate, i.e. the
+    same values the list screen filters on.
+
+    A metric the data model cannot express is returned as ``null`` with a note
+    in ``kpi_notes`` (there is no vacancy entity, so «активные вакансии» is
+    ``null`` rather than a fabricated zero).
+    """
+    payload = dashboard.build_dashboard(
+        db,
+        user=user,
+        period=period,
+        timezone=timezone,
+        owner_id=owner_id,
+        position=position,
+        stage=stage,
+        source=source,
+    )
+    tasks = payload.pop("tasks")
+    payload["tasks_due"] = tasks["due"]
+    payload["tasks_overdue"] = tasks["overdue"]
+    return QueueDashboard(**payload)
 
 
 @router.post(
@@ -368,6 +705,7 @@ def create_candidate(
         email_normalized=normalize_email(email),
         source=payload.source,
         position=payload.position,
+        position_normalized=normalize_position(payload.position),
         owner_user_id=owner.id,
         stage=CandidateStage.NEW,
         stage_position=CANDIDATE_STAGE_POSITION[CandidateStage.NEW],
@@ -458,6 +796,7 @@ def update_candidate(
         changes.append(f"source={payload.source.value}")
     if payload.position is not None and payload.position != candidate.position:
         candidate.position = payload.position
+        candidate.position_normalized = normalize_position(payload.position)
         changes.append("position")
 
     # --- Phase 18: «Выход на работу» -------------------------------------

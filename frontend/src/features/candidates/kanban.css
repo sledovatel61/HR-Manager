@@ -9,10 +9,11 @@
   align-items: flex-end;
   gap: var(--space-3);
   flex-wrap: wrap;
-  background: var(--surface-app);
+  background: var(--surface-raised);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
+  box-shadow: var(--card-shadow);
 }
 
 .kanban-toolbar .field {
@@ -37,13 +38,13 @@
 }
 
 .kanban-column {
-  flex: 0 0 260px;
+  flex: 0 0 264px;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   background: var(--surface-sunken);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--card-radius);
   padding: var(--space-3);
   min-height: 200px;
   max-height: 72vh;
@@ -75,9 +76,16 @@
   gap: var(--space-2);
   background: var(--surface-raised);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   padding: var(--space-3);
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--card-shadow);
+  transition: box-shadow var(--duration-fast) var(--easing-standard),
+    transform var(--duration-fast) var(--easing-standard);
+}
+
+.kanban-card:hover {
+  box-shadow: var(--card-hover-shadow);
+  transform: var(--card-hover-transform);
 }
 
 .kanban-card[draggable="true"] {

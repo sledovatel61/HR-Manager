@@ -81,3 +81,17 @@ def normalize_full_name(value: str) -> str:
     ASCII-only ``lower()``, so search behaves the same on both databases.
     """
     return value.strip().casefold()
+
+
+def normalize_position(value: str | None) -> str:
+    """Normalize a free-text position for exact-match filtering.
+
+    Same rationale as :func:`normalize_full_name`: the comparison happens in
+    Python's ``casefold``, not in SQL ``lower()``, so «Монтажник РЭА» and
+    «монтажник рэа» are one value on PostgreSQL and on SQLite alike, whatever
+    the database locale is. Repeated spaces inside the string collapse into
+    one, so a typo in spacing does not hide a candidate from the filter.
+    """
+    if not value:
+        return ""
+    return " ".join(value.split()).casefold()

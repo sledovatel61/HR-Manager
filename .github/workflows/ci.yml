@@ -187,6 +187,16 @@ jobs:
         run: npm run test
       - name: Production build
         run: npm run build
+      - name: Контраст AA — гейт, аудит пар и сверка ссылок
+        working-directory: .
+        # Гейт существовал с пятого раунда, но в CI не запускался: проверка
+        # жила только в отчётах. Теперь три прогона обязательны — провал
+        # контраста, пара в вёрстке вне гейта и устаревшая ссылка в
+        # доказательстве ломают сборку, а не ждут следующего ревью.
+        run: |
+          python3 scripts/measure-contrast.py
+          python3 scripts/measure-contrast.py --audit
+          python3 scripts/measure-contrast.py --check-refs
       - name: Dependency audit (high and above)
         run: |
           # The npm registry retired the legacy quick-audit endpoint; npm < 11

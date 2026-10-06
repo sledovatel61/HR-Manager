@@ -11,6 +11,7 @@ vi.mock("../../api", async (importOriginal) => {
   return {
     ...original,
     listCandidates: vi.fn(),
+    listPositionOptions: vi.fn(),
     listHrUsers: vi.fn(),
     updateCandidate: vi.fn(),
     fetchWorkScheduleSuggestions: vi.fn(),
@@ -55,6 +56,15 @@ function candidate(stage: CandidateStage, id = "44444444-4444-4444-4444-44444444
   };
 }
 
+/** Only per-column requests (have `stage`) — the board also asks the
+ *  dedicated endpoint for the position-filter suggestions. */
+function columnCalls() {
+  return vi
+    .mocked(api.listCandidates)
+    .mock.calls.map(([query]) => query)
+    .filter((query) => query?.stage !== undefined);
+}
+
 function renderKanban() {
   return render(
     <ToastProvider>
@@ -65,6 +75,13 @@ function renderKanban() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Справочник должностей по умолчанию пуст.
+  vi.mocked(api.listPositionOptions).mockResolvedValue({
+    items: [],
+    total: 0,
+    limit: 500,
+    truncated: false,
+  });
   vi.mocked(api.listHrUsers).mockResolvedValue({ items: [], total: 0 });
   vi.mocked(api.fetchWorkScheduleSuggestions).mockResolvedValue({
     organizations: [],
@@ -103,6 +120,29 @@ describe("KanbanPage", () => {
         stage: "offer",
       })
     );
+  });
+
+  it("обновляет справочник должностей после смены этапа", async () => {
+    vi.mocked(api.updateCandidate).mockResolvedValue(candidate("offer"));
+    renderKanban();
+
+    await screen.findByText("Кандидат new");
+    const directoryCalls = vi.mocked(api.listPositionOptions).mock.calls.length;
+    const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.selectOptions(within(newColumn).getByLabelText("Изменить этап: Кандидат new"), "offer");
+
+    await waitFor(() => expect(api.updateCandidate).toHaveBeenCalled());
+    await waitFor(() => {
+      expect(vi.mocked(api.listPositionOptions).mock.calls.length).toBeGreaterThan(directoryCalls);
+    });
+  });
+
+  it("показывает ошибку загрузки справочника должностей", async () => {
+    vi.mocked(api.listPositionOptions).mockRejectedValue(new api.ApiError(500, "Сбой сервера"));
+    renderKanban();
+
+    expect(await screen.findByText("Не удалось загрузить список должностей.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Обновить должности" })).toBeInTheDocument();
   });
 
   it("rolls back the optimistic move when PATCH fails", async () => {
@@ -153,15 +193,46 @@ describe("KanbanPage", () => {
     renderKanban();
 
     expect(await screen.findByText("Кандидат new-0")).toBeInTheDocument();
-    // 11 columns × first pages were requested — bounded, per-column paging.
-    expect(vi.mocked(api.listCandidates)).toHaveBeenCalledTimes(11);
+    // Besides the column pages the board makes one request for the
+    // «Должность» filter suggestions — count only per-column paging.
+    expect(columnCalls()).toHaveLength(11);
 
     await userEvent.click(screen.getByRole("button", { name: "Показать ещё (5)" }));
-    await waitFor(() => expect(vi.mocked(api.listCandidates)).toHaveBeenCalledTimes(12));
-    expect(vi.mocked(api.listCandidates).mock.calls.at(-1)?.[0]).toMatchObject({
+    await waitFor(() => expect(columnCalls()).toHaveLength(12));
+    expect(columnCalls().at(-1)).toMatchObject({
       stage: "new",
       offset: 20,
     });
+  });
+
+  it("applies the «Должность» filter to every funnel column, not just one", async () => {
+    vi.mocked(api.listPositionOptions).mockResolvedValue({
+      items: [
+        { position: "Монтажник РЭА", count: 3 },
+        { position: "Инженер", count: 1 },
+      ],
+      total: 2,
+      limit: 500,
+      truncated: false,
+    });
+    vi.mocked(api.listCandidates).mockImplementation(async (query) => {
+      const items = query?.stage === "new" ? [candidate("new")] : [];
+      return { items, total: items.length, limit: 20, offset: 0 };
+    });
+    renderKanban();
+    await screen.findByText("Кандидат new");
+
+    const before = columnCalls().length;
+    await userEvent.selectOptions(screen.getByLabelText("Должность"), "Монтажник РЭА");
+
+    await waitFor(() => {
+      expect(columnCalls().at(-1)).toMatchObject({ position: "Монтажник РЭА" });
+    });
+    const after = columnCalls().slice(before);
+    // Фильтр уходит в каждую колонку воронки — иначе «останутся только
+    // монтажники» выполнялось бы для одной колонки из одиннадцати.
+    expect(after.length).toBeGreaterThan(1);
+    expect(after.every((query) => query?.position === "Монтажник РЭА")).toBe(true);
   });
 
   it("labels columns with the shared STAGE_LABELS vocabulary", () => {
