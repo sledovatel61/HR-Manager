@@ -154,6 +154,8 @@ export default function CandidatesListPage({
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+  const shownStart = items.length ? offset + 1 : 0;
+  const shownEnd = items.length ? Math.min(offset + items.length, total) : 0;
 
   return (
     <div className="candidates-page">
@@ -161,7 +163,7 @@ export default function CandidatesListPage({
         <div>
           <div className="eyebrow">Подбор</div>
           <p className="page-sub">
-            {total > 0 ? `Всего в списке: ${total}` : "Список пуст"}
+            {loading ? "Загрузка списка…" : error ? "Список недоступен" : `Всего в списке: ${total}`}
           </p>
         </div>
         <div className="page-actions">
@@ -408,10 +410,10 @@ export default function CandidatesListPage({
         </div>
       )}
 
-      {!loading && !error && total > 0 && (
+      {!loading && !error && (
         <nav className="pagination" aria-label="Пагинация списка кандидатов">
-          <span className="pagination-info">
-            {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} из {total}
+          <span className="pagination-info" role="status">
+            Показано {shownStart}–{shownEnd} из {total}
           </span>
           <div className="pagination-buttons">
             <Button
@@ -423,7 +425,7 @@ export default function CandidatesListPage({
               Назад
             </Button>
             <span className="pagination-page">
-              {currentPage} / {totalPages}
+              {currentPage > totalPages ? "Список изменился" : `${currentPage} / ${totalPages}`}
             </span>
             <Button
               variant="secondary"

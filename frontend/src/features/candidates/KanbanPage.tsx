@@ -8,11 +8,12 @@ import {
 import { Button } from "../../design-system/components/Button";
 import { Field, SelectInput } from "../../design-system/components/Field";
 import { EmptyState, ErrorState } from "../../design-system/components/StateViews";
-import { StageChip } from "../../design-system/components/StatusChip";
+import { Badge, StageChip } from "../../design-system/components/StatusChip";
 import { useToast } from "../../design-system/components/ToastContext";
 import {
   CANDIDATE_STAGE_ORDER,
   STAGE_LABELS,
+  SOURCE_LABELS,
   type Candidate,
   type CandidateStage,
   type User,
@@ -22,6 +23,7 @@ import { CandidateDrawer } from "./CandidateDrawer";
 import { StartDateModal } from "../schedule/StartDateModal";
 import { CandidateFormModal } from "./CandidateFormModal";
 import { EDGE_SPEED_PX, edgeScrollDirection } from "./boardScroll";
+import { formatDate } from "./format";
 import { usePositionOptions } from "./usePositionOptions";
 import "./kanban.css";
 
@@ -61,6 +63,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   const [columns, setColumns] = useState<Columns>(emptyColumns);
   const [directory, setDirectory] = useState<UserListItem[]>([]);
   const [busy, setBusy] = useState(false);
+  const [dropStage, setDropStage] = useState<CandidateStage | null>(null);
   const [drawerCandidateId, setDrawerCandidateId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
@@ -282,6 +285,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   const handleDrop = (event: React.DragEvent, to: CandidateStage) => {
     event.preventDefault();
     stopAutoScroll();
+    setDropStage(null);
     const dragging = draggingRef.current;
     draggingRef.current = null;
     if (!dragging) return;
@@ -296,7 +300,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         <div>
           <div className="eyebrow">Подбор</div>
           <p className="page-sub">
-            {totalCount > 0
+            {anyLoading ? "Загрузка доски…" : anyError ? "Не все колонки загружены" : totalCount > 0
               ? `Всего на доске: ${totalCount} · перетащите карточку, чтобы сменить этап`
               : "Доска пуста"}
           </p>
@@ -359,6 +363,40 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         </Button>
       </div>
 
+      {(position || (canSeeAll && ownerId)) && (
+        <div className="kanban-active-filters" role="group" aria-label="Активные фильтры доски">
+          {position && (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="close"
+              aria-label={`Снять фильтр должности: ${position}`}
+              onClick={() => {
+                setPosition("");
+                setColumns(emptyColumns());
+              }}
+            >
+              {position}
+            </Button>
+          )}
+          {canSeeAll && ownerId && (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="close"
+              aria-label="Снять фильтр ответственного"
+              onClick={() => {
+                setOwnerId("");
+                setColumns(emptyColumns());
+              }}
+            >
+              {directory.find((item) => item.id === ownerId)?.full_name ||
+                directory.find((item) => item.id === ownerId)?.username || "Выбранный HR"}
+            </Button>
+          )}
+        </div>
+      )}
+
       {anyError && !anyItems && <ErrorState onRetry={reloadBoard} />}
       {!anyError && !anyLoading && !anyItems && (
         <EmptyState
@@ -374,6 +412,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
 
       <div
         className="kanban-board"
+        aria-busy={busy}
         role="list"
         aria-label="Воронка кандидатов по этапам"
         ref={boardRef}
@@ -394,10 +433,18 @@ export default function KanbanPage({ user }: KanbanPageProps) {
           return (
             <section
               key={stage}
-              className="kanban-column"
+              className={`kanban-column${dropStage === stage ? " is-drop-target" : ""}`}
               role="listitem"
               aria-label={`Колонка: ${STAGE_LABELS[stage]}`}
-              onDragOver={(event) => event.preventDefault()}
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (!busy && draggingRef.current) setDropStage(stage);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setDropStage(null);
+                }
+              }}
               onDrop={(event) => handleDrop(event, stage)}
             >
               <header className="kanban-column-head">
@@ -430,6 +477,8 @@ export default function KanbanPage({ user }: KanbanPageProps) {
                       }}
                       onDragEnd={() => {
                         draggingRef.current = null;
+                        setDropStage(null);
+                        stopAutoScroll();
                       }}
                     >
                       <button
@@ -437,11 +486,20 @@ export default function KanbanPage({ user }: KanbanPageProps) {
                         className="kanban-card-name"
                         onClick={() => openCandidate(candidate.id)}
                       >
-                        {candidate.full_name}
+                        <span className="kanban-avatar" aria-hidden="true">
+                          {candidate.full_name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}
+                        </span>
+                        <span>{candidate.full_name}</span>
                       </button>
                       {candidate.position && (
                         <span className="kanban-card-position">{candidate.position}</span>
                       )}
+                      <div className="kanban-card-meta">
+                        <Badge>{SOURCE_LABELS[candidate.source]}</Badge>
+                        <time dateTime={candidate.updated_at} title="Обновлён">
+                          {formatDate(candidate.updated_at)}
+                        </time>
+                      </div>
                       <div className="kanban-card-foot">
                         {canSeeAll && (
                           <span className="kanban-card-owner">{candidate.owner_username ?? "Не назначен"}</span>
