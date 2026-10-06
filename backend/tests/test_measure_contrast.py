@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -131,6 +132,66 @@ def test_notes_and_refs_have_no_stale_line_numbers() -> None:
     module = _load()
 
     assert module.check_refs() == 0
+
+
+def _sandbox(tmp_path: Path) -> Path:
+    """Копия дерева, которой хватает ``--check-refs``: скрипт и вёрстка.
+
+    Негативные проверки надо доказать на испорченной копии — портить ради
+    этого сам репозиторий нельзя, а зелёный ``--check-refs`` на целом дереве
+    ничего не говорит о том, сработает ли он на сломанном.
+    """
+    root = tmp_path / "root"
+    (root / "scripts").mkdir(parents=True)
+    shutil.copy2(SCRIPT, root / "scripts" / SCRIPT.name)
+    shutil.copytree(ROOT / "frontend" / "src", root / "frontend" / "src")
+    return root
+
+
+def _check_refs_in(root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(root / "scripts" / SCRIPT.name), "--check-refs"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_ref_check_reports_a_prose_line_number_that_no_longer_matches(tmp_path: Path) -> None:
+    """Ссылка в прозе указывает на строку без литерала — это обязано падать."""
+    root = _sandbox(tmp_path)
+    control = _check_refs_in(root)
+    assert control.returncode == 0, control.stdout + control.stderr  # копия верна
+
+    script = root / "scripts" / SCRIPT.name
+    source = script.read_text(encoding="utf-8")
+    # Заметка говорит «фон — queue.css:665 `var(--accent-subtle)`»; уводим
+    # номер на строку 657, где стоит `.queue-link {`.
+    mutated = source.replace("фон — queue.css:665", "фон — queue.css:657", 1)
+    assert mutated != source
+    script.write_text(mutated, encoding="utf-8")
+
+    result = _check_refs_in(root)
+
+    assert result.returncode == 1
+    assert "queue.css:657" in result.stdout
+    assert "ожидался var(--accent-subtle)" in result.stdout
+
+
+def test_ref_check_reports_a_prose_reference_without_a_literal(tmp_path: Path) -> None:
+    """Голый номер строки непроверяем — раунд 8 объявил это устаревшей ссылкой."""
+    root = _sandbox(tmp_path)
+    script = root / "scripts" / SCRIPT.name
+    source = script.read_text(encoding="utf-8")
+    mutated = source.replace("фон — queue.css:665 `var(--accent-subtle)`", "фон — queue.css:665", 1)
+    assert mutated != source
+    script.write_text(mutated, encoding="utf-8")
+
+    result = _check_refs_in(root)
+
+    assert result.returncode == 1
+    assert "ссылка без ожидаемого текста" in result.stdout
 
 
 def test_evidence_notes_name_a_literal_for_every_line_reference() -> None:
