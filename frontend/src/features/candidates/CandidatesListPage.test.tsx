@@ -108,6 +108,26 @@ beforeEach(() => {
 });
 
 describe("CandidatesListPage", () => {
+  it("counts the rows actually returned, not the requested page size", async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue({ items: [candidate()], total: 7, limit: 20, offset: 0 });
+    renderPage();
+    expect(await screen.findByText("Показано 1–1 из 7")).toBeInTheDocument();
+  });
+
+  it("keeps an empty later page readable and allows returning after the list shrinks", async () => {
+    vi.mocked(api.listCandidates).mockImplementation(async (query) => ({
+      items: query?.offset ? [] : [candidate()], total: query?.offset ? 0 : 21,
+      limit: 20, offset: query?.offset ?? 0,
+    }));
+    renderPage();
+    await screen.findByText("Показано 1–1 из 21");
+    await userEvent.click(screen.getByRole("button", { name: "Вперёд" }));
+    expect(await screen.findByText("Показано 0–0 из 0")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Назад" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Назад" }));
+    expect(await screen.findByText("Показано 1–1 из 21")).toBeInTheDocument();
+  });
+
   it("shows a skeleton while loading and then renders rows", async () => {
     vi.mocked(api.listCandidates).mockResolvedValue({
       items: [candidate()],
@@ -128,6 +148,7 @@ describe("CandidatesListPage", () => {
     vi.mocked(api.listCandidates).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
     renderPage();
     expect(await screen.findByText("Кандидаты не найдены")).toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "Пагинация списка кандидатов" })).getByRole("status")).toHaveTextContent("Показано 0–0 из 0");
   });
 
   it("shows an explicit unassigned label in the manager candidate list", async () => {
@@ -252,10 +273,12 @@ describe("CandidatesListPage", () => {
     renderPage();
 
     expect(await screen.findByText("Кандидат 0")).toBeInTheDocument();
-    expect(screen.getByText("1–20 из 25")).toBeInTheDocument();
+    expect(screen.getByText("Показано 1–20 из 25")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Вперёд" }));
     expect(await screen.findByText("Кандидат 20")).toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "Пагинация списка кандидатов" })).getByRole("status")).toHaveTextContent("Показано 21–25 из 25");
+    expect(screen.getByRole("button", { name: "Вперёд" })).toBeDisabled();
 
     expect(vi.mocked(api.listCandidates).mock.calls.at(-1)?.[0]).toMatchObject({ offset: 20 });
   });
