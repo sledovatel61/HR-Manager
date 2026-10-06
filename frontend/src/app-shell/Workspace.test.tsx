@@ -328,8 +328,9 @@ describe("личная очередь администратора", () => {
     ]);
   });
 
-  it("не добавляет очередь руководителю без продуктового решения", () => {
-    expect(sectionsForRole("manager")).not.toContain("queue");
+  it("делает очередь первым разделом для руководителя", () => {
+    expect(sectionsForRole("manager")[0]).toBe("queue");
+    expect(sectionsForRole("manager")).toContain("queue");
   });
 
   it.each(["", "#/queue"])("открывает реальную MyQueuePage для admin по адресу %s", async (hash) => {
@@ -339,6 +340,19 @@ describe("личная очередь администратора", () => {
     expect(screen.getByRole("heading", { name: "Моя очередь", level: 1 })).toBeInTheDocument();
     const nav = screen.getByRole("navigation", { name: "Разделы" });
     expect(within(nav).getByRole("button", { name: "Моя очередь" })).toHaveAttribute("aria-current", "page");
+    await waitFor(() => expect(api.getQueueDashboard).toHaveBeenCalledWith(
+      expect.objectContaining({ owner_id: undefined }),
+    ));
+  });
+
+  it("открывает очередь руководителю стартовым разделом", async () => {
+    window.location.hash = "";
+    renderWorkspace("manager");
+    expect(await screen.findByRole("region", { name: "Моя очередь" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Моя очередь", level: 1 })).toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "Разделы" }))
+      .getByRole("button", { name: "Моя очередь" }))
+      .toHaveAttribute("aria-current", "page");
     await waitFor(() => expect(api.getQueueDashboard).toHaveBeenCalledWith(
       expect.objectContaining({ owner_id: undefined }),
     ));
