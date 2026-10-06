@@ -3,7 +3,10 @@
 Дата: 2026-10-06. Baseline: `1fdcc464f727abcf1a82b8fe4e89a087fed81991`.
 Ветка изменений: `arena/9d09afe4-hr-manager`.
 
-PR #50 на момент проверки **открыт**, его head — `arena/44cb1fd1-hr-manager`, SHA совпадает с baseline. По отдельному подтверждению владельца follow-up направляется в эту ветку, а не в `main`. Merge, force push, release/signing и изменения `main` не выполнялись. Снимки владельца в `screenshots/после PR50/` сохранены без изменения; это references, не доказательства нового runtime.
+Создан [PR #51](https://github.com/sledovatel61/HR-Manager/pull/51).
+Коммит реализации и проверок: `af393aab58ee1bd621adbc21d4126849e52afc3f`.
+
+PR #50 на момент проверки **открыт**, его head — `arena/44cb1fd1-hr-manager`, SHA совпадает с baseline. По отдельному подтверждению владельца follow-up направляется в эту ветку, а не в `main`. Слияние PR в GitHub, force push, release/signing и изменения `main` не выполнялись. Локальная история сохраняет ранее выполненное объединение baseline и пользовательских uploads. Снимки владельца в `screenshots/после PR50/` сохранены без изменения; это references, не доказательства нового runtime.
 
 ## Что исправлено
 
