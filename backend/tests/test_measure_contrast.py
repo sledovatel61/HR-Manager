@@ -101,6 +101,14 @@ def test_base_and_state_surfaces_do_not_overlap() -> None:
     assert not set(module.BASE_SURFACES) & set(module.STATE_SURFACES)
 
 
+def test_pair_rejects_an_unknown_text_token() -> None:
+    """Опечатка в имени токена — ошибка, а не молчаливое «ок» без чисел."""
+    result = _run("--pair", "-", "--not-a-text-token")
+
+    assert result.returncode == 2
+    assert "неизвестный токен" in result.stderr
+
+
 def test_pair_returns_nonzero_when_a_theme_fails(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
