@@ -22,6 +22,7 @@ import { CandidateDrawer } from "./CandidateDrawer";
 import { StartDateModal } from "../schedule/StartDateModal";
 import { CandidateFormModal } from "./CandidateFormModal";
 import { EDGE_SPEED_PX, edgeScrollDirection } from "./boardScroll";
+import { usePositionOptions } from "./usePositionOptions";
 import "./kanban.css";
 
 /**
@@ -56,6 +57,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   const { pushToast } = useToast();
   const canSeeAll = user.role !== "hr";
   const [ownerId, setOwnerId] = useState("");
+  const [position, setPosition] = useState("");
   const [columns, setColumns] = useState<Columns>(emptyColumns);
   const [directory, setDirectory] = useState<UserListItem[]>([]);
   const [busy, setBusy] = useState(false);
@@ -114,6 +116,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
       try {
         const page = await listCandidates({
           stage,
+          position: position || undefined,
           owner_id: canSeeAll && ownerId ? ownerId : undefined,
           sort: "updated_at",
           direction: "desc",
@@ -142,7 +145,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         }));
       }
     },
-    [canSeeAll, ownerId]
+    [canSeeAll, ownerId, position]
   );
 
   useEffect(() => {
@@ -150,6 +153,18 @@ export default function KanbanPage({ user }: KanbanPageProps) {
       void loadColumn(stage, 0);
     }
   }, [loadColumn, reloadTick]);
+
+  const positionOptions = usePositionOptions({
+    owner_id: canSeeAll && ownerId ? ownerId : undefined,
+  });
+  const { reload: reloadPositions } = positionOptions;
+
+  /** Кандидат изменился (этап, карточка, создание) — перечитываем и доску,
+   *  и справочник должностей: новая должность должна появиться в подсказках. */
+  const reloadBoard = useCallback(() => {
+    setReloadTick((tick) => tick + 1);
+    reloadPositions();
+  }, [reloadPositions]);
 
   useEffect(() => {
     if (!canSeeAll) return;
@@ -197,7 +212,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
       try {
         await updateCandidate(candidate.id, { stage: to, ...extra });
         pushToast("success", `Этап изменён: ${STAGE_LABELS[to]}`);
-        setReloadTick((tick) => tick + 1);
+        reloadBoard();
         return null;
       } catch (caught) {
         // Hard rollback to the pre-move state.
@@ -222,7 +237,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         setBusy(false);
       }
     },
-    [busy, pushToast]
+    [busy, pushToast, reloadBoard]
   );
 
   const moveCandidate = useCallback(
@@ -277,6 +292,25 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   return (
     <div className="kanban-page">
       <div className="kanban-toolbar">
+        <Field label="Должность" error={positionOptions.error ?? undefined}>
+          {(id) => (
+            <SelectInput
+              id={id}
+              value={position}
+              onChange={(event) => {
+                setPosition(event.target.value);
+                setColumns(emptyColumns());
+              }}
+            >
+              <option value="">Все должности</option>
+              {positionOptions.positions.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </SelectInput>
+          )}
+        </Field>
         {canSeeAll && (
           <Field label="Ответственный">
             {(id) => (
@@ -303,12 +337,17 @@ export default function KanbanPage({ user }: KanbanPageProps) {
           сам) или выберите этап прямо на карточке — так можно перевести кандидата
           в любой этап за одно действие.
         </span>
+        {positionOptions.error && (
+          <Button variant="ghost" size="sm" onClick={reloadPositions}>
+            Обновить должности
+          </Button>
+        )}
         <Button icon="plus" onClick={() => setCreateOpen(true)}>
           Добавить кандидата
         </Button>
       </div>
 
-      {anyError && !anyItems && <ErrorState onRetry={() => setReloadTick((tick) => tick + 1)} />}
+      {anyError && !anyItems && <ErrorState onRetry={reloadBoard} />}
       {!anyError && !anyLoading && !anyItems && (
         <EmptyState
           title="Кандидатов пока нет"
@@ -443,7 +482,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
           candidateId={drawerCandidateId}
           user={user}
           onClose={() => setDrawerCandidateId(null)}
-          onChanged={() => setReloadTick((tick) => tick + 1)}
+          onChanged={reloadBoard}
           onOpenCandidate={(id) => setDrawerCandidateId(id)}
         />
       )}
@@ -467,7 +506,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         onClose={() => setCreateOpen(false)}
         onCreated={() => {
           setCreateOpen(false);
-          setReloadTick((tick) => tick + 1);
+          reloadBoard();
         }}
         onOpenCandidate={(id) => setDrawerCandidateId(id)}
       />

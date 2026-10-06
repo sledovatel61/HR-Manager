@@ -99,7 +99,7 @@ from app.schemas import (
     WorkScheduleList,
     WorkScheduleSuggestions,
 )
-from app.utils import client_ip, user_agent, utc_now
+from app.utils import client_ip, normalize_position, user_agent, utc_now
 from app.work_schedule import (
     build_import_source_xlsx,
     build_rows,
@@ -1268,6 +1268,7 @@ def _create_candidate_from_row(
         email_normalized=None,
         source=CandidateSource.EXCEL_IMPORT,
         position=row.position or "",
+        position_normalized=normalize_position(row.position),
         owner_user_id=owner_user_id,
         stage=CandidateStage.OFFER,
         stage_position=CANDIDATE_STAGE_POSITION[CandidateStage.OFFER],

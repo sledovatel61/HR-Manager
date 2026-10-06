@@ -5,7 +5,7 @@
 
 .admin-diagnostics-intro {
   margin: 0;
-  color: var(--text-secondary, #5b6b73);
+  color: var(--text-secondary);
   font-size: var(--text-size-sm, 13px);
   max-width: 900px;
 }

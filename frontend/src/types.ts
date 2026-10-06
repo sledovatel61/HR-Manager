@@ -247,6 +247,8 @@ export interface CandidateListQuery {
   query?: string;
   stage?: CandidateStage;
   source?: CandidateSource;
+  /** Free-text position (no vacancy directory exists — see backlog §7.1). */
+  position?: string;
   owner_id?: string;
   /** Scope the listing to soft-deleted candidates (the trash view). */
   include_deleted?: boolean;
@@ -254,6 +256,228 @@ export interface CandidateListQuery {
   direction?: "asc" | "desc";
   limit?: number;
   offset?: number;
+}
+
+/** Scope of the distinct-position directory (same rules as the list). */
+export interface PositionOptionsQuery {
+  /** Managers/admins may narrow the scope to one owner; HR is always own. */
+  owner_id?: string;
+  /** Switch to the soft-deleted view (the trash tab). */
+  include_deleted?: boolean;
+  /** Server-side ceiling on the number of options (default 500). */
+  limit?: number;
+}
+
+/** One distinct free-text position with the number of candidates behind it. */
+export interface CandidatePositionOption {
+  position: string;
+  count: number;
+}
+
+export interface CandidatePositionList {
+  items: CandidatePositionOption[];
+  /** Distinct positions in the scope, ignoring `limit`. */
+  total: number;
+  limit: number;
+  /** True when fewer options than exist were returned. */
+  truncated: boolean;
+}
+
+/** One funnel row of the «Моя очередь» summary (zero-filled when empty). */
+export interface QueueStageCount {
+  stage: CandidateStage;
+  count: number;
+}
+
+/** Bounded card of «Требуют внимания» (a candidate without movement). */
+export interface QueueStuckCandidate {
+  id: string;
+  full_name: string;
+  position: string;
+  stage: CandidateStage;
+  updated_at: string;
+}
+
+/** Statuses a «Ближайшие события» card can carry: the server excludes the
+ *  terminal ones (completed/cancelled), so only these two can arrive. */
+export type QueueEventStatus = Extract<CalendarEventStatus, "scheduled" | "postponed">;
+
+/** Bounded card of «Ближайшие события» (never completed/cancelled). */
+export interface QueueUpcomingEvent {
+  id: string;
+  candidate_id: string;
+  candidate_full_name: string;
+  type: CalendarEventType;
+  title: string;
+  status: QueueEventStatus;
+  starts_at: string;
+  ends_at: string | null;
+}
+
+/** «Моя очередь»: aggregates over the whole personal scope + small samples. */
+export interface QueueSummary {
+  owner_id: string;
+  owner_username: string;
+  personal: boolean;
+  generated_at: string;
+  total: number;
+  in_work: number;
+  fresh: number;
+  stuck: number;
+  starts: number;
+  stuck_days: number;
+  horizon_days: number;
+  /** Stages that mean «не в работе» (mirrors the server contract). */
+  closed_stages: string[];
+  by_stage: QueueStageCount[];
+  stuck_sample: QueueStuckCandidate[];
+  stuck_sample_truncated: boolean;
+  upcoming_events: QueueUpcomingEvent[];
+  upcoming_events_total: number;
+  upcoming_events_truncated: boolean;
+}
+
+/** Presets of the «Моя очередь» dashboard (boundaries are computed by the
+ *  server in `timezone`, so the browser never guesses a day boundary). */
+export type QueueDashboardPeriodKey = "today" | "week" | "all";
+
+/** Query of `GET /candidates/queue/dashboard`. */
+export interface QueueDashboardQuery {
+  period?: QueueDashboardPeriodKey;
+  /** IANA timezone the period boundaries are computed in. */
+  timezone?: string;
+  /** Whose queue (manager/administrator only; HR is always pinned to self). */
+  owner_id?: string;
+  position?: string;
+  stage?: CandidateStage;
+  source?: CandidateSource;
+}
+
+/** One point of the shared bucket axis (half-open `[from, to)`). */
+export interface QueueDashboardBucket {
+  bucket: string;
+  from: string;
+  to: string;
+  label: string;
+}
+
+/** The resolved period: the server computes it, the browser only renders it. */
+export interface QueueDashboardPeriod {
+  key: string;
+  from: string;
+  to: string;
+  timezone: string;
+  bucket_size: "hour" | "day" | "month" | string;
+  /** «Всё» axis cut at 24 months: the UI must say so out loud. */
+  capped: boolean;
+  buckets: QueueDashboardBucket[];
+}
+
+/** A conversion: `rate` is `null` (not 0) when the cohort is empty. */
+export interface QueueRatio {
+  numerator: number;
+  denominator: number;
+  rate: number | null;
+}
+
+/** An average in days plus the sample it was computed from. */
+export interface QueueDuration {
+  value: number | null;
+  sample: number;
+}
+
+export interface QueueSeriesValue {
+  bucket: string;
+  value: number;
+}
+
+export interface QueueSeriesRatio {
+  bucket: string;
+  numerator: number;
+  denominator: number;
+  rate: number | null;
+}
+
+export interface QueueSeriesDuration {
+  bucket: string;
+  value: number | null;
+  sample: number;
+}
+
+/** «Динамика найма»: exits per bucket plus the hiring-time line. */
+export interface QueueHiringPoint {
+  bucket: string;
+  exits: number;
+  hired: number;
+  avg_hiring_days: number | null;
+}
+
+export interface QueueSourceCount {
+  source: string;
+  label: string;
+  count: number;
+}
+
+/** A task of «Моя очередь»: the project has no Task entity, so a task is an
+ *  active reminder assigned to the caller. */
+export interface QueueDashboardTask {
+  id: string;
+  title: string;
+  due_at: string;
+  importance: string;
+  status: string;
+  candidate_id: string | null;
+  event_id: string | null;
+}
+
+export interface QueueDashboardScope {
+  owner_id: string;
+  owner_username: string;
+  personal: boolean;
+  role: string;
+}
+
+/** The KPI row. `active_vacancies` is `null` until the project gets a vacancy
+ *  entity — the UI shows «—» with `kpi_notes.active_vacancies`, never 0. */
+export interface QueueDashboardKpis {
+  total_candidates: number;
+  in_work: number;
+  my_tasks: number;
+  overdue_tasks: number;
+  new_candidates: number;
+  interviews: number;
+  interview_conversion: QueueRatio;
+  average_hiring_days: QueueDuration;
+  active_vacancies: number | null;
+  weekly_exits: number;
+}
+
+/** `GET /candidates/queue/dashboard` — every number of the screen, aggregated
+ *  server-side over the caller's whole scope (never over a page). */
+export interface QueueDashboard {
+  scope: QueueDashboardScope;
+  period: QueueDashboardPeriod;
+  generated_at: string;
+  filters: Record<string, string | null>;
+  kpis: QueueDashboardKpis;
+  /** Why a KPI is `null` (there is no vacancy entity in the project). */
+  kpi_notes: Record<string, string>;
+  created_candidates_series: QueueSeriesValue[];
+  interview_conversion_series: QueueSeriesRatio[];
+  average_hiring_days_series: QueueSeriesDuration[];
+  hiring_dynamics: QueueHiringPoint[];
+  sources: QueueSourceCount[];
+  funnel: QueueStageCount[];
+  attention_candidates: QueueStuckCandidate[];
+  attention_candidates_total: number;
+  attention_truncated: boolean;
+  upcoming_events: QueueUpcomingEvent[];
+  upcoming_events_total: number;
+  upcoming_events_truncated: boolean;
+  tasks_due: QueueDashboardTask[];
+  tasks_overdue: QueueDashboardTask[];
+  unread_notifications: number;
+  truncated: boolean;
 }
 
 /** POST /candidates payload (confirm_duplicate allows an exact copy on 409). */

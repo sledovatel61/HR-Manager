@@ -16,16 +16,18 @@
 }
 
 .modal-panel {
-  background: var(--surface-raised);
-  border-radius: var(--radius-lg);
+  background: var(--drawer-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border-radius: var(--card-radius);
   box-shadow: var(--shadow-4);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-default);
   width: 100%;
   max-height: 84vh;
   display: flex;
   flex-direction: column;
   z-index: var(--z-modal);
-  animation: panel-in var(--duration-base) var(--easing-decelerate);
+  animation: panel-in var(--duration-base) var(--easing-spring);
 }
 
 @keyframes panel-in {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   deleteCandidate,
@@ -26,6 +26,7 @@ import { CandidateDrawer } from "./CandidateDrawer";
 import { CandidateFormModal } from "./CandidateFormModal";
 import { formatDate } from "./format";
 import { useCandidatesList } from "./useCandidatesList";
+import { usePositionOptions } from "./usePositionOptions";
 import "./candidates.css";
 
 const PAGE_SIZE = 20;
@@ -52,10 +53,15 @@ export default function CandidatesListPage({
 }: CandidatesListPageProps) {
   const isDeleted = mode === "deleted";
   const canSeeAll = user.role !== "hr";
+  // «Моя очередь» — личная область для всех ролей. Без этого запрос руководителя
+  // или администратора уходил без owner_id и возвращал общую базу, хотя заголовок
+  // раздела обещает моих кандидатов (то же правило, что и у сводки очереди).
+  const isMyQueue = mode === "queue";
 
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState<CandidateStage | "">("");
   const [source, setSource] = useState<CandidateSource | "">("");
+  const [position, setPosition] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [sort, setSort] = useState<SortField>("updated_at");
   const [direction, setDirection] = useState<"asc" | "desc">("desc");
@@ -63,22 +69,80 @@ export default function CandidatesListPage({
   const [createOpen, setCreateOpen] = useState(false);
   const [drawerCandidateId, setDrawerCandidateId] = useState<string | null>(null);
 
+  // В «Моей очереди» ответственный по умолчанию — я; руководитель может явно
+  // переключиться на коллегу своим фильтром.
+  const scopeOwnerId = isMyQueue
+    ? ownerId || user.id
+    : canSeeAll && ownerId
+      ? ownerId
+      : undefined;
+
   const queryObject = useMemo(
     () => ({
       query: query || undefined,
       stage: (stage || undefined) as CandidateStage | undefined,
       source: (source || undefined) as CandidateSource | undefined,
-      owner_id: canSeeAll && ownerId ? ownerId : undefined,
+      position: position || undefined,
+      owner_id: scopeOwnerId,
       include_deleted: isDeleted,
       sort,
       direction,
       limit: PAGE_SIZE,
       offset,
     }),
-    [query, stage, source, ownerId, canSeeAll, isDeleted, sort, direction, offset]
+    [
+      query,
+      stage,
+      source,
+      position,
+      scopeOwnerId,
+      isDeleted,
+      sort,
+      direction,
+      offset,
+    ]
   );
 
   const { items, total, loading, error, reload } = useCandidatesList(queryObject);
+  const positionOptions = usePositionOptions({
+    owner_id: scopeOwnerId,
+    include_deleted: isDeleted,
+  });
+
+  /** Кандидат изменился — перечитываем и список, и справочник должностей:
+   *  новая или исправленная должность должна появиться в подсказках. */
+  const { reload: reloadPositions } = positionOptions;
+  const reloadWithPositions = useCallback(() => {
+    reload();
+    reloadPositions();
+  }, [reload, reloadPositions]);
+
+  const activeFilters = useMemo(
+    () => [
+      stage && { key: "stage", label: "Этап", value: STAGE_LABELS[stage] },
+      source && { key: "source", label: "Источник", value: SOURCE_LABELS[source] },
+      position && { key: "position", label: "Должность", value: position },
+      canSeeAll && ownerId && { key: "owner", label: "Ответственный", value: ownerId },
+    ].filter(Boolean) as { key: string; label: string; value: string }[],
+    [stage, source, position, ownerId, canSeeAll]
+  );
+
+  const resetFilters = () => {
+    setQuery("");
+    setStage("");
+    setSource("");
+    setPosition("");
+    setOwnerId("");
+    setOffset(0);
+  };
+
+  const clearFilter = (key: string) => {
+    if (key === "stage") setStage("");
+    if (key === "source") setSource("");
+    if (key === "position") setPosition("");
+    if (key === "owner") setOwnerId("");
+    setOffset(0);
+  };
 
   useEffect(() => {
     if (openCandidateId) {
@@ -159,6 +223,35 @@ export default function CandidatesListPage({
             )}
           </Field>
 
+          <Field
+            label="Должность"
+            error={positionOptions.error ?? undefined}
+          >
+            {(id) => (
+              <SelectInput
+                id={id}
+                value={position}
+                onChange={(event) => {
+                  setPosition(event.target.value);
+                  setOffset(0);
+                }}
+              >
+                <option value="">Все должности</option>
+                {positionOptions.positions.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </SelectInput>
+            )}
+          </Field>
+
+          {positionOptions.error && (
+            <Button variant="ghost" size="sm" onClick={positionOptions.reload}>
+              Обновить должности
+            </Button>
+          )}
+
           {canSeeAll && (
             <OwnerFilter
               value={ownerId}
@@ -199,7 +292,33 @@ export default function CandidatesListPage({
               </div>
             )}
           </Field>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={resetFilters}
+            disabled={activeFilters.length === 0 && !query}
+          >
+            Сбросить фильтры
+          </Button>
         </div>
+
+        {activeFilters.length > 0 && (
+          <div className="filter-chips" aria-label="Активные фильтры">
+            {activeFilters.map((filter) => (
+              <span key={filter.key} className="filter-chip">
+                <span className="filter-chip-label">{filter.label}:</span> {filter.value}
+                <button
+                  type="button"
+                  className="filter-chip-remove"
+                  aria-label={`Сбросить фильтр «${filter.label}»`}
+                  onClick={() => clearFilter(filter.key)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {loading && <SkeletonRows rows={6} columns={6} />}
@@ -219,7 +338,7 @@ export default function CandidatesListPage({
       )}
 
       {!loading && !error && items.length > 0 && (
-        <div className="table-wrap">
+        <div className="bento-table-scroll">
           <table className="candidates-table">
             <thead>
               <tr>
@@ -266,9 +385,9 @@ export default function CandidatesListPage({
                   <td>{formatDate(candidate.updated_at)}</td>
                   <td className="row-actions">
                     {isDeleted ? (
-                      <RestoreAction candidate={candidate} onDone={reload} />
+                      <RestoreAction candidate={candidate} onDone={reloadWithPositions} />
                     ) : (
-                      <DeleteAction candidate={candidate} onDone={reload} />
+                      <DeleteAction candidate={candidate} onDone={reloadWithPositions} />
                     )}
                   </td>
                 </tr>
@@ -312,7 +431,7 @@ export default function CandidatesListPage({
           candidateId={drawerCandidateId}
           user={user}
           onClose={() => setDrawerCandidateId(null)}
-          onChanged={reload}
+          onChanged={reloadWithPositions}
           onOpenCandidate={(id) => setDrawerCandidateId(id)}
         />
       )}
@@ -323,7 +442,7 @@ export default function CandidatesListPage({
         onClose={() => setCreateOpen(false)}
         onCreated={(candidate) => {
           setCreateOpen(false);
-          reload();
+          reloadWithPositions();
           if (!candidate.is_deleted) setDrawerCandidateId(candidate.id);
         }}
         onOpenCandidate={(id) => setDrawerCandidateId(id)}

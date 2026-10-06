@@ -51,6 +51,7 @@ import type {
   CandidateInteraction,
   CandidateInteractionCreateInput,
   CandidateListQuery,
+  CandidatePositionList,
   CandidateTransfer,
   CandidateTransferInput,
   CandidateTransferResult,
@@ -64,6 +65,7 @@ import type {
   HealthResponse,
   ImportRowDecision,
   Paginated,
+  PositionOptionsQuery,
   ScheduleEntry,
   ScheduleEntryCreateInput,
   ScheduleEntryUpdateInput,
@@ -75,6 +77,9 @@ import type {
   WorkScheduleImportPreview,
   WorkScheduleImportResult,
   WorkScheduleList,
+  QueueDashboard,
+  QueueDashboardQuery,
+  QueueSummary,
   WorkScheduleQuery,
   WorkScheduleSuggestions,
 } from "./types";
@@ -362,6 +367,9 @@ function candidateQuery(params: CandidateListQuery): string {
   if (params.query) search.set("query", params.query);
   if (params.stage) search.set("stage", params.stage);
   if (params.source) search.set("source", params.source);
+  // Должность: без этой строки выбранный фильтр не уходил на сервер вовсе
+  // (селект заполнялся, список при этом не фильтровался).
+  if (params.position) search.set("position", params.position);
   if (params.owner_id) search.set("owner_id", params.owner_id);
   if (params.include_deleted) search.set("include_deleted", "true");
   if (params.sort) search.set("sort", params.sort);
@@ -380,6 +388,69 @@ export async function listCandidates(
 
 export async function getCandidate(id: string): Promise<Candidate> {
   return request<Candidate>(`/candidates/${id}`);
+}
+
+/**
+ * Distinct positions for the «Должность» filter.
+ *
+ * The option list used to be derived from one page of `listCandidates`
+ * (100 rows), so a position existing only further down the base could not be
+ * selected at all — the filter is a <select> without free input. The server
+ * now groups the whole visible scope (`GROUP BY position_normalized`), and the
+ * browser receives strings only.
+ */
+export async function listPositionOptions(
+  scope: PositionOptionsQuery = {},
+): Promise<CandidatePositionList> {
+  const search = new URLSearchParams();
+  if (scope.owner_id) search.set("owner_id", scope.owner_id);
+  if (scope.include_deleted) search.set("include_deleted", "true");
+  if (scope.limit !== undefined) search.set("limit", String(scope.limit));
+  const suffix = search.toString();
+  return request<CandidatePositionList>(`/candidates/positions${suffix ? `?${suffix}` : ""}`);
+}
+
+/**
+ * «Моя очередь» summary: server-side aggregates over the caller's whole
+ * personal scope plus bounded samples for the cards.
+ *
+ * Kept separate from `listCandidates` deliberately: the KPI tiles and the
+ * funnel must not be computed from a page in the browser — the 100 freshest
+ * rows never contain the candidates that have been waiting the longest.
+ */
+export async function getQueueSummary(
+  params: { stuck_days?: number; horizon_days?: number; sample_limit?: number } = {},
+): Promise<QueueSummary> {
+  const search = new URLSearchParams();
+  if (params.stuck_days !== undefined) search.set("stuck_days", String(params.stuck_days));
+  if (params.horizon_days !== undefined) search.set("horizon_days", String(params.horizon_days));
+  if (params.sample_limit !== undefined) search.set("sample_limit", String(params.sample_limit));
+  const suffix = search.toString();
+  return request<QueueSummary>(`/candidates/queue/summary${suffix ? `?${suffix}` : ""}`);
+}
+
+/**
+ * «Моя очередь» dashboard: KPI, series, sources, tasks and the personal
+ * blocks — aggregated by the server over the caller's whole scope.
+ *
+ * Why not a raw list: every series here is an aggregate over *all* candidates
+ * in scope. Counting them in the browser would mean shipping the queue and
+ * would silently turn one page into the whole queue (the defect the summary
+ * endpoint fixed). Periods and timezone boundaries are computed by the server
+ * as well, so the API is reproducible from tests.
+ */
+export async function getQueueDashboard(
+  params: QueueDashboardQuery = {},
+): Promise<QueueDashboard> {
+  const search = new URLSearchParams();
+  if (params.period !== undefined) search.set("period", params.period);
+  if (params.timezone !== undefined) search.set("timezone", params.timezone);
+  if (params.owner_id !== undefined) search.set("owner_id", params.owner_id);
+  if (params.position !== undefined) search.set("position", params.position);
+  if (params.stage !== undefined) search.set("stage", params.stage);
+  if (params.source !== undefined) search.set("source", params.source);
+  const suffix = search.toString();
+  return request<QueueDashboard>(`/candidates/queue/dashboard${suffix ? `?${suffix}` : ""}`);
 }
 
 /**

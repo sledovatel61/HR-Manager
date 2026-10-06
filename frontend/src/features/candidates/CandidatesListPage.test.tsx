@@ -10,6 +10,7 @@ vi.mock("../../api", async (importOriginal) => {
   return {
     ...original,
     listCandidates: vi.fn(),
+    listPositionOptions: vi.fn(),
     listHrUsers: vi.fn(),
     deleteCandidate: vi.fn(),
     restoreCandidate: vi.fn(),
@@ -56,6 +57,41 @@ function candidate(overrides: Partial<Candidate> = {}): Candidate {
     ...overrides,
   };
 }
+
+/** Подсказки должностей приходят отдельным запросом — без них в селекте будет
+ *  только «Все должности». */
+function listWithPositions(positions: string[], rows: Candidate[] = []) {
+  vi.mocked(api.listPositionOptions).mockResolvedValue({
+    items: positions.map((position, index) => ({ position, count: index + 1 })),
+    total: positions.length,
+    limit: 500,
+    truncated: false,
+  });
+  vi.mocked(api.listCandidates).mockResolvedValue({
+    items: rows,
+    total: rows.length,
+    limit: 20,
+    offset: 0,
+  });
+}
+
+function lastPositionScope() {
+  return vi.mocked(api.listPositionOptions).mock.calls.at(-1)?.[0];
+}
+
+function lastListQuery() {
+  return vi.mocked(api.listCandidates).mock.calls.at(-1)?.[0];
+}
+
+beforeEach(() => {
+  // Справочник должностей по умолчанию пуст: экраны им не заняты.
+  vi.mocked(api.listPositionOptions).mockResolvedValue({
+    items: [],
+    total: 0,
+    limit: 500,
+    truncated: false,
+  });
+});
 
 function renderPage(mode: "queue" | "all" | "deleted" = "queue", user: User = HR) {
   return render(
@@ -117,8 +153,8 @@ describe("CandidatesListPage", () => {
     expect(await screen.findByText("Петров Пётр Петрович")).toBeInTheDocument();
   });
 
-  it("debounces search and passes query/stage/source to the API", async () => {
-    vi.mocked(api.listCandidates).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+  it("debounces search and passes query/stage/source/position to the API", async () => {
+    listWithPositions(["Монтажник РЭА", "Инженер"]);
     const user = userEvent.setup();
     renderPage();
 
@@ -138,25 +174,80 @@ describe("CandidatesListPage", () => {
 
     await user.selectOptions(screen.getByLabelText("Источник"), "referral");
     await waitFor(() => {
-      const lastCall = vi.mocked(api.listCandidates).mock.calls.at(-1)?.[0];
-      expect(lastCall).toMatchObject({ source: "referral" });
+      expect(lastListQuery()).toMatchObject({ source: "referral" });
     });
+
+    await user.selectOptions(screen.getByLabelText("Должность"), "Монтажник РЭА");
+    await waitFor(() => {
+      expect(lastListQuery()).toMatchObject({ position: "Монтажник РЭА" });
+    });
+    // Фильтр не подменяет остальные — они едут в том же запросе.
+    expect(lastListQuery()).toMatchObject({ query: "петров", stage: "offer", source: "referral" });
+  });
+
+  it("shows the active chip for the position and clears it with its own button", async () => {
+    listWithPositions(["Монтажник РЭА", "Инженер"]);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.selectOptions(await screen.findByLabelText("Должность"), "Монтажник РЭА");
+    const chip = await screen.findByLabelText("Активные фильтры");
+    expect(within(chip).getByText("Монтажник РЭА")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Сбросить фильтр «Должность»" }));
+
+    await waitFor(() => {
+      expect(lastListQuery()?.position).toBeUndefined();
+    });
+    expect(screen.queryByLabelText("Активные фильтры")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Должность")).toHaveValue("");
+  });
+
+  it("treats «Все должности» as no filter and resets the position with the common button", async () => {
+    listWithPositions(["Монтажник РЭА", "Инженер"]);
+    const user = userEvent.setup();
+    renderPage();
+
+    const select = await screen.findByLabelText("Должность");
+    // Пустое значение = «Все должности»: параметр вообще не уходит на сервер.
+    await waitFor(() => {
+      expect(lastListQuery()?.position).toBeUndefined();
+    });
+
+    await user.selectOptions(select, "Монтажник РЭА");
+    await waitFor(() => {
+      expect(lastListQuery()).toMatchObject({ position: "Монтажник РЭА" });
+    });
+
+    await user.click(screen.getByRole("button", { name: "Сбросить фильтры" }));
+    await waitFor(() => {
+      expect(lastListQuery()?.position).toBeUndefined();
+    });
+    expect(select).toHaveValue("");
   });
 
   it("paginates server-side with next/prev", async () => {
-    vi.mocked(api.listCandidates)
-      .mockResolvedValueOnce({
-        items: Array.from({ length: 20 }, (_, i) => candidate({ id: `id-${i}`, full_name: `Кандидат ${i}` })),
-        total: 25,
-        limit: 20,
-        offset: 0,
-      })
-      .mockResolvedValueOnce({
-        items: Array.from({ length: 5 }, (_, i) => candidate({ id: `id-${20 + i}`, full_name: `Кандидат ${20 + i}` })),
+    vi.mocked(api.listCandidates).mockImplementation(async (query) => {
+      const offset = query?.offset ?? 0;
+      if (offset === 0) {
+        return {
+          items: Array.from({ length: 20 }, (_, i) =>
+            candidate({ id: `id-${i}`, full_name: `Кандидат ${i}` }),
+          ),
+          total: 25,
+          limit: 20,
+          offset: 0,
+        };
+      }
+      return {
+        items: Array.from({ length: 5 }, (_, i) =>
+          candidate({ id: `id-${20 + i}`, full_name: `Кандидат ${20 + i}` }),
+        ),
         total: 25,
         limit: 20,
         offset: 20,
-      });
+      };
+    });
     renderPage();
 
     expect(await screen.findByText("Кандидат 0")).toBeInTheDocument();
@@ -199,6 +290,82 @@ describe("CandidatesListPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Восстановить" }));
     await waitFor(() => expect(api.restoreCandidate).toHaveBeenCalledWith("44444444-4444-4444-4444-444444444444"));
+  });
+
+  it("«Моя очередь» личная для всех ролей: список и справочник должностей идут в моей области", async () => {
+    listWithPositions(["Инженер"], [candidate()]);
+    renderPage("queue", MANAGER);
+
+    await waitFor(() => {
+      expect(lastListQuery()).toMatchObject({ owner_id: MANAGER.id });
+    });
+    // Справочник должен предлагать должности из той же области, что и список,
+    // иначе фильтр будет содержать значения, которых в списке нет.
+    expect(lastPositionScope()).toMatchObject({ owner_id: MANAGER.id });
+
+    // Общий раздел по-прежнему без фильтра по ответственному.
+    renderPage("all", MANAGER);
+    await waitFor(() => {
+      expect(lastListQuery()?.owner_id).toBeUndefined();
+    });
+    expect(lastPositionScope()?.owner_id).toBeUndefined();
+  });
+
+  it("«Моя очередь» для HR и deleted-вид не ломают область справочника", async () => {
+    listWithPositions(["Инженер"], [candidate()]);
+    renderPage("queue", HR);
+
+    await waitFor(() => {
+      expect(lastListQuery()).toMatchObject({ owner_id: HR.id });
+    });
+    expect(lastPositionScope()).toMatchObject({ owner_id: HR.id, include_deleted: false });
+
+    renderPage("deleted");
+    await waitFor(() => {
+      expect(lastListQuery()).toMatchObject({ include_deleted: true });
+    });
+    expect(lastPositionScope()).toMatchObject({ include_deleted: true });
+  });
+
+  it("показывает ошибку загрузки справочника должностей с кнопкой повтора", async () => {
+    listWithPositions(["Инженер"], [candidate()]);
+    vi.mocked(api.listPositionOptions).mockRejectedValue(new api.ApiError(500, "Сбой сервера"));
+    renderPage();
+
+    expect(await screen.findByText("Не удалось загрузить список должностей.")).toBeInTheDocument();
+
+    vi.mocked(api.listPositionOptions).mockResolvedValue({
+      items: [{ position: "Монтажник РЭА", count: 2 }],
+      total: 1,
+      limit: 500,
+      truncated: false,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Обновить должности" }));
+
+    // Список кандидатов при этом не перезапрашивался — повтор касается только
+    // справочника.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Должность")).toHaveValue("");
+    });
+    expect(screen.getByText("Монтажник РЭА")).toBeInTheDocument();
+    expect(screen.queryByText("Не удалось загрузить список должностей.")).not.toBeInTheDocument();
+  });
+
+  it("обновляет справочник должностей после удаления кандидата", async () => {
+    listWithPositions(["Инженер"], [candidate()]);
+    renderPage();
+
+    expect(await screen.findByText("Петров Пётр Петрович")).toBeInTheDocument();
+    const directoryCalls = vi.mocked(api.listPositionOptions).mock.calls.length;
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Удалить кандидата Петров Пётр Петрович" }),
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Удалить" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.listPositionOptions).mock.calls.length).toBeGreaterThan(directoryCalls);
+    });
   });
 
   it("confirms soft delete before calling the API", async () => {
