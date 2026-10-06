@@ -38,6 +38,7 @@ from app.models import (
     AnalyticsFactType,
     AuditAction,
     Candidate,
+    CandidateAttachment,
     CandidateInteraction,
     CandidateSource,
     CandidateStage,
@@ -53,6 +54,7 @@ from app.notification_service import transfer_notification
 from app.schemas import (
     CandidateCreate,
     CandidateList,
+    CandidateListItem,
     CandidateOut,
     CandidatePositionList,
     CandidatePositionOption,
@@ -355,8 +357,32 @@ def list_candidates(
     stmt = stmt.order_by(Candidate.id).limit(limit).offset(offset)
 
     candidates = db.scalars(stmt).all()
+    # One bounded aggregate for this authorized page, not a request per row.
+    # Deleted candidates cannot expose their attachments through this badge.
+    visible_ids = [c.id for c in candidates if c.deleted_at is None]
+    counts = (
+        {
+            candidate_id: count
+            for candidate_id, count in db.execute(
+                select(CandidateAttachment.candidate_id, func.count(CandidateAttachment.id))
+                .where(
+                    CandidateAttachment.candidate_id.in_(visible_ids),
+                    CandidateAttachment.deleted_at.is_(None),
+                )
+                .group_by(CandidateAttachment.candidate_id)
+            ).all()
+        }
+        if visible_ids
+        else {}
+    )
     return CandidateList(
-        items=[CandidateOut.model_validate(c) for c in candidates],
+        items=[
+            CandidateListItem(
+                **CandidateOut.model_validate(c).model_dump(),
+                attachment_count=counts.get(c.id, 0),
+            )
+            for c in candidates
+        ],
         total=total,
         limit=limit,
         offset=offset,

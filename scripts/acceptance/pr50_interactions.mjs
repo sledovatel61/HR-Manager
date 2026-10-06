@@ -1,0 +1,45 @@
+// Run after pr50_smoke.mjs against the SAME isolated fixture API.
+import {browser} from './pr50_browser.mjs';
+import assert from 'node:assert/strict';
+import {writeFile} from 'node:fs/promises';
+const base=process.env.HR_ACCEPTANCE_URL ?? 'http://localhost:5173';
+try {
+ const page=await browser.newPage({viewport:{width:1440,height:1000},reducedMotion:'reduce'});
+ page.setDefaultTimeout(10000);
+ await page.goto(base);
+ await page.getByLabel('Имя пользователя').fill('visual-hr');
+ await page.getByLabel('Пароль').fill('Str0ng-Pass-2026');
+ await page.getByRole('button',{name:'Войти',exact:true}).click();
+ await page.locator('.workspace').waitFor();
+ await page.goto(base+'/#/kanban');
+ await page.locator('.kanban-card').first().waitFor();
+ await page.getByText('Загрузка доски…',{exact:true}).waitFor({state:'hidden'});
+ const first=page.getByRole('listitem',{name:'Колонка: Новый',exact:true});
+ const target=page.getByRole('listitem',{name:'Колонка: Контакт',exact:true});
+ const card=first.locator('.kanban-card').first();
+ const name=await card.locator('.kanban-card-name > span').last().innerText();
+ const patch=()=>page.waitForResponse(r=>r.request().method()==='PATCH' && /\/candidates\//.test(r.url()));
+ const dropped=patch();
+ await card.dragTo(target.locator('header'));
+ const dropResponse=await dropped;
+ assert.equal(dropResponse.status(),200);
+ assert.equal((await dropResponse.json()).stage,'contacted');
+ const moved=target.locator('.kanban-card').filter({has:page.getByRole('button',{name,exact:true})});
+ await moved.locator('summary').click();
+ const movedBack=patch();
+ await moved.getByRole('combobox').selectOption('new');
+ const keyboardResponse=await movedBack;
+ assert.equal(keyboardResponse.status(),200);
+ assert.equal((await keyboardResponse.json()).stage,'new');
+ const board=page.locator('.kanban-board');
+ const transfer=await page.evaluateHandle(()=>new DataTransfer());
+ const source=first.locator('.kanban-card').first();
+ await source.dispatchEvent('dragstart',{dataTransfer:transfer});
+ const box=await board.boundingBox();
+ await board.dispatchEvent('dragover',{dataTransfer:transfer,clientX:box.x+box.width-8,clientY:box.y+30});
+ await page.waitForFunction(()=>document.querySelector('.kanban-board').scrollLeft>0);
+ const edgeScrollLeft=await board.evaluate(el=>el.scrollLeft);
+ await source.dispatchEvent('dragend',{dataTransfer:transfer});
+ await writeFile('screenshots/pr50-follow-up/interactions.json',JSON.stringify({fixture:'Synthetic data / real FastAPI API',nativeMouseDragPatch:dropResponse.status(),moveSelectPatch:keyboardResponse.status(),edgeScrollLeft,reducedMotion:true},null,2));
+ console.log('PASS native mouse drag, move select, edge auto-scroll; real PATCH 200');
+} finally { await browser.close(); }

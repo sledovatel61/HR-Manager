@@ -333,10 +333,16 @@ class CandidateOut(BaseModel):
     is_deleted: bool = False
 
 
+class CandidateListItem(CandidateOut):
+    """List-only metadata; never loads attachment bytes or filenames."""
+
+    attachment_count: int = 0
+
+
 class CandidateList(BaseModel):
     """Paginated candidate list."""
 
-    items: list[CandidateOut]
+    items: list[CandidateListItem]
     total: int
     limit: int
     offset: int

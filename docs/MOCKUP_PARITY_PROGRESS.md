@@ -224,3 +224,24 @@ Playwright/Puppeteer в этой среде не найдены. Новые scre
 - [ ] Исправления перенесены в head PR #50, его полный CI зелёный на новом SHA.
 
 **Итог: локальная реализация подготовлена; приёмка PR #50 и его merge пока не завершены.**
+
+
+## Follow-up после baseline 1fdcc46 — 2026-10-06
+
+Предыдущие пункты выше сохранены как исторический отчёт, а не статус нового head.
+Новый проход по 20 приёмочным screenshots владельца описан в
+[PR50_FOLLOWUP_ACCEPTANCE.md](PR50_FOLLOWUP_ACCEPTANCE.md).
+
+- Контракт анкет подтверждён владельцем: хранение DOCX/PDF, без распознавания.
+- Исправлены скролл/геометрия Kanban, доступность файлов и их маркер в списке,
+  read-all и поповер уведомлений, legacy/native dark theme, ячейки ФИО графика.
+- На конечном коде локально: **434 frontend / 1185 backend unit** passed;
+  lint, typecheck, build, Ruff, mypy и contrast refs/audit/gate прошли.
+- Выполнен реальный Chromium/API smoke: 3 роли × 2 темы × 2 viewport,
+  [99 новых снимков](../screenshots/pr50-follow-up/README.md), геометрия,
+  загрузка/скачивание, read-all, mouse DnD/select/edge-scroll. Данные явно
+  тестовые, in-memory SQLite; production/PostgreSQL/Windows не объявлены проверенными.
+- PR #50 по read-only GitHub проверке всё ещё открыт на
+  `arena/44cb1fd1-hr-manager`, head `1fdcc464f727abcf1a82b8fe4e89a087fed81991`.
+  Владелец отдельно разрешил follow-up из `arena/9d09afe4-hr-manager` в его ветку.
+  Merge, изменение main и force push не выполняются.

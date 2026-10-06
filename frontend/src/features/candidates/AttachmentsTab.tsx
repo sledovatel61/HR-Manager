@@ -41,9 +41,10 @@ interface UploadState {
   percent: number;
 }
 
-export function AttachmentsTab({ candidateId }: { candidateId: string }) {
+export function AttachmentsTab({ candidateId, onChanged }: { candidateId: string; onChanged?: () => void }) {
   const load = useCallback(() => listCandidateAttachments(candidateId), [candidateId]);
   const resource = useResource(load);
+  const uploadBusy = useRef(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState<UploadState | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -75,7 +76,7 @@ export function AttachmentsTab({ candidateId }: { candidateId: string }) {
     const file = event.target.files?.[0];
     // Значение сбрасываем сразу, чтобы повторный выбор того же файла сработал.
     event.target.value = "";
-    if (!file || !data) return;
+    if (!file || !data || !canManage || limitsReached || uploadBusy.current) return;
     resetMessages();
 
     const name = file.name.toLowerCase();
@@ -98,16 +99,19 @@ export function AttachmentsTab({ candidateId }: { candidateId: string }) {
       return;
     }
 
+    uploadBusy.current = true;
     setUploading({ filename: file.name, percent: 0 });
     try {
       const created = await uploadCandidateAttachment(candidateId, file, (percent) =>
         setUploading({ filename: file.name, percent }),
       );
+      onChanged?.();
       await resource.reload();
       setNotice(`Файл «${created.filename}» загружен.`);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : errorText(caught));
     } finally {
+      uploadBusy.current = false;
       setUploading(null);
     }
   };
@@ -172,6 +176,7 @@ export function AttachmentsTab({ candidateId }: { candidateId: string }) {
     setBusyId(attachment.id);
     try {
       await deleteCandidateAttachment(candidateId, attachment.id);
+      onChanged?.();
       await resource.reload();
       setNotice(`Файл «${attachment.filename}» удалён из карточки.`);
     } catch (caught) {
@@ -201,6 +206,7 @@ export function AttachmentsTab({ candidateId }: { candidateId: string }) {
               accept={ACCEPT}
               className="sr-only"
               aria-label="Файл анкеты или скана"
+              disabled={!canManage || limitsReached || uploading !== null}
               onChange={(event) => void onFileChosen(event)}
             />
             <Button
@@ -217,7 +223,7 @@ export function AttachmentsTab({ candidateId }: { candidateId: string }) {
                     : undefined
               }
             >
-              Загрузить
+              Загрузить анкету
             </Button>
             {canManage ? (
               <span className="attachments-quota">
@@ -234,7 +240,7 @@ export function AttachmentsTab({ candidateId }: { candidateId: string }) {
           {uploading && (
             <p role="status" className="attachments-progress">
               Загрузка «{uploading.filename}»… {uploading.percent}%
-              <progress max={100} value={uploading.percent} />
+              <progress aria-label="Загрузка файла" max={100} value={uploading.percent} />
             </p>
           )}
 

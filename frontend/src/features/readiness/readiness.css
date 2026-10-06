@@ -15,7 +15,7 @@
   margin: 0 0 12px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--surface-sunken);
   font-size: 1rem;
 }
 
@@ -25,17 +25,17 @@
 }
 
 .readiness-verdict.ok {
-  background: rgba(52, 211, 153, 0.12);
+  background: var(--status-success-bg);
   color: var(--status-success-fg);
 }
 
 .readiness-verdict.warn {
-  background: rgba(251, 191, 36, 0.14);
+  background: var(--status-warning-bg);
   color: var(--status-warning-fg);
 }
 
 .readiness-verdict.bad {
-  background: rgba(248, 113, 113, 0.14);
+  background: var(--status-danger-bg);
   color: var(--status-danger-fg);
 }
 
@@ -62,11 +62,11 @@
 }
 
 .readiness-item.fail {
-  border-color: rgba(248, 113, 113, 0.55);
+  border-color: var(--status-danger-border);
 }
 
 .readiness-item.warning {
-  border-color: rgba(251, 191, 36, 0.55);
+  border-color: var(--status-warning-border);
 }
 
 .readiness-item-head {
@@ -86,23 +86,23 @@
   padding: 2px 9px;
   border-radius: 999px;
   font-size: 0.8rem;
-  background: rgba(148, 163, 184, 0.16);
+  background: var(--surface-sunken);
   color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .readiness-pill.pass {
-  background: rgba(52, 211, 153, 0.12);
+  background: var(--status-success-bg);
   color: var(--status-success-fg);
 }
 
 .readiness-pill.warning {
-  background: rgba(251, 191, 36, 0.14);
+  background: var(--status-warning-bg);
   color: var(--status-warning-fg);
 }
 
 .readiness-pill.fail {
-  background: rgba(248, 113, 113, 0.14);
+  background: var(--status-danger-bg);
   color: var(--status-danger-fg);
 }
 

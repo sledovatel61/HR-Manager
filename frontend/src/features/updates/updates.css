@@ -14,17 +14,17 @@
   padding: 3px 10px;
   border-radius: 999px;
   font-size: 0.85rem;
-  background: rgba(148, 163, 184, 0.14);
+  background: var(--surface-sunken);
   color: var(--text-secondary);
 }
 
 .update-pill.ok {
-  background: rgba(52, 211, 153, 0.12);
+  background: var(--status-success-bg);
   color: var(--status-success-fg);
 }
 
 .update-pill.warn {
-  background: rgba(251, 191, 36, 0.14);
+  background: var(--status-warning-bg);
   color: var(--status-warning-fg);
 }
 

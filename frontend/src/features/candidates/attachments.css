@@ -111,3 +111,10 @@
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+
+.attachments-progress { flex-wrap: wrap; overflow-wrap: anywhere; }
+.attachments-progress progress { min-width: 100px; accent-color: var(--accent-default); }
+@media (max-width: 640px) {
+  .attachments-item { flex-direction: column; }
+  .attachments-actions { justify-content: flex-start; }
+}

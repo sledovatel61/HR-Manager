@@ -487,3 +487,20 @@
   padding: 4px 10px;
   font-size: var(--text-size-xs);
 }
+
+/* Constrain horizontal overflow to the screen's scroll containers. */
+.workspace-content { min-width: 0; }
+
+/* Keep horizontal overflow inside the board/table, not the mobile shell. */
+@media (max-width: 640px) {
+  .topbar { height: auto; min-height: var(--topbar-height); flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3); }
+  .topbar-title { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; }
+  .topbar-right { width: 100%; min-width: 0; gap: var(--space-2); }
+  .topbar-user { flex: 1; min-width: 0; gap: var(--space-2); }
+  .topbar-avatar { display: none; }
+  .topbar-user-text { flex: 1; min-width: 0; }
+  .topbar-username { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-logout { flex-shrink: 0; }
+  .topbar-bell-wrap { position: static; }
+  .bell-popover { right: var(--space-2); width: calc(100% - var(--space-4)); }
+}

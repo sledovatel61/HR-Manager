@@ -453,3 +453,14 @@ describe("CandidatesListPage", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
+
+
+it("shows the API attachment count without fetching files for each candidate", async () => {
+  vi.mocked(api.listCandidates).mockResolvedValue({
+    items: [candidate({ attachment_count: 2 }), candidate({ id: "without-files", full_name: "Без файлов", attachment_count: 0 })],
+    total: 2, limit: 20, offset: 0,
+  });
+  renderPage();
+  expect(await screen.findByLabelText("Вложений: 2")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Вложений: 0")).not.toBeInTheDocument();
+});

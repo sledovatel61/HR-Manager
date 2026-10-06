@@ -460,3 +460,13 @@
   font-size: var(--text-size-xs);
   color: var(--status-danger-fg);
 }
+
+.row-attachments {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-size-xs);
+}
+/* Contain absolute sr-only headers as well as the visible wide table. */
+.bento-table-scroll { position: relative; }

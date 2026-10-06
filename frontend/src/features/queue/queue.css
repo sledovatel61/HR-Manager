@@ -691,3 +691,6 @@
     opacity: 0.75;
   }
 }
+
+/* Accessible chart data tables retain their own narrow-screen scroll. */
+.queue-chart-fallback { max-width: 100%; overflow-x: auto; }
