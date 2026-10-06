@@ -279,7 +279,7 @@ PAIR_EVIDENCE: dict[tuple[str, str | None], Evidence] = {
         "`var(--surface-sunken)`, цвет — calendar.css:88 `var(--text-secondary)`); "
         "tabs.css:32-39 `.tab-count` (фон — tabs.css:33 `var(--surface-sunken)`); "
         "analytics.css:50-58 `.analytics-empty-note` (фон — analytics.css:55 "
-        "`var(--surface-sunken)`), форма analytics.css:50-58 `.analytics-empty-note`",
+        "`var(--surface-sunken)`), цвет — analytics.css:56 `var(--text-secondary)`",
         refs=(
             ("features/calendar/calendar.css", 90, "--surface-sunken"),
             ("features/calendar/calendar.css", 88, "--text-secondary"),
@@ -982,8 +982,9 @@ def print_pair(surface: str | None, text: str) -> int:
     напечатан, но не виден по коду выхода, нельзя поймать ни скриптом, ни CI.
     """
     print(f"пара: {surface or 'без состояния'} + {text}")
+    measured_themes = measure_pair(surface, text)
     failed = False
-    for theme, measured in measure_pair(surface, text).items():
+    for theme, measured in measured_themes.items():
         if measured is None:
             print(f"  {theme}: токен не объявлен")
             continue
@@ -992,6 +993,10 @@ def print_pair(surface: str | None, text: str) -> int:
         if ratio < AA_NORMAL:
             failed = True
         print(f"  {theme}: {ratio:.2f}:1 ({verdict}) — худший фон {worst_label}")
+    if all(value is None for value in measured_themes.values()):
+        # Ни в одной теме токена нет: это опечатка в имени, а не «всё хорошо».
+        print(f"неизвестный токен: {text}" + (f" / {surface}" if surface else ""), file=sys.stderr)
+        return 2
     return 1 if failed else 0
 
 
