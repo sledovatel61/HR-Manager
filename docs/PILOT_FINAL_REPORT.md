@@ -5,21 +5,33 @@
 
 ## 1. Вердикт
 
-> **NO-GO — до выполнения ручного чек-листа на Windows.**
-> Код, автотесты и документация готовы; Windows-часть (реальный Docker Desktop, трей, Setup.exe, SmartScreen)
-> в текущей среде разработки непроверяема: здесь нет Windows, PowerShell, Docker и Inno Setup.
-> Пилотный `Setup.exe` нельзя передавать Перепечай, пока не пройден `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`
-> и не заполнен раздел 6 этого отчёта.
+> **NO-GO — остался только ручной чек-лист на реальной Windows.**
+> Всё, что можно проверить машинно, проверено и зелёное: CI-прогон `37640729694` (коммит `7a5ed7a`) — **8 из 8 джобов успешны**,
+> включая сборку пилотного `Setup.exe` 0.15.0, сборку `LicenseIssuer-Portable.exe`, Pester-наборы движка,
+> silent install/uninstall и pilot drill (обновление/откат/resume) на Windows-раннере.
+> Хэши артефактов собраны в разделе 4.
+> Остаётся то, что в принципе нельзя закрыть из CI: прогон `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на реальной машине
+> (реальный Docker Desktop с UAC и перезагрузкой, трей в пользовательской сессии, сеть/LAN, SmartScreen).
+> До прохождения этого чек-листа и письменного owner decision пилотный `Setup.exe` Перепечай не передаётся,
+> тег и GitHub Release не создаются.
 
-Блокирующие пункты (каждый закрывается только доказательством с Windows):
+Что осталось (закрывается только на реальной Windows):
 
 | # | Что блокирует GO | Как закрыть |
 | --- | --- | --- |
 | 1 | Пункты B, C чек-листа: Docker Desktop отсутствует/установлен, UAC, перезагрузка, движок, порт | Прогон `Setup.exe` на чистой ВМ/ПК по чек-листу |
-| 2 | Пункты D: трей, повторный запуск без дублей, автозапуск после перезагрузки | Тот же прогон |
-| 3 | Пункты G: обновление N → N+1 и откат на реальном Docker | Тот же прогон (2 сборки) |
-| 4 | Пункт A: SHA256 собранных `Setup.exe` и `LicenseIssuer-Portable.exe` | Собрать в CI (`Pilot release`, `license-issuer-windows`) и приложить хэши |
-| 5 | Пункт H1: `run-tests.ps1` на Windows PowerShell 5.1 | CI-джоб `windows-installer` (Pester-наборы) |
+| 2 | Пункты D: трей, повторный запуск без дублей, автозапуск после перезагрузки | Тот же прогон (трей живёт в пользовательской сессии — в CI его нет) |
+| 3 | Пункты G: обновление N → N+1 и откат на реальном Docker | Тот же прогон (2 сборки); в CI уже пройден drill на моках движка |
+| 4 | Пункты E, F: живая проверка LAN-переключателя, активация лицензии у Перепечай, окно GUI issuer | Тот же прогон |
+| 5 | Письменный owner decision и заполненные отметки/доказательства чек-листа | `docs/runbook-pilot-release.md`, раздел «go/no-go evidence» |
+
+Закрытые блокеры (были в первой редакции отчёта):
+
+| # | Было | Чем закрыто |
+| --- | --- | --- |
+| 1 | Пункт H1: `run-tests.ps1` на Windows PowerShell 5.1 | Джоб `windows-installer`: 8 наборов Pester зелёные (в т.ч. `pilot-final`, `supervisor`, `stack`, `docker`) |
+| 2 | Пункт H2 и сборка артефактов | Джоб `windows-installer` (Setup.exe + silent install/uninstall + drill), новый джоб `pilot-setup` (пилотный `Setup.exe` 0.15.0 + `SHA256SUMS.txt`), джоб `license-issuer-windows` (bundle + portable exe, фазы `parser/build/portable/runtime/accept`) |
+| 3 | Пункт A: SHA256 артефактов | Раздел 4 этого отчёта: хэши опубликованы notice-аннотациями CI и лежат в `SHA256SUMS.txt` / `BUILD-INFO.txt` рядом с файлами |
 
 ## 2. Изменённые и созданные файлы
 
@@ -51,9 +63,9 @@
 ### Лицензирование
 | Файл | Что сделано |
 | --- | --- |
-| `tools/license-issuer/launcher/Program.cs` *(новый)* | Самодостаточный launcher одного `.exe`: распаковка payload в `%LOCALAPPDATA%\HRManager\LicenseIssuer`, GUI по двойному клику, CLI с кодом возврата, `--hrm-selfcheck`; ASCII-only, без сети и без работы с ключами |
-| `tools/license-issuer/build-portable.ps1` *(новый)* | Сборка `LicenseIssuer-Portable.exe` (payload + 32-байтный трейлер), `BUILD-INFO.txt` с SHA256 и версиями, smoke-тест цепочки через сам exe, отказ при утечке ключа, `dist/` без ключей |
-| `tools/license-issuer/ci-portable-contract.py` *(новый)* | 74 контрактные проверки (ASCII/BOM, отсутствие сети и ключей в launcher, совместимость трейлера, top-level layout payload при упаковке через `ZipArchive`, запрет `Add-Type -TypeDefinition` при обязательном явном `csc`, режим `HRM_PORTABLE_LOG`, pin `cryptography==50.0.2` + наличие win_amd64-колеса, .gitignore, документация) |
+| `tools/license-issuer/launcher/Program.cs` *(новый)* | Самодостаточный launcher одного `.exe`: ровно payload-байты копируются во временный файл и распаковываются в `%LOCALAPPDATA%\HRManager\LicenseIssuer` (ZIP больше не открывается прямо из exe с 32-байтным трейлером — именно на этом падал первый запуск в CI), GUI по двойному клику, CLI с кодом возврата, `--hrm-selfcheck`; в CLI-режиме нет модальных окон (ошибка пишется в `launcher-error.log`, ход работы — в `launcher-trace.log`), ASCII-only, без сети и без работы с ключами |
+| `tools/license-issuer/build-portable.ps1` *(новый)* | Сборка `LicenseIssuer-Portable.exe` (payload + 32-байтный трейлер), проверка чтения payload-ZIP сразу после упаковки (fail-closed до сборки exe), фиксированное время записей в ZIP (1980-01-01), `BUILD-INFO.txt` с SHA256 и версиями, хэши в журнале — половинками по 32 символа (гейт «нет 64+ hex» остаётся строгим), запуск exe через `[System.Diagnostics.Process]::Start` с обязательным читаемым кодом возврата, smoke-тест цепочки через сам exe, отказ при утечке ключа, `dist/` без ключей |
+| `tools/license-issuer/ci-portable-contract.py` *(новый)* | 77 контрактных проверок (ASCII/BOM, отсутствие сети и ключей в launcher, отдельная копия payload перед `ZipArchive`, совместимость трейлера, top-level layout payload, запрет `Add-Type -TypeDefinition` при обязательном явном `csc`, обязательный читаемый код возврата (`cannot read the exit code`), хэши в журнале половинками, режим `HRM_PORTABLE_LOG`, pin `cryptography==50.0.2` + наличие win_amd64-колеса, .gitignore, документация) |
 | `tools/license-issuer/build.ps1` | Пин `cryptography==50.0.2` (воспроизводимость) + параметр `-CryptographyVersion` |
 | `tools/license-issuer/ci-windows-checks.ps1` | Новая фаза `portable`: сборка exe под 5.1, независимая проверка трейлера и SHA256, `--hrm-selfcheck`, CLI-цепочка, отказ по подделанной лицензии, отсутствие ключей |
 | `backend/app/license.py`, `backend/app/routers/license.py` | Распознавание загрузки приватного ключа (`private_key_upload`), понятные русские причины отказа |
@@ -61,93 +73,152 @@
 | `backend/tests/test_candidate_event_hooks.py` | Тест напоминаний переведён на даты относительно «сейчас» (был календарно-зависимым и «протухал») |
 
 ### CI, документация
-* `.github/workflows/ci.yml` — шаг сборки portable exe (фаза `portable`), шаг контрактных проверок (python), артефакт `license-issuer-portable` с `BUILD-INFO.txt`; `pilot-release.yml` — версия по умолчанию 0.15.0.
+* `.github/workflows/ci.yml` — джоб `pilot-setup` (пилотный `Setup.exe` 0.15.0 без подписи + `SHA256SUMS.txt` + артефакт `pilot-setup-0.15.0-unsigned`),
+  шаг публикации хэшей notice-аннотацией в джобе `windows-installer`, фаза сборки portable exe (фаза `portable`), шаг контрактных проверок (python),
+  артефакт `license-issuer-portable` с `BUILD-INFO.txt`; `pilot-release.yml` — версия по умолчанию 0.15.0 и та же публикация хэшей (для ручного запуска владельцем).
 * Новые документы: `docs/PILOT_FINAL_AUDIT.md`, `docs/UPDATE_GUIDE.md`, `docs/RECOVERY_GUIDE.md`, `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`, `docs/DOCKER_RUNTIME_DECISION.md`, `docs/PILOT_FINAL_REPORT.md` (этот файл).
 * Обновлены: `docs/MARIA_GUIDE.md` (0.15.0: один Setup.exe, трей, обновление, честно про UAC/перезагрузку/лицензию Docker), `docs/OWNER_QUICKSTART.md` (один `.exe` для владельца), `tools/license-issuer/README.md`.
 
 Ответ на отдельный вопрос задания («нужен ли Docker Desktop или другой runtime»): **остаётся Docker Desktop**; сравнение вариантов, юридическое обоснование и условия перехода — `docs/DOCKER_RUNTIME_DECISION.md`.
 
-## 3. Выполненные команды и результат (в этой среде)
+## 3. Выполненные команды и результаты
+
+### В этой среде (Linux, без Windows)
 
 ```bash
 python3 infra/windows/tests/lint-engine.py
-# Проверено файлов: 29; структурная проверка пройдена (0 провалов)
+# Проверено источников: 29 (0 провалов); syntax/sanity 29/29; проверено тестов: 1
 
 python3 tools/license-issuer/ci-portable-contract.py
-# portable issuer contract: 74 checks passed (в т.ч. PyPI: cryptography 50.0.2 cp311-abi3-win_amd64 — есть)
+# portable issuer contract: 77 checks passed
+#   (в т.ч. PyPI: cryptography 50.0.2 cp311-abi3-win_amd64 — колесо есть)
 
-python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -r backend/requirements-dev.txt
-cd backend && /tmp/venv/bin/python -m pytest -q -p no:randomly
-# 1200 passed, 146 skipped (146 — интеграционные, требуют PostgreSQL/TEST_DATABASE_URL)
-
-/tmp/venv/bin/python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"
-# все workflow-файлы: YAML валиден, джоб license-issuer-windows содержит новые шаги
+PYTHONPATH=/tmp/pylibs python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"
+# ci.yml: 8 джобов, YAML валиден; pilot-release.yml валиден
 ```
 
-Честно: PowerShell-наборы (Pester), сборка `Setup.exe` (Inno Setup + Authenticode-проверки) и сборка portable exe
-(`csc.exe`) в этой среде **не запускались** — здесь нет Windows, PowerShell, Docker и Visual Studio/.NET Framework.
-Они запускаются в CI: джоб `windows-installer` (`run-tests.ps1`, `installer/build.ps1`) и `license-issuer-windows`
-(фазы `parser/build/portable/runtime/accept`).
+Backend-наборы (1200+ тестов, включая лицензионные сценарии) прогонялись в этой среде ранее — см. раздел 5
+аудита; в CI джобы `Backend checks` и `Backend integration tests (PostgreSQL)` зелёные на итоговом коммите.
 
-## 4. Артефакты
+PowerShell-наборы (Pester), сборка `Setup.exe` (Inno Setup) и portable exe (`csc.exe`) в этой среде
+**не запускались** — здесь нет Windows, PowerShell и .NET Framework. Они выполняются в CI, и на итоговом
+коммите все они зелёные (ниже).
 
-| Артефакт | Где собирается | SHA256 |
-| --- | --- | --- |
-| `HR-Manager-Setup-0.15.0.exe` | CI `Pilot release` (`pilot-release.yml`, без тега и Release) или локально `installer/build.ps1 -Version 0.15.0` | заполнить после сборки: хэш берётся из `installer/release-manifest.json` → `installer_exe.sha256` и из артефакта `pilot-release-<версия>` → `SHA256SUMS.txt` (пункт A1 чек-листа) |
-| `LicenseIssuer-Portable.exe` + `BUILD-INFO.txt` | CI `license-issuer-windows` (фаза `portable`), артефакт `license-issuer-portable` | заполнить после сборки: строка `sha256_exe` из `BUILD-INFO.txt` и SHA256 из лога шага (пункт A2) |
-| `license-issuer-dist.zip` (резервный вариант для владельца) | там же, артефакт `license-issuer-owner` | — |
+### В CI (Windows-раннеры GitHub Actions)
 
-Хэши артефактов нельзя посчитать в среде разработки: `Setup.exe` собирается Inno Setup под Windows, portable
-`.exe` — компилятором `csc.exe` под Windows. Оба workflow печатают SHA256 в журнал шага и кладут в артефакты
-(`SHA256SUMS.txt`, `BUILD-INFO.txt`), поэтому строка «SHA256» заполняется копированием из артефакта после
-первого зелёного прогона `Pilot release` / `license-issuer-windows`.
+Прогон **`37640729694`, коммит `7a5ed7a`, ветка `arena/4be5f952-hr-manager` — 8 из 8 джобов `success`:**
 
-Приватный ключ лицензии в артефакты **не попадает**: сборка падает, если ключевой материал появляется в логе или в `dist/`
-(проверяется в `build.ps1`, `build-portable.ps1` и в фазе `portable`).
+| Джоб | Что реально выполнено на Windows |
+| --- | --- |
+| `Windows engine tests + installer smoke` | Pester-наборы движка под Windows PowerShell 5.1 (`run-tests.ps1`, 8 наборов: static/engine/channel/installer-roots/docker/stack/supervisor/pilot-final); контракт ephemeral trust store; сборка `Setup.exe` (Inno Setup 6.7.3, SHA256 компилятора проверен); `silent install` → проверка установленного движка → `silent uninstall` → проверка, что файлы удалены; Phase 14 pilot drill (обновление/откат/resume/uninstall) |
+| `Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS` *(новый)* | `installer/build.ps1 -Version 0.15.0` без trust store (пилот не использует канал обновлений), журнал сборки в job summary, `SHA256SUMS.txt`, публикация хэшей notice-аннотацией, артефакт `pilot-setup-0.15.0-unsigned` |
+| `License issuer bundle - Windows PowerShell 5.1 checks` | фазы `parser` (все .ps1 через парсер 5.1), `build` (autonomous bundle), **`portable`** (сборка `LicenseIssuer-Portable.exe`, проверка трейлера, сверка SHA256 с `BUILD-INFO.txt`, `--hrm-selfcheck`, CLI-цепочка gen-keypair → issue → verify, отказ по подделанной лицензии, поиск ключей), `runtime` (свежий unzip, путь с пробелами, скрытый системный Python, loopback-only), `accept` (28 проверок: GUI Tk-окно, Edge + WebCrypto Ed25519, firewall/нулевой исходящий трафик, 20-кратная гонка запуска, отсутствие ключей), контракт portable-issuer, backend-проверка выпущенных лицензий (7/7) |
+| `Backend checks`, `Backend integration tests (PostgreSQL)`, `Frontend checks`, `Compose stack smoke test (dev + prod overlay)`, `Release pipeline fail-closed policy` | Полные наборы на том же коммите |
+
+Ключевые строки из аннотаций прогона: `[portable] selfcheck PASS: payload 1994 files, 50,810,936 bytes`,
+`[portable] portable CLI chain PASS: gen-keypair -> issue -> verify (exit codes 0)`,
+`[portable] tampered license correctly rejected (exit=1)`,
+`[runtime] ALL RUNTIME CHECKS PASS`, `[accept] SUMMARY: 28 checks, 28 PASS, 0 FAIL, 0 NOT VERIFIED`,
+`[backend] PASS: 7/7 backend verification expectations met`.
+
+Отдельно важен предыдущий прогон **`37638116840` (коммит `3df0ae8`, 7 из 7 джобов зелёные)**: он был первым,
+где фаза `portable` собрала exe, прошла selfcheck и CLI-цепочку, — именно на нём закрылась причина падения
+первого запуска артефакта (чтение ZIP прямо из exe с приклеенным трейлером).
+
+## 4. Артефакты и их SHA256
+
+Итоговый коммит: `7a5ed7a`. Хэши опубликованы notice-аннотациями CI (шаг
+«Publish the pilot artifact hashes…») и лежат рядом с файлами в артефактах — артефакты GitHub Actions
+скачиваются только через веб-интерфейс, поэтому аннотации и нужны как читаемое доказательство.
+
+| Артефакт | Где собран | SHA256 | Размер / где лежит |
+| --- | --- | --- | --- |
+| `HR-Manager-Setup-0.15.0.exe` — **пилотный файл для Перепечай** (без подписи) | джоб `pilot-setup`, прогон `37640729694`, артефакт `pilot-setup-0.15.0-unsigned` | `3C3B4AF3683E97A74CAFF59FEF060E7DADACF60F29F887571A0BD7C3ED3B8051` | `SHA256SUMS.txt` лежит рядом с exe в том же артефакте |
+| `installer/release-manifest.json` (манифест той же сборки) | там же | `03AEFBFAE94FBFB2F83268BEF73E98A40743A4435C37D8FC1B14AAE1E4126EB7` | в том же артефакте |
+| `LicenseIssuer-Portable.exe` — portable-выпуск лицензий для владельца | джоб `license-issuer-windows`, фаза `portable`, прогон `37640729694`, артефакт `license-issuer-portable` | `618B0174F154F1F7E9393DE1A85BE56FDC54E584AF9FD959FCF1E8BA534D741A` | 21 116 660 байт (payload 21 099 220); `sha256_exe` в `BUILD-INFO.txt` |
+| `license-issuer-dist.zip` (резервный вариант для владельца: папка + bat-файлы) | тот же джоб, артефакт `license-issuer-owner` | в `SHA256SUMS`/логе джоба | — |
+| **Диагностические** (не для пилота): `HR-Manager-Setup-0.13.0.exe` — smoke-сборка джоба `windows-installer`, перед загрузкой подписана ephemeral-тестовым сертификатом CI | прогон `37638116840`: как собрано `0DDA8261E9483D556327D9CF8D1BB0B9154E90994A6C54FB2DBCF9ACC403B9DD`, как загружено `5498CB2118755D92982BA49B39E941B8FC5CEC0D43F3FE0EC0AD0A01094C99D1` | 2 814 456 байт | артефакт `hr-manager-windows-setup` |
+
+Как проверить у себя (Windows PowerShell):
+
+```powershell
+Get-FileHash .\HR-Manager-Setup-0.15.0.exe -Algorithm SHA256   # сверить с таблицей и с SHA256SUMS.txt
+Get-Content .\SHA256SUMS.txt                                   # 3C3B4AF3... HR-Manager-Setup-0.15.0.exe
+```
+
+Если владелец запускает workflow `Pilot release` вручную (одна кнопка, версия 0.15.0, без тега и Release),
+он получит **свою** сборку того же кода: её SHA256 будет другим (Inno Setup не даёт побайтовой
+воспроизводимости) и будет напечатан в `SHA256SUMS.txt` + notice-аннотацией шага
+«Publish the pilot artifact hashes…». Поэтому хэш всегда берётся из `SHA256SUMS.txt` конкретной сборки,
+а не «запоминается» из отчёта.
 
 ## 5. Что реально проверено, а что нет
 
-**Проверено здесь (Linux, без Windows):**
-* backend: 1200 тестов, включая лицензии (срок, подпись, подмена владельца, приватный ключ), сохранность данных при истечении, N→N+1 на уровне сервисов;
-* статический контур движка (`lint-engine.py`): BOM, синтаксические маркеры, запрещённые команды (`down -v`, `volume prune`, `--accept-license`), контракты меню трея, `desktop.docker.com` + Authenticode;
-* контракт portable-issuer (68 проверок) и валидность CI-конфигураций.
+**Проверено машинно (Linux + Windows-раннеры CI):**
+* backend: 1200+ тестов, включая лицензии (срок, подпись, подмена владельца, приватный ключ), сохранность данных
+  при истечении, N→N+1 на уровне сервисов; джобы `Backend checks` и `Backend integration tests (PostgreSQL)` зелёные;
+* движок установки/обновления: 8 наборов Pester под Windows PowerShell 5.1 (в т.ч. отсутствие Docker, UAC,
+  reboot-pending, занятый порт, повторный запуск без дублей, состояния стека, сохранность томов, откат);
+* установщик: сборка `Setup.exe` 0.15.0, `silent install` → проверка установленного движка → `silent uninstall`,
+  Phase 14 pilot drill (обновление/откат/resume/uninstall);
+* portable-выпуск лицензий: сборка exe, трейлер, `--hrm-selfcheck`, CLI-цепочка (gen-keypair → issue → verify),
+  отказ по подделанной лицензии, отсутствие ключевого материала; на раннере дополнительно: Tk-окно GUI,
+  выпуск лицензии через GUI и Edge (WebCrypto Ed25519), отсутствие исходящих соединений, 20-кратная гонка запуска;
+* статические контракты: `lint-engine.py` (29 источников, 0 провалов), `ci-portable-contract.py` (77 проверок),
+  валидность workflow-файлов;
+* сборки артефактов и их хэши — раздел 4.
 
-**Состояние CI-цикла 2026-10-07 (честно):**
-* Прогон `37622968179` (`239364c`) и `37628319482` (`929f87e`) — красные: первый поймал `Health`/`docker.exe`/`--accept-license` и таймаут шага P8,
-  второй — смешивание журнала с результатами функций (`$stack.ok` → `The property 'ok' cannot be found on this object`) и статический контракт portable-issuer;
-  обе причины разобраны и починены (`929f87e`, `e67f7a4`).
-* Прогон `37630406320` (SHA `e67f7a4`) запущен; вердикт по нему — в разделе 7 и в `docs/CURRENT_STATUS.md`.
-* Выводы делались **без доступа к логам** (`gh run view --log` в этой среде недоступен): источники — аннотации check-runs через API, артефакт «windows-engine-test-failures» (его загрузку добавили) и локальный разбор кода.
-
-**Не проверено здесь (только Windows/CI):**
-* Pester-наборы движка (88 кейсов в 8 файлах) — `run-tests.ps1`;
-* сборка `Setup.exe` (Inno Setup) и portable `.exe` (`csc.exe`);
-* реальные Docker Desktop (установка, UAC, перезагрузка, WSL2, движок), WinForms-трей, автозапуск, SmartScreen;
-* ручной чек-лист приёмки целиком (разделы A–H).
+**Не проверено и не может быть проверено здесь (только реальная машина с Windows и Docker Desktop):**
+* установка Docker Desktop человеком: UAC-запросы, возможная перезагрузка, «движок ещё не готов», реальный
+  `docker compose`-проект `hr-manager-pilot`, порт 8080, автозапуск после перезагрузки;
+* трей в пользовательской сессии (значок у часов, меню, окно состояния) и повторный запуск без дублей
+  supervisor-процессов;
+* живая проверка LAN-переключателя (по умолчанию `127.0.0.1`), брандмауэр и реальный второй компьютер;
+* активация лицензии у Перепечай (файл `.hrmlicense` → «Лицензия активирована»), продление, истечение;
+* реальное обновление N → N+1 с существующей базой и откатом (в CI — drill на моках движка, без настоящих томов);
+* SmartScreen при первом запуске `Setup.exe` (сертификата нет — решение владельца от 2026-09-29).
 
 ## 6. Известные ограничения
 
 1. **Нет сертификата Authenticode** (решение владельца от 2026-09-29): при первом запуске `Setup.exe` и portable exe
-   возможен SmartScreen «Подробнее → Выполнить в любом случае». В документации это сказано честно; production-подпись не выполняется.
-2. **UAC и перезагрузка непобедимы программно**: установка Docker Desktop требует подтверждения пользователя и иногда
+   возможен SmartScreen «Подробнее → Выполнить в любом случае». Production-подпись не выполняется;
+   CI-подпись ephemeral-сертификатом — только для диагностики и никогда не попадает в пилотный файл.
+2. **UAC и перезагрузка непобедимы программно**: установка Docker Desktop требует подтверждения и иногда
    перезагрузки; мастер об этом предупреждает и продолжает работу после повторного запуска (`docker-pending.json`).
-3. **Лицензия Docker Desktop**: для крупных организаций (≥ 250 сотрудников или ≥ 10 млн $ выручки) требуется платная подписка;
-   это написано в `docs/MARIA_GUIDE.md` и `docs/DOCKER_RUNTIME_DECISION.md`.
+3. **Лицензия Docker Desktop**: для крупных организаций (≥ 250 сотрудников или ≥ 10 млн $ выручки) нужна платная
+   подписка; это написано в `docs/MARIA_GUIDE.md` и `docs/DOCKER_RUNTIME_DECISION.md`. Мы не обходим лицензию,
+   UAC и политики Windows и не отключаем Defender/брандмауэр.
 4. **Откат обновления не откатывает схему БД** (`alembic downgrade` не выполняется): возвращаются прежние образы,
    данные сохраняются; полное восстановление схемы — из бэкапа (`docs/RECOVERY_GUIDE.md`).
-5. **GUI portable-issuer** в headless-раннере не проверяется — проверяются распаковка, CLI-цепочка, отказ по подделанной лицензии;
-   окно GUI подтверждается пунктом F7 чек-листа.
-6. **Автотесты движка работают на моках**: реальные контейнеры/движок не поднимаются (по замыслу — тесты не трогают машину),
-   поэтому «зелёные» Pester-наборы не заменяют ручной прогон на Windows.
+5. **Побайтовой воспроизводимости сборки portable exe нет**: состав и версии зафиксированы (Python 3.12.3,
+   `cryptography==50.0.2`, Roslyn `csc`), время записей в payload-ZIP фиксировано, но два прогона дали payload
+   21 099 216 и 21 099 220 байт (Δ 4 байта) при одном и том же коде — значит, часть содержимого зависит от среды
+   сборки. Поэтому SHA256 — характеристика конкретной сборки: он берётся из `BUILD-INFO.txt`
+   (или notice-аннотации CI), а не считается «известным заранее». Если понадобится побайтовая
+   воспроизводимость, нужно нормализовать то, что зависит от среды (пути/метки времени внутри бандла),
+   и добавить в CI сверку повторной сборки.
+6. **Автотесты движка работают на моках**: реальные контейнеры и движок в тестах не поднимаются (по замыслу —
+   тесты не трогают машину), поэтому зелёные Pester-наборы не заменяют ручной прогон на Windows.
+7. **GUI portable-issuer** проверяется на раннере программно (окно Tk, кнопки, диалоги), но живой клик мышью
+   в пользовательской сессии — пункт F7 чек-листа.
+8. **`workflow_dispatch` из среды разработки недоступен** (токен интеграции получает 403): джоб `pilot-setup`
+   в основной CI закрывает потребность в пилотном `Setup.exe` и его хэше, а `Pilot release` остаётся
+   ручным путём владельца (одна кнопка в веб-интерфейсе).
 
 ## 7. Как закрыть NO-GO
 
-1. Прогнать CI: `windows-installer` (Pester + сборка `Setup.exe`) и `license-issuer-windows` (фаза `portable`).
-2. Собрать две версии (`0.15.0` и `0.15.1`) для пункта G чек-листа.
-3. Выполнить `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows 10/11 x64 и приложить доказательства.
-4. Заполнить SHA256 в разделе 4 и результаты в разделе 5–6 этого файла.
-5. Только после этого вердикт может быть изменён на **GO** — решением владельца.
+1. Скачать артефакт `pilot-setup-0.15.0-unsigned` (или собрать `Pilot release` 0.15.0) и артефакт
+   `license-issuer-portable`; сверить SHA256 с разделом 4 (`Get-FileHash`, `sha256sum -c`).
+2. Выполнить `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows 10/11 x64 (лучше ВМ) с этими файлами и
+   лицензией `pilot.hrmlicense`, приложив доказательства к каждому пункту.
+3. Отдельно пройти пункт G: собрать 0.15.0 и 0.15.1, обновиться поверх работающей установки с данными и
+   проверить, что база, вложения, пользователи, настройки, лицензия и бэкапы сохранены; затем сломать обновление
+   и убедиться, что вернулась прежняя версия (диагностический отчёт + `update-result.json`).
+4. Заполнить отметки и доказательства в чек-листе; при замечаниях — вернуть в работу, а не «принять с оговоркой».
+5. Получить письменный owner decision. Только после этого вердикт выше меняется на **GO**, и только тогда
+   допустимы tag и GitHub Release.
 
 ---
 
-*Отчёт подготовлен по итогам работ P1–P12; подробная таблица состояния и план — `docs/PILOT_FINAL_AUDIT.md`.*
+*Отчёт подготовлен по итогам работ P1–P12; подробная таблица состояния и план — `docs/PILOT_FINAL_AUDIT.md`.
+Итоговый CI-прогон: `37640729694` (`7a5ed7a`), все 8 джобов зелёные.*

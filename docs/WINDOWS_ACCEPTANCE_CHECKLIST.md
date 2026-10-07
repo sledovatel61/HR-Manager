@@ -5,7 +5,12 @@
 Автотесты (`infra/windows/tests/run-tests.ps1`) и CI **не заменяют** этот чек-лист: в песочнице нет Windows, Docker и PowerShell.
 
 Артефакты для прогона:
-* `HR-Manager-Setup-0.15.0.exe` + его SHA256 (из артефакта `pilot-release-<версия>` → `SHA256SUMS.txt` или `installer/release-manifest.json` → `installer_exe.sha256`; локально печатает `installer/build.ps1`),
+* `HR-Manager-Setup-0.15.0.exe` + его SHA256. Файл берётся из артефакта веточного CI
+  `pilot-setup-0.15.0-unsigned` (`SHA256SUMS.txt` лежит рядом с exe) либо из артефакта `pilot-release-0.15.0`
+  (workflow `Pilot release`, запускается одной кнопкой, без тега и Release); локально —
+  `installer/build.ps1 -Version 0.15.0`. Хэш зафиксированной сборки записан в разделе 4
+  `docs/PILOT_FINAL_REPORT.md` и продублирован notice-аннотацией шага «Publish the pilot artifact hashes»
+  в джобе `Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS`,
 * `LicenseIssuer-Portable.exe` + `BUILD-INFO.txt` (SHA256),
 * лицензия `pilot.hrmlicense`, выпущенная владельцем.
 
@@ -13,7 +18,7 @@
 
 | # | Шаг | Ожидаемый результат | Отметка | Доказательство |
 | --- | --- | --- | --- | --- |
-| A1 | `Get-FileHash .\HR-Manager-Setup-0.15.0.exe -Algorithm SHA256` | Совпадает с SHA256 из отчёта сборки | ☐ | скриншот/лог |
+| A1 | `Get-FileHash .\HR-Manager-Setup-0.15.0.exe -Algorithm SHA256` | Совпадает с `SHA256SUMS.txt` и с разделом 4 `docs/PILOT_FINAL_REPORT.md` | ☐ | скриншот/лог |
 | A2 | `Get-FileHash .\LicenseIssuer-Portable.exe -Algorithm SHA256` | Совпадает с `sha256_exe` из `BUILD-INFO.txt` | ☐ | скриншот/лог |
 | A3 | `git grep -n "private_key" -- installer/` и поиск `*.hrmlicense`, `private_key.hex` в `dist/` | Ничего не найдено: ни приватного ключа, ни лицензий в артефактах | ☐ | вывод команды |
 | A4 | Windows 10/11 x64, PowerShell 5.1, свободно ≥ 10 ГБ, виртуализация включена | `Виртуализация: Включено` в Диспетчере задач | ☐ | скриншот |
@@ -99,7 +104,7 @@
 | # | Шаг | Ожидаемый результат | Отметка | Доказательство |
 | --- | --- | --- | --- | --- |
 | H1 | `powershell -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1` на Windows | Все наборы (static/engine/channel/installer-roots/docker/stack/supervisor/pilot-final) пройдены | ☐ | лог |
-| H2 | CI: джоб `windows-installer` и `license-issuer-windows` (в т.ч. фаза `portable`) | Зелёные; в приложенных к джобу артефактах есть `LicenseIssuer-Portable.exe` + `BUILD-INFO.txt` | ☐ | ссылка/скриншот |
+| H2 | CI: джобы `windows-installer`, `pilot-setup` и `license-issuer-windows` (в т.ч. фаза `portable`) | Зелёные; в артефактах есть `pilot-setup-0.15.0-unsigned` (exe + `SHA256SUMS.txt`) и `LicenseIssuer-Portable.exe` + `BUILD-INFO.txt` | ☐ | ссылка/скриншот |
 | H3 | Заполнить «Итог» в `docs/PILOT_FINAL_REPORT.md` (что проверено на Windows, что нет) | Отчёт обновлён, вердикт GO/NO-GO обоснован | ☐ | документ |
 
 ### Что считается доказательством
