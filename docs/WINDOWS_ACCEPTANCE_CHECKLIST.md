@@ -5,7 +5,7 @@
 Автотесты (`infra/windows/tests/run-tests.ps1`) и CI **не заменяют** этот чек-лист: в песочнице нет Windows, Docker и PowerShell.
 
 Артефакты для прогона:
-* `HR-Manager-Setup-0.15.0.exe` + его SHA256 (из `installer/build.ps1`/CI),
+* `HR-Manager-Setup-0.15.0.exe` + его SHA256 (из артефакта `pilot-release-<версия>` → `SHA256SUMS.txt` или `installer/release-manifest.json` → `installer_exe.sha256`; локально печатает `installer/build.ps1`),
 * `LicenseIssuer-Portable.exe` + `BUILD-INFO.txt` (SHA256),
 * лицензия `pilot.hrmlicense`, выпущенная владельцем.
 

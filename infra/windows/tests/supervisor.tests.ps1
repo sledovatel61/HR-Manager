@@ -39,7 +39,9 @@ Test-Case "состояние supervisor'а не содержит секрето
     $file = Get-HrmSupervisorStateFile $state
     $text = Get-Content -Path $file -Raw -Encoding UTF8
     Assert-HrmNotContains $text $secret "секрет попал в состояние supervisor'а"
-    Assert-HrmContains $text "<redacted>" "секрет должен быть отредактирован"
+    # ConvertTo-Json экранирует < > как \u003c/\u003e: читатель JSON видит
+    # <redacted>, поэтому проверяем обе формы.
+    Assert-HrmContainsRedacted $text "секрет должен быть отредактирован"
 }
 
 Test-Case "меню трея содержит все обязательные пункты" {

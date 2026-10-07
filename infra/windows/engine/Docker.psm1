@@ -154,7 +154,16 @@ function Get-HrmWslState {
     # Проверка без прав администратора: реестр Lxss (default version) + wsl.exe.
     $override = Get-HrmDockerOverrideValue "wsl"
     if ($null -ne $override) {
-        return [pscustomobject]@{ state = [string]$override; default_version = 0; distributions = @(); message = "" }
+        # Сообщение обязано быть содержательным и в тестовом/заданном состоянии:
+        # шаги мастера берут текст именно отсюда (иначе пользователь видит пустое
+        # «действие»), поэтому дублируем формулировки реальных веток.
+        $overrideState = [string]$override
+        $overrideMessage = ""
+        if ($overrideState -eq "missing") { $overrideMessage = "WSL не отвечает: команда wsl недоступна." }
+        elseif ($overrideState -eq "not_wsl2") { $overrideMessage = "Ни один дистрибутив WSL не использует версию 2." }
+        elseif ($overrideState -eq "ok") { $overrideMessage = "WSL2 готов к работе." }
+        else { $overrideMessage = "Состояние WSL2 определить не удалось." }
+        return [pscustomobject]@{ state = $overrideState; default_version = 0; distributions = @(); message = $overrideMessage }
     }
     $defaultVersion = 0
     $distributions = @()
@@ -197,7 +206,20 @@ function Get-HrmVirtualizationState {
     # (Hyper-V/WSL2/Credential Guard) — это тоже «включено».
     $override = Get-HrmDockerOverrideValue "virtualization"
     if ($null -ne $override) {
-        return [pscustomobject]@{ state = [string]$override; hypervisor_present = $false; firmware_enabled = $false; message = "" }
+        # То же правило, что и для WSL2: шаг мастера показывает это сообщение
+        # как «что делать», пустая строка здесь — потерянное действие.
+        $overrideState = [string]$override
+        $overrideMessage = ""
+        if ($overrideState -eq "disabled") {
+            $overrideMessage = "Виртуализация не обнаружена. Включите её в BIOS/UEFI (Intel VT-x или AMD-V) и перезагрузите компьютер."
+        }
+        elseif ($overrideState -eq "enabled") {
+            $overrideMessage = "Аппаратная виртуализация включена."
+        }
+        else {
+            $overrideMessage = "Не удалось определить состояние виртуализации."
+        }
+        return [pscustomobject]@{ state = $overrideState; hypervisor_present = $false; firmware_enabled = $false; message = $overrideMessage }
     }
     try {
         $computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
@@ -336,7 +358,12 @@ function Start-HrmDockerDesktop {
     }
     if ($desktop.state -eq "installed_stopped") {
         if (-not $desktop.path) {
-            throw "Не удалось найти Docker Desktop.exe. Откройте Docker Desktop из меню «Пуск» и дождитесь надписи Engine running."
+            # Не исключение: prepare/supervisor должны вернуть понятный код
+            # состояния и текст («без crash-loop»), а не падать у пользователя.
+            return [pscustomobject]@{
+                started = $false
+                message = "Не удалось найти Docker Desktop. Откройте Docker Desktop из меню «Пуск», дождитесь надписи «Engine running» и нажмите «Повторить»."
+            }
         }
         Write-HrmLog "info" "Запускаем Docker Desktop…"
         Start-HrmDetached -FilePath $desktop.path -WorkingDirectory (Split-Path $desktop.path -Parent) | Out-Null

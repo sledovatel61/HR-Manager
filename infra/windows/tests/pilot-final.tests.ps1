@@ -27,10 +27,19 @@ Test-Case "установщик: секция [Icons] с ярлыками раб
     Assert-HrmContains $iss '-WindowStyle Hidden' "ярлык open не скрывает окно"
 }
 
-Test-Case "установщик: автозапуск после перезагрузки (если Docker Desktop запущен)" {
+Test-Case "установщик: автозапуск supervisor'а (значок в трее), а не консольный -Action start" {
     $iss = Get-Content -Path (Join-Path $script:RepoRoot "installer\installer.iss") -Raw -Encoding UTF8
     Assert-HrmContains $iss '{userstartup}' "нет автозапуска через userstartup"
-    Assert-HrmContains $iss '-Action start' "автозапуск не вызывает start"
+    $startupLines = @($iss -split "`r?`n" | Where-Object {
+            $_.TrimStart().StartsWith("Name:") -and $_.Contains("{userstartup}") -and $_.Contains("HR Manager")
+        })
+    Assert-HrmTrue ($startupLines.Count -ge 1) "нет ярлыка автозапуска в папке автозагрузки"
+    # Автозапуск после входа в Windows принадлежит supervisor'у: поднимается
+    # значок в трее (hrm-tray.ps1). Консольный -Action start оставлял бы
+    # пользователю видимое окно PowerShell и не держал состояние в трее.
+    Assert-HrmContains $startupLines[0] "hrm-tray.ps1" "автозапуск должен поднимать значок в трее"
+    Assert-HrmNotContains $startupLines[0] "-Action start" "автозапуск не должен быть консольным"
+    Assert-HrmNotContains $iss "-Action start" "консольный автозапуск остался в установщике"
 }
 
 # --- B1: ключ лицензии в сборке ---

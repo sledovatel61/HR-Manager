@@ -198,11 +198,14 @@ function Save-HrmDownload {
         [Parameter(Mandatory = $true)][string]$Uri,
         [Parameter(Mandatory = $true)][string]$Destination
     )
+    # Каталог назначения создаём ДО мока: иначе тестовый шов вёл бы себя
+    # иначе, чем настоящая загрузка (мок писал файл в несуществующий каталог,
+    # установка Docker падала с «Не удалось скачать установщик»).
+    $dir = Split-Path $Destination -Parent
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     if ($null -ne $script:MockDownload) {
         return (& $script:MockDownload -Uri $Uri -Destination $Destination)
     }
-    $dir = Split-Path $Destination -Parent
-    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $previous = $ProgressPreference
     $ProgressPreference = "SilentlyContinue"
     try {

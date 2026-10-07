@@ -71,7 +71,10 @@ if ($failuresFile) {
         $cur = "failure list (" + $global:HRM_TestFailed + "):"
         foreach ($failure in @($global:HRM_TestFailures)) {
             $safe = [regex]::Replace([string]$failure, $rx, "<redacted>")
-            if ($safe.Length -gt 3000) { $safe = $safe.Substring(0, 3000) }
+            # Запись уже содержит компактный стектрейс; короткий лимит нужен,
+            # чтобы ВЕСЬ список попал в notice-аннотации (логи и артефакты
+            # GitHub из песочницы не скачиваются, аннотации читаются через API).
+            if ($safe.Length -gt 700) { $safe = $safe.Substring(0, 700) }
             if (($cur.Length + $safe.Length + 3) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
             if ($cur.Length -gt 0) { $cur += "`n" }
             $cur += $safe

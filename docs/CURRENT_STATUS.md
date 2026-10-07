@@ -237,15 +237,37 @@ PostgreSQL integration и Compose должны подтверждаться CI �
   распознавание загрузки приватного ключа в backend, 15 новых UX-тестов активации.
 - **Тесты**: `docker.tests.ps1` (12), `stack.tests.ps1` (8), `supervisor.tests.ps1` (13),
   `pilot-final.tests.ps1` (18, включая предпросмотр, сохранность данных и откат), статические 0.15.0-контракты;
-  `lint-engine.py` — 29 файлов, 0 провалов; контракт portable-issuer — 68 проверок; backend — 1200 passed / 146 skipped.
+  `lint-engine.py` — 29 файлов, 0 провалов; контракт portable-issuer — 74 проверки; backend — 1200 passed / 146 skipped.
 - **Документы**: `docs/MARIA_GUIDE.md` (0.15.0), `docs/UPDATE_GUIDE.md`, `docs/RECOVERY_GUIDE.md`,
   `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`, `docs/DOCKER_RUNTIME_DECISION.md` (Docker Desktop остаётся runtime,
   с юридическим обоснованием), `docs/OWNER_QUICKSTART.md` (один `.exe` для владельца).
 
-Остаётся (без этого GO нет): прогон CI-джобов `windows-installer` и `license-issuer-windows`,
-ручной чек-лист `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows и заполнение SHA256 артефактов
-в `docs/PILOT_FINAL_REPORT.md`. В среде разработки нет Windows/PowerShell/Docker/Inno Setup, поэтому
-Pester-наборы и реальная установка здесь не запускались.
+### CI-цикл 2026-10-07: что поймано и починено
+
+- Прогон `37622968179` (SHA `239364c`): Backend — только реформат `backend/app/license.py`; Windows-джоб —
+  `Test-HrmContainerHealthy` падал на отсутствующем поле `Health` (8 pilot-drill тестов), плюс два статических
+  контракта (`docker.exe` в комментарии и литерал `--accept-license` в комментарии); license-issuer — шаг P8
+  (сборка portable exe) не уложился в 30 минут.
+- Починено в `929f87e`: ruff-формат и аннотация возврата в тесте; чтение `State`/`Health` через
+  `PSObject.Properties`; `Get-HrmDockerCliPath` без `Get-Command`; статические проверки смотрят только
+  исполняемые строки; полный список провалов тестов публикуется артефактом и в step summary; у launcher
+  появился диагностический режим `HRM_PORTABLE_LOG`, payload пакуется `System.IO.Compression.ZipArchive`
+  (вместо `Compress-Archive`), GUI-exe запускается через `Start-Process -Wait` с таймаутом.
+- Прогон `37628319482` (SHA `929f87e`): Frontend, Backend checks, Release-policy, Backend integration и Compose —
+  зелёные; Windows-джоб упал по другой причине: `Write-HrmLog` писал журнал в success stream, поэтому
+  `Start-HrmStack` возвращал массив [строка журнала, объект], а `$stack.ok` под StrictMode падал
+  («The property 'ok' cannot be found on this object»); license-issuer на этом SHA не прошёл бы статический
+  контракт portable-issuer (он требовал литерал `Compress-Archive` и запрещал любое упоминание `Add-Type`).
+- Починено в `e67f7a4`: журнал движка не пишет в конвейер (`Format-HrmLogLine` + `Write-Host`/файл
+  `HRM_LOG_FILE`, который наследует фоновый процесс supervisor'а); регрессионные тесты на «ровно один объект с
+  ok» у `Start-HrmStack` (stack/static/engine); полный список провалов тестов дополнительно публикуется
+  notice-аннотациями (лимит `::error::` — 10 на шаг); контракт portable-issuer синхронизирован с новой упаковкой
+  (74 проверки, локально все PASS).
+
+Остаётся (без этого GO нет): зелёный прогон CI на `e67f7a4` (`37630406320`, джобы `windows-installer` и
+`license-issuer-windows`), ручной чек-лист `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows и заполнение
+SHA256 артефактов в `docs/PILOT_FINAL_REPORT.md`. В среде разработки нет Windows/PowerShell/Docker/Inno Setup,
+поэтому Pester-наборы и реальная установка здесь не запускались.
 
 ## Пилотный релиз: что осталось сделать
 

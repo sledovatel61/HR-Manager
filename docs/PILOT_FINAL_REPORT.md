@@ -33,7 +33,7 @@
 | `infra/windows/engine/Compose.psm1` | Состояния стека `absent/stopped/partial/running/degraded/unknown`, ремонт и запуск без удаления томов, чтение головы миграций из образа (без зашитой константы) |
 | `infra/windows/engine/Update.psm1` | `Get-HrmUpdatePreview` (текущая/новая версия, changelog, проверки места/лицензии/настроек/порта/сети/Docker/тома бэкапов, предупреждение о данных), `update-result.json` (`done/rolled_back/failed`), `Assert-HrmUpdatePreservedState`, фазы prepare→backup→build→switch→migrate→smoke, возврат к прежним образам, запрет даунгрейда БД |
 | `infra/windows/engine/Install.psm1` | Повторный `Setup.exe` → обновление поверх; public key → каталог состояния (fail-closed); установка Docker через движок; запуск supervisor; подтверждение purge только по фразе |
-| `infra/windows/engine/Common.psm1` | Швы моков, запуск процессов/повышение прав, редакция секретов в выводе и файлах |
+| `infra/windows/engine/Common.psm1` | Швы моков, запуск процессов/повышение прав, редакция секретов в выводе и файлах; журнал (`Format-HrmLogLine` + `Write-HrmLog`) не пишет в success stream — иначе строки журнала примешивались бы к возвращаемым объектам и ломали их свойства под StrictMode; фоновый процесс получает `HRM_LOG_FILE` и ведёт журнал сам |
 | `infra/windows/hr-manager.ps1` | Новые действия: `prepare`, `docker-status`, `docker-install`, `docker-start`, `supervise`, `tray`, `autostart`, `update-preview` (+ прежние), запись ошибок в `supervisor.json` |
 | `installer/installer.iss` | Галочка «Установить Docker Desktop», честный текст про UAC/перезагрузку/лицензию, кодовые страницы, `[Run]` (трей → install), ярлыки, `[UninstallDelete]` без данных |
 | `installer/build.ps1` | `release.json` с версией/`release_sha`/`built_at`/changelog; версия по умолчанию 0.15.0 |
@@ -53,7 +53,7 @@
 | --- | --- |
 | `tools/license-issuer/launcher/Program.cs` *(новый)* | Самодостаточный launcher одного `.exe`: распаковка payload в `%LOCALAPPDATA%\HRManager\LicenseIssuer`, GUI по двойному клику, CLI с кодом возврата, `--hrm-selfcheck`; ASCII-only, без сети и без работы с ключами |
 | `tools/license-issuer/build-portable.ps1` *(новый)* | Сборка `LicenseIssuer-Portable.exe` (payload + 32-байтный трейлер), `BUILD-INFO.txt` с SHA256 и версиями, smoke-тест цепочки через сам exe, отказ при утечке ключа, `dist/` без ключей |
-| `tools/license-issuer/ci-portable-contract.py` *(новый)* | 68 контрактных проверок (ASCII/BOM, отсутствие сети и ключей в launcher, совместимость трейлера, pin `cryptography==50.0.2` + наличие win_amd64-колеса, .gitignore, документация) |
+| `tools/license-issuer/ci-portable-contract.py` *(новый)* | 74 контрактные проверки (ASCII/BOM, отсутствие сети и ключей в launcher, совместимость трейлера, top-level layout payload при упаковке через `ZipArchive`, запрет `Add-Type -TypeDefinition` при обязательном явном `csc`, режим `HRM_PORTABLE_LOG`, pin `cryptography==50.0.2` + наличие win_amd64-колеса, .gitignore, документация) |
 | `tools/license-issuer/build.ps1` | Пин `cryptography==50.0.2` (воспроизводимость) + параметр `-CryptographyVersion` |
 | `tools/license-issuer/ci-windows-checks.ps1` | Новая фаза `portable`: сборка exe под 5.1, независимая проверка трейлера и SHA256, `--hrm-selfcheck`, CLI-цепочка, отказ по подделанной лицензии, отсутствие ключей |
 | `backend/app/license.py`, `backend/app/routers/license.py` | Распознавание загрузки приватного ключа (`private_key_upload`), понятные русские причины отказа |
@@ -74,7 +74,7 @@ python3 infra/windows/tests/lint-engine.py
 # Проверено файлов: 29; структурная проверка пройдена (0 провалов)
 
 python3 tools/license-issuer/ci-portable-contract.py
-# portable issuer contract: 68 checks passed (в т.ч. PyPI: cryptography 50.0.2 cp311-abi3-win_amd64 — есть)
+# portable issuer contract: 74 checks passed (в т.ч. PyPI: cryptography 50.0.2 cp311-abi3-win_amd64 — есть)
 
 python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -r backend/requirements-dev.txt
 cd backend && /tmp/venv/bin/python -m pytest -q -p no:randomly
@@ -93,9 +93,14 @@ cd backend && /tmp/venv/bin/python -m pytest -q -p no:randomly
 
 | Артефакт | Где собирается | SHA256 |
 | --- | --- | --- |
-| `HR-Manager-Setup-0.15.0.exe` | CI `Pilot release` (или `installer/build.ps1 -Version 0.15.0`) | заполнить после сборки (пункт A1 чек-листа) |
-| `LicenseIssuer-Portable.exe` + `BUILD-INFO.txt` | CI `license-issuer-windows` (фаза `portable`), артефакт `license-issuer-portable` | заполнить после сборки (пункт A2) |
+| `HR-Manager-Setup-0.15.0.exe` | CI `Pilot release` (`pilot-release.yml`, без тега и Release) или локально `installer/build.ps1 -Version 0.15.0` | заполнить после сборки: хэш берётся из `installer/release-manifest.json` → `installer_exe.sha256` и из артефакта `pilot-release-<версия>` → `SHA256SUMS.txt` (пункт A1 чек-листа) |
+| `LicenseIssuer-Portable.exe` + `BUILD-INFO.txt` | CI `license-issuer-windows` (фаза `portable`), артефакт `license-issuer-portable` | заполнить после сборки: строка `sha256_exe` из `BUILD-INFO.txt` и SHA256 из лога шага (пункт A2) |
 | `license-issuer-dist.zip` (резервный вариант для владельца) | там же, артефакт `license-issuer-owner` | — |
+
+Хэши артефактов нельзя посчитать в среде разработки: `Setup.exe` собирается Inno Setup под Windows, portable
+`.exe` — компилятором `csc.exe` под Windows. Оба workflow печатают SHA256 в журнал шага и кладут в артефакты
+(`SHA256SUMS.txt`, `BUILD-INFO.txt`), поэтому строка «SHA256» заполняется копированием из артефакта после
+первого зелёного прогона `Pilot release` / `license-issuer-windows`.
 
 Приватный ключ лицензии в артефакты **не попадает**: сборка падает, если ключевой материал появляется в логе или в `dist/`
 (проверяется в `build.ps1`, `build-portable.ps1` и в фазе `portable`).
@@ -106,6 +111,13 @@ cd backend && /tmp/venv/bin/python -m pytest -q -p no:randomly
 * backend: 1200 тестов, включая лицензии (срок, подпись, подмена владельца, приватный ключ), сохранность данных при истечении, N→N+1 на уровне сервисов;
 * статический контур движка (`lint-engine.py`): BOM, синтаксические маркеры, запрещённые команды (`down -v`, `volume prune`, `--accept-license`), контракты меню трея, `desktop.docker.com` + Authenticode;
 * контракт portable-issuer (68 проверок) и валидность CI-конфигураций.
+
+**Состояние CI-цикла 2026-10-07 (честно):**
+* Прогон `37622968179` (`239364c`) и `37628319482` (`929f87e`) — красные: первый поймал `Health`/`docker.exe`/`--accept-license` и таймаут шага P8,
+  второй — смешивание журнала с результатами функций (`$stack.ok` → `The property 'ok' cannot be found on this object`) и статический контракт portable-issuer;
+  обе причины разобраны и починены (`929f87e`, `e67f7a4`).
+* Прогон `37630406320` (SHA `e67f7a4`) запущен; вердикт по нему — в разделе 7 и в `docs/CURRENT_STATUS.md`.
+* Выводы делались **без доступа к логам** (`gh run view --log` в этой среде недоступен): источники — аннотации check-runs через API, артефакт «windows-engine-test-failures» (его загрузку добавили) и локальный разбор кода.
 
 **Не проверено здесь (только Windows/CI):**
 * Pester-наборы движка (88 кейсов в 8 файлах) — `run-tests.ps1`;

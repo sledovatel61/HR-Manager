@@ -109,7 +109,7 @@ function Get-HrmTrayBalloon {
         return [pscustomobject]@{ title = "HR Manager — нужна помощь"; text = ("{0} Нажмите «Создать отчёт для поддержки»." -f $Message); kind = "error" }
     }
     if ($State -eq "starting") {
-        return [pscustomobject]@{ title = "HR Manager запускается"; text = "Подготавливаем рабочую среду. Это может занять до нескольких минут."; kind = "info" }
+        return [pscustomobject]@{ title = "HR Manager запускается"; text = "HR Manager запускается: подготавливаем рабочую среду. Это может занять несколько минут."; kind = "info" }
     }
     return [pscustomobject]@{ title = "HR Manager"; text = $Message; kind = "info" }
 }
