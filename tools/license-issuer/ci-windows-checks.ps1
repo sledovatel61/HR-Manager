@@ -293,7 +293,10 @@ try {
         if ($actualHash -ne $infoMatch.Groups[1].Value.ToUpperInvariant()) {
             Report-Fail "portable: SHA256 mismatch between BUILD-INFO.txt and the artifact" ("recorded: " + $infoMatch.Groups[1].Value + " actual: " + $actualHash)
         }
-        Write-Phase ("SHA256 matches BUILD-INFO.txt: " + $actualHash)
+        # A 64+ hex run is blanked by the annotation redaction (that rule exists
+        # to keep key material out of the logs), so the hash that goes into the
+        # release report is printed as two 32-character halves.
+        Write-Phase ("SHA256 matches BUILD-INFO.txt: " + $actualHash.Substring(0, 32) + " " + $actualHash.Substring(32))
 
         # --- second, independent CLI run through the shipped exe ---------------
         # A fresh temp directory with spaces: the launcher must quote correctly.

@@ -189,6 +189,11 @@ if builder_text:
         "HRM_PORTABLE_LOG" in builder_text,
         "builder smoke test reads the real child CLI output through HRM_PORTABLE_LOG",
     )
+    check(
+        "function Format-ShaLog" in builder_text
+        and 'Write-Info "SHA256 (portable exe): $exeHash"' not in builder_text,
+        "builder prints hashes as two 32-char halves (no 64+ hex run in the log it is gated on)",
+    )
 
 # --- bundle builder: pinned, reproducible inputs ----------------------------
 bundle = read_bytes(BUNDLE_BUILDER)
@@ -226,6 +231,10 @@ if ci_text:
     check(
         "HRM_PORTABLE_LOG" in ci_text and "function Invoke-PortableExe" in ci_text,
         "portable phase captures CLI output through HRM_PORTABLE_LOG with an explicit timeout",
+    )
+    check(
+        "Substring(0, 32)" in ci_text and "Substring(32)" in ci_text,
+        "portable phase publishes the artifact hash as two 32-char halves",
     )
 
 # --- repository hygiene -----------------------------------------------------

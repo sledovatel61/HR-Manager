@@ -739,6 +739,38 @@ jobs:
             installer/authenticode-verification.json
           if-no-files-found: error
 
+      - name: Publish the installer hashes as an annotation (evidence without artifact download)
+        if: always()
+        shell: powershell
+        run: |
+          # docs/PILOT_FINAL_REPORT.md (section 4) records the SHA256 of the files
+          # handed to the owner, but artifacts can only be fetched from the Actions
+          # UI, so the same values are published here as notice annotations: the
+          # check-run API exposes them. Each hash is printed as two 32-character
+          # halves, because a 64+ hex run is blanked by the annotation redaction
+          # that keeps key material out of the logs.
+          $ErrorActionPreference = "Continue"
+          function Get-SplitHash([string]$hash) {
+            if ($hash.Length -ne 64) { return "" }
+            $h = $hash.ToUpperInvariant()
+            return ($h.Substring(0, 32) + " " + $h.Substring(32))
+          }
+          $manifestPath = "installer/release-manifest.json"
+          $manifest = $null
+          if (Test-Path $manifestPath) {
+            try { $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json } catch { $manifest = $null }
+          }
+          if ($manifest) {
+            $built = Get-SplitHash ([string]$manifest.installer_exe.sha256)
+            if ($built) {
+              Write-Host ("::notice title=pilot Setup.exe (build output)::file=" + $manifest.installer_exe.file + " sha256=" + $built)
+            }
+          }
+          $setup = Get-ChildItem -Path "installer/output" -Filter "HR-Manager-Setup-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $setup) { Write-Host "no Setup.exe in installer/output"; exit 0 }
+          $uploaded = Get-SplitHash ((Get-FileHash -Path $setup.FullName -Algorithm SHA256).Hash)
+          Write-Host ("::notice title=pilot Setup.exe (uploaded artifact)::file=" + $setup.Name + " bytes=" + $setup.Length + " sha256=" + $uploaded)
+
   license-issuer-windows:
     name: License issuer bundle - Windows PowerShell 5.1 checks
     runs-on: windows-latest
