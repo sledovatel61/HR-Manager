@@ -43,6 +43,10 @@ $global:HRM_TestFailed = $failures.Count
 if ($global:HRM_TestFailed -gt 0) { $exitCode = 1 }
 if ($exitCode -eq 0) {
     Write-Host ("ВСЕ ТЕСТЫ ПРОЙДЕНЫ ({0})" -f $global:HRM_TestPassed) -ForegroundColor Green
+    # Успех тоже публикуется аннотацией: журнал шага снаружи недоступен, а по
+    # числу пройденных кейсов видно, что наборы действительно выполнялись, а не
+    # были пропущены (например, при случайном удалении файла теста).
+    Write-Host ("::notice title=HRM engine tests::ВСЕ ТЕСТЫ ПРОЙДЕНЫ ({0}); наборы: static, engine, channel, installer-roots, docker, stack, supervisor, pilot-final" -f $global:HRM_TestPassed)
 }
 else {
     Write-Host ("ЕСТЬ ПРОВАЛЫ: {0}" -f $global:HRM_TestFailed) -ForegroundColor Red
