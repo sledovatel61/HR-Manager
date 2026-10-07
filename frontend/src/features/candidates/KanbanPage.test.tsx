@@ -65,10 +65,10 @@ function columnCalls() {
     .filter((query) => query?.stage !== undefined);
 }
 
-function renderKanban() {
+function renderKanban(user: User = HR) {
   return render(
     <ToastProvider>
-      <KanbanPage user={HR} />
+      <KanbanPage user={user} />
     </ToastProvider>
   );
 }
@@ -96,6 +96,66 @@ beforeEach(() => {
 });
 
 describe("KanbanPage", () => {
+  it("clears the owner chip without dropping the position filter", async () => {
+    vi.mocked(api.listPositionOptions).mockResolvedValue({
+      items: [{ position: "Инженер", count: 1 }], total: 1, limit: 500, truncated: false,
+    });
+    vi.mocked(api.listHrUsers).mockResolvedValue({ items: [HR], total: 1 });
+    renderKanban({ ...HR, role: "admin" });
+    await screen.findByRole("option", { name: HR.full_name });
+    await userEvent.selectOptions(screen.getByLabelText("Должность"), "Инженер");
+    await userEvent.selectOptions(screen.getByLabelText("Ответственный"), HR.id);
+    await waitFor(() => expect(columnCalls().at(-1)).toMatchObject({ position: "Инженер", owner_id: HR.id }));
+    vi.mocked(api.listCandidates).mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "Снять фильтр ответственного" }));
+    await waitFor(() => expect(columnCalls()).toHaveLength(11));
+    expect(columnCalls().every((query) => query?.owner_id === undefined && query?.position === "Инженер")).toBe(true);
+    expect(screen.getByRole("button", { name: "Снять фильтр должности: Инженер" })).toBeInTheDocument();
+  });
+
+  it("shows API source and update date, without invented salary or scoring", async () => {
+    renderKanban();
+    const name = await screen.findByRole("button", { name: "Кандидат new" });
+    const card = name.closest("article")!;
+    expect(within(card).getByText("Сайт компании")).toBeInTheDocument();
+    expect(within(card).getByText("02.09.2026")).toHaveAttribute("dateTime", "2026-09-02T10:00:00Z");
+    expect(within(card).queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(card).not.toHaveTextContent("₽");
+  });
+
+  it("marks the drag target and busy board, then clears both after the real mutation", async () => {
+    let finish!: (value: Candidate) => void;
+    vi.mocked(api.updateCandidate).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    renderKanban();
+    const card = (await screen.findByRole("button", { name: "Кандидат new" })).closest("article")!;
+    const target = screen.getByRole("listitem", { name: `Колонка: ${STAGE_LABELS.contacted}` });
+    fireEvent.dragStart(card, { dataTransfer: { effectAllowed: "" } });
+    fireEvent.dragOver(target);
+    expect(target).toHaveClass("is-drop-target");
+    fireEvent.drop(target);
+    expect(target).not.toHaveClass("is-drop-target");
+    const board = screen.getByRole("list", { name: "Воронка кандидатов по этапам" });
+    expect(board).toHaveAttribute("aria-busy", "true");
+    expect(api.updateCandidate).toHaveBeenCalledWith(candidate("new").id, { stage: "contacted" });
+    finish(candidate("contacted"));
+    await waitFor(() => expect(board).toHaveAttribute("aria-busy", "false"));
+  });
+
+  it("clears the position chip and reloads every column without that filter", async () => {
+    vi.mocked(api.listPositionOptions).mockResolvedValue({
+      items: [{ position: "Инженер", count: 1 }], total: 1, limit: 500, truncated: false,
+    });
+    renderKanban();
+    await screen.findByRole("option", { name: "Инженер" });
+    await userEvent.selectOptions(screen.getByLabelText("Должность"), "Инженер");
+    await waitFor(() => expect(columnCalls().at(-1)?.position).toBe("Инженер"));
+    vi.mocked(api.listCandidates).mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "Снять фильтр должности: Инженер" }));
+    await waitFor(() => expect(columnCalls()).toHaveLength(11));
+    expect(columnCalls().every((query) => query?.position === undefined)).toBe(true);
+    expect(screen.queryByRole("group", { name: "Активные фильтры доски" })).not.toBeInTheDocument();
+  });
+
   it("renders all funnel columns from CANDIDATE_STAGE_ORDER including «Вышел»", async () => {
     renderKanban();
     expect(await screen.findByText("Кандидат new")).toBeInTheDocument();
@@ -113,6 +173,7 @@ describe("KanbanPage", () => {
 
     await screen.findByText("Кандидат new");
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(within(newColumn).getByLabelText("Изменить этап: Кандидат new"), "offer");
 
     await waitFor(() =>
@@ -129,6 +190,7 @@ describe("KanbanPage", () => {
     await screen.findByText("Кандидат new");
     const directoryCalls = vi.mocked(api.listPositionOptions).mock.calls.length;
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(within(newColumn).getByLabelText("Изменить этап: Кандидат new"), "offer");
 
     await waitFor(() => expect(api.updateCandidate).toHaveBeenCalled());
@@ -151,6 +213,7 @@ describe("KanbanPage", () => {
 
     await screen.findByText("Кандидат new");
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(
       within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
       "hired"
@@ -245,6 +308,7 @@ describe("KanbanPage", () => {
 
     await screen.findByText("Кандидат new");
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(
       within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
       "started"
@@ -278,6 +342,7 @@ describe("KanbanPage", () => {
 
     await screen.findByText("Кандидат new");
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(
       within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
       "started"
@@ -324,6 +389,7 @@ describe("KanbanPage — длинная воронка (block C)", () => {
     const newColumn = screen.getByRole("listitem", { name: /Новый/ });
     // «Отказ» is the far end of the funnel and is nowhere near the visible
     // area — the picker reaches it without any scrolling at all.
+    await userEvent.click(within(newColumn).getByText("Перенести", { exact: true }));
     await userEvent.selectOptions(
       within(newColumn).getByLabelText("Изменить этап: Кандидат new"),
       "rejected"
@@ -399,4 +465,34 @@ describe("KanbanPage — длинная воронка (block C)", () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(board.scrollLeft).toBe(scrolled);
   });
+});
+
+
+it("scrolls the board without dragging and keeps the move control collapsed", async () => {
+  renderKanban();
+  await screen.findByText("Кандидат new");
+  const board = screen.getByRole("list", { name: "Воронка кандидатов по этапам" });
+  const scrollBy = vi.fn();
+  board.scrollBy = scrollBy;
+  expect(board).toHaveAttribute("tabindex", "0");
+  await userEvent.click(screen.getByRole("button", { name: "Прокрутить воронку вправо" }));
+  expect(scrollBy).toHaveBeenLastCalledWith({ left: 520, behavior: "auto" });
+  await userEvent.click(screen.getByRole("button", { name: "Прокрутить воронку влево" }));
+  expect(scrollBy).toHaveBeenLastCalledWith({ left: -520, behavior: "auto" });
+  const summary = screen.getByText("Перенести");
+  expect(summary.closest("details")).not.toHaveAttribute("open");
+  await userEvent.click(summary);
+  expect(summary.closest("details")).toHaveAttribute("open");
+  expect(screen.getByRole("combobox", { name: "Изменить этап: Кандидат new" })).toBeVisible();
+});
+
+it.each([undefined, 0, 2])("only shows a positive attachment count on Kanban (%s)", async (count) => {
+  vi.mocked(api.listCandidates).mockImplementation(async (query) => {
+    const items = query?.stage === "new" ? [{ ...candidate("new"), attachment_count: count }] : [];
+    return { items, total: items.length, limit: 20, offset: 0 };
+  });
+  renderKanban();
+  await screen.findByText("Кандидат new");
+  if (count && count > 0) expect(screen.getByLabelText("Вложений: 2")).toBeVisible();
+  else expect(screen.queryByLabelText(/^Вложений:/)).not.toBeInTheDocument();
 });

@@ -154,9 +154,30 @@ export default function CandidatesListPage({
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+  const shownStart = items.length ? offset + 1 : 0;
+  const shownEnd = items.length ? Math.min(offset + items.length, total) : 0;
 
   return (
     <div className="candidates-page">
+      <header className="page-head">
+        <div>
+          <div className="eyebrow">Подбор</div>
+          <p className="page-sub">
+            {loading ? "Загрузка списка…" : error ? "Список недоступен" : `Всего в списке: ${total}`}
+          </p>
+        </div>
+        <div className="page-actions">
+          <Button
+            icon="plus"
+            iconPosition="left"
+            onClick={() => setCreateOpen(true)}
+            disabled={isDeleted}
+          >
+            Добавить кандидата
+          </Button>
+        </div>
+      </header>
+
       <div className="list-toolbar">
         <div className="list-toolbar-row">
           <div className="search-box" role="search">
@@ -172,14 +193,6 @@ export default function CandidatesListPage({
               aria-label="Поиск кандидатов"
             />
           </div>
-          <Button
-            icon="plus"
-            iconPosition="left"
-            onClick={() => setCreateOpen(true)}
-            disabled={isDeleted}
-          >
-            Добавить кандидата
-          </Button>
         </div>
 
         <div className="list-toolbar-row list-filters">
@@ -369,6 +382,11 @@ export default function CandidatesListPage({
                       </span>
                       <span>
                         <span className="row-fullname">{candidate.full_name}</span>
+                        {(candidate.attachment_count ?? 0) > 0 && (
+                          <span className="row-attachments" aria-label={`Вложений: ${candidate.attachment_count}`}>
+                            <Icon name="file-text" size={13} /> {candidate.attachment_count}
+                          </span>
+                        )}
                         {candidate.phone && <span className="row-contact">{candidate.phone}</span>}
                         {!candidate.phone && candidate.email && (
                           <span className="row-contact">{candidate.email}</span>
@@ -397,10 +415,10 @@ export default function CandidatesListPage({
         </div>
       )}
 
-      {!loading && !error && total > 0 && (
+      {!loading && !error && (
         <nav className="pagination" aria-label="Пагинация списка кандидатов">
-          <span className="pagination-info">
-            {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} из {total}
+          <span className="pagination-info" role="status">
+            Показано {shownStart}–{shownEnd} из {total}
           </span>
           <div className="pagination-buttons">
             <Button
@@ -412,7 +430,7 @@ export default function CandidatesListPage({
               Назад
             </Button>
             <span className="pagination-page">
-              {currentPage} / {totalPages}
+              {currentPage > totalPages ? "Список изменился" : `${currentPage} / ${totalPages}`}
             </span>
             <Button
               variant="secondary"

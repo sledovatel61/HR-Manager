@@ -34,14 +34,14 @@
   width: 220px;
 }
 
-.detail-list {
+.candidate-detail-list {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
   margin: 0;
 }
 
-.detail-row {
+.candidate-detail-row {
   display: flex;
   justify-content: space-between;
   gap: var(--space-4);
@@ -49,12 +49,12 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.detail-row dt {
+.candidate-detail-row dt {
   color: var(--text-tertiary);
   font-size: var(--text-size-xs);
 }
 
-.detail-row dd {
+.candidate-detail-row dd {
   margin: 0;
   color: var(--text-primary);
   font-size: var(--text-size-sm);
@@ -315,4 +315,16 @@
 .candidate-reminder-meta {
   font-size: 12.5px;
   color: var(--text-secondary);
+}
+
+/* All eight tabs must remain visible, including attachments, on narrow drawers. */
+.drawer-content > .tabs { flex-wrap: wrap; }
+.drawer-content > .tabs .tab-item { margin-right: var(--space-2); }
+.candidate-detail-list { width: 100%; min-width: 0; }
+.candidate-detail-row { background: transparent; }
+.candidate-detail-row dd { min-width: 0; overflow-wrap: anywhere; }
+.info-row, .stage-control { flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .stage-control { width: 100%; }
+  .stage-control .select-input { width: 100%; }
 }

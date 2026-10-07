@@ -117,3 +117,49 @@ img, svg {
   justify-content: center;
   background: var(--surface-canvas);
 }
+
+/* ---------- Page header (eyebrow + title + computed sub + actions) ----------
+   Единый заголовок экранов в стиле mockup (bento-arctic.html: .page-head).
+   Статистика в .page-sub всегда вычисляется из API, демо-числа не показываем. */
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.page-head .eyebrow {
+  font-size: var(--text-size-xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-on-subtle);
+}
+
+.page-head .page-title {
+  font-size: var(--text-size-2xl);
+  line-height: var(--line-height-tight);
+  margin-top: 2px;
+}
+
+.page-head .page-sub {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: var(--text-size-sm);
+}
+
+.page-head .page-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+@media (max-width: 640px) {
+  .page-head {
+    align-items: flex-start;
+  }
+  .page-head .page-actions {
+    width: 100%;
+  }
+}

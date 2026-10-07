@@ -1,0 +1,534 @@
+{
+  "fixture": "Synthetic test data; real FastAPI API; in-memory SQLite; Chromium 153; no network mocks",
+  "results": [
+    {
+      "role": "hr",
+      "theme": "light",
+      "width": 1440,
+      "board": {
+        "client": 1137,
+        "scroll": 3416,
+        "height": 527,
+        "scrollHeight": 527,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 1440,
+        "viewport": 1440
+      },
+      "drawer": {
+        "width": 559,
+        "scroll": 559
+      },
+      "popover": {
+        "x": 841.546875,
+        "y": 55.5,
+        "width": 360,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "hr",
+      "theme": "light",
+      "width": 390,
+      "board": {
+        "client": 269,
+        "scroll": 3416,
+        "height": 319,
+        "scrollHeight": 527,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 380,
+        "viewport": 390
+      },
+      "drawer": {
+        "width": 358,
+        "scroll": 358
+      },
+      "popover": {
+        "x": 76,
+        "y": 70,
+        "width": 300,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "hr",
+      "theme": "dark",
+      "width": 1440,
+      "board": {
+        "client": 1137,
+        "scroll": 3416,
+        "height": 527,
+        "scrollHeight": 527,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 1440,
+        "viewport": 1440
+      },
+      "drawer": {
+        "width": 559,
+        "scroll": 559
+      },
+      "popover": {
+        "x": 841.546875,
+        "y": 55.5,
+        "width": 360,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "hr",
+      "theme": "dark",
+      "width": 390,
+      "board": {
+        "client": 269,
+        "scroll": 3416,
+        "height": 319,
+        "scrollHeight": 527,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 380,
+        "viewport": 390
+      },
+      "drawer": {
+        "width": 358,
+        "scroll": 358
+      },
+      "popover": {
+        "x": 76,
+        "y": 70,
+        "width": 300,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "admin",
+      "theme": "light",
+      "width": 1440,
+      "board": {
+        "client": 1137,
+        "scroll": 3416,
+        "height": 599,
+        "scrollHeight": 599,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 1440,
+        "viewport": 1440
+      },
+      "drawer": {
+        "width": 559,
+        "scroll": 559
+      },
+      "popover": {
+        "x": 809.484375,
+        "y": 55.5,
+        "width": 360,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "admin",
+      "theme": "light",
+      "width": 390,
+      "board": {
+        "client": 269,
+        "scroll": 3416,
+        "height": 319,
+        "scrollHeight": 599,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 380,
+        "viewport": 390
+      },
+      "drawer": {
+        "width": 358,
+        "scroll": 358
+      },
+      "popover": {
+        "x": 76,
+        "y": 70,
+        "width": 300,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "admin",
+      "theme": "dark",
+      "width": 1440,
+      "board": {
+        "client": 1137,
+        "scroll": 3416,
+        "height": 599,
+        "scrollHeight": 599,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 1440,
+        "viewport": 1440
+      },
+      "drawer": {
+        "width": 559,
+        "scroll": 559
+      },
+      "popover": {
+        "x": 809.484375,
+        "y": 55.5,
+        "width": 360,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "admin",
+      "theme": "dark",
+      "width": 390,
+      "board": {
+        "client": 269,
+        "scroll": 3416,
+        "height": 319,
+        "scrollHeight": 599,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 380,
+        "viewport": 390
+      },
+      "drawer": {
+        "width": 358,
+        "scroll": 358
+      },
+      "popover": {
+        "x": 76,
+        "y": 70,
+        "width": 300,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "manager",
+      "theme": "light",
+      "width": 1440,
+      "board": {
+        "client": 1137,
+        "scroll": 3416,
+        "height": 599,
+        "scrollHeight": 599,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 1440,
+        "viewport": 1440
+      },
+      "drawer": {
+        "width": 559,
+        "scroll": 559
+      },
+      "popover": {
+        "x": 796.703125,
+        "y": 55.5,
+        "width": 360,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "manager",
+      "theme": "light",
+      "width": 390,
+      "board": {
+        "client": 269,
+        "scroll": 3416,
+        "height": 319,
+        "scrollHeight": 599,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 380,
+        "viewport": 390
+      },
+      "drawer": {
+        "width": 358,
+        "scroll": 358
+      },
+      "popover": {
+        "x": 76,
+        "y": 70,
+        "width": 300,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "manager",
+      "theme": "dark",
+      "width": 1440,
+      "board": {
+        "client": 1137,
+        "scroll": 3416,
+        "height": 599,
+        "scrollHeight": 599,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 1440,
+        "viewport": 1440
+      },
+      "drawer": {
+        "width": 559,
+        "scroll": 559
+      },
+      "popover": {
+        "x": 796.703125,
+        "y": 55.5,
+        "width": 360,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    },
+    {
+      "role": "manager",
+      "theme": "dark",
+      "width": 390,
+      "board": {
+        "client": 269,
+        "scroll": 3416,
+        "height": 319,
+        "scrollHeight": 599,
+        "overflow": "auto",
+        "gap": "16px",
+        "widths": [
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296,
+          296
+        ],
+        "documentWidth": 380,
+        "viewport": 390
+      },
+      "drawer": {
+        "width": 358,
+        "scroll": 358
+      },
+      "popover": {
+        "x": 76,
+        "y": 70,
+        "width": 300,
+        "height": 489.390625
+      },
+      "schedule": {
+        "display": "table-cell",
+        "height": 54.6875,
+        "siblingHeight": 54.6875
+      },
+      "uploadDownload": "real API; byte-identical DOCX"
+    }
+  ],
+  "errors": []
+}

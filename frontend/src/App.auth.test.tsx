@@ -77,9 +77,9 @@ describe("App authentication flow", () => {
 
     expect(await screen.findByText("Админ Админов")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Выйти" })).toBeInTheDocument();
-    // Admin sees the shared candidates section, not the personal queue.
+    // Admin lands on the personal queue; the shared candidates section remains available.
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Кандидаты" })
+      await screen.findByRole("heading", { level: 1, name: "Моя очередь" })
     ).toBeInTheDocument();
   });
 

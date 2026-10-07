@@ -62,9 +62,14 @@
 }
 
 .library-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: calc(var(--control-height-md) + var(--space-3));
+  color: var(--text-primary);
   border: 1px solid var(--border-default);
   background: var(--surface-raised);
-  border-radius: var(--chip-radius);
+  border-radius: var(--card-radius);
   padding: 6px 14px;
   font: inherit;
   font-size: 13px;
@@ -76,9 +81,9 @@
 }
 
 .library-chip.is-active {
-  background: var(--accent-default);
-  border-color: var(--accent-default);
-  color: var(--text-on-accent);
+  background: var(--accent-subtle);
+  border-color: var(--accent-subtle-border);
+  color: var(--accent-on-subtle);
 }
 
 .library-chip:focus-visible {
@@ -87,7 +92,7 @@
 }
 
 .library-chip-count {
-  opacity: 0.75;
+  font-weight: var(--font-weight-medium);
   font-variant-numeric: tabular-nums;
 }
 
@@ -117,9 +122,9 @@
 
 .library-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
-  margin-top: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-4);
 }
 
 .library-card {
@@ -197,6 +202,7 @@
 
 .library-card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -345,5 +351,39 @@
   .library-header {
     flex-direction: column;
     align-items: stretch;
+  }
+}
+
+/* Catalog hierarchy: real category, publication and version metadata. */
+.library-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+
+.library-card-body {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.library-card-version {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
+}
+
+.library-chip-count {
+  margin-left: auto;
+}
+
+.library-search input {
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .library-chip {
+    flex: 1 1 140px;
   }
 }

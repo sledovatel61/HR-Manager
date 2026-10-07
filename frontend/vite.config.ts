@@ -23,6 +23,8 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // Preserve raw stylesheet imports for structural layout/theme regression tests.
+    css: { include: [/\?raw$/] },
     setupFiles: ["./src/setupTests.ts"],
     globals: true,
   },

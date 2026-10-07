@@ -11,14 +11,14 @@
   gap: 12px;
   margin: 0 0 20px;
   padding: 12px 16px;
-  border: 1px solid #dde3ee;
+  border: 1px solid var(--border-default);
   border-radius: 8px;
-  background: #f8fafd;
+  background: var(--surface-sunken);
 }
 
 .first-run-summary dt {
   font-size: 0.8rem;
-  color: #5a6478;
+  color: var(--text-secondary);
 }
 
 .first-run-summary dd {
@@ -54,13 +54,13 @@
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px solid #dde3ee;
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   cursor: pointer;
 }
 
 .first-run-weekday input {
-  accent-color: #2f6fed;
+  accent-color: var(--accent-default);
 }
 
 .first-run-submit {

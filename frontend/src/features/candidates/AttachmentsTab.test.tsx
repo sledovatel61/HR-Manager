@@ -147,7 +147,7 @@ describe("Загрузка", () => {
 
   it("не отправляет файл больше лимита", async () => {
     listMock.mockResolvedValue(
-      payload({ limits: { max_file_bytes: 1024, max_total_bytes: 1024, max_count: 30 } }),
+      payload({ limits: { max_file_bytes: 1024, max_total_bytes: 10000000, max_count: 30 } }),
     );
     const user = userEvent.setup();
     render(<AttachmentsTab candidateId={CANDIDATE_ID} />);
@@ -238,7 +238,7 @@ describe("Права", () => {
     render(<AttachmentsTab candidateId={CANDIDATE_ID} />);
     await screen.findByText("Анкета кандидата.docx");
 
-    expect(screen.getByRole("button", { name: "Загрузить" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Загрузить анкету" })).toBeDisabled();
     expect(
       screen.queryByRole("button", { name: /Удалить Анкета кандидата.docx/ }),
     ).toBeNull();
@@ -254,7 +254,7 @@ describe("Права", () => {
     render(<AttachmentsTab candidateId={CANDIDATE_ID} />);
     await screen.findByText("Анкета кандидата.docx");
 
-    expect(screen.getByRole("button", { name: "Загрузить" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Загрузить анкету" })).toBeDisabled();
   });
 });
 
@@ -285,4 +285,46 @@ describe("Удаление", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("Недостаточно прав.");
   });
+});
+
+
+it("allows selecting the same file again and refreshes the parent attachment badge", async () => {
+  uploadMock.mockResolvedValue(ATTACHMENT);
+  const onChanged = vi.fn();
+  render(<AttachmentsTab candidateId={CANDIDATE_ID} onChanged={onChanged} />);
+  await screen.findByText("Анкета кандидата.docx");
+  const input = screen.getByLabelText("Файл анкеты или скана");
+  const file = new File(["pdf"], "анкета.pdf", { type: "application/pdf" });
+  await userEvent.upload(input, file);
+  await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+  await userEvent.upload(input, file);
+  await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+  expect(uploadMock).toHaveBeenCalledTimes(2);
+});
+
+it("shows real upload progress and disables both upload entry points until completion", async () => {
+  let finish!: (value: CandidateAttachment) => void;
+  uploadMock.mockImplementation((_id, _file, progress) => {
+    progress?.(42);
+    return new Promise((resolve) => { finish = resolve; });
+  });
+  render(<AttachmentsTab candidateId={CANDIDATE_ID} />);
+  await screen.findByText("Анкета кандидата.docx");
+  const input = screen.getByLabelText("Файл анкеты или скана");
+  await userEvent.upload(input, new File(["pdf"], "анкета.pdf", { type: "application/pdf" }));
+  expect(screen.getByRole("progressbar", { name: "Загрузка файла" })).toHaveAttribute("value", "42");
+  expect(input).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Загрузить анкету" })).toBeDisabled();
+  finish(ATTACHMENT);
+  await waitFor(() => expect(input).toBeEnabled());
+});
+
+it("reports an upload permission refusal without announcing success", async () => {
+  uploadMock.mockRejectedValue(new ApiError(403, "Недостаточно прав."));
+  const onChanged = vi.fn();
+  render(<AttachmentsTab candidateId={CANDIDATE_ID} onChanged={onChanged} />);
+  await screen.findByText("Анкета кандидата.docx");
+  await userEvent.upload(screen.getByLabelText("Файл анкеты или скана"), new File(["pdf"], "анкета.pdf", { type: "application/pdf" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Недостаточно прав.");
+  expect(onChanged).not.toHaveBeenCalled();
 });

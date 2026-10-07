@@ -1666,6 +1666,7 @@ export type SavePickerOutcome = "saved" | "cancelled";
 export async function saveCandidateAttachmentWithPicker(
   candidateId: string,
   attachmentId: string,
+  filename: string,
 ): Promise<{ outcome: SavePickerOutcome; filename: string; handle?: FileSystemFileHandle }> {
   if (typeof window.showSaveFilePicker !== "function") {
     throw new ApiError(
@@ -1673,8 +1674,9 @@ export async function saveCandidateAttachmentWithPicker(
       "Диалог «Сохранить как…» недоступен в этом браузере. Используйте обычное скачивание.",
     );
   }
-  const { blob, filename } = await fetchCandidateAttachment(candidateId, attachmentId);
-  const extension = filename.slice(filename.lastIndexOf(".")) || "";
+  // Open the picker during the click gesture, before slow network I/O can
+  // consume transient activation. The name is already known from the list.
+  const extension = filename.slice(filename.lastIndexOf(".")).toLowerCase() || "";
   let handle: FileSystemFileHandle;
   try {
     handle = await window.showSaveFilePicker({
@@ -1695,9 +1697,15 @@ export async function saveCandidateAttachmentWithPicker(
     }
     throw error;
   }
+  const { blob } = await fetchCandidateAttachment(candidateId, attachmentId);
   const writable = await handle.createWritable();
-  await writable.write(blob);
-  await writable.close();
+  try {
+    await writable.write(blob);
+    await writable.close();
+  } catch (error) {
+    await writable.abort().catch(() => {});
+    throw error;
+  }
   return { outcome: "saved", filename, handle };
 }
 
@@ -1726,8 +1734,19 @@ export function triggerBrowserDownload(blob: Blob, filename: string): void {
  * а не в Word/Acrobat — запустить внешнюю программу страница не может.
  */
 export async function openSavedFile(handle: FileSystemFileHandle): Promise<void> {
-  const file = await handle.getFile();
-  const url = URL.createObjectURL(file);
-  window.open(url, "_blank", "noopener");
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  // Reserve the tab synchronously while the user's click is still active.
+  // Drop opener before any asynchronous work/navigation (reverse-tabnabbing).
+  const tab = window.open("about:blank", "_blank");
+  if (!tab) throw new ApiError(0, "Браузер заблокировал новую вкладку. Разрешите всплывающие окна и повторите.");
+  tab.opener = null;
+  try {
+    const file = await handle.getFile();
+    if (tab.closed) throw new ApiError(0, "Вкладка была закрыта. Повторите открытие файла.");
+    const url = URL.createObjectURL(file);
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    tab.location.replace(url);
+  } catch (error) {
+    tab.close();
+    throw error;
+  }
 }
