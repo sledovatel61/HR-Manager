@@ -133,9 +133,15 @@ PowerShell-наборы (Pester), сборка `Setup.exe` (Inno Setup) и porta
 ## 4. Артефакты и их SHA256
 
 **Хэш артефакта берётся из `SHA256SUMS.txt` / `BUILD-INFO.txt` той сборки, которую скачали, а не из этой
-таблицы.** Голова ветки на момент сдачи ревью — `5d6aaf3`; её сборка (прогон `37646226479`) даёт
-`HR-Manager-Setup-0.15.0.exe` = `084032F54C12F3B96EB38C48DAFBBB3A4825F44EF71280EA5F8ED739E4978349`,
-`LicenseIssuer-Portable.exe` = `1EEDA1E719B7B2330DECDB5C82A6D1E5D0CE6DC0186E81038B27BFD572457C59`.
+таблицы.** Сборка, включающая правки итерации ревью 12 (точная проверка издателя Docker, предупреждение про
+приватность внутри архива отчёта) — прогон `37655251039`, коммит `7324db3`:
+`HR-Manager-Setup-0.15.0.exe` = `F6A2417C024D39F2740FDA327DB6F0E1C0A237DAE14511E8802815465C1A19FF`,
+`LicenseIssuer-Portable.exe` = `1D507BD9A2EB978C8121BBAE1E626783B93FB7AF3B5FD85FA7061FF879654A37`,
+`release-manifest.json` = `98C72CF1F3B27E954615740113E9218AF6CF4D85B6548B9BE9D19AF6E448F2BC`.
+
+Ранее (голова ветки `5d6aaf3`, прогон `37646226479`) те же файлы имели хэши
+`084032F54C12F3B96EB38C48DAFBBB3A4825F44EF71280EA5F8ED739E4978349` и
+`1EEDA1E719B7B2330DECDB5C82A6D1E5D0CE6DC0186E81038B27BFD572457C59`.
 
 Ниже — сборка коммита `7633eef` (прогон `37642930511`); в скобках рядом сборки того же кода из `7a5ed7a`
 (прогон `37640729694`) и `3df0ae8` (`37638116840`), чтобы было видно: разные прогоны одного и того же кода дают
@@ -179,8 +185,8 @@ notice-аннотациями CI (шаг «Publish the pilot artifact hashes…�
 
 | Что именно | Из какого прогона | SHA256 | Откуда скачать |
 | --- | --- | --- | --- |
-| `HR-Manager-Setup-0.15.0.exe` — **файл для Марии** (без подписи, SmartScreen «Подробнее → Выполнить в любом случае») | `37646226479` (голова ветки `5d6aaf3`), джоб `Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS` | `084032F54C12F3B96EB38C48DAFBBB3A4825F44EF71280EA5F8ED739E4978349` | артефакт `pilot-setup-0.15.0-unsigned`; рядом с exe лежит `SHA256SUMS.txt` с той же строкой |
-| `LicenseIssuer-Portable.exe` — portable-выпуск лицензий для владельца | тот же прогон, джоб `License issuer bundle - Windows PowerShell 5.1 checks` (фаза `portable`) | `1EEDA1E719B7B2330DECDB5C82A6D1E5D0CE6DC0186E81038B27BFD572457C59` | артефакт `license-issuer-portable`, строка `sha256_exe` в `BUILD-INFO.txt` |
+| `HR-Manager-Setup-0.15.0.exe` — **файл для Марии** (без подписи, SmartScreen «Подробнее → Выполнить в любом случае») | `37655251039` (коммит `7324db3`), джоб `Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS` | `F6A2417C024D39F2740FDA327DB6F0E1C0A237DAE14511E8802815465C1A19FF` | артефакт `pilot-setup-0.15.0-unsigned`; рядом с exe лежит `SHA256SUMS.txt` с той же строкой |
+| `LicenseIssuer-Portable.exe` — portable-выпуск лицензий для владельца | тот же прогон, джоб `License issuer bundle - Windows PowerShell 5.1 checks` (фаза `portable`) | `1D507BD9A2EB978C8121BBAE1E626783B93FB7AF3B5FD85FA7061FF879654A37` | артефакт `license-issuer-portable`, строка `sha256_exe` в `BUILD-INFO.txt` |
 
 Проверка на машине: `Get-FileHash .\HR-Manager-Setup-0.15.0.exe -Algorithm SHA256` совпадает со `SHA256SUMS.txt`
 из того же артефакта. Если владелец собрал релиз сам (`Pilot release`), он сверяет хэш с `SHA256SUMS.txt`
