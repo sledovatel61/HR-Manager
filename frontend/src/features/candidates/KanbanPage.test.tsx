@@ -485,3 +485,14 @@ it("scrolls the board without dragging and keeps the move control collapsed", as
   expect(summary.closest("details")).toHaveAttribute("open");
   expect(screen.getByRole("combobox", { name: "Изменить этап: Кандидат new" })).toBeVisible();
 });
+
+it.each([undefined, 0, 2])("only shows a positive attachment count on Kanban (%s)", async (count) => {
+  vi.mocked(api.listCandidates).mockImplementation(async (query) => {
+    const items = query?.stage === "new" ? [{ ...candidate("new"), attachment_count: count }] : [];
+    return { items, total: items.length, limit: 20, offset: 0 };
+  });
+  renderKanban();
+  await screen.findByText("Кандидат new");
+  if (count && count > 0) expect(screen.getByLabelText("Вложений: 2")).toBeVisible();
+  else expect(screen.queryByLabelText(/^Вложений:/)).not.toBeInTheDocument();
+});
