@@ -79,7 +79,9 @@ function Initialize-HrmTestEngine {
         $TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM тест движка " + [System.Guid]::NewGuid().ToString("N").Substring(0, 8))
     }
     $engineDir = Join-Path $PSScriptRoot "..\engine"
-    foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install", "Crypto", "Channel", "Lan", "SupportBundle")) {
+    foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update",
+            "Diagnostics", "Install", "Crypto", "Channel", "Lan", "SupportBundle",
+            "Docker", "Supervisor", "Tray")) {
         Import-Module (Join-Path $engineDir "$module.psm1") -Force -ErrorAction Stop
     }
     $env:HRM_NONINTERACTIVE = "1"
@@ -93,7 +95,13 @@ function Initialize-HrmTestEngine {
     Clear-HrmExternalMock
     Clear-HrmHttpMock
     Clear-HrmPreflightOverride
+    Clear-HrmDockerOverride
+    Clear-HrmDownloadMock
+    Clear-HrmProcessLaunchMock
     Reset-HrmRedaction
+    Remove-Item Env:HRM_AUTOSTART_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_AUTOSTART_MOCK -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_DESKTOP_DIR -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $env:HRM_STATE_DIR -Force | Out-Null
     New-Item -ItemType Directory -Path $env:HRM_INSTALL_DIR -Force | Out-Null
 }
@@ -155,6 +163,15 @@ function New-HrmMockWorld {
         TagCount = 0
         BuildCount = 0
         SimulateStaleRelease = $false
+        # 0.15.0: пилотный supervisor/Docker
+        PgVolumeMissing = $false
+        AlembicHeads = "0013"
+        ContainersUp = $true
+        WslAvailable = $true
+        SuspendEngine = $false
+        ContainersJson = ""
+        UpFails = $false
+        UpCount = 0
     }
     $world.OpsBody = [pscustomobject]@{
         status = "ok"
@@ -183,6 +200,9 @@ function New-HrmMockWorld {
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "Docker version 27.3.1, build ce12230"; Stderr = "" }
             }
             if ($Arguments.Count -ge 1 -and $Arguments[0] -eq "info") {
+                if ($global:HRM_MockWorld.SuspendEngine) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "engine is not running" }
+                }
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "27.3.1"; Stderr = "" }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "version")) {
@@ -192,12 +212,19 @@ function New-HrmMockWorld {
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ""; Stderr = "" }
             }
             if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "ps")) {
+                if ($global:HRM_MockWorld.ContainersJson) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.ContainersJson; Stderr = "" }
+                }
                 if ($global:HRM_MockWorld.Running) {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = '[{"Name":"backend","State":"running"},{"Name":"frontend","State":"running"}]'; Stderr = "" }
                 }
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "[]"; Stderr = "" }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "up")) {
+                $global:HRM_MockWorld.UpCount++
+                if ($global:HRM_MockWorld.UpFails) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "container failed to start" }
+                }
                 $global:HRM_MockWorld.Running = $true
                 if (-not $global:HRM_MockWorld.SimulateStaleRelease) {
                     $envIndex = [array]::IndexOf([object[]]$Arguments, "--env-file")
@@ -239,6 +266,9 @@ function New-HrmMockWorld {
                     }
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "INFO [alembic.runtime.migration] Running upgrade -> 0013"; Stderr = "" }
                 }
+                if ($joined -match "alembic heads") {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.AlembicHeads; Stderr = "" }
+                }
                 if ($joined -match "worker-check") {
                     if ($global:HRM_MockWorld.WorkerCheckOk) {
                         return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "worker ok"; Stderr = "" }
@@ -275,6 +305,12 @@ function New-HrmMockWorld {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "2026-09-09T01:00:00Z ok abc.enc"; Stderr = "" }
                 }
             }
+            if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "volume" -and $Arguments[1] -eq "inspect") {
+                if ($Arguments[2] -eq "hr-manager-pilot_pilot_pgdata" -and $global:HRM_MockWorld.PgVolumeMissing) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "no such volume" }
+                }
+                return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ('[{"Name":"{0}"}]' -f $Arguments[2]); Stderr = "" }
+            }
             if ($Arguments.Count -eq 3 -and $Arguments[0] -eq "volume" -and $Arguments[1] -eq "rm") {
                 $global:HRM_MockWorld.RemovedVolumes += $Arguments[2]
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "removed"; Stderr = "" }
@@ -297,6 +333,12 @@ function New-HrmMockWorld {
         }
         if ($Name -eq "git.exe") {
             return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.ReleaseSha; Stderr = "" }
+        }
+        if ($Name -eq "wsl.exe") {
+            if (-not $global:HRM_MockWorld.WslAvailable) {
+                return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "WSL is not installed" }
+            }
+            return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "  NAME      STATE           VERSION`n* Ubuntu    Running         2"; Stderr = "" }
         }
         return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "unexpected command: $Name $($Arguments -join ' ')" }
     }

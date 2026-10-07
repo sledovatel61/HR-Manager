@@ -14,7 +14,7 @@ $exitCode = 0
 $totalPassed = 0
 $failures = @()
 try {
-    foreach ($file in @("static.tests.ps1", "engine.tests.ps1", "channel.tests.ps1", "installer-roots.tests.ps1", "pilot-final.tests.ps1")) {
+    foreach ($file in @("static.tests.ps1", "engine.tests.ps1", "channel.tests.ps1", "installer-roots.tests.ps1", "docker.tests.ps1", "stack.tests.ps1", "supervisor.tests.ps1", "pilot-final.tests.ps1")) {
         $path = Join-Path $testsDir $file
         & (Resolve-Path $path).Path -HarnessPath $testsDir
         if (-not $?) { $exitCode = 1 }

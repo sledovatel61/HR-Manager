@@ -392,10 +392,129 @@ Test-Case "обновление с падающей миграцией отка�
     Assert-HrmTrue $caught "падающая миграция не бросила исключение"
     Assert-HrmEqual ("a"*40) (Get-HrmInstallRecord $state).release_sha "после отката sha должен остаться прежним"
     Assert-HrmTrue ($global:HRM_MockWorld.TagCount -ge 1) "откат к прежним образам не выполнен"
+    # Б8: результат обновления фиксируется для трея/мастера/диагностики — «восстановлена прежняя версия», без секретов
+    $result = Get-HrmUpdateResult $state
+    Assert-HrmTrue ($null -ne $result) "update-result.json не создан при откате"
+    Assert-HrmEqual "rolled_back" ([string]$result.status) "статус результата должен быть rolled_back"
+    Assert-HrmTrue ([bool]$result.rolled_back) "флаг rolled_back должен быть выставлен"
+    Assert-HrmContains ([string]$result.message) "прежняя версия" "сообщение не объясняет откат простыми словами"
+    Assert-HrmNotContains ([string]$result.message) "Выполните" "сообщение об откате не должно требовать ручных действий от Марии"
     Remove-Item $sourceN1 -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $sourceN2 -Recurse -Force -ErrorAction SilentlyContinue
     Clear-HrmExternalMock
     Clear-HrmHttpMock
+}
+
+
+# --- B6 (0.15.0): предпросмотр обновления и сохранность данных ---
+Test-Case "предпросмотр обновления: текущая/новая версия, changelog, проверки и предупреждение о данных" {
+    Initialize-HrmTestEngine
+    $null = New-HrmMockWorld
+    Set-HrmPreflightOverride @{ windows=$true; powershell=$true; docker=$true; daemon=$true; compose="v2.29.7 (mock)"; port=$true; state_dir=$true; space=$true; config=$true }
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $sourceN1 = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-prevN1-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
+    $sourceN2 = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-prevN2-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
+    New-Item -ItemType Directory -Path $sourceN1 -Force | Out-Null
+    New-Item -ItemType Directory -Path $sourceN2 -Force | Out-Null
+    New-HrmFakeSnapshot -Root $sourceN1 -ReleaseSha ("1"*40)
+    New-HrmFakeSnapshot -Root $sourceN2 -ReleaseSha ("2"*40)
+    (@{ release_sha = ("2"*40); version = "0.15.0"; changelog = @("Проверка состояния перед запуском", "Обновление сохраняет данные и лицензию") } | ConvertTo-Json) |
+        Set-Content -Path (Join-Path $sourceN2 "release.json") -Encoding UTF8
+    Install-HrmApp -SourceDir $sourceN1 -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    $preview = Get-HrmUpdatePreview -ReleaseDir $sourceN2 -InstallDir $install -StateDir $state
+    Assert-HrmEqual "1.0.0" ([string]$preview.current_version) "предпросмотр не показал текущую версию"
+    Assert-HrmEqual "0.15.0" ([string]$preview.new_version) "предпросмотр не показал новую версию"
+    Assert-HrmFalse ([bool]$preview.same_version) "разные версии не должны считаться совпадением"
+    Assert-HrmTrue ([bool]$preview.can_update) "предпросмотр заблокировал обновление без причины"
+    Assert-HrmTrue (@($preview.changelog).Count -ge 2) "changelog не прочитан из release.json"
+    Assert-HrmContains ([string]$preview.data_notice) "резервная копия" "нет предупреждения про резервную копию"
+    Assert-HrmContains ([string]$preview.data_notice) "сохраняются" "нет предупреждения о сохранении данных"
+    Assert-HrmEqual 8080 ([int]$preview.port) "предпросмотр не сохраняет порт установки"
+    Assert-HrmFalse ([bool]$preview.lan_enabled) "по умолчанию LAN должен быть выключен"
+    $keys = @($preview.checks | ForEach-Object { $_.key })
+    foreach ($expected in @("space", "license", "settings", "port", "docker", "backup_volume")) {
+        Assert-HrmTrue ($keys -contains $expected) ("в предпросмотре нет проверки '" + $expected + "'")
+    }
+    $portCheck = @($preview.checks | Where-Object { $_.key -eq "port" })[0]
+    Assert-HrmContains ([string]$portCheck.detail) "8080" "проверка порта не упоминает текущий порт"
+    $settingsCheck = @($preview.checks | Where-Object { $_.key -eq "settings" })[0]
+    Assert-HrmEqual "ok" ([string]$settingsCheck.status) "сохранение пользователей/настроек не подтверждено"
+    # Человеческие строки для мастера: без docker/powershell-жаргона.
+    $lines = Format-HrmUpdatePreview -Preview $preview
+    $text = ($lines -join "`n")
+    Assert-HrmContains $text "Обновление HR Manager: 1.0.0" "заголовок предпросмотра без версий"
+    Assert-HrmNotContains $text "docker compose" "текст предпросмотра не должен требовать ручных команд Docker"
+    Remove-Item $sourceN1 -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $sourceN2 -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Test-Case "предпросмотр обновления: та же версия -> same_version, повторный запуск Setup не ломает установку" {
+    Initialize-HrmTestEngine
+    $null = New-HrmMockWorld
+    Set-HrmPreflightOverride @{ windows=$true; powershell=$true; docker=$true; daemon=$true; compose="v2.29.7 (mock)"; port=$true; state_dir=$true; space=$true; config=$true }
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $source = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-same-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
+    New-Item -ItemType Directory -Path $source -Force | Out-Null
+    New-HrmFakeSnapshot -Root $source -ReleaseSha ("c"*40)
+    Install-HrmApp -SourceDir $source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    $preview = Get-HrmUpdatePreview -ReleaseDir $source -InstallDir $install -StateDir $state
+    Assert-HrmTrue ([bool]$preview.same_version) "одинаковый release_sha должен давать same_version=true"
+    Remove-Item $source -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Test-Case "обновление поверх сохраняет лицензию, порт, LAN и не удаляет тома данных" {
+    Initialize-HrmTestEngine
+    $world = New-HrmMockWorld
+    Set-HrmPreflightOverride @{ windows=$true; powershell=$true; docker=$true; daemon=$true; compose="v2.29.7 (mock)"; port=$true; state_dir=$true; space=$true; config=$true }
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $sourceN1 = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-keepN1-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
+    $sourceN2 = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-keepN2-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
+    New-Item -ItemType Directory -Path $sourceN1 -Force | Out-Null
+    New-Item -ItemType Directory -Path $sourceN2 -Force | Out-Null
+    New-HrmFakeSnapshot -Root $sourceN1 -ReleaseSha ("3"*40)
+    New-HrmFakeSnapshot -Root $sourceN2 -ReleaseSha ("4"*40)
+    (@{ release_sha = ("4"*40); version = "0.15.0"; changelog = @("Обновление сохраняет данные") } | ConvertTo-Json) |
+        Set-Content -Path (Join-Path $sourceN2 "release.json") -Encoding UTF8
+    Install-HrmApp -SourceDir $sourceN1 -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    # Пользовательское состояние ДО обновления: ключ лицензии и явно включённый LAN.
+    $licenseKeyBefore = Get-HrmLicensePublicKey $state
+    Invoke-HrmLanAccess -InstallDir $install -StateDir $state -Enable | Out-Null
+    Assert-HrmTrue ((Get-HrmLanConfig $state).enabled) "LAN не включился до обновления"
+    $world.RemovedVolumes = @()
+    $world.BackupNowCount = 0
+    # Обновление поверх (как второй Setup.exe новой версии).
+    Install-HrmApp -SourceDir $sourceN2 -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    # 1) Лицензия/ключ проверки, секреты, порт и LAN не потеряны.
+    Assert-HrmEqual $licenseKeyBefore (Get-HrmLicensePublicKey $state) "ключ проверки лицензии изменился при обновлении"
+    Assert-HrmTrue (Test-Path (Get-HrmSecretsFile $state)) "секреты установки потеряны"
+    $record = Get-HrmInstallRecord $state
+    Assert-HrmEqual 8080 ([int]$record.port) "порт изменился при обновлении"
+    Assert-HrmTrue ((Get-HrmLanConfig $state).enabled) "настройка LAN потеряна при обновлении"
+    Assert-HrmEqual ("4"*40) ([string]$record.release_sha) "запись установки не обновилась на новый релиз"
+    Assert-HrmEqual "0.15.0" ([string]$record.version) "версия установки не обновилась"
+    # 2) Тома данных и базы не удаляются: ни volume rm/prune, ни down -v.
+    Assert-HrmEqual 0 (@($world.RemovedVolumes).Count) "при обновлении удалялись тома"
+    $destroying = @($world.Calls | Where-Object {
+            $joined = ($_.Args -join " ")
+            ($joined -match "volume\s+(rm|prune)") -or ($joined -match "down\b.*-v") -or ($joined -match "down\s+-v")
+        })
+    Assert-HrmEqual 0 $destroying.Count "при обновлении вызывались разрушительные команды Docker"
+    # 3) Бэкап перед миграцией делался, и результат обновления зафиксирован.
+    Assert-HrmTrue ($world.BackupNowCount -ge 1) "перед обновлением не создавался свежий бэкап"
+    $result = Get-HrmUpdateResult $state
+    Assert-HrmTrue ($null -ne $result) "update-result.json не создан после успешного обновления"
+    Assert-HrmEqual "done" ([string]$result.status) "статус успешного обновления должен быть done"
+    Assert-HrmContains ([string]$result.message) "Обновление завершено" "нет сообщения «Обновление завершено»"
+    Assert-HrmFalse ([bool]$result.rolled_back) "успешное обновление не должно помечаться откатом"
+    Assert-HrmEqual "1.0.0" ([string]$result.from_version) "не зафиксирована прежняя версия"
+    Assert-HrmEqual "0.15.0" ([string]$result.to_version) "не зафиксирована новая версия"
+    # 4) Приложение после обновления отвечает (readiness) и открывается.
+    Assert-HrmTrue (Test-HrmComposeRunning -InstallDir $install -StateDir $state) "после обновления контейнеры не запущены"
+    Remove-Item $sourceN1 -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $sourceN2 -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ("Пилот финал: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

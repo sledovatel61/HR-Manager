@@ -9,12 +9,13 @@
 #   parser  - build.ps1 encoding contract + Windows PowerShell 5.1 Parser
 #   build   - full build.ps1 run under 5.1, zip present, no hex leaks in log
 #   runtime - fresh unzip + CLI chain + fail-closed + loopback + key sweep
+#   portable- build-portable.ps1 + single-file exe: trailer, selfcheck, CLI chain
 #
 # Every failure is written to the GitHub step summary (readable via the
 # check-run API) with the offending line number, then the phase exits 1.
 
 param(
-    [ValidateSet("parser", "build", "runtime")]
+    [ValidateSet("parser", "build", "runtime", "portable")]
     [string]$Phase = "parser"
 )
 
@@ -48,7 +49,7 @@ try {
       if ($PSVersionTable.PSEdition -ne "Desktop" -or $PSVersionTable.PSVersion.Major -ne 5) {
           Report-Fail "parser: not running under Windows PowerShell 5.1" ("edition=" + $PSVersionTable.PSEdition + " version=" + $PSVersionTable.PSVersion)
       }
-      foreach ($scriptName in @("build.ps1", "ci-windows-checks.ps1", "ci-windows-acceptance.ps1", "windows-vm-checklist.ps1")) {
+      foreach ($scriptName in @("build.ps1", "build-portable.ps1", "ci-windows-checks.ps1", "ci-windows-acceptance.ps1", "windows-vm-checklist.ps1")) {
         $BuildScript = Join-Path $Root $scriptName
         if (-not (Test-Path $BuildScript)) {
             Report-Fail "parser: $scriptName not found" "expected: $BuildScript"
@@ -159,6 +160,159 @@ try {
         $ok = "PASS: zip present, no 64+ hex material in the build log"
         Write-Phase $ok
         if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $ok -Encoding utf8 }
+    }
+
+    # ------------------------------------------------------------ portable
+    if ($Phase -eq "portable") {
+        $portableScript = Join-Path $Root "build-portable.ps1"
+        $portableExe = Join-Path $Root "dist\LicenseIssuer-Portable.exe"
+        $portableInfo = Join-Path $Root "dist\BUILD-INFO.txt"
+        if (-not (Test-Path $portableScript)) { Report-Fail "portable: build-portable.ps1 not found" ("expected: " + $portableScript) }
+        if (-not (Test-Path $DistZip)) { Report-Fail "portable: the bundle zip is missing (run the build phase first)" ("expected: " + $DistZip) }
+        $issuerVersion = "0.15.0"
+        if ($env:HRM_ISSUER_VERSION) { $issuerVersion = $env:HRM_ISSUER_VERSION }
+        $logFile = Join-Path $env:RUNNER_TEMP "license-issuer-portable.log"
+        # Explicit 5.1 invocation: the builder must work under Windows
+        # PowerShell 5.1, not only under pwsh 7.
+        $ps51 = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $previousEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $portableLines = @(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $portableScript -Version $issuerVersion *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
+            $portableCode = $LASTEXITCODE
+            Set-Content -Path $logFile -Value $portableLines -Encoding UTF8
+        } finally { $ErrorActionPreference = $previousEap }
+        Write-Phase "build-portable.ps1 exit code: $portableCode"
+        if ($portableCode -ne 0) {
+            $tail = (Get-Content $logFile -Tail 40 -ErrorAction SilentlyContinue) -join "`n"
+            Report-Fail "portable: build-portable.ps1 failed with code $portableCode" $tail
+        }
+        if (-not (Test-Path $portableExe)) {
+            Report-Fail "portable: LicenseIssuer-Portable.exe was not created" ("expected: " + $portableExe)
+        }
+        # The build log must never carry key material (the smoke test checks the
+        # CLI output; this is the second, independent gate on the whole log).
+        $portableLog = Get-Content $logFile -Raw
+        $hexRuns = [regex]::Matches($portableLog, "(?i)\b[0-9a-f]{64,}\b")
+        if ($hexRuns.Count -ne 0) {
+            Report-Fail "portable: build log contains $($hexRuns.Count) run(s) of 64+ hex characters" "possible key material leak"
+        }
+        if (-not (Test-Path $portableInfo)) { Report-Fail "portable: BUILD-INFO.txt was not written" ("expected: " + $portableInfo) }
+
+        # --- trailer read-back, independent of the builder -------------------
+        $marker = "HRMISSUER-PAYLOAD1"
+        $trailerSize = $marker.Length + 14
+        $bytes = New-Object byte[] $trailerSize
+        $stream = [System.IO.File]::OpenRead($portableExe)
+        try {
+            $exeLength = $stream.Length
+            if ($exeLength -le $trailerSize) { throw "the exe is too small to carry a payload" }
+            $stream.Seek(-$trailerSize, [System.IO.SeekOrigin]::End) | Out-Null
+            $total = 0
+            while ($total -lt $trailerSize) {
+                $n = $stream.Read($bytes, $total, $trailerSize - $total)
+                if ($n -le 0) { throw "could not read the trailer" }
+                $total += $n
+            }
+        } finally { $stream.Dispose() }
+        $markerBack = [System.Text.Encoding]::ASCII.GetString($bytes, 0, $marker.Length)
+        if ($markerBack -ne $marker) { Report-Fail "portable: trailer marker mismatch" ("found: " + $markerBack) }
+        $lengthBack = [System.Text.Encoding]::ASCII.GetString($bytes, $marker.Length, 14)
+        [long]$payloadLength = 0
+        if (-not [long]::TryParse($lengthBack, [ref]$payloadLength)) { Report-Fail "portable: trailer length is not a number" ("found: " + $lengthBack) }
+        if ($payloadLength -le 0 -or ($payloadLength + $trailerSize) -ge $exeLength) { Report-Fail "portable: trailer length is out of range" ("length: " + $payloadLength + " exe: " + $exeLength) }
+        Write-Phase ("trailer verified: marker={0} payload={1:N0} bytes exe={2:N0} bytes" -f $markerBack, $payloadLength, $exeLength)
+
+        # --- SHA256 from BUILD-INFO must match the artifact -------------------
+        $infoText = Get-Content $portableInfo -Raw
+        $infoMatch = [regex]::Match($infoText, "sha256_exe:\s*([0-9a-fA-F]{64})")
+        if (-not $infoMatch.Success) { Report-Fail "portable: BUILD-INFO.txt has no sha256_exe line" $infoText }
+        $actualHash = (Get-FileHash -Path $portableExe -Algorithm SHA256).Hash
+        if ($actualHash -ne $infoMatch.Groups[1].Value.ToUpperInvariant()) {
+            Report-Fail "portable: SHA256 mismatch between BUILD-INFO.txt and the artifact" ("recorded: " + $infoMatch.Groups[1].Value + " actual: " + $actualHash)
+        }
+        Write-Phase ("SHA256 matches BUILD-INFO.txt: " + $actualHash)
+
+        # --- second, independent CLI run through the shipped exe ---------------
+        # A fresh temp directory with spaces: the launcher must quote correctly.
+        $root = Join-Path $env:TEMP ("HRM Issuer PR52 Portable " + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        try {
+            $selfJson = Join-Path $root "selfcheck.json"
+            $previousEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                $null = (& $portableExe "--hrm-selfcheck" $selfJson 2>&1 | ForEach-Object { $_.ToString() })
+                $selfCode = $LASTEXITCODE
+            } finally { $ErrorActionPreference = $previousEap }
+            if ($selfCode -ne 0) { throw "selfcheck exited with code $selfCode" }
+            if (-not (Test-Path $selfJson)) { throw "selfcheck did not write $selfJson" }
+            $selfData = Get-Content $selfJson -Raw | ConvertFrom-Json
+            if (-not $selfData.ok) { throw "selfcheck reported ok=false, missing: $($selfData.missing)" }
+            Write-Phase ("selfcheck PASS: payload {0} files, {1:N0} bytes" -f $selfData.payload_file_count, $selfData.payload_total_bytes)
+
+            $keysDir = Join-Path $root "keys"
+            $licenseFile = Join-Path $root "chain.hrmlicense"
+            $steps = @(
+                @{ Name = "gen-keypair"; Args = @("gen-keypair", "--out-dir", $keysDir) },
+                @{ Name = "issue"; Args = @("issue", "--private-key-file", (Join-Path $keysDir "private_key.hex"), "--client", "Portable Smoke", "--expires", "2099-12-31", "--max-users", "2", "--out", $licenseFile) },
+                @{ Name = "verify"; Args = @("verify", "--public-key-file", (Join-Path $keysDir "public_key.b64"), "--license-file", $licenseFile) }
+            )
+            $chainOutput = @{}
+            foreach ($step in $steps) {
+                $previousEap = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                try {
+                    $text = (& $portableExe @($step.Args) 2>&1 | ForEach-Object { $_.ToString() } | Out-String)
+                    $stepCode = $LASTEXITCODE
+                } finally { $ErrorActionPreference = $previousEap }
+                $chainOutput[$step.Name] = $text
+                if ($stepCode -ne 0) { throw ("step '{0}' exited with code {1}" -f $step.Name, $stepCode) }
+            }
+            if (-not (Test-Path $licenseFile)) { throw "the CLI chain did not create the license file" }
+            Write-Phase "portable CLI chain PASS: gen-keypair -> issue -> verify (exit codes 0)"
+
+            # A tampered license must be rejected with a non-zero exit code.
+            $tampered = Join-Path $root "tampered.hrmlicense"
+            # Re-serialize the license with a different user limit: any change
+            # to the signed payload must invalidate the Ed25519 signature.
+            $lic = Get-Content -Path $licenseFile -Raw | ConvertFrom-Json
+            $lic.max_active_users = 999
+            $lic | ConvertTo-Json -Depth 4 | Set-Content -Path $tampered -Encoding utf8
+            $previousEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                $null = (& $portableExe "verify" "--public-key-file" (Join-Path $keysDir "public_key.b64") "--license-file" $tampered 2>&1 | ForEach-Object { $_.ToString() })
+                $tamperedCode = $LASTEXITCODE
+            } finally { $ErrorActionPreference = $previousEap }
+            if ($tamperedCode -eq 0) { throw "a tampered license was accepted by the portal exe" }
+            Write-Phase "tampered license correctly rejected (exit=$tamperedCode)"
+
+            # --- no private key material in the outputs or the temp tree -------
+            $privHex = (Get-Content -Path (Join-Path $keysDir "private_key.hex") -Raw).Trim()
+            if ($privHex) {
+                foreach ($name in $chainOutput.Keys) {
+                    if ($chainOutput[$name] -match [regex]::Escape($privHex)) { throw "private key material leaked into '$name' output" }
+                }
+                foreach ($f in (Get-ChildItem $root -Recurse -File | Where-Object { -not ($_.Name -eq "private_key.hex" -and $_.Directory.Name -eq "keys") -and $_.Length -lt 10MB })) {
+                    try {
+                        if ((Get-Content $f.FullName -Raw -Encoding utf8 -ErrorAction Stop) -match [regex]::Escape($privHex)) {
+                            throw "private key material found in: $($f.FullName)"
+                        }
+                    } catch [System.IO.IOException] { }
+                }
+            }
+            Write-Phase "no private key material in the portable exe outputs or temp artifacts"
+            $ok = "PASS: single-file exe built, trailer valid, GUI path present, CLI chain + tamper rejection + key sweep clean"
+            Write-Phase $ok
+            if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $ok -Encoding utf8 }
+        } finally {
+            if (Test-Path $root) {
+                Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+                if (Test-Path $root) { Write-Phase "WARN: could not remove $root - remove it manually" }
+                else { Write-Phase "temporary test directory removed: $root" }
+            }
+        }
     }
 
     # ------------------------------------------------------------ runtime

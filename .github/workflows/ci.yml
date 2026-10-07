@@ -790,6 +790,49 @@ jobs:
           if ($code -ne 0) { & $emit "error" "license-issuer-windows failure tail" (@($lines | Select-Object -Last 30) + ("exit code: " + $code)) }
           exit $code
 
+      - name: "Portable single-file issuer exe (P8): build, trailer, selfcheck, CLI chain under PowerShell 5.1"
+        id: portable
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 30
+        shell: powershell
+        run: |
+          # Windows PowerShell 5.1 logic lives in checked-in helpers (ASCII + UTF-8 BOM).
+          # Output goes to the log and to RUNNER_TEMP; the helper's own "[phase] ..."
+          # result lines become a notice annotation (readable via the check-run API),
+          # a failure tail becomes an error annotation. Key-like runs are redacted.
+          # HRM_ISSUER_VERSION stamps dist/BUILD-INFO.txt (falls back to 0.15.0).
+          $env:HRM_ISSUER_VERSION = "0.15.0"
+          $ErrorActionPreference = "Continue"
+          $diag = Join-Path $env:RUNNER_TEMP "diag-portable.txt"
+          $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase portable *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
+          $code = $LASTEXITCODE
+          Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
+          # Annotations are capped at 4096 chars each and 10 per level per step:
+          # evidence is emitted in chunks. Key-like tokens are redacted (64+ hex,
+          # 40+ base64/base64url chars containing digits and letters).
+          $emit = {
+            param([string]$kind, [string]$title, [string[]]$src)
+            $rx = "(?<![A-Za-z0-9+/_-])(?:[0-9a-fA-F]{64,}|(?=[A-Za-z0-9+/_-]*[0-9])(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}={0,2})(?![A-Za-z0-9+/_=-])"
+            $chunks = New-Object System.Collections.ArrayList
+            $cur = ""
+            foreach ($l in $src) {
+              $l = [regex]::Replace([string]$l, $rx, "<redacted>")
+              if ($l.Length -gt 3500) { $l = $l.Substring(0, 3500) + " ..." }
+              if ($cur.Length -gt 0 -and ($cur.Length + $l.Length + 1) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
+              if ($cur.Length -gt 0) { $cur += "`n" }
+              $cur += $l
+            }
+            if ($cur.Length -gt 0) { [void]$chunks.Add($cur) }
+            $n = [Math]::Min($chunks.Count, 9)
+            for ($i = 0; $i -lt $n; $i++) {
+              $m = ([string]$chunks[$i]).Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+              Write-Host ("::" + $kind + " title=" + $title + " " + ($i + 1) + "/" + $chunks.Count + "::" + $m)
+            }
+          }
+          & $emit "notice" "license-issuer-windows evidence" @($lines | Where-Object { $_ -match "^\[(parser|build|runtime|portable|accept|backend)\] " })
+          if ($code -ne 0) { & $emit "error" "license-issuer-windows failure tail" (@($lines | Select-Object -Last 30) + ("exit code: " + $code)) }
+          exit $code
+
       - name: Runtime checks from a fresh unzip (spaces in path, no system Python, loopback, fail-closed)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 10
@@ -877,6 +920,17 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Portable issuer contract checks (python, no Windows needed)
+        if: ${{ !cancelled() && steps.accept.outcome != 'skipped' }}
+        shell: powershell
+        run: |
+          # Static contract for launcher/Program.cs + build-portable.ps1 (ASCII-only,
+          # no network/private-key handling, trailer byte-compatibility, pinned
+          # cryptography wheel for win_amd64). Runs after setup-python.
+          $env:PYTHONUTF8 = "1"
+          python tools/license-issuer/ci-portable-contract.py
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::portable issuer contract checks failed"; exit 1 }
+
       - name: Backend verification of the Windows-issued licenses (backend service-layer code)
         if: ${{ !cancelled() && steps.accept.outcome != 'skipped' }}
         timeout-minutes: 10
@@ -925,6 +979,16 @@ jobs:
           if (Test-Path $h) { Remove-Item $h -Recurse -Force }
           if (Test-Path $h) { Write-Host "::warning::could not remove $h"; exit 1 }
           Write-Host "handoff directory removed"
+
+      - name: Upload portable license issuer for owner (P8, single file + SHA256 evidence)
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: license-issuer-portable
+          path: |
+            tools/license-issuer/dist/LicenseIssuer-Portable.exe
+            tools/license-issuer/dist/BUILD-INFO.txt
+          if-no-files-found: error
 
       - name: Upload license-issuer bundle for owner (B2, no private keys)
         if: success()

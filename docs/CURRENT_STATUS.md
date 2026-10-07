@@ -217,10 +217,42 @@ PostgreSQL integration и Compose должны подтверждаться CI �
 Отдельные технические follow-up вне Phase 16 перечислены в отчёте
 [`phase-16-report-arena.md`](phase-16-report-arena.md) §9.
 
+## Пилот 0.15.0 — финальная установочная сборка (P1–P12, 2026-10-07)
+
+Работы по финальной сборке для Windows 10/11 x64: аудит `docs/PILOT_FINAL_AUDIT.md`,
+итоговый отчёт `docs/PILOT_FINAL_REPORT.md`. Реализовано (код + автотесты + документы):
+
+- **Docker-сценарий** (`infra/windows/engine/Docker.psm1`): поиск Docker Desktop/движка, WSL2, виртуализация,
+  права, перезагрузка, место, порт; установка только официального установщика (`desktop.docker.com`, проверка
+  Authenticode + Subject, без `--accept-license`); отмена UAC/reboot → `docker-pending.json`; ожидание движка
+  с прогрессом; человеческие сообщения.
+- **Стек** (`Compose.psm1`): состояния `absent/stopped/partial/running/degraded/unknown`, ремонт и запуск
+  существующего проекта `hr-manager-pilot` **без удаления томов**.
+- **Трей** (`Tray.psm1`, `Supervisor.psm1`, `hrm-tray.ps1`): значок, меню (открыть/проверить/перезапустить/
+  отчёт/остановить/выйти), окно состояния с кнопками, единственный supervisor (mutex), безопасный автозапуск.
+- **Обновление поверх** (`Update.psm1`): предпросмотр (версии, changelog, проверки, предупреждение о данных),
+  бэкап-ворота, миграции, smoke, автоматический откат образов, `update-result.json`, сохранность лицензии/
+  настроек/порта/LAN/томов.
+- **Лицензирование**: `LicenseIssuer-Portable.exe` (один файл, без Python/Node/Docker/VS),
+  распознавание загрузки приватного ключа в backend, 15 новых UX-тестов активации.
+- **Тесты**: `docker.tests.ps1` (12), `stack.tests.ps1` (8), `supervisor.tests.ps1` (13),
+  `pilot-final.tests.ps1` (18, включая предпросмотр, сохранность данных и откат), статические 0.15.0-контракты;
+  `lint-engine.py` — 29 файлов, 0 провалов; контракт portable-issuer — 68 проверок; backend — 1200 passed / 146 skipped.
+- **Документы**: `docs/MARIA_GUIDE.md` (0.15.0), `docs/UPDATE_GUIDE.md`, `docs/RECOVERY_GUIDE.md`,
+  `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`, `docs/DOCKER_RUNTIME_DECISION.md` (Docker Desktop остаётся runtime,
+  с юридическим обоснованием), `docs/OWNER_QUICKSTART.md` (один `.exe` для владельца).
+
+Остаётся (без этого GO нет): прогон CI-джобов `windows-installer` и `license-issuer-windows`,
+ручной чек-лист `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows и заполнение SHA256 артефактов
+в `docs/PILOT_FINAL_REPORT.md`. В среде разработки нет Windows/PowerShell/Docker/Inno Setup, поэтому
+Pester-наборы и реальная установка здесь не запускались.
+
 ## Пилотный релиз: что осталось сделать
 
 Этот раздел отвечает на вопрос «можно ли запускать пилот». Ответ на текущий
-момент: **NO-GO**. Не смешивать завершённость функций с release readiness.
+момент: **NO-GO** — код финальной сборки 0.15.0 готов, но Windows-приёмка
+(`docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`) ещё не выполнена. Не смешивать
+завершённость функций с release readiness.
 
 > **Решение владельца 2026-09-29:** покупной сертификат (Authenticode/TSA)
 > пилот на ПК Марии **не блокирует** — SmartScreen обходится инструкцией.
@@ -228,7 +260,8 @@ PostgreSQL integration и Compose должны подтверждаться CI �
 
 ### Обязательные задачи пилота (агенты)
 
-- [ ] Установщик «из коробки» (B1–B6): `prompts/PILOT_FINAL_PROMPT.md`.
+- [x] Установщик «из коробки» (B1–B6): реализовано в 0.15.0 (см. раздел выше и `docs/PILOT_FINAL_AUDIT.md`);
+  приёмка на Windows — по `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` (пока не выполнена).
 - [ ] График выхода на работу (Этап 18): `prompts/PHASE_18_WORK_SCHEDULE_PROMPT.md`.
 - [ ] Понятные правила + диагностика в администрировании:
   `prompts/UX_RULES_DIAGNOSTICS_PROMPT.md`.

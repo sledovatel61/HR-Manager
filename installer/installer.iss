@@ -1,4 +1,4 @@
-; HR Manager — локальный пилот для Windows (phase 12).
+﻿; HR Manager — локальный пилот для Windows (phase 12).
 ; Мастер установки Inno Setup 6.7.3 (закреплено в installer/README.md):
 ;   роль (HR | Руководитель | Администратор) → фамилия владельца →
 ;   часовой пояс (по умолчанию Europe/Moscow) → Установить.
@@ -41,6 +41,12 @@ UsePreviousAppDir=yes
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
+[Tasks]
+; Пользователь сам решает, устанавливать ли Docker Desktop. По умолчанию
+; галочка стоит — обычному пользователю достаточно нажать «Установить»; при
+; этом лицензию Docker и запрос UAC принимает человек, а не программа.
+Name: "dockerinstall"; Description: "{cm:DockerTaskInstall}"; GroupDescription: "{cm:DockerTaskGroup}"
+
 [CustomMessages]
 russian.RolePageCaption=Роль владельца
 russian.RolePageDescription=Выберите режим работы единственной учётной записи пилота. Роль можно будет изменить позже в настройках приложения.
@@ -51,7 +57,11 @@ russian.SurnamePageCaption=Владелец
 russian.SurnamePageDescription=Введите фамилию владельца. Техническое имя пользователя будет создано автоматически, а пароль вы зададите в браузере на странице первого запуска.
 russian.TimezonePageCaption=Часовой пояс
 russian.TimezonePageDescription=Часовой пояс для уведомлений и расписаний (по умолчанию Europe/Moscow). Изменить можно в настройках приложения.
-russian.DockerNote=Перед установкой убедитесь, что Docker Desktop установлен с официального сайта docker.com и запущен. Установщик не скачивает и не принимает лицензию Docker автоматически.
+russian.DockerNote=HR Manager работает в контейнерах, поэтому нужен Docker Desktop.%n%nЕсли Docker Desktop ещё не установлен, оставьте галочку ниже: HR Manager скачает ОФИЦИАЛЬНЫЙ установщик с сайта docker.com. Windows запросит разрешение (UAC), а лицензионное соглашение Docker принимаете вы сами — за вас его никто не принимает.%n%nЕсли Docker Desktop уже установлен и запущен — просто снимите галочку.
+russian.DockerTaskGroup=Docker для HR Manager:
+russian.DockerTaskInstall=Установить Docker Desktop сейчас (официальный установщик Docker)
+russian.FinishTitle=HR Manager установлен
+russian.FinishText=Готово! HR Manager уже запускается — это занимает 2–5 минут.%n%nВ правом нижнем углу появится значок HR Manager (в трее): он показывает состояние «Запускается», «Готово», «Ошибка».%nКогда всё будет готово, откроется браузер со страницей первого запуска — задайте пароль администратора.%nЗначок HR Manager на рабочем столе открывает приложение; меню значка позволяет перезапустить приложение и создать отчёт для поддержки.%n%nЕсли что-то пойдёт не так — откройте значок HR Manager в трее и нажмите «Создать отчёт для поддержки».
 
 [Files]
 ; Снимок приложения собирает installer/build.ps1 в staging/app:
@@ -60,24 +70,29 @@ Source: "staging\app\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdir
 ; Каталог состояния создаёт движок; здесь — только пустой маркер структуры не нужен.
 
 [Run]
-; Запуск движка после копирования файлов: сборка образов, генерация
-; секретов, подъём контейнеров, одноразовый loopback-обмен и браузер
-; со страницей первого запуска. Окно консоли остаётся видимым — виден
-; прогресс сборки; флаг -NonInteractive отключает запросы (все ответы уже
-; даны мастером через first-run-input.json).
+; Порядок после копирования файлов:
+;   1) значок HR Manager в трее (управляющий компонент) — пользователь видит
+;      состояние «Запускается / Готово / Ошибка» и кнопки действий;
+;   2) движок выполняется СКРЫТО и пишет журнал в каталог состояния: проверка
+;      Windows/WSL2/виртуализации/места/порта, при необходимости установка
+;      Docker Desktop официальным установщиком (UAC и лицензию принимает
+;      пользователь), ожидание Docker Engine, сборка и запуск контейнеров,
+;      первый запуск в браузере.
+; После перезагрузки Windows (если её потребует установка Docker) движок
+; продолжит работу сам — см. действие resume.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action install -SourceDir ""{app}"" -NonInteractive -OpenBrowser"; \
-  WorkingDir: "{app}"; \
-  StatusMsg: "Установка HR Manager (сборка образов может занять несколько минут)…"; \
-  Flags: postinstall nowait skipifsilent
-
-; Наблюдатель канала обновлений (Phase 13): фоновый опрос и выполнение
-; только явно поставленной команды установки. Фоновая установка не
-; запускается никогда.
-Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action channel -Watch -InstallDir ""{app}"""; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hrm-tray.ps1"" -InstallDir ""{app}"""; \
   WorkingDir: "{app}"; \
   Flags: postinstall nowait runhidden skipifsilent
+
+Filename: "powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action install -SourceDir ""{app}"" -NonInteractive -OpenBrowser {code:GetEngineDockerArgs}"; \
+  WorkingDir: "{app}"; \
+  StatusMsg: "HR Manager устанавливается (это может занять несколько минут)…"; \
+  Flags: postinstall nowait runhidden skipifsilent
+
+; Наблюдатель канала обновлений больше НЕ запускается из установщика: его
+; запускает supervisor один раз — повторные установки не плодят процессов.
 
 [UninstallRun]
 ; Контейнеры останавливаются; данные Postgres и зашифрованные бэкапы
@@ -99,10 +114,13 @@ Name: "{userdesktop}\HR Manager"; Filename: "powershell.exe"; Parameters: "-NoPr
 Name: "{group}\HR Manager"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hr-manager.ps1"" -Action open"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Открыть HR Manager в браузере"
 Name: "{group}\HR Manager — отчёт для разработчика"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action support-bundle"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Создать архив диагностики для отправки разработчику"
 Name: "{group}\HR Manager — перезапуск"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hr-manager.ps1"" -Action restart"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Перезапустить контейнеры HR Manager"
+Name: "{group}\HR Manager — значок в трее"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hrm-tray.ps1"" -InstallDir ""{app}"""; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Запустить значок HR Manager в системном трее"
 Name: "{group}\HR Manager — доступ по сети"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action lan-access"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Показать адрес для доступа коллеги по локальной сети"
-Name: "{userstartup}\HR Manager"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hr-manager.ps1"" -Action start"; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Автозапуск HR Manager после входа в систему"
+Name: "{userstartup}\HR Manager (трей)"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hrm-tray.ps1"" -InstallDir ""{app}"""; WorkingDir: "{app}"; IconFilename: "powershell.exe"; Comment: "Автозапуск HR Manager после входа в Windows (значок в трее)"
 
 [UninstallDelete]
+; Ярлык автозапуска supervisor'а: без него значок в трее больше не поднимался бы.
+Type: files; Name: "{userstartup}\HR Manager (трей).lnk"
 ; Штатное обновление заменяет файлы снимка уже после установки, поэтому Inno
 ; не считает их исходными файлами пакета. После остановки стека удаляем только
 ; каталог программы; StateDir и именованные Docker volumes намеренно вне {app}.
@@ -120,7 +138,6 @@ begin
     wpWelcome,
     CustomMessage('RolePageCaption'),
     CustomMessage('RolePageDescription'),
-    CustomMessage('DockerNote') + #13#10 + #13#10 + 'Роль:',
     True, False);
   RolePage.Add(CustomMessage('RoleHR'));
   RolePage.Add(CustomMessage('RoleManager'));
@@ -181,4 +198,26 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
     WriteFirstRunInput();
+end;
+
+function GetEngineDockerArgs(Param: String): String;
+begin
+  // Галочка «Установить Docker Desktop» передаёт движку разрешение предложить
+  // официальный установщик Docker. Отмена UAC или отказ от лицензии Docker —
+  // штатный результат: движок покажет понятное сообщение, а не «упадёт».
+  if WizardIsTaskSelected('dockerinstall') then
+    Result := '-InstallDocker'
+  else
+    Result := '';
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpFinished then
+  begin
+    WizardForm.FinishedLabel.Caption :=
+      ExpandConstant('{cm:FinishText}');
+    WizardForm.FinishedHeadingLabel.Caption :=
+      ExpandConstant('{cm:FinishTitle}');
+  end;
 end;

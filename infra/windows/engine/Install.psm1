@@ -38,11 +38,14 @@ function Copy-HrmSnapshot {
 function Install-HrmApp {
     # Основной сценарий: повторный запуск распознаёт существующую установку
     # и только открывает/восстанавливает её.
+    # -AllowDockerInstall: разрешено предложить/выполнить установку Docker Desktop
+    # официальным установщиком (UAC и лицензию Docker принимает человек).
     param(
         [string]$SourceDir = "",
         [string]$InstallDir = "",
         [string]$StateDir = "",
-        [int]$Port = 0
+        [int]$Port = 0,
+        [switch]$AllowDockerInstall
     )
     if (-not $SourceDir) {
         # Каталог снимка — ближайший родитель, содержащий infra/compose.pilot.yml
@@ -73,6 +76,8 @@ function Install-HrmApp {
         $installedSha = [string]$existing.release_sha
         if ($sourceReleaseSha -and $installedSha -and $sourceReleaseSha -ne $installedSha) {
             Write-HrmLog "info" ("Существующая установка найдена: {0}" -f $installedSha)
+            $preview = Get-HrmUpdatePreview -ReleaseDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir
+            foreach ($line in (Format-HrmUpdatePreview $preview)) { Write-HrmLog "info" $line }
             Write-HrmLog "info" ("Обнаружена новая версия {0} — запускаю обновление с бэкапом и откатом..." -f $sourceReleaseSha)
             $releaseDirForUpdate = $SourceDir
             $tempRelease = ""
@@ -94,25 +99,49 @@ function Install-HrmApp {
                 if ($tempRelease -and (Test-Path $tempRelease)) { Remove-Item $tempRelease -Recurse -Force -ErrorAction SilentlyContinue }
             }
             Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $port
+            Start-HrmSupervisorIfUserSession -InstallDir $InstallDir -StateDir $StateDir | Out-Null
+            Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "Обновление завершено."
             return
         }
         Write-HrmLog "info" ("Существующая установка найдена: {0}" -f $existing.release_sha)
         Write-HrmLog "info" "Повторный запуск установки не меняет данные и секреты."
+        $existingPort = $port
+        if ($existing.PSObject.Properties["port"] -and $existing.port) { $existingPort = [int]$existing.port }
+        $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $existingPort -AllowInstall:$AllowDockerInstall -Interactive:($AllowDockerInstall -or (Test-HrmInteractive))
+        if (-not $prepare.ok) {
+            Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+            throw $prepare.message
+        }
         if (Test-HrmComposeRunning $InstallDir $StateDir) {
             Write-HrmLog "info" "Приложение уже запущено."
         }
         else {
             Write-HrmLog "info" "Запускаю приложение…"
-            Start-HrmStack $InstallDir $StateDir
-            Wait-HrmReady (Get-HrmBaseUrl $port)
+            $stack = Start-HrmStack $InstallDir $StateDir
+            if (-not $stack.ok) { throw $stack.message }
+            Wait-HrmReady (Get-HrmBaseUrl $existingPort)
         }
-        Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $port
+        $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $existingPort
+        Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $existingPort
+        Start-HrmSupervisorIfUserSession -InstallDir $InstallDir -StateDir $StateDir | Out-Null
+        Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "HR Manager запущен."
         return
     }
 
     # --- Первичная установка ---
     Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port -SkipCompose
     Initialize-HrmStateDir $StateDir
+    # Подготовка рабочей среды: Docker Desktop (при разрешении — официальный
+    # установщик), WSL2/виртуализация, ожидание Engine. Без Docker дальше нельзя.
+    $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port -AllowInstall:$AllowDockerInstall -Interactive:($AllowDockerInstall -or (Test-HrmInteractive))
+    if (-not $prepare.ok) {
+        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+        if ($prepare.needs_install) {
+            Write-HrmLog "warn" $prepare.message
+            foreach ($line in (Get-HrmDockerInstallGuide)) { Write-HrmLog "info" $line }
+        }
+        throw $prepare.message
+    }
     Protect-HrmFile $StateDir $StateDir
     # Файл ввода первого запуска (если его записал мастер установки)
     # тоже защищается ACL — фамилия владельца не должна читаться другими
@@ -194,9 +223,12 @@ function Install-HrmApp {
     # Перепроверяем конфигурацию уже с env-файлом.
     Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
 
-    Start-HrmStack $InstallDir $StateDir
+    $stack = Start-HrmStack $InstallDir $StateDir
+    if (-not $stack.ok) { throw $stack.message }
     Wait-HrmReady (Get-HrmBaseUrl $port)
     Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $port
+    Start-HrmSupervisorIfUserSession -InstallDir $InstallDir -StateDir $StateDir | Out-Null
+    Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "HR Manager готов."
     Write-HrmLog "info" ("Установка завершена. Приложение: {0}" -f (Get-HrmBaseUrl $port))
 }
 
@@ -207,15 +239,22 @@ function Start-HrmApp {
     $record = Get-HrmInstallRecord $StateDir
     if ($null -eq $record) { throw "Установка не найдена. Выполните -Action install." }
     $port = [int]$record.port
-    Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
-    Start-HrmStack $InstallDir $StateDir
-    Wait-HrmReady (Get-HrmBaseUrl $port)
-    # Наблюдатель канала обновлений (Phase 13) — только интерактивно:
-    # в неинтерактивном/тестовом режиме канал не трогается (тесты вызывают
-    # -Action channel напрямую).
-    if (Test-HrmInteractive) {
-        Start-HrmChannelWatcherProcess -InstallDir $InstallDir -StateDir $StateDir
+    $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port
+    if (-not $prepare.ok) {
+        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+        throw $prepare.message
     }
+    Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
+    $stack = Start-HrmStack $InstallDir $StateDir
+    if (-not $stack.ok) { throw $stack.message }
+    Wait-HrmReady (Get-HrmBaseUrl $port)
+    # Управляющий компонент (значок в трее) — единственный supervisor: повторный
+    # запуск ничего не дублирует. Наблюдатель канала обновлений живёт внутри
+    # supervisor'а, а не в консольном процессе.
+    if (Test-HrmInteractive) {
+        Start-HrmSupervisorIfUserSession -InstallDir $InstallDir -StateDir $StateDir | Out-Null
+    }
+    Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "HR Manager готов."
     Write-HrmLog "info" ("Приложение запущено: {0}" -f (Get-HrmBaseUrl $port))
 }
 
@@ -268,8 +307,19 @@ function Open-HrmApp {
     if ($null -ne $record -and $record.port) { $port = [int]$record.port }
     if (-not (Test-HrmComposeRunning $InstallDir $StateDir)) {
         Write-HrmLog "info" "Приложение не запущено — запускаю…"
-        Start-HrmStack $InstallDir $StateDir
-        Wait-HrmReady (Get-HrmBaseUrl $port)
+        $guard = Enter-HrmActionLock -StateDir $StateDir -Action "open"
+        if (-not $guard.acquired) {
+            Write-HrmLog "info" $guard.message
+            return
+        }
+        try {
+            $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port
+            if (-not $prepare.ok) { throw $prepare.message }
+            $stack = Start-HrmStack $InstallDir $StateDir
+            if (-not $stack.ok) { throw $stack.message }
+            Wait-HrmReady (Get-HrmBaseUrl $port)
+        }
+        finally { Exit-HrmActionLock -StateDir $StateDir }
     }
     Invoke-HrmOpenBrowser (Get-HrmBaseUrl $port)
 }
@@ -290,6 +340,7 @@ function Remove-HrmApp {
         return
     }
     Stop-HrmChannelWatch -StateDir $StateDir
+    Stop-HrmSupervisor -InstallDir $InstallDir -StateDir $StateDir
     if ($PurgeData) {
         # Фраза-подтверждение. Неинтерактивно фраза берётся из
         # HRM_PURGE_CONFIRMATION (документировано в infra/windows/README.md).
@@ -341,8 +392,22 @@ function Resume-HrmOperation {
             return
         }
     }
+    $pending = Get-HrmPendingDockerOperation $StateDir
+    if ($null -ne $pending) {
+        $kind = ""
+        if ($pending.PSObject.Properties["kind"]) { $kind = [string]$pending.kind }
+        Write-HrmLog "info" "Найдена незавершённая установка рабочей среды — продолжаю автоматически."
+        $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -AllowInstall -Interactive
+        if (-not $prepare.ok) {
+            Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+            throw $prepare.message
+        }
+        if ($kind -eq "reboot") { Clear-HrmPendingDockerOperation $StateDir }
+    }
     Write-HrmLog "info" "Прерванных операций нет; поднимаю приложение."
     Start-HrmApp -InstallDir $InstallDir -StateDir $StateDir
     $port = Get-HrmPort
+    $record = Get-HrmInstallRecord $StateDir
+    if ($null -ne $record -and $record.PSObject.Properties["port"] -and $record.port) { $port = [int]$record.port }
     Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $port
 }

@@ -38,7 +38,9 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet("install", "start", "stop", "status", "open", "update",
         "uninstall", "diagnostics", "resume", "channel", "channel-config",
-        "support-bundle", "lan-access", "restart", "help")]
+        "support-bundle", "lan-access", "restart", "help",
+        "prepare", "docker-status", "docker-install", "docker-start",
+        "supervise", "tray", "autostart", "update-preview")]
     [string]$Action = "help",
 
     # Обновление: доверенный каталог релиза (trust boundary — см. README).
@@ -80,14 +82,24 @@ param(
 
     # lan-access: -Enable включает публикацию на LAN, -Disable выключает
     [switch]$Enable,
-    [switch]$Disable
+    [switch]$Disable,
+
+    # docker-install / install / resume: разрешить установку Docker Desktop
+    # официальным установщиком Docker (UAC и лицензию принимает человек).
+    [switch]$InstallDocker,
+
+    # autostart: -Enable включает автозапуск, -Disable выключает.
+    # prepare/supervise: -Interactive разрешает диалоги/UAC/установку Docker.
+    [switch]$Interactive
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
 $script:EngineDir = Join-Path $PSScriptRoot "engine"
-foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install", "Crypto", "Channel", "Lan", "SupportBundle")) {
+foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update",
+        "Diagnostics", "Install", "Crypto", "Channel", "Lan", "SupportBundle",
+        "Docker", "Supervisor", "Tray")) {
     Import-Module (Join-Path $script:EngineDir "$module.psm1") -Force -ErrorAction Stop
 }
 
@@ -113,6 +125,14 @@ function Show-HrmUsage {
         "  support-bundle Создать архив диагностики на рабочем столе",
         "  lan-access     Доступ по локальной сети: -Enable / -Disable (без флагов — показать адрес)",
         "  restart        Перезапуск приложения (stop + start)",
+        "  prepare        Подготовить рабочую среду (Docker, WSL2, место, порт) и показать состояние",
+        "  docker-status  Состояние Docker Desktop, WSL2, виртуализации, места, порта и прав",
+        "  docker-install Установить Docker Desktop официальным установщиком (-Interactive)",
+        "  docker-start   Запустить Docker Desktop и дождаться готовности Docker Engine",
+        "  supervise      Один цикл управляющего компонента: среда → приложение → готовность",
+        "  tray           Показать значок HR Manager в системном трее",
+        "  autostart      Автозапуск после входа в Windows: -Enable / -Disable",
+        "  update-preview Показать текущую/новую версию и проверки перед обновлением",
         "",
         "Параметры: -SourceDir, -InstallDir, -StateDir, -Port, -NonInteractive, -OpenBrowser",
         "           -ReleaseDir, -Watch, -SetUrl, -KeysJson, -Enable, -Disable",
@@ -125,7 +145,7 @@ try {
     switch ($Action) {
         "help" { Show-HrmUsage }
         "install" {
-            Install-HrmApp -SourceDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir -Port $Port
+            Install-HrmApp -SourceDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir -Port $Port -AllowDockerInstall:($InstallDocker -or $Interactive)
         }
         "start" {
             Start-HrmApp -InstallDir $InstallDir -StateDir $StateDir
@@ -182,6 +202,14 @@ try {
         }
         "support-bundle" {
             $zip = New-HrmSupportBundle -InstallDir $InstallDir -StateDir $StateDir
+            if ($zip) {
+                $stateDirResolved = if ($StateDir) { $StateDir } else { Get-HrmStateDir }
+                Set-HrmJsonFile $stateDirResolved "last-support-bundle.json" ([ordered]@{
+                        path = [string]$zip
+                        name = [string](Split-Path $zip -Leaf)
+                        created_at = (Get-Date).ToString("o")
+                    })
+            }
             Write-HrmLog "info" ("Архив диагностики создан: {0}" -f $zip)
         }
         "lan-access" {
@@ -193,6 +221,58 @@ try {
             Start-HrmApp -InstallDir $InstallDir -StateDir $StateDir
             Write-HrmLog "info" "Перезапуск завершён."
         }
+        "prepare" {
+            $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $Port -AllowInstall:($InstallDocker -or $Interactive) -Interactive:$Interactive
+            foreach ($line in (Format-HrmDockerReadiness -InstallDir $InstallDir -StateDir $StateDir -Port $Port)) { Write-Output $line }
+            if (-not $prepare.ok) {
+                Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+                throw $prepare.message
+            }
+            Write-HrmLog "info" "Рабочая среда готова."
+        }
+        "docker-status" {
+            foreach ($line in (Format-HrmDockerReadiness -InstallDir $InstallDir -StateDir $StateDir -Port $Port)) { Write-Output $line }
+        }
+        "docker-install" {
+            $result = Install-HrmDockerDesktop -StateDir $StateDir -Interactive:($Interactive -or (Test-HrmInteractive)) -AllowSilent
+            Write-Output $result.message
+            if ($result.status -eq "reboot_required") { exit 2 }
+            if ($result.status -eq "uac_declined" -or $result.status -eq "failed" -or $result.status -eq "manual_required") { exit 1 }
+        }
+        "docker-start" {
+            $result = Start-HrmDockerDesktop
+            Write-Output $result.message
+            if (-not $result.started) { exit 1 }
+        }
+        "supervise" {
+            $result = Invoke-HrmSupervisorCycle -InstallDir $InstallDir -StateDir $StateDir -Port $Port -AllowInstall:($InstallDocker -or $Interactive) -Interactive:$Interactive
+            Write-Output $result.message
+            if (-not $result.ok) { exit 1 }
+        }
+        "tray" {
+            Start-HrmSupervisor -InstallDir $InstallDir -StateDir $StateDir | Out-Null
+            Write-Output "HR Manager работает в системном трее."
+        }
+        "autostart" {
+            if ($Enable.IsPresent -and $Disable.IsPresent) { throw "Укажите только -Enable или -Disable." }
+            if ($Disable.IsPresent) {
+                $state = Disable-HrmAutostart -StateDir $StateDir
+                Write-Output "Автозапуск выключен."
+                return
+            }
+            if ($Enable.IsPresent) {
+                $state = Enable-HrmAutostart -InstallDir $InstallDir -StateDir $StateDir
+                Write-Output "Автозапуск включён: HR Manager появится в трее после входа в Windows."
+                return
+            }
+            $state = Get-HrmAutostartState -StateDir $StateDir
+            if ($state.enabled) { Write-Output "Автозапуск включён." } else { Write-Output "Автозапуск выключен." }
+        }
+        "update-preview" {
+            if (-not $ReleaseDir) { throw "Укажите -ReleaseDir (каталог новой версии)." }
+            $preview = Get-HrmUpdatePreview -ReleaseDir $ReleaseDir -InstallDir $InstallDir -StateDir $StateDir
+            foreach ($line in (Format-HrmUpdatePreview $preview)) { Write-Output $line }
+        }
     }
     exit 0
 }
@@ -200,5 +280,10 @@ catch {
     $message = Redact-HrmText ($_.Exception.Message)
     Write-Host "ОШИБКА: $message" -ForegroundColor Red
     Write-HrmLog "error" ("fatal: " + $message)
+    try {
+        $stateDirForError = if ($StateDir) { $StateDir } else { Get-HrmStateDir }
+        Set-HrmSupervisorState -StateDir $stateDirForError -State "error" -Message $message
+    }
+    catch { }
     exit 1
 }

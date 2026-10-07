@@ -21,11 +21,6 @@ Set-StrictMode -Version 2.0
 
 $script:UpdatePhases = @("prepare", "backup", "build", "switch", "migrate", "smoke", "done", "rollback")
 
-# Голова миграций Alembic, которую должен показывать работающий бэкенд
-# после обновления (проверка отсутствия дрейфа в smoke). Обновляется при
-# добавлении новых ревизий схемы.
-$script:ExpectedHeadRevision = "0013"
-
 function Get-HrmImageIds {
     # Закрепляем текущие образы отдельными тегами ДО сборки. BuildKit может
     # удалить прежний нетегированный image ID, когда частично перезаписывает
@@ -99,6 +94,196 @@ function Invoke-HrmRollbackImages {
         Invoke-HrmDocker @("tag", $PreviousIds[$image], $image) | Out-Null
     }
     Write-HrmLog "info" "Предыдущие образы восстановлены по тегам."
+}
+
+function Get-HrmInstalledVersionInfo {
+    # Версия и sha УСТАНОВЛЕННОГО снимка (release.json и запись установки).
+    param([string]$InstallDir, [string]$StateDir)
+    $version = ""
+    $sha = ""
+    $releaseFile = Join-Path $InstallDir "release.json"
+    if (Test-Path $releaseFile) {
+        $data = Get-HrmJsonFile $releaseFile
+        if ($null -ne $data) {
+            if ($data.PSObject.Properties["version"]) { $version = [string]$data.version }
+            if ($data.PSObject.Properties["release_sha"]) { $sha = [string]$data.release_sha }
+        }
+    }
+    $record = Get-HrmInstallRecord $StateDir
+    if ($null -ne $record -and $record.PSObject.Properties["release_sha"] -and $record.release_sha) { $sha = [string]$record.release_sha }
+    if ($null -ne $record -and $record.PSObject.Properties["version"] -and $record.version) { $version = [string]$record.version }
+    return [pscustomobject]@{ version = $version; release_sha = $sha }
+}
+
+function Get-HrmReleaseChangelog {
+    # Список изменений релиза: release.json (changelog[]) или CHANGELOG.md рядом.
+    param([string]$ReleaseDir)
+    $entries = @()
+    $releaseFile = Join-Path $ReleaseDir "release.json"
+    if (Test-Path $releaseFile) {
+        $data = Get-HrmJsonFile $releaseFile
+        if ($null -ne $data -and $data.PSObject.Properties["changelog"] -and $data.changelog) {
+            foreach ($item in @($data.changelog)) { if ($item) { $entries += [string]$item } }
+        }
+    }
+    if ($entries.Count -eq 0) {
+        $md = Join-Path $ReleaseDir "CHANGELOG.md"
+        if (Test-Path $md) {
+            foreach ($line in (Get-Content -Path $md -Encoding UTF8)) {
+                $trimmed = $line.Trim()
+                if ($trimmed -match "^[-*]\s+(.+)$") { $entries += $Matches[1] }
+                if ($entries.Count -ge 10) { break }
+            }
+        }
+    }
+    if ($entries.Count -eq 0) { $entries += "Улучшения установки, запуска и диагностики." }
+    return $entries
+}
+
+function Get-HrmUpdatePreview {
+    # Что показывается пользователю ДО обновления: текущая и новая версия,
+    # список изменений, предупреждение о сохранении данных и проверки
+    # (место, лицензия, настройки, порт, доступ по сети, готовность Docker).
+    param([string]$ReleaseDir, [string]$InstallDir = "", [string]$StateDir = "")
+    if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $current = Get-HrmInstalledVersionInfo -InstallDir $InstallDir -StateDir $StateDir
+    $newVersion = ""
+    $newSha = ""
+    $releaseFile = Join-Path $ReleaseDir "release.json"
+    if (Test-Path $releaseFile) {
+        $data = Get-HrmJsonFile $releaseFile
+        if ($null -ne $data) {
+            if ($data.PSObject.Properties["version"]) { $newVersion = [string]$data.version }
+            if ($data.PSObject.Properties["release_sha"]) { $newSha = [string]$data.release_sha }
+        }
+    }
+    $record = Get-HrmInstallRecord $StateDir
+    $port = Get-HrmPort
+    if ($null -ne $record -and $record.PSObject.Properties["port"] -and $record.port) { $port = [int]$record.port }
+    $lan = Get-HrmLanConfig $StateDir
+    $licenseKey = Get-HrmLicensePublicKey $StateDir
+
+    $checks = @()
+    $freeMb = Get-HrmFreeSpaceMb $StateDir
+    $freeOk = ($freeMb -lt 0) -or ($freeMb -ge 5120)
+    $checks += [pscustomobject]@{
+        key = "space"; label = "Свободное место"
+        status = if ($freeOk) { "ok" } else { "fail" }
+        detail = if ($freeMb -lt 0) { "Не удалось определить свободное место." } else { ("Свободно {0} МБ." -f $freeMb) }
+    }
+    $checks += [pscustomobject]@{
+        key = "license"; label = "Лицензия и ключ проверки"
+        status = if ($licenseKey) { "ok" } else { "warn" }
+        detail = if ($licenseKey) { "Ключ проверки лицензии на месте; сама лицензия хранится в базе и сохраняется." } else { "Ключ проверки лицензии не найден — приложение не сможет проверить лицензию." }
+    }
+    $checks += [pscustomobject]@{
+        key = "settings"; label = "Настройки и пользователи"
+        status = "ok"
+        detail = "Пользователи, настройки, вложения и лицензия хранятся в базе данных (том pilot_pgdata) и сохраняются."
+    }
+    $checks += [pscustomobject]@{
+        key = "port"; label = "Порт и доступ по сети"
+        status = "ok"
+        detail = ("Порт {0} и доступ по сети ({1}) сохраняются без изменений." -f $port, $(if ($lan.enabled) { "включён" } else { "только этот компьютер" }))
+    }
+    $checks += [pscustomobject]@{
+        key = "docker"; label = "Готовность рабочей среды"
+        status = if (Test-HrmDockerEngineReady) { "ok" } else { "fail" }
+        detail = if (Test-HrmDockerEngineReady) { "Docker Engine работает." } else { "Docker Engine не отвечает — обновление начнётся после его запуска." }
+    }
+    $backupVolume = Invoke-HrmDocker -Arguments @("volume", "inspect", ((Get-HrmProjectName) + "_pilot_backups")) -IgnoreExitCode
+    $checks += [pscustomobject]@{
+        key = "backup_volume"; label = "Хранилище резервных копий"
+        status = if ($backupVolume.ExitCode -eq 0) { "ok" } else { "warn" }
+        detail = if ($backupVolume.ExitCode -eq 0) { "Том резервных копий на месте — перед обновлением будет создан свежий бэкап." } else { "Том резервных копий не найден до первой установки — бэкап будет создан при обновлении." }
+    }
+    $canUpdate = (@($checks | Where-Object { $_.status -eq "fail" }).Count -eq 0)
+    return [pscustomobject]@{
+        current_version = $current.version
+        current_sha = $current.release_sha
+        new_version = $newVersion
+        new_sha = $newSha
+        same_version = ($current.release_sha -ne "" -and $current.release_sha -eq $newSha)
+        changelog = (Get-HrmReleaseChangelog $ReleaseDir)
+        data_notice = "Перед обновлением автоматически создаётся резервная копия. Пользователи, настройки, вложения и лицензия сохраняются."
+        checks = $checks
+        can_update = $canUpdate
+        port = $port
+        lan_enabled = [bool]$lan.enabled
+    }
+}
+
+function Format-HrmUpdatePreview {
+    # Человеческие строки для мастера/консоли.
+    param($Preview)
+    $lines = @()
+    $from = if ($Preview.current_version) { $Preview.current_version } else { "неизвестна" }
+    $to = if ($Preview.new_version) { $Preview.new_version } else { "новая сборка" }
+    $lines += ("Обновление HR Manager: {0} → {1}" -f $from, $to)
+    $lines += $Preview.data_notice
+    $lines += "Что нового:"
+    foreach ($item in $Preview.changelog) { $lines += ("  • " + $item) }
+    foreach ($check in $Preview.checks) {
+        $mark = if ($check.status -eq "ok") { "[OK]" } elseif ($check.status -eq "warn") { "[ВНИМАНИЕ]" } else { "[НУЖНО ДЕЙСТВИЕ]" }
+        $lines += ("{0} {1}: {2}" -f $mark, $check.label, $check.detail)
+    }
+    return $lines
+}
+
+function Write-HrmUpdateResult {
+    # Результат обновления для трея/мастера/диагностики: «Обновление завершено»
+    # или понятное сообщение об ошибке и откате. Секретов здесь нет.
+    param(
+        [string]$StateDir,
+        [string]$Status,
+        [string]$Message,
+        [string]$FromVersion = "",
+        [string]$ToVersion = "",
+        [string]$ReleaseSha = "",
+        [switch]$RolledBack
+    )
+    $data = [ordered]@{
+        status = $Status
+        message = (Redact-HrmText $Message)
+        from_version = $FromVersion
+        to_version = $ToVersion
+        release_sha = $ReleaseSha
+        rolled_back = [bool]$RolledBack
+        finished_at = (Get-Date).ToString("o")
+    }
+    Set-HrmJsonFile $StateDir "update-result.json" $data
+    return $data
+}
+
+function Get-HrmUpdateResult {
+    param([string]$StateDir)
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $file = Join-Path $StateDir "update-result.json"
+    if (-not (Test-Path $file)) { return $null }
+    try { return (Get-HrmJsonFile $file) } catch { return $null }
+}
+
+function Assert-HrmUpdatePreservedState {
+    # После замены файлов проверяем, что пользовательское состояние НЕ потеряно:
+    # ключ лицензии, секреты, порт, LAN-настройка и тома данных.
+    param([string]$InstallDir, [string]$StateDir)
+    $problems = @()
+    $licenseKey = Get-HrmLicensePublicKey $StateDir
+    if (-not $licenseKey) { $problems += "ключ проверки лицензии" }
+    if (-not (Test-Path (Get-HrmSecretsFile $StateDir))) { $problems += "секреты установки" }
+    $record = Get-HrmInstallRecord $StateDir
+    if ($null -eq $record) { $problems += "запись установки" }
+    if (Test-Path (Join-Path $StateDir "lan.json")) {
+        $lan = Get-HrmLanConfig $StateDir
+        if ($lan.enabled -and $lan.bind -ne "0.0.0.0") { $problems += "настройка доступа по сети" }
+    }
+    $volume = Invoke-HrmDocker -Arguments @("volume", "inspect", ((Get-HrmProjectName) + "_pilot_pgdata")) -IgnoreExitCode
+    if ($volume.ExitCode -ne 0) { $problems += "том данных PostgreSQL" }
+    if ($problems.Count -gt 0) {
+        throw ("После обновления не найдено: {0}. Обновление остановлено." -f ($problems -join ", "))
+    }
+    return $true
 }
 
 function Update-HrmApp {
@@ -214,17 +399,41 @@ function Update-HrmApp {
             if ($releaseData.release_sha -and $sha -and $sha -ne $releaseData.release_sha) {
                 throw ("Smoke: несовпадение версии в работе ({0}) и релиза ({1})." -f $sha, $releaseData.release_sha)
             }
+            # Дрейф миграций: сначала серверный вердикт (/api/ops/status уже
+            # знает ожидаемую голову релиза), затем сверка с головой РАЗВЁРНУТОГО
+            # образа backend. Зашитой константы головы нет: она расходилась с
+            # релизом и давала ложный откат.
+            $migrationOk = $true
             $current = Get-HrmMigrationsState $InstallDir $StateDir
-            if ($null -eq $current) { throw "Smoke: не удалось прочитать текущую ревизию миграций." }
-            if ($current -ne $script:ExpectedHeadRevision) {
-                throw ("Smoke: дрейф миграций — в базе {0}, ожидается {1}." -f $current, $script:ExpectedHeadRevision)
+            if ($ops.PSObject.Properties["migrations"] -and $null -ne $ops.migrations) {
+                if ($ops.migrations.ok -eq $false) {
+                    $migrationOk = $false
+                    throw ("Smoke: дрейф миграций — в базе {0}, ожидается {1}." -f $ops.migrations.current_revision, $ops.migrations.expected_revision)
+                }
             }
+            if ($migrationOk -and $null -ne $current) {
+                $expected = Get-HrmMigrationsHead $InstallDir $StateDir
+                if ($null -ne $expected -and $current -ne $expected) {
+                    throw ("Smoke: дрейф миграций — в базе {0}, ожидается {1}." -f $current, $expected)
+                }
+            }
+            if ($migrationOk -and $null -eq $current -and $null -eq $ops.migrations) {
+                throw "Smoke: не удалось прочитать состояние миграций."
+            }
+            # Пользовательское состояние должно остаться на месте (лицензия,
+            # секреты, порт, LAN, том данных).
+            Assert-HrmUpdatePreservedState -InstallDir $InstallDir -StateDir $StateDir | Out-Null
             $worker = Invoke-HrmCompose $InstallDir $StateDir @("exec", "-T", "worker", "python", "-m", "app.cli", "worker-check") -IgnoreExitCode
             if ($worker.ExitCode -ne 0) { throw "Smoke: worker-check не прошёл." }
-            Set-HrmInstallRecord $StateDir @{ release_sha = $releaseData.release_sha; updated_at = (Get-Date).ToString("o") }
+            $installedVersion = ""
+            if ($releaseData.PSObject.Properties["version"] -and $releaseData.version) { $installedVersion = [string]$releaseData.version }
+            Set-HrmInstallRecord $StateDir @{ release_sha = $releaseData.release_sha; updated_at = (Get-Date).ToString("o"); version = $installedVersion }
             Set-HrmUpdateJournal $StateDir "done" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }
             Clear-HrmUpdateJournal $StateDir
-            Write-HrmLog "info" ("Обновление завершено: {0}" -f $releaseData.release_sha)
+            $fromVersion = ""
+            if ($null -ne $record -and $record.PSObject.Properties["version"] -and $record.version) { $fromVersion = [string]$record.version }
+            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "done" -Message "Обновление завершено." -FromVersion $fromVersion -ToVersion $installedVersion -ReleaseSha $releaseData.release_sha
+            Write-HrmLog "info" "Обновление завершено."
             return
         }
 
@@ -235,7 +444,8 @@ function Update-HrmApp {
         }
     }
     catch {
-        Write-HrmLog "error" ("Обновление не удалось: {0}" -f (Redact-HrmText $_.Exception.Message))
+        $failureMessage = Redact-HrmText $_.Exception.Message
+        Write-HrmLog "error" ("Обновление не удалось: {0}" -f $failureMessage)
         if ($previousIds.Count -gt 0) {
             Write-HrmLog "info" "Возврат к предыдущей рабочей версии (без даунгрейда БД)…"
             Invoke-HrmRollbackImages $previousIds
@@ -245,9 +455,11 @@ function Update-HrmApp {
             $lock = Get-HrmUpdateLock $StateDir
             if (Test-Path $lock) { Remove-Item $lock -Force }
             Write-HrmLog "info" "Предыдущая версия восстановлена."
+            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "rolled_back" -Message ("Обновление не удалось, восстановлена прежняя версия. Причина: {0}" -f $failureMessage) -RolledBack
         }
         else {
             Set-HrmUpdateJournal $StateDir "rollback" @{ release_dir = $ReleaseDir; release_sha = $releaseData.release_sha }
+            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "failed" -Message ("Обновление не удалось: {0}" -f $failureMessage)
         }
         throw
     }
