@@ -883,7 +883,12 @@ jobs:
     # запуском установщика, поэтому ручного прогона для годичного цикла хватает.
     # Значения сняты прогонами 37653666837 (измерение) и 37654388276 (сверка с
     # зафиксированным издателем, результат — «издатель совпал»).
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.docker_audit }}
+    # github.event.inputs вместо inputs: контекст inputs существует только у
+    # workflow_dispatch/workflow_call, и именно эта строка сделала прогон
+    # 37655251039 «workflow file may be broken» (джоб аудита при этом
+    # пропустился, а часть джобов вообще не создалась). Для dispatch-события
+    # значение приходит строкой, поэтому сравнение со строкой 'true'.
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.docker_audit == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 45
     permissions:
