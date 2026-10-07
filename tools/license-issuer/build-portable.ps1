@@ -45,6 +45,23 @@ function Write-Info($msg) { Write-Host $msg -ForegroundColor Cyan }
 function Write-Warn2($msg) { Write-Host $msg -ForegroundColor Yellow }
 function Write-Err($msg) { Write-Host $msg -ForegroundColor Red }
 
+# Launcher processes are GUI-subsystem exes: PowerShell does not wait for those,
+# so the exit code has to be read through Start-Process -Wait -PassThru, with an
+# explicit timeout so a stuck process fails the build instead of hanging it.
+function Invoke-PortableExe {
+    param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSeconds = 900)
+    $quoted = @()
+    foreach ($argument in $Arguments) {
+        if ($argument -match '[\s"]') { $quoted += ('"' + ($argument -replace '"', '\"') + '"') } else { $quoted += $argument }
+    }
+    $process = Start-Process -FilePath $Exe -ArgumentList ($quoted -join " ") -PassThru -NoNewWindow -ErrorAction Stop
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $process.Kill() } catch { }
+        throw ("TIMEOUT: {0} did not finish in {1} seconds" -f $Exe, $TimeoutSeconds)
+    }
+    return [pscustomobject]@{ ExitCode = $process.ExitCode }
+}
+
 $pythonDir = Join-Path $OutDir "python"
 $appDir = Join-Path $OutDir "license-issuer"
 $payloadZip = Join-Path $OutDir "license-issuer-payload.zip"
@@ -65,27 +82,47 @@ foreach ($required in @("gui.py", "cli.py", "license_issuer.py")) {
 }
 if (-not (Test-Path $launcherSource)) { Write-Err "launcher source not found at $launcherSource"; exit 1 }
 
-# 1. Pack the payload (Python runtime + issuer app). The folder names inside the
-#    zip must be exactly "python" and "license-issuer": the launcher resolves
-#    payload\python\python.exe and payload\license-issuer\cli.py.
-Write-Info "Packing payload zip $payloadZip ..."
+# 1. Pack the payload (Python runtime + issuer app) with the native ZIP writer.
+#    Windows PowerShell 5.1 Compress-Archive needs tens of minutes for the ~10k
+#    small files of the embeddable Python + Tcl/Tk (and copies the tree twice);
+#    System.IO.Compression.ZipArchive is fast and writes forward-slash entry
+#    names, which is exactly what the launcher reads back.
+Write-Info "Packing payload zip $payloadZip (System.IO.Compression.ZipArchive) ..."
 if (Test-Path $payloadZip) { Remove-Item $payloadZip -Force }
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) ("hrm-portable-stage-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $staging -Force | Out-Null
+try { Add-Type -AssemblyName System.IO.Compression | Out-Null } catch { }
+$fileTotal = 0
+$rawBytes = 0
+$packStarted = Get-Date
+$zipStream = [System.IO.File]::Open($payloadZip, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
 try {
-    Copy-Item -Path $pythonDir -Destination (Join-Path $staging "python") -Recurse -Force
-    Copy-Item -Path $appDir -Destination (Join-Path $staging "license-issuer") -Recurse -Force
-    # Stale bytecode caches are noise and can shadow modules after an app update.
-    Get-ChildItem -Path $staging -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue | ForEach-Object {
-        Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Compress-Archive -Path (Join-Path $staging "python"), (Join-Path $staging "license-issuer") -DestinationPath $payloadZip -Force
-} finally {
-    if (Test-Path $staging) { Remove-Item -Path $staging -Recurse -Force -ErrorAction SilentlyContinue }
-}
+    $archive = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($source in @($pythonDir, $appDir)) {
+            $baseName = Split-Path $source -Leaf
+            foreach ($file in (Get-ChildItem -Path $source -Recurse -File -ErrorAction SilentlyContinue)) {
+                $relative = $file.FullName.Substring($source.Length).TrimStart('\', '/')
+                if (($relative -split '[\\/]') -contains "__pycache__") { continue }
+                if ($file.Extension -eq ".pyc") { continue }
+                $entryName = ($baseName + "/" + $relative).Replace('\', '/')
+                $entry = $archive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+                $target = $entry.Open()
+                try {
+                    $sourceStream = [System.IO.File]::OpenRead($file.FullName)
+                    try { $sourceStream.CopyTo($target) } finally { $sourceStream.Dispose() }
+                } finally { $target.Dispose() }
+                $fileTotal++
+                $rawBytes += $file.Length
+                if (($fileTotal % 2000) -eq 0) {
+                    Write-Host ("  ... {0} files, {1:N0} MB raw, {2:N1}s" -f $fileTotal, ($rawBytes / 1MB), ((Get-Date) - $packStarted).TotalSeconds)
+                }
+            }
+        }
+    } finally { $archive.Dispose() }
+} finally { $zipStream.Dispose() }
 if (-not (Test-Path $payloadZip)) { Write-Err "payload zip was not created"; exit 1 }
 $payloadSize = (Get-Item $payloadZip).Length
-Write-Info ("payload zip: {0:N0} bytes" -f $payloadSize)
+Write-Info ("payload zip: {0} files, {1:N0} bytes, packed in {2:N1}s" -f $fileTotal, $payloadSize, ((Get-Date) - $packStarted).TotalSeconds)
+if ($fileTotal -eq 0) { Write-Err "payload zip is empty - nothing to pack"; exit 1 }
 if ($payloadSize -ge 10000000000) { Write-Err "payload is too large for the 14-digit trailer"; exit 1 }
 
 # 2. Compile the launcher. Roslyn csc (from Visual Studio / Build Tools) is
@@ -234,19 +271,14 @@ if ($SkipSelfTest) {
 # 6. Smoke test: run the artifact exactly as the owner/CI would, in a temporary
 #    directory outside the repository (key material must never land in the work
 #    tree), then remove everything. The private key must never appear in the log.
-Write-Info "Smoke test: --hrm-selfcheck + CLI chain (gen-keypair -> issue -> verify) through the portable exe ..."
+Write-Info ("[{0:HH:mm:ss}] Smoke test: --hrm-selfcheck + CLI chain (gen-keypair -> issue -> verify) through the portable exe ..." -f (Get-Date))
 $smokeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("hrm-portable-smoke-" + [guid]::NewGuid().ToString("N"))
 try {
     New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
     $selfCheckJson = Join-Path $smokeDir "selfcheck.json"
 
-    $previousEap = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $selfCheckOut = (& $exePath "--hrm-selfcheck" $selfCheckJson 2>&1 | ForEach-Object { $_.ToString() } | Out-String)
-        $selfCheckCode = $LASTEXITCODE
-    } finally { $ErrorActionPreference = $previousEap }
-    if ($selfCheckCode -ne 0) { Write-Err "selfcheck exited with $selfCheckCode`: $selfCheckOut"; exit 1 }
+    $selfCheckRun = Invoke-PortableExe -Exe $exePath -Arguments @("--hrm-selfcheck", $selfCheckJson) -TimeoutSeconds 900
+    if ($selfCheckRun.ExitCode -ne 0) { Write-Err "selfcheck exited with $($selfCheckRun.ExitCode)"; exit 1 }
     if (-not (Test-Path $selfCheckJson)) { Write-Err "selfcheck did not write $selfCheckJson"; exit 1 }
     $selfCheck = Get-Content -Path $selfCheckJson -Raw | ConvertFrom-Json
     if (-not $selfCheck.ok) { Write-Err ("selfcheck reported failure: missing=" + $selfCheck.missing); exit 1 }
@@ -261,14 +293,22 @@ try {
     )
     $outputs = @{}
     foreach ($step in $steps) {
-        $previousEap = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
+        # HRM_PORTABLE_LOG (launcher feature): the child CLI writes its stdout/stderr
+        # into a file, so the key-material scan below sees the real command output.
+        $logPath = Join-Path $smokeDir ("cli-" + $step.Name + ".log")
+        $env:HRM_PORTABLE_LOG = $logPath
         try {
-            $text = (& $exePath @($step.Args) 2>&1 | ForEach-Object { $_.ToString() } | Out-String)
-            $code = $LASTEXITCODE
-        } finally { $ErrorActionPreference = $previousEap }
+            $run = Invoke-PortableExe -Exe $exePath -Arguments $step.Args -TimeoutSeconds 600
+        } finally { Remove-Item Env:HRM_PORTABLE_LOG -ErrorAction SilentlyContinue }
+        $text = ""
+        if (Test-Path $logPath) { $text = (Get-Content -Path $logPath -Raw) }
         $outputs[$step.Name] = $text
-        if ($code -ne 0) { Write-Err ("portable CLI step '{0}' exited with code {1}: {2}" -f $step.Name, $code, $text); exit 1 }
+        if ($run.ExitCode -ne 0) {
+            Write-Err ("portable CLI step '{0}' exited with code {1}" -f $step.Name, $run.ExitCode)
+            Write-Err ("log: " + $text)
+            exit 1
+        }
+        Write-Info ("  {0}: exit 0, log {1:N0} bytes" -f $step.Name, $text.Length)
     }
     if (-not (Test-Path $licenseFile)) { Write-Err "portable CLI did not create the license file"; exit 1 }
 

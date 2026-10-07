@@ -28,6 +28,22 @@ $DistZip = Join-Path $Root "dist\license-issuer-dist.zip"
 
 function Write-Phase([string]$msg) { Write-Host "[$Phase] $msg" }
 
+# The portable launcher is a GUI-subsystem exe: PowerShell does not wait for
+# those, so both the wait and the exit code go through Start-Process.
+function Invoke-PortableExe {
+    param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSeconds = 900)
+    $quoted = @()
+    foreach ($argument in $Arguments) {
+        if ($argument -match '[\s"]') { $quoted += ('"' + ($argument -replace '"', '\"') + '"') } else { $quoted += $argument }
+    }
+    $process = Start-Process -FilePath $Exe -ArgumentList ($quoted -join " ") -PassThru -NoNewWindow -ErrorAction Stop
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $process.Kill() } catch { }
+        throw ("TIMEOUT: {0} did not finish in {1} seconds" -f $Exe, $TimeoutSeconds)
+    }
+    return [pscustomobject]@{ ExitCode = $process.ExitCode }
+}
+
 function Report-Fail([string]$title, [string]$detail) {
     # Fence is built from a single-quoted fragment: in a double-quoted string
     # a backtick escapes the next character, so literal backticks there need
@@ -239,13 +255,9 @@ try {
         New-Item -ItemType Directory -Path $root -Force | Out-Null
         try {
             $selfJson = Join-Path $root "selfcheck.json"
-            $previousEap = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            try {
-                $null = (& $portableExe "--hrm-selfcheck" $selfJson 2>&1 | ForEach-Object { $_.ToString() })
-                $selfCode = $LASTEXITCODE
-            } finally { $ErrorActionPreference = $previousEap }
-            if ($selfCode -ne 0) { throw "selfcheck exited with code $selfCode" }
+            Write-Phase ("[{0:HH:mm:ss}] selfcheck via the shipped exe (first run unpacks the payload) ..." -f (Get-Date))
+            $selfRun = Invoke-PortableExe -Exe $portableExe -Arguments @("--hrm-selfcheck", $selfJson) -TimeoutSeconds 900
+            if ($selfRun.ExitCode -ne 0) { throw "selfcheck exited with code $($selfRun.ExitCode)" }
             if (-not (Test-Path $selfJson)) { throw "selfcheck did not write $selfJson" }
             $selfData = Get-Content $selfJson -Raw | ConvertFrom-Json
             if (-not $selfData.ok) { throw "selfcheck reported ok=false, missing: $($selfData.missing)" }
@@ -260,14 +272,18 @@ try {
             )
             $chainOutput = @{}
             foreach ($step in $steps) {
-                $previousEap = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
+                # HRM_PORTABLE_LOG: the launcher redirects the child CLI output into
+                # a file, which is what the key-material scan below inspects.
+                $logPath = Join-Path $root ("cli-" + $step.Name + ".log")
+                $env:HRM_PORTABLE_LOG = $logPath
                 try {
-                    $text = (& $portableExe @($step.Args) 2>&1 | ForEach-Object { $_.ToString() } | Out-String)
-                    $stepCode = $LASTEXITCODE
-                } finally { $ErrorActionPreference = $previousEap }
+                    $run = Invoke-PortableExe -Exe $portableExe -Arguments $step.Args -TimeoutSeconds 600
+                } finally { Remove-Item Env:HRM_PORTABLE_LOG -ErrorAction SilentlyContinue }
+                $text = ""
+                if (Test-Path $logPath) { $text = (Get-Content -Path $logPath -Raw) }
                 $chainOutput[$step.Name] = $text
-                if ($stepCode -ne 0) { throw ("step '{0}' exited with code {1}" -f $step.Name, $stepCode) }
+                if ($run.ExitCode -ne 0) { throw ("step '{0}' exited with code {1}; log: {2}" -f $step.Name, $run.ExitCode, $text) }
+                Write-Phase ("  {0}: exit 0, log {1} bytes" -f $step.Name, $text.Length)
             }
             if (-not (Test-Path $licenseFile)) { throw "the CLI chain did not create the license file" }
             Write-Phase "portable CLI chain PASS: gen-keypair -> issue -> verify (exit codes 0)"
@@ -279,13 +295,9 @@ try {
             $lic = Get-Content -Path $licenseFile -Raw | ConvertFrom-Json
             $lic.max_active_users = 999
             $lic | ConvertTo-Json -Depth 4 | Set-Content -Path $tampered -Encoding utf8
-            $previousEap = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            try {
-                $null = (& $portableExe "verify" "--public-key-file" (Join-Path $keysDir "public_key.b64") "--license-file" $tampered 2>&1 | ForEach-Object { $_.ToString() })
-                $tamperedCode = $LASTEXITCODE
-            } finally { $ErrorActionPreference = $previousEap }
-            if ($tamperedCode -eq 0) { throw "a tampered license was accepted by the portal exe" }
+            $tamperedRun = Invoke-PortableExe -Exe $portableExe -Arguments @("verify", "--public-key-file", (Join-Path $keysDir "public_key.b64"), "--license-file", $tampered) -TimeoutSeconds 600
+            $tamperedCode = $tamperedRun.ExitCode
+            if ($tamperedCode -eq 0) { throw "a tampered license was accepted by the portable exe" }
             Write-Phase "tampered license correctly rejected (exit=$tamperedCode)"
 
             # --- no private key material in the outputs or the temp tree -------

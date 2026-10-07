@@ -71,7 +71,12 @@ function Get-HrmComposeContainers {
 }
 
 function Test-HrmContainerRunning {
+    # Свойства объектов docker compose ps читаются через PSObject.Properties:
+    # при StrictMode обращение к отсутствующему свойству бросило бы исключение
+    # (в JSON разных версий Compose поля могут отличаться).
     param($Container)
+    if ($null -eq $Container) { return $false }
+    if (-not $Container.PSObject.Properties["State"]) { return $false }
     $state = [string]$Container.State
     if ($state -eq "running" -or $state -like "Up*") { return $true }
     return $false
@@ -79,8 +84,10 @@ function Test-HrmContainerRunning {
 
 function Test-HrmContainerHealthy {
     # Неизвестное/отсутствующее здоровье не считается ошибкой: не все сервисы
-    # пилота имеют healthcheck.
+    # пилота имеют healthcheck, и не все версии Compose отдают поле Health.
     param($Container)
+    if ($null -eq $Container) { return $true }
+    if (-not $Container.PSObject.Properties["Health"]) { return $true }
     $health = [string]$Container.Health
     if (-not $health -or $health -eq "<none>" -or $health -eq "unknown") { return $true }
     return ($health -eq "healthy")

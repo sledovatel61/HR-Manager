@@ -110,6 +110,12 @@ internal static class Program
                 ShowError(UiStartupFailed() + "\r\n\r\npython: " + pythonDir);
                 return 3;
             }
+            string logPath = Environment.GetEnvironmentVariable("HRM_PORTABLE_LOG");
+            if (!string.IsNullOrEmpty(logPath))
+            {
+                // Diagnostic/CI mode: same CLI, output captured to a file, no console window.
+                return RunCliCaptured(pythonExe, cliScript, args, appDir, logPath);
+            }
             ProcessStartInfo cli = new ProcessStartInfo();
             cli.FileName = pythonExe;
             cli.Arguments = Quote(cliScript) + " " + JoinArguments(args);
@@ -124,6 +130,50 @@ internal static class Program
             ShowError(UiCrash() + "\r\n\r\n" + ex.Message);
             return 4;
         }
+    }
+
+    private static int RunCliCaptured(string pythonExe, string cliScript, string[] args, string appDir, string logPath)
+    {
+        // Runs the bundled CLI with stdout/stderr captured into logPath (UTF-8, no BOM).
+        // The launcher itself never writes keys anywhere: this is the child's own output.
+        ProcessStartInfo psi = new ProcessStartInfo();
+        psi.FileName = pythonExe;
+        psi.Arguments = Quote(cliScript) + " " + JoinArguments(args);
+        psi.WorkingDirectory = appDir;
+        psi.UseShellExecute = false;
+        psi.CreateNoWindow = true;
+        psi.RedirectStandardOutput = true;
+        psi.RedirectStandardError = true;
+        psi.EnvironmentVariables["PYTHONUTF8"] = "1";
+        StringBuilder buffer = new StringBuilder();
+        Process child = new Process();
+        child.StartInfo = psi;
+        child.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+        {
+            if (e.Data != null) { lock (buffer) { buffer.AppendLine(e.Data); } }
+        };
+        child.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
+        {
+            if (e.Data != null) { lock (buffer) { buffer.AppendLine("[stderr] " + e.Data); } }
+        };
+        child.Start();
+        child.BeginOutputReadLine();
+        child.BeginErrorReadLine();
+        child.WaitForExit();
+        child.WaitForExit(); // flush the asynchronous readers
+        string text;
+        lock (buffer) { text = buffer.ToString(); }
+        try
+        {
+            string parent = Path.GetDirectoryName(logPath);
+            if (!string.IsNullOrEmpty(parent)) { Directory.CreateDirectory(parent); }
+            File.WriteAllText(logPath, text, new UTF8Encoding(false));
+        }
+        catch (Exception)
+        {
+            // A diagnostic log must never break the command itself.
+        }
+        return child.ExitCode;
     }
 
     private static string LocalRoot()

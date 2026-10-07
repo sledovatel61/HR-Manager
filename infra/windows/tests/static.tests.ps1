@@ -332,7 +332,11 @@ Test-Case "Docker: официальный установщик, проверка
     $docker = Get-Content -Path (Join-Path $EngineDir "Docker.psm1") -Raw -Encoding UTF8
     Assert-HrmContains $docker "desktop.docker.com" "установщик берётся не с официального адреса"
     Assert-HrmContains $docker "Get-AuthenticodeSignature" "подпись установщика не проверяется"
-    Assert-HrmNotContains $docker "--accept-license" "лицензия Docker не принимается за пользователя"
+    # Инвариант проверяется по исполняемым строкам: в комментариях движка
+    # прямо написано, что флаг не передаётся, и это не должно выглядеть как вызов.
+    $dockerCode = [regex]::Replace($docker, '(?s)<#.*?#>', '')
+    $dockerCode = (($dockerCode -split "`r?`n") | Where-Object { -not $_.TrimStart().StartsWith('#') }) -join "`n"
+    Assert-HrmNotContains $dockerCode "--accept-license" "лицензия Docker не принимается за пользователя"
     Assert-HrmContains $docker "WSL" "нет проверки WSL2"
     Assert-HrmContains $docker "VirtualizationFirmwareEnabled" "нет проверки аппаратной виртуализации"
     Assert-HrmContains $docker "Wait-HrmDockerEngine" "нет ожидания готовности Docker Engine"

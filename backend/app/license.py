@@ -131,8 +131,7 @@ def parse_license_json(text: str | bytes) -> dict:
     except Exception as exc:
         raise LicenseError(
             "malformed_json",
-            "файл лицензии повреждён или это не лицензия (ожидается JSON *.hrmlicense): "
-            f"{exc}",
+            f"файл лицензии повреждён или это не лицензия (ожидается JSON *.hrmlicense): {exc}",
         ) from exc
     if not isinstance(raw, dict):
         raise LicenseError("malformed_json", "лицензия должна быть JSON-объектом")
