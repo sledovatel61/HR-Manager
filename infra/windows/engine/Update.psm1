@@ -306,6 +306,12 @@ function Update-HrmApp {
     if ($null -eq $record) { throw "Установка не найдена. Выполните -Action install." }
     $port = [int]$record.port
     $baseUrl = Get-HrmBaseUrl $port
+    # Версия «до обновления» читается ДО подмены файлов снимка: в записи
+    # установки её может не быть (старые релизы), тогда берём release.json
+    # установленного снимка. Нужна для отчёта «текущая → новая» и трея.
+    $previousVersion = ""
+    if ($record.PSObject.Properties["version"] -and $record.version) { $previousVersion = [string]$record.version }
+    if (-not $previousVersion) { $previousVersion = [string](Get-HrmInstalledVersionInfo -InstallDir $InstallDir -StateDir $StateDir).version }
 
     # Re-render the protected env before the backup gate. Besides keeping the
     # current release/port authoritative, this upgrades legacy phase-12
@@ -430,9 +436,7 @@ function Update-HrmApp {
             Set-HrmInstallRecord $StateDir @{ release_sha = $releaseData.release_sha; updated_at = (Get-Date).ToString("o"); version = $installedVersion }
             Set-HrmUpdateJournal $StateDir "done" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }
             Clear-HrmUpdateJournal $StateDir
-            $fromVersion = ""
-            if ($null -ne $record -and $record.PSObject.Properties["version"] -and $record.version) { $fromVersion = [string]$record.version }
-            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "done" -Message "Обновление завершено." -FromVersion $fromVersion -ToVersion $installedVersion -ReleaseSha $releaseData.release_sha
+            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "done" -Message "Обновление завершено." -FromVersion $previousVersion -ToVersion $installedVersion -ReleaseSha $releaseData.release_sha
             Write-HrmLog "info" "Обновление завершено."
             return
         }
@@ -455,11 +459,11 @@ function Update-HrmApp {
             $lock = Get-HrmUpdateLock $StateDir
             if (Test-Path $lock) { Remove-Item $lock -Force }
             Write-HrmLog "info" "Предыдущая версия восстановлена."
-            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "rolled_back" -Message ("Обновление не удалось, восстановлена прежняя версия. Причина: {0}" -f $failureMessage) -RolledBack
+            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "rolled_back" -Message ("Обновление не удалось, восстановлена прежняя версия. Причина: {0}" -f $failureMessage) -FromVersion $previousVersion -ToVersion $previousVersion -RolledBack
         }
         else {
             Set-HrmUpdateJournal $StateDir "rollback" @{ release_dir = $ReleaseDir; release_sha = $releaseData.release_sha }
-            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "failed" -Message ("Обновление не удалось: {0}" -f $failureMessage)
+            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "failed" -Message ("Обновление не удалось: {0}" -f $failureMessage) -FromVersion $previousVersion -ToVersion ([string]$releaseData.version)
         }
         throw
     }
