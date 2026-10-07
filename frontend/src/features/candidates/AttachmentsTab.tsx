@@ -136,7 +136,7 @@ export function AttachmentsTab({ candidateId, onChanged }: { candidateId: string
     resetMessages();
     setBusyId(attachment.id);
     try {
-      const result = await saveCandidateAttachmentWithPicker(candidateId, attachment.id);
+      const result = await saveCandidateAttachmentWithPicker(candidateId, attachment.id, attachment.filename);
       if (result.outcome === "cancelled") {
         // Отмена диалога — не успех: ничего не сохранено и сообщение нейтральное.
         setNotice("Сохранение отменено.");
@@ -160,7 +160,7 @@ export function AttachmentsTab({ candidateId, onChanged }: { candidateId: string
     setBusyId(attachment.id);
     try {
       await openSavedFile(handle);
-      setNotice("Файл открыт в новой вкладке браузера.");
+      setNotice(`Сохранённый файл передан браузеру. ${BROWSER_LIMIT_NOTE}`);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : errorText(caught));
     } finally {

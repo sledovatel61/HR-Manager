@@ -245,3 +245,5 @@
 @media (max-width: 640px) {
   .kanban-board { max-height: max(240px, calc(100dvh - 510px)); }
 }
+
+.kanban-attachments { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--text-secondary); }

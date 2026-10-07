@@ -5,6 +5,7 @@ import {
   listHrUsers,
   updateCandidate,
 } from "../../api";
+import { Icon } from "../../design-system/icons/Icon";
 import { Button } from "../../design-system/components/Button";
 import { Field, SelectInput } from "../../design-system/components/Field";
 import { EmptyState, ErrorState } from "../../design-system/components/StateViews";
@@ -503,6 +504,11 @@ export default function KanbanPage({ user }: KanbanPageProps) {
                       )}
                       <div className="kanban-card-meta">
                         <Badge>{SOURCE_LABELS[candidate.source]}</Badge>
+                        {(candidate.attachment_count ?? 0) > 0 && (
+                          <span className="kanban-attachments" aria-label={`Вложений: ${candidate.attachment_count}`}>
+                            <Icon name="file-text" size={13} /> {candidate.attachment_count}
+                          </span>
+                        )}
                         <time dateTime={candidate.updated_at} title="Обновлён">
                           {formatDate(candidate.updated_at)}
                         </time>
