@@ -41,20 +41,31 @@ internal static class Program
     private const int LengthDigits = 14;
     private const string ReadyFileName = ".payload-ready";
     private const string ProductFolder = "HRManager";
+    private static readonly object TraceLock = new object();
 
     [STAThread]
     private static int Main(string[] args)
     {
         try
         {
+            TraceReset();
             string exePath = Process.GetCurrentProcess().MainModule.FileName;
+            Trace("start: args=" + args.Length.ToString(CultureInfo.InvariantCulture) + " mode=" + (args.Length == 0 ? "gui" : "cli") + " exe=" + exePath);
 
             if (args.Length > 0 && args[0] == "--hrm-version")
             {
-                // Console-free informational mode: message box for a double-click,
-                // exit code 0 so scripts can rely on it.
+                // Informational mode: a dialog for a double-click, exit code 0 for
+                // scripts. HRM_NO_DIALOG=1 (CI, scripts) prints instead of blocking:
+                // a modal window in a scripted run would hang it forever.
+                string version = LauncherVersion() + "\r\n" + exePath;
+                Trace("version: " + version.Replace("\r", " ").Replace("\n", " "));
+                if (NoDialogRequested())
+                {
+                    WriteConsole(UiErrorTitle() + ": " + version);
+                    return 0;
+                }
                 MessageBox.Show(
-                    "HR Manager - portable license issuer\r\n" + LauncherVersion() + "\r\n" + exePath,
+                    "HR Manager - portable license issuer\r\n" + version,
                     "HR Manager - licenses",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -63,6 +74,7 @@ internal static class Program
 
             bool showProgress = args.Length == 0;
             string payloadDir = ExtractPayload(exePath, showProgress);
+            Trace("payload: " + payloadDir);
             string appDir = Path.Combine(payloadDir, "license-issuer");
             string pythonDir = Path.Combine(payloadDir, "python");
             string pythonExe = Path.Combine(pythonDir, "python.exe");
@@ -75,20 +87,23 @@ internal static class Program
                 string outPath = args.Length > 1
                     ? args[1]
                     : Path.Combine(LocalRoot(), "license-issuer-selfcheck.json");
-                return SelfCheck(exePath, payloadDir, appDir, pythonDir, outPath);
+                Trace("selfcheck: writing " + outPath);
+                int selfCheckCode = SelfCheck(exePath, payloadDir, appDir, pythonDir, outPath);
+                Trace("selfcheck: exit " + selfCheckCode.ToString(CultureInfo.InvariantCulture));
+                return selfCheckCode;
             }
 
             if (args.Length == 0)
             {
                 if (!File.Exists(guiScript))
                 {
-                    ShowError(UiStartupFailed() + "\r\n\r\ngui.py: " + guiScript);
+                    ReportError(UiStartupFailed() + "\r\n\r\ngui.py: " + guiScript, args);
                     return 3;
                 }
                 if (!File.Exists(pythonwExe)) { pythonwExe = pythonExe; }
                 if (!File.Exists(pythonwExe))
                 {
-                    ShowError(UiStartupFailed() + "\r\n\r\npython: " + pythonDir);
+                    ReportError(UiStartupFailed() + "\r\n\r\npython: " + pythonDir, args);
                     return 3;
                 }
                 ProcessStartInfo gui = new ProcessStartInfo();
@@ -96,39 +111,137 @@ internal static class Program
                 gui.Arguments = Quote(guiScript);
                 gui.WorkingDirectory = appDir;
                 gui.UseShellExecute = true;
+                Trace("gui: starting " + pythonwExe);
                 Process.Start(gui);
                 return 0;
             }
 
             if (!File.Exists(cliScript))
             {
-                ShowError(UiStartupFailed() + "\r\n\r\ncli.py: " + cliScript);
+                ReportError(UiStartupFailed() + "\r\n\r\ncli.py: " + cliScript, args);
                 return 3;
             }
             if (!File.Exists(pythonExe))
             {
-                ShowError(UiStartupFailed() + "\r\n\r\npython: " + pythonDir);
+                ReportError(UiStartupFailed() + "\r\n\r\npython: " + pythonDir, args);
                 return 3;
             }
             string logPath = Environment.GetEnvironmentVariable("HRM_PORTABLE_LOG");
             if (!string.IsNullOrEmpty(logPath))
             {
                 // Diagnostic/CI mode: same CLI, output captured to a file, no console window.
-                return RunCliCaptured(pythonExe, cliScript, args, appDir, logPath);
+                Trace("cli(captured): " + string.Join(" ", args) + " -> " + logPath);
+                int capturedCode = RunCliCaptured(pythonExe, cliScript, args, appDir, logPath);
+                Trace("cli(captured): exit " + capturedCode.ToString(CultureInfo.InvariantCulture));
+                return capturedCode;
             }
             ProcessStartInfo cli = new ProcessStartInfo();
             cli.FileName = pythonExe;
             cli.Arguments = Quote(cliScript) + " " + JoinArguments(args);
             cli.WorkingDirectory = appDir;
             cli.UseShellExecute = true; // the child console app gets its own window
+            Trace("cli: starting " + pythonExe);
             Process child = Process.Start(cli);
             child.WaitForExit();
+            Trace("cli: exit " + child.ExitCode.ToString(CultureInfo.InvariantCulture));
             return child.ExitCode;
         }
         catch (Exception ex)
         {
-            ShowError(UiCrash() + "\r\n\r\n" + ex.Message);
+            return Fail(ex, args);
+        }
+    }
+
+    // Failure reporting that never blocks: a modal dialog in CLI/CI mode would
+    // hang the caller forever (the process would stay alive until a human clicks
+    // OK). The details always land in the diagnostics files below
+    // %LOCALAPPDATA%\HRManager\LicenseIssuer, which the builder/CI dump on
+    // failure, so a stuck first run is diagnosable instead of silent.
+    private static int Fail(Exception ex, string[] args)
+    {
+        string details = ex.GetType().FullName + ": " + ex.Message;
+        Trace("FAILED: " + details);
+        if (ex.StackTrace != null) { Trace(ex.StackTrace); }
+        try
+        {
+            Directory.CreateDirectory(LocalRoot());
+            File.WriteAllText(
+                Path.Combine(LocalRoot(), "launcher-error.log"),
+                details + "\r\n\r\n" + ex.ToString() + "\r\n",
+                new UTF8Encoding(false));
+        }
+        catch (Exception)
+        {
+        }
+        if (args != null && args.Length > 0)
+        {
+            WriteConsole(UiCrash() + " " + details);
             return 4;
+        }
+        ShowError(UiCrash() + "\r\n\r\n" + ex.Message);
+        return 4;
+    }
+
+    private static void ReportError(string message, string[] args)
+    {
+        Trace("ERROR: " + message.Replace("\r", " ").Replace("\n", " "));
+        try
+        {
+            Directory.CreateDirectory(LocalRoot());
+            File.WriteAllText(
+                Path.Combine(LocalRoot(), "launcher-error.log"),
+                message + "\r\n",
+                new UTF8Encoding(false));
+        }
+        catch (Exception)
+        {
+        }
+        if (args != null && args.Length > 0) { WriteConsole(message); return; }
+        ShowError(message);
+    }
+
+    private static bool NoDialogRequested()
+    {
+        string flag = Environment.GetEnvironmentVariable("HRM_NO_DIALOG");
+        return !string.IsNullOrEmpty(flag) && flag != "0";
+    }
+
+    private static void WriteConsole(string message)
+    {
+        // A winexe has no console attached: this is best-effort (empty in CI's
+        // captured run, where the diagnostics files carry the information).
+        try { Console.Error.WriteLine(message); }
+        catch (Exception) { }
+    }
+
+    private static void Trace(string message)
+    {
+        // Best-effort progress log: the launcher must never fail because of it.
+        try
+        {
+            Directory.CreateDirectory(LocalRoot());
+            lock (TraceLock)
+            {
+                File.AppendAllText(
+                    Path.Combine(LocalRoot(), "launcher-trace.log"),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + " " + message + "\r\n",
+                    new UTF8Encoding(false));
+            }
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private static void TraceReset()
+    {
+        try
+        {
+            string path = Path.Combine(LocalRoot(), "launcher-trace.log");
+            if (File.Exists(path)) { File.Delete(path); }
+        }
+        catch (Exception)
+        {
         }
     }
 
@@ -327,6 +440,7 @@ internal static class Program
                             }
                         }
                         entries++;
+                        if ((entries % 500) == 0) { Trace("extract: " + entries.ToString(CultureInfo.InvariantCulture) + "/" + total.ToString(CultureInfo.InvariantCulture)); }
                         if (progressBar != null)
                         {
                             int percent = total > 0 ? (int)((entries * 100L) / total) : 0;

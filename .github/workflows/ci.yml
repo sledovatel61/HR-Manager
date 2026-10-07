@@ -571,6 +571,37 @@ jobs:
             $body = "### Build log" + "`n" + $fence + "text" + "`n" + $content + "`n" + $fence
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $body
             Write-Host "Build log posted to the job summary"
+            # Аннотации — единственный канал, который виден снаружи через
+            # check-run API: логи шагов и артефакты приватного репозитория
+            # отдаются только подписанными ссылками на сторонний хост. Без
+            # аннотаций причина падения сборки осталась бы невидимой.
+            $all = @(Get-Content -Path $logFile -Encoding utf8)
+            $lines = @()
+            $lines += ("=== build.log: {0} lines ===" -f $all.Count)
+            $lines += "--- head (first 25) ---"
+            $lines += @($all | Select-Object -First 25)
+            $lines += "--- tail (last 80) ---"
+            $lines += @($all | Select-Object -Last 80)
+            $lines += "--- error-like lines ---"
+            $lines += @($all | Where-Object {
+              $_ -match "(?i)(error|fail|exception|throw|traceback|не совпал|ошиб|отказ|не удалось|missing|not found|cannot)"
+            } | Select-Object -First 40)
+            $rx = "(?i)(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+"
+            $chunks = New-Object System.Collections.ArrayList
+            $cur = ""
+            foreach ($l in $lines) {
+              $l = [regex]::Replace([string]$l, $rx, '$1=<redacted>')
+              if ($l.Length -gt 3500) { $l = $l.Substring(0, 3500) + " ..." }
+              if ($cur.Length -gt 0 -and ($cur.Length + $l.Length + 1) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
+              if ($cur.Length -gt 0) { $cur += "`n" }
+              $cur += $l
+            }
+            if ($cur.Length -gt 0) { [void]$chunks.Add($cur) }
+            $n = [Math]::Min($chunks.Count, 8)
+            for ($i = 0; $i -lt $n; $i++) {
+              $m = ([string]$chunks[$i]).Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+              Write-Host ("::error title=build.log " + ($i + 1) + "/" + $chunks.Count + "::" + $m)
+            }
           }
           else {
             Write-Host "No build log at $logFile (сборка не запускалась)"
