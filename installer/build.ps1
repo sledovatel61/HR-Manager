@@ -132,10 +132,18 @@ Write-Host "release_sha: $releaseSha"
 $changelog = @()
 $changelogFile = Join-Path $repoRoot "CHANGELOG.md"
 if (Test-Path $changelogFile) {
-    foreach ($line in (Get-Content -Path $changelogFile -Encoding UTF8)) {
-        $trimmed = $line.Trim()
-        if ($trimmed -match '^[-*]\s+(.+)$') { $changelog += $Matches[1] }
-        if ($changelog.Count -ge 10) { break }
+    try {
+        foreach ($line in (Get-Content -Path $changelogFile -Encoding UTF8)) {
+            $trimmed = $line.Trim()
+            if ($trimmed -match '^[-*]\s+(.+)$') { $changelog += $Matches[1] }
+            if ($changelog.Count -ge 10) { break }
+        }
+    }
+    catch {
+        # Список изменений — только текст для экрана обновления. Он не имеет
+        # права ломать сборку установщика: пишем предупреждение в лог сборки и
+        # продолжаем с нейтральным текстом.
+        Write-Host "CHANGELOG.md при чтении дал ошибку (не критично, продолжаем): $_"
     }
 }
 if ($changelog.Count -eq 0) {

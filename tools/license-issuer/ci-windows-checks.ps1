@@ -29,20 +29,48 @@ $DistZip = Join-Path $Root "dist\license-issuer-dist.zip"
 function Write-Phase([string]$msg) { Write-Host "[$Phase] $msg" }
 
 # The portable launcher is a GUI-subsystem exe: PowerShell does not wait for
-# those, so both the wait and the exit code go through Start-Process.
+# those, so both the wait and the exit code go through Start-Process. The timeout
+# is short on purpose: unpacking 20 MB takes seconds, so a longer wait only
+# hides a broken artifact and burns CI time.
 function Invoke-PortableExe {
-    param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSeconds = 900)
+    param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSeconds = 300, [string]$Stage = "")
     $quoted = @()
     foreach ($argument in $Arguments) {
         if ($argument -match '[\s"]') { $quoted += ('"' + ($argument -replace '"', '\"') + '"') } else { $quoted += $argument }
     }
     $process = Start-Process -FilePath $Exe -ArgumentList ($quoted -join " ") -PassThru -NoNewWindow -ErrorAction Stop
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        Show-PortableDiagnostics ("timeout after {0}s (stage '{1}'): {2}" -f $TimeoutSeconds, $Stage, ($quoted -join " "))
         try { $process.Kill() } catch { }
         throw ("TIMEOUT: {0} did not finish in {1} seconds" -f $Exe, $TimeoutSeconds)
     }
     return [pscustomobject]@{ ExitCode = $process.ExitCode }
 }
+
+# A hung or failing portable exe must not stay a black box: the launcher keeps
+# its own stage log and error log below %LOCALAPPDATA%\HRManager\LicenseIssuer
+# (the launcher source never touches keys). Dumping them into the build log is
+# also what makes the failure visible through the CI check-run annotations,
+# which is the only channel readable from outside a private repository.
+function Show-PortableDiagnostics {
+    param([string]$Reason)
+    Write-Phase ("portable diagnostics: " + $Reason)
+    $diagRoot = Join-Path $env:LOCALAPPDATA "HRManager\LicenseIssuer"
+    Write-Phase ("diagnostics root: " + $diagRoot)
+    foreach ($diagName in @("launcher-trace.log", "launcher-error.log")) {
+        $diagPath = Join-Path $diagRoot $diagName
+        if (Test-Path $diagPath) {
+            Write-Phase ("--- " + $diagName + " (last 30 lines) ---")
+            foreach ($diagLine in @(Get-Content -Path $diagPath -Tail 30 -ErrorAction SilentlyContinue)) {
+                Write-Phase ("    " + $diagLine)
+            }
+        }
+        else {
+            Write-Phase ("--- " + $diagName + ": not found ---")
+        }
+    }
+}
+
 
 function Report-Fail([string]$title, [string]$detail) {
     # Fence is built from a single-quoted fragment: in a double-quoted string
@@ -180,6 +208,8 @@ try {
 
     # ------------------------------------------------------------ portable
     if ($Phase -eq "portable") {
+        # The launcher must never open a modal window here (nobody would click it).
+        $env:HRM_NO_DIALOG = "1"
         $portableScript = Join-Path $Root "build-portable.ps1"
         $portableExe = Join-Path $Root "dist\LicenseIssuer-Portable.exe"
         $portableInfo = Join-Path $Root "dist\BUILD-INFO.txt"
@@ -256,7 +286,7 @@ try {
         try {
             $selfJson = Join-Path $root "selfcheck.json"
             Write-Phase ("[{0:HH:mm:ss}] selfcheck via the shipped exe (first run unpacks the payload) ..." -f (Get-Date))
-            $selfRun = Invoke-PortableExe -Exe $portableExe -Arguments @("--hrm-selfcheck", $selfJson) -TimeoutSeconds 900
+            $selfRun = Invoke-PortableExe -Exe $portableExe -Arguments @("--hrm-selfcheck", $selfJson) -TimeoutSeconds 300 -Stage "selfcheck"
             if ($selfRun.ExitCode -ne 0) { throw "selfcheck exited with code $($selfRun.ExitCode)" }
             if (-not (Test-Path $selfJson)) { throw "selfcheck did not write $selfJson" }
             $selfData = Get-Content $selfJson -Raw | ConvertFrom-Json
@@ -277,7 +307,7 @@ try {
                 $logPath = Join-Path $root ("cli-" + $step.Name + ".log")
                 $env:HRM_PORTABLE_LOG = $logPath
                 try {
-                    $run = Invoke-PortableExe -Exe $portableExe -Arguments $step.Args -TimeoutSeconds 600
+                    $run = Invoke-PortableExe -Exe $portableExe -Arguments $step.Args -TimeoutSeconds 300 -Stage $step.Name
                 } finally { Remove-Item Env:HRM_PORTABLE_LOG -ErrorAction SilentlyContinue }
                 $text = ""
                 if (Test-Path $logPath) { $text = (Get-Content -Path $logPath -Raw) }
@@ -295,7 +325,7 @@ try {
             $lic = Get-Content -Path $licenseFile -Raw | ConvertFrom-Json
             $lic.max_active_users = 999
             $lic | ConvertTo-Json -Depth 4 | Set-Content -Path $tampered -Encoding utf8
-            $tamperedRun = Invoke-PortableExe -Exe $portableExe -Arguments @("verify", "--public-key-file", (Join-Path $keysDir "public_key.b64"), "--license-file", $tampered) -TimeoutSeconds 600
+            $tamperedRun = Invoke-PortableExe -Exe $portableExe -Arguments @("verify", "--public-key-file", (Join-Path $keysDir "public_key.b64"), "--license-file", $tampered) -TimeoutSeconds 300 -Stage "tampered"
             $tamperedCode = $tamperedRun.ExitCode
             if ($tamperedCode -eq 0) { throw "a tampered license was accepted by the portable exe" }
             Write-Phase "tampered license correctly rejected (exit=$tamperedCode)"
@@ -567,5 +597,6 @@ try {
 catch {
     $lineInfo = ""
     if ($_.InvocationInfo) { $lineInfo = "`nscript line: " + $_.InvocationInfo.ScriptLineNumber + " script: " + (Split-Path -Leaf $_.InvocationInfo.ScriptName) }
+    if ($Phase -eq "portable") { Show-PortableDiagnostics ("phase failed: " + $_.Exception.Message) }
     Report-Fail "phase '$Phase' failed" ($_.Exception.Message + $lineInfo)
 }

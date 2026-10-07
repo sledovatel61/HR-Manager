@@ -45,17 +45,44 @@ function Write-Info($msg) { Write-Host $msg -ForegroundColor Cyan }
 function Write-Warn2($msg) { Write-Host $msg -ForegroundColor Yellow }
 function Write-Err($msg) { Write-Host $msg -ForegroundColor Red }
 
+# A hung or failing portable exe must not stay a black box: the launcher keeps
+# its own stage log and error log below %LOCALAPPDATA%\HRManager\LicenseIssuer
+# (the launcher source never touches keys). Dumping them into the build log is
+# also what makes the failure visible through the CI check-run annotations,
+# which is the only channel readable from outside a private repository.
+function Show-PortableDiagnostics {
+    param([string]$Reason)
+    Write-Warn2 ("portable diagnostics: " + $Reason)
+    $diagRoot = Join-Path $env:LOCALAPPDATA "HRManager\LicenseIssuer"
+    Write-Warn2 ("diagnostics root: " + $diagRoot)
+    foreach ($diagName in @("launcher-trace.log", "launcher-error.log")) {
+        $diagPath = Join-Path $diagRoot $diagName
+        if (Test-Path $diagPath) {
+            Write-Warn2 ("--- " + $diagName + " (last 30 lines) ---")
+            foreach ($diagLine in @(Get-Content -Path $diagPath -Tail 30 -ErrorAction SilentlyContinue)) {
+                Write-Warn2 ("    " + $diagLine)
+            }
+        }
+        else {
+            Write-Warn2 ("--- " + $diagName + ": not found ---")
+        }
+    }
+}
+
 # Launcher processes are GUI-subsystem exes: PowerShell does not wait for those,
 # so the exit code has to be read through Start-Process -Wait -PassThru, with an
 # explicit timeout so a stuck process fails the build instead of hanging it.
+# The timeout is short on purpose: unpacking 20 MB takes seconds, so a longer
+# wait only hides a broken artifact and burns CI time.
 function Invoke-PortableExe {
-    param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSeconds = 900)
+    param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSeconds = 300, [string]$Stage = "")
     $quoted = @()
     foreach ($argument in $Arguments) {
         if ($argument -match '[\s"]') { $quoted += ('"' + ($argument -replace '"', '\"') + '"') } else { $quoted += $argument }
     }
     $process = Start-Process -FilePath $Exe -ArgumentList ($quoted -join " ") -PassThru -NoNewWindow -ErrorAction Stop
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        Show-PortableDiagnostics ("timeout after {0}s (stage '{1}'): {2}" -f $TimeoutSeconds, $Stage, ($quoted -join " "))
         try { $process.Kill() } catch { }
         throw ("TIMEOUT: {0} did not finish in {1} seconds" -f $Exe, $TimeoutSeconds)
     }
@@ -276,9 +303,16 @@ $smokeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("hrm-portable-smoke-" +
 try {
     New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
     $selfCheckJson = Join-Path $smokeDir "selfcheck.json"
+    # HRM_NO_DIALOG: a modal window would never be dismissed on a build machine,
+    # so the launcher must report through its log files instead of blocking.
+    $env:HRM_NO_DIALOG = "1"
 
-    $selfCheckRun = Invoke-PortableExe -Exe $exePath -Arguments @("--hrm-selfcheck", $selfCheckJson) -TimeoutSeconds 900
-    if ($selfCheckRun.ExitCode -ne 0) { Write-Err "selfcheck exited with $($selfCheckRun.ExitCode)"; exit 1 }
+    $selfCheckRun = Invoke-PortableExe -Exe $exePath -Arguments @("--hrm-selfcheck", $selfCheckJson) -TimeoutSeconds 300 -Stage "selfcheck"
+    if ($selfCheckRun.ExitCode -ne 0) {
+        Show-PortableDiagnostics ("selfcheck exit code " + $selfCheckRun.ExitCode)
+        Write-Err "selfcheck exited with $($selfCheckRun.ExitCode)"
+        exit 1
+    }
     if (-not (Test-Path $selfCheckJson)) { Write-Err "selfcheck did not write $selfCheckJson"; exit 1 }
     $selfCheck = Get-Content -Path $selfCheckJson -Raw | ConvertFrom-Json
     if (-not $selfCheck.ok) { Write-Err ("selfcheck reported failure: missing=" + $selfCheck.missing); exit 1 }
@@ -298,12 +332,13 @@ try {
         $logPath = Join-Path $smokeDir ("cli-" + $step.Name + ".log")
         $env:HRM_PORTABLE_LOG = $logPath
         try {
-            $run = Invoke-PortableExe -Exe $exePath -Arguments $step.Args -TimeoutSeconds 600
+            $run = Invoke-PortableExe -Exe $exePath -Arguments $step.Args -TimeoutSeconds 300 -Stage $step.Name
         } finally { Remove-Item Env:HRM_PORTABLE_LOG -ErrorAction SilentlyContinue }
         $text = ""
         if (Test-Path $logPath) { $text = (Get-Content -Path $logPath -Raw) }
         $outputs[$step.Name] = $text
         if ($run.ExitCode -ne 0) {
+            Show-PortableDiagnostics ("CLI step '{0}' exit code {1}" -f $step.Name, $run.ExitCode)
             Write-Err ("portable CLI step '{0}' exited with code {1}" -f $step.Name, $run.ExitCode)
             Write-Err ("log: " + $text)
             exit 1
@@ -323,9 +358,11 @@ try {
     }
     Write-Info "Smoke test PASS: portable exe opens the GUI path, runs the CLI chain and never prints key material"
 } catch {
+    Show-PortableDiagnostics ("smoke test failed: " + $_.Exception.Message)
     Write-Err "smoke test failed: $_"
     exit 1
 } finally {
+    Remove-Item Env:HRM_NO_DIALOG -ErrorAction SilentlyContinue
     if (Test-Path $smokeDir) { Remove-Item -Path $smokeDir -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path $smokeDir) { Write-Warn2 "could not remove $smokeDir - delete it manually" }
 }
