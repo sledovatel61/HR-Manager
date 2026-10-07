@@ -45,6 +45,15 @@ function Write-Info($msg) { Write-Host $msg -ForegroundColor Cyan }
 function Write-Warn2($msg) { Write-Host $msg -ForegroundColor Yellow }
 function Write-Err($msg) { Write-Host $msg -ForegroundColor Red }
 
+# A 64+ hex run in this log is rejected by the CI gate (a leaked private key is
+# exactly 64 hex characters), so hashes are printed here as two 32-character
+# halves. The full value is recorded in dist/BUILD-INFO.txt, which is a file and
+# never printed. The portable phase re-reads it and re-hashes the artifact.
+function Format-ShaLog($hash) {
+    if ($hash.Length -ne 64) { return $hash }
+    return ($hash.Substring(0, 32) + " " + $hash.Substring(32))
+}
+
 # A hung or failing portable exe must not stay a black box: the launcher keeps
 # its own stage log and error log below %LOCALAPPDATA%\HRManager\LicenseIssuer
 # (the launcher source never touches keys). Dumping them into the build log is
@@ -314,9 +323,8 @@ Write-Info "trailer verified: marker '$markerBack', payload length $lengthBack"
 # 5. SHA256 evidence for the release notes / acceptance checklist.
 $exeHash = (Get-FileHash -Path $exePath -Algorithm SHA256).Hash
 $payloadHash = (Get-FileHash -Path $payloadZip -Algorithm SHA256).Hash
-Write-Info "SHA256 (portable exe): $exeHash"
-Write-Info "SHA256 (payload zip):  $payloadHash"
-
+Write-Info ("SHA256 (portable exe): {0}" -f (Format-ShaLog $exeHash))
+Write-Info ("SHA256 (payload zip):  {0}" -f (Format-ShaLog $payloadHash))
 $info = @()
 $info += "HR Manager License Issuer - portable single file"
 $info += "version: $Version"
@@ -418,6 +426,6 @@ if ($leaks.Count -ne 0) {
 
 Write-Info "Build complete!"
 Write-Info "  portable exe: $exePath"
-Write-Info "  sha256:       $exeHash"
+Write-Info ("  sha256:       {0}  (full value in BUILD-INFO.txt)" -f (Format-ShaLog $exeHash))
 Write-Info "  build info:   $infoPath"
 Write-Info "Hand this ONE file to the owner. Double-click opens the GUI; the exe needs no Python/Node/Docker/Visual Studio and no internet."
