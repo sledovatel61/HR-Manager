@@ -92,14 +92,24 @@ function Get-HrmDockerDesktopPath {
 }
 
 function Get-HrmDockerCliPath {
-    # Путь к docker.exe (CLI) без запуска процесса, если он есть в PATH.
-    try {
-        $cmd = Get-Command docker.exe -ErrorAction SilentlyContinue
-        if ($null -ne $cmd) { return [string]$cmd.Source }
-    }
-    catch { }
+    # Путь к CLI контейнеров без запуска процесса и без Get-Command: известные
+    # каталоги Docker Desktop, затем каталоги из PATH (проверка Test-Path).
     $override = Get-HrmDockerOverrideValue "cli_path"
     if ($null -ne $override) { return [string]$override }
+    $dirs = @()
+    if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin") }
+    $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    if ($programFilesX86) { $dirs += (Join-Path $programFilesX86 "Docker\Docker\resources\bin") }
+    if ($env:LOCALAPPDATA) { $dirs += (Join-Path $env:LOCALAPPDATA "Docker\Docker\resources\bin") }
+    foreach ($dir in $dirs) {
+        $candidate = Join-Path $dir "docker.exe"
+        if (Test-Path $candidate) { return $candidate }
+    }
+    foreach ($dir in @($env:PATH -split ";")) {
+        if (-not $dir) { continue }
+        $candidate = Join-Path $dir "docker.exe"
+        if (Test-Path $candidate) { return $candidate }
+    }
     return ""
 }
 

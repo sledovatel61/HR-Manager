@@ -48,4 +48,24 @@ else {
     Write-Host ("ЕСТЬ ПРОВАЛЫ: {0}" -f $global:HRM_TestFailed) -ForegroundColor Red
     foreach ($failure in $global:HRM_TestFailures) { Write-Host ("  " + $failure) -ForegroundColor Red }
 }
+# GitHub показывает в check-run не более 10 аннотаций `::error::`, поэтому
+# полный список провалов дополнительно пишется в файл (CI загружает его как
+# артефакт) и в шаг-summary, если он доступен.
+$failuresFile = ""
+if ($env:RUNNER_TEMP) { $failuresFile = Join-Path $env:RUNNER_TEMP "hr-engine-test-failures.txt" }
+elseif ($env:TEMP) { $failuresFile = Join-Path $env:TEMP "hr-engine-test-failures.txt" }
+if ($failuresFile) {
+    $report = @(
+        ("HR Manager engine tests: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)
+    ) + @($global:HRM_TestFailures)
+    try {
+        Set-Content -Path $failuresFile -Value $report -Encoding UTF8
+        Write-Host ("Отчёт о провалах: " + $failuresFile)
+    } catch { }
+    if ($global:HRM_TestFailed -gt 0 -and $env:GITHUB_STEP_SUMMARY) {
+        try {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("### Провалы тестов движка" + "`n" + '```text' + "`n" + ($report -join "`n") + "`n" + '```' + "`n") -Encoding utf8
+        } catch { }
+    }
+}
 exit $exitCode

@@ -463,6 +463,14 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
 
+      - name: Upload engine test failures (if any)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-engine-test-failures
+          path: ${{ runner.temp }}/hr-engine-test-failures.txt
+          if-no-files-found: ignore
+
       - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
         run: |

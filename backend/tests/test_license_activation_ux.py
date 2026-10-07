@@ -27,7 +27,7 @@ from app.license import (
 from app.services.license_service import parse_and_verify_license_text
 
 
-def gen_keypair():
+def gen_keypair() -> tuple[bytes, bytes]:
     priv = Ed25519PrivateKey.generate()
     return priv.private_bytes_raw(), priv.public_key().public_bytes_raw()
 
