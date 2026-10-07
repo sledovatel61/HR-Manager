@@ -238,7 +238,7 @@ function Get-HrmMigrationsState {
 }
 
 function Get-HrmOpsStatus {
-    # /ops/status через loopback-прокси (без секретов, без PII).
+    # /ops/status через loopback-прокси (вывод проходит редакцию секретов).
     param([string]$BaseUrl)
     try {
         $result = Invoke-HrmHttp -Uri "$BaseUrl/api/ops/status"

@@ -186,6 +186,74 @@ Test-Case "support-bundle не включает дамп БД и pilot.env" {
     Remove-Item Env:HRM_DESKTOP_DIR -ErrorAction SilentlyContinue
 }
 
+Test-Case "support-bundle: внутри архива README-ПЕРЕД-ОТПРАВКОЙ.txt с честным текстом" {
+    # P1 ревью раунда 12: человек, который не программист, откроет архив и
+    # поверит тому, что лежит внутри. Поэтому предупреждение обязано быть в
+    # самом архиве, а не только в документации.
+    Initialize-HrmTestEngine
+    $world = New-HrmMockWorld
+    Set-HrmPreflightOverride @{ windows=$true; powershell=$true; docker=$true; daemon=$true; compose="v2.29.7 (mock)"; port=$true; state_dir=$true; space=$true; config=$true }
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Initialize-HrmStateDir $state | Out-Null
+    Set-HrmInstallRecord $state @{ release_sha="a"*40; install_dir=$install; state_dir=$state; port=8080; installed_at="2026-09-29T00:00:00Z"; pilot_created=$true }
+    (@{ release_sha="a"*40; version="0.15.0" } | ConvertTo-Json) | Set-Content -Path (Join-Path $install "release.json") -Encoding UTF8
+    $desktop = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-desktop3-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
+    New-Item -ItemType Directory -Path $desktop -Force | Out-Null
+    $env:HRM_DESKTOP_DIR = $desktop
+    $zipPath = New-HrmSupportBundle -InstallDir $install -StateDir $state -LogTail 10
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        $entries = @($zip.Entries | Where-Object { $_.FullName -like "README*" })
+        Assert-HrmTrue ($entries.Count -ge 1) "в архиве нет файла-предупреждения README-ПЕРЕД-ОТПРАВКОЙ.txt"
+        Assert-HrmContains $entries[0].FullName "ПЕРЕД-ОТПРАВКОЙ" "предупреждение должно называться README-ПЕРЕД-ОТПРАВКОЙ.txt"
+        $stream = $entries[0].Open()
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+        $readme = $reader.ReadToEnd()
+        $reader.Dispose()
+        $stream.Dispose()
+        # Текст говорит, что вырезается, и чего автоматика НЕ гарантирует.
+        Assert-HrmContains $readme "вырезается автоматически" "нет перечня того, что вырезается"
+        Assert-HrmContains $readme "почт" "нет упоминания адресов электронной почты"
+        Assert-HrmContains $readme "телефон" "нет упоминания телефонов"
+        Assert-HrmContains $readme "гарантирует" "нет честного «автоматика НЕ гарантирует»"
+        Assert-HrmContains $readme "могут остаться" "нет предупреждения, что часть текста может остаться"
+        Assert-HrmContains $readme "просмотрите" "нет требования просмотреть архив перед отправкой"
+        Assert-HrmContains $readme "закрытому каналу" "нет требования отправлять по закрытому каналу"
+        # И не возвращает обещаний, которых код не выполняет.
+        Assert-HrmNotContains $readme "не попадают" "предупреждение обещает, что данные не попадают в отчёт"
+        Assert-HrmNotContains $readme "без PII" "предупреждение обещает «без PII»"
+    } finally { $zip.Dispose() }
+    Remove-Item $desktop -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_DESKTOP_DIR -ErrorAction SilentlyContinue
+}
+
+Test-Case "документация про отчёт для поддержки не обещает вырезание личных данных" {
+    # Обещание «пароли, ключи, токены и данные кандидатов в отчёт не попадают»
+    # было неправдой: Redact-HrmPii вырезает только адреса почты и телефоны,
+    # а имена/свободный текст — нет. Тест не даёт обещанию вернуться.
+    $guardFiles = @(
+        "docs\MARIA_GUIDE.md",
+        "docs\CURRENT_STATUS.md",
+        "docs\OWNER_QUICKSTART.md",
+        "docs\RECOVERY_GUIDE.md",
+        "docs\UPDATE_GUIDE.md",
+        "infra\windows\README.md",
+        "infra\windows\engine\SupportBundle.psm1"
+    )
+    foreach ($rel in $guardFiles) {
+        $full = Join-Path $script:RepoRoot $rel
+        Assert-HrmTrue (Test-Path $full) ("нет файла " + $rel)
+        $fileText = Get-Content -Path $full -Raw -Encoding UTF8
+        Assert-HrmNotContains $fileText "не попадают" ($rel + ": вернулось обещание «в отчёт не попадают»")
+        Assert-HrmNotContains $fileText "без PII" ($rel + ": вернулось обещание «без PII»")
+    }
+    $maria = Get-Content -Path (Join-Path $script:RepoRoot "docs\MARIA_GUIDE.md") -Raw -Encoding UTF8
+    Assert-HrmContains $maria "просмотрите" "в инструкции Перепечай нет требования просмотреть архив"
+    Assert-HrmContains $maria "README-ПЕРЕД-ОТПРАВКОЙ.txt" "инструкция не упоминает предупреждение внутри архива"
+}
+
 # --- B5: LAN ---
 Test-Case "lan-access по умолчанию выключен, включение меняет бинд и правило Firewall" {
     Initialize-HrmTestEngine

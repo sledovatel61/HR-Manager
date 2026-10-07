@@ -24,7 +24,23 @@ $script:DockerOverride = $null
 
 $script:DockerInstallerUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
 $script:DockerDownloadPage = "https://www.docker.com/products/docker-desktop/"
-$script:DockerPublisherMarker = "Docker"
+# Издатель официального установщика Docker Desktop. Раньше здесь была подстрока
+# "Docker", и проверка пропускала любой корректно подписанный файл, у которого
+# слово Docker встречается в subject (например "CN=Fake Docker Signer, O=Evil").
+# Теперь допускается только точное совпадение с одной из зафиксированных строк
+# или отпечаток сертификата из списка ниже.
+#
+# Значения сняты с настоящего файла Docker Desktop Installer.exe на Windows-раннере
+# CI скриптом infra/windows/tools/Audit-HrmDockerPublisher.ps1 — не выдуманы.
+# Пока список пуст, проверка отказывает: неизвестный издатель не считается
+# доверенным. Заполняется строками вида
+#   "CN=Docker Inc., O=Docker Inc., L=Palo Alto, S=California, C=US"
+# При смене сертификата Docker: прогнать аудит (CI, входной параметр
+# docker_audit=true), добавить новую строку/отпечаток, старые оставить, пока не
+# истечёт срок их действия.
+$script:DockerPublisherSubjects = @()
+# Отпечатки сертификата (SHA1 Thumbprint и SHA256 cert hash), тоже из аудита CI.
+$script:DockerPublisherThumbprints = @()
 $script:DockerRequiredComposeMinor = 24
 
 # --- Тестовые переопределения -------------------------------------------------
@@ -111,6 +127,18 @@ function Get-HrmDockerCliPath {
         if (Test-Path $candidate) { return $candidate }
     }
     return ""
+}
+
+function Get-HrmDockerInstallerUrl {
+    # Единственный источник адреса официального установщика: его используют
+    # движок (Install-HrmDockerDesktop) и аудит издателя в CI
+    # (infra/windows/tools/Audit-HrmDockerPublisher.ps1).
+    return $script:DockerInstallerUrl
+}
+
+function Get-HrmDockerPublisherSubjects {
+    # Зафиксированные издатели официального установщика (заполняются из аудита CI).
+    return @($script:DockerPublisherSubjects)
 }
 
 function Get-HrmDockerDesktopState {
@@ -395,24 +423,60 @@ function Get-HrmDockerInstallGuide {
     )
 }
 
+function Test-HrmDockerPublisherSubject {
+    # Решение «издатель — это Docker Inc.» вынесено в чистую функцию: её можно
+    # проверить тестами без сертификатов, и именно её использует аудит CI.
+    # Сравнение нормализованное: пробелы сжимаются, регистр не важен, чтобы
+    # форматирование X.500 (пробел после запятой, порядок атрибутов в строке)
+    # не влияло на решение.
+    param([string]$Subject, [string[]]$Thumbprints = @())
+    foreach ($thumbprint in @($Thumbprints)) {
+        if (-not [string]::IsNullOrWhiteSpace($thumbprint)) {
+            $clean = ($thumbprint -replace '[^0-9a-fA-F]', '').ToLowerInvariant()
+            if ($script:DockerPublisherThumbprints -contains $clean) { return $true }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($Subject)) { return $false }
+    $normalized = (($Subject -replace '\s+', ' ').Trim()).ToLowerInvariant()
+    foreach ($allowed in @($script:DockerPublisherSubjects)) {
+        $expected = (($allowed -replace '\s+', ' ').Trim()).ToLowerInvariant()
+        if ($expected -and $normalized -ceq $expected) { return $true }
+    }
+    return $false
+}
+
 function Test-HrmDockerInstallerTrusted {
-    # Проверка подписи скачанного установщика: издатель должен быть Docker.
+    # Проверка подписи скачанного установщика: подпись действительна И издатель
+    # ровно Docker Inc. (точное совпадение subject/отпечатка из списка выше).
     # Возвращает @{ trusted; status; subject; reason }.
     param([string]$Path)
     $override = Get-HrmDockerOverrideValue "install_signature"
     if ($null -ne $override) {
+        # Тесты могут переопределить проверку. $true/$false — «подпись верна» без
+        # реального файла; строка — subject, который надо пропустить через НАСТОЯЩЕЕ
+        # решение о издателе (так проверяется отказ фальшивому «Docker» в subject).
+        if ($override -is [string]) {
+            $trusted = Test-HrmDockerPublisherSubject $override
+            $reason = ""
+            if (-not $trusted) { $reason = ("Издатель установщика не Docker Inc. (сертификат: {0})." -f $override) }
+            return [pscustomobject]@{ trusted = $trusted; status = "override"; subject = $override; reason = $reason }
+        }
         return [pscustomobject]@{ trusted = [bool]$override; status = "override"; subject = "CN=Docker Inc."; reason = "" }
     }
     try {
         $signature = Get-AuthenticodeSignature -FilePath $Path
         $status = [string]$signature.Status
         $subject = ""
-        if ($null -ne $signature.SignerCertificate) { $subject = [string]$signature.SignerCertificate.Subject }
+        $thumbprints = @()
+        if ($null -ne $signature.SignerCertificate) {
+            $subject = [string]$signature.SignerCertificate.Subject
+            $thumbprints = @([string]$signature.SignerCertificate.Thumbprint, [string]$signature.SignerCertificate.GetCertHashString("SHA256"))
+        }
         if ($status -ne "Valid") {
             return [pscustomobject]@{ trusted = $false; status = $status; subject = $subject; reason = ("Подпись установщика не подтверждена Windows (статус: {0})." -f $status) }
         }
-        if ($subject -notmatch [regex]::Escape($script:DockerPublisherMarker)) {
-            return [pscustomobject]@{ trusted = $false; status = $status; subject = $subject; reason = "Издатель установщика не Docker." }
+        if (-not (Test-HrmDockerPublisherSubject -Subject $subject -Thumbprints $thumbprints)) {
+            return [pscustomobject]@{ trusted = $false; status = $status; subject = $subject; reason = ("Издатель установщика не Docker Inc. (сертификат: {0})." -f $subject) }
         }
         return [pscustomobject]@{ trusted = $true; status = $status; subject = $subject; reason = "" }
     }

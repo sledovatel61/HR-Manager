@@ -34,6 +34,26 @@ Test-Case "все файлы движка проходят парсер PowerShe
     }
 }
 
+Test-Case "вспомогательные скрипты infra/windows/tools проходят парсер и имеют BOM" {
+    # Аудит издателя Docker (tools\Audit-HrmDockerPublisher.ps1) запускается только
+    # по кнопке в CI, поэтому синтаксис проверяем здесь, а не ждём ручного прогона.
+    $toolsDir = Join-Path $WindowsDir "tools"
+    Assert-HrmTrue (Test-Path $toolsDir) "нет каталога infra\windows\tools"
+    $toolFiles = @(Get-ChildItem -Path $toolsDir -File -Filter *.ps1)
+    Assert-HrmTrue ($toolFiles.Count -ge 1) "в infra\windows\tools нет скриптов"
+    foreach ($file in $toolFiles) {
+        $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+        Assert-HrmTrue ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) `
+            ($file.Name + ": нет UTF-8 BOM (Windows PowerShell 5.1 прочитает файл в кодовой странице)")
+        $tokens = $null
+        $errors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+        if ($errors -and $errors.Count -gt 0) {
+            throw ("Ошибки парсера в {0}: {1}" -f $file.Name, ($errors[0].Message))
+        }
+    }
+}
+
 Test-Case "нет битых символов U+FFFD в файлах движка" {
     foreach ($file in Get-HrmEngineFiles) {
         $text = Get-Content -Path $file -Raw -Encoding UTF8

@@ -212,4 +212,3 @@ jobs:
           }
           if ($entries.Count -eq 0) { Write-Host "SHA256SUMS.txt had no parsable lines"; exit 0 }
           Write-Host ("::notice title=pilot release ${{ steps.resolve.outputs.version }}::" + ($entries -join "; "))
-

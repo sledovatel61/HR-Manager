@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      docker_audit:
+        description: "Снять подпись официального установщика Docker Desktop (~600 МБ) и сверить с зафиксированным издателем"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -865,6 +871,42 @@ jobs:
             installer/output/SHA256SUMS.txt
             installer/release-manifest.json
           if-no-files-found: error
+
+  docker-publisher-audit:
+    name: Docker Desktop publisher audit (official installer signature)
+    # Ручной аудит: скачивает официальный установщик Docker Desktop и снимает с
+    # него подпись (subject, отпечатки сертификата), сверяя с издателем,
+    # зафиксированным в infra/windows/engine/Docker.psm1. Нужен при смене
+    # сертификата Docker и как доказательство, что список издателей не выдуман.
+    # ВРЕМЕННО (измерение, раунд ревью 12): запускается и на pull_request, чтобы
+    # получить фактические значения; после фиксации издателя условие станет
+    # только ручным (workflow_dispatch + docker_audit=true).
+    if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.docker_audit) }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Audit the official installer signature
+        shell: powershell
+        run: |
+          # Коды возврата аудита: 0 — измерено (и издатель совпал, если он уже
+          # зафиксирован), 1 — тревога (подпись/издатель не совпали с
+          # зафиксированными), 2 — измерить не удалось (нет сети/таймаут).
+          # Код 2 не должен красить сборку: это не смена издателя.
+          $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tools/Audit-HrmDockerPublisher.ps1 *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
+          $code = $LASTEXITCODE
+          if ($code -eq 2) {
+            Write-Host "::warning::аудит издателя Docker не смог скачать установщик (код 2) - это не смена издателя"
+            exit 0
+          }
+          if ($code -ne 0) {
+            Write-Host "::error::аудит издателя Docker завершился с кодом $code"
+            exit $code
+          }
+          Write-Host "Аудит издателя Docker Desktop пройден"
 
   license-issuer-windows:
     name: License issuer bundle - Windows PowerShell 5.1 checks
