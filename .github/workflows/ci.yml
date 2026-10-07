@@ -771,6 +771,101 @@ jobs:
           $uploaded = Get-SplitHash ((Get-FileHash -Path $setup.FullName -Algorithm SHA256).Hash)
           Write-Host ("::notice title=pilot Setup.exe (uploaded artifact)::file=" + $setup.Name + " bytes=" + $setup.Length + " sha256=" + $uploaded)
 
+  pilot-setup:
+    name: Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Build the pilot Setup.exe (unsigned, no trust store)
+        shell: pwsh
+        run: |
+          # The same command the owner-triggered "Pilot release" workflow runs: the
+          # pilot does not use the update channel, so no trust store is passed, and
+          # the license public key comes from infra/license/public_key.b64 (build.ps1
+          # fails closed when it is missing). Keeping this in the branch CI means
+          # every push produces the file handed to the pilot user, together with the
+          # SHA256 that goes into docs/PILOT_FINAL_REPORT.md.
+          $ErrorActionPreference = "Stop"
+          Write-Host "Pilot Setup.exe build, commit $env:GITHUB_SHA"
+          & ./installer/build.ps1 -Version 0.15.0 *>&1 | Tee-Object pilot-build.log
+          if (-not (Test-Path "installer/release-manifest.json")) { throw "release-manifest.json was not written" }
+          $setup = Get-ChildItem installer/output/HR-Manager-Setup-*.exe | Select-Object -First 1
+          if (-not $setup) { throw "Setup.exe was not produced" }
+          Write-Host ("pilot Setup.exe: {0} ({1:N0} bytes)" -f $setup.Name, $setup.Length)
+
+      - name: Post the pilot build log to the job summary
+        if: always()
+        shell: pwsh
+        run: |
+          $logFile = "pilot-build.log"
+          if (-not (Test-Path $logFile)) { Write-Host "no build log at $logFile"; exit 0 }
+          $content = Get-Content -Path $logFile -Raw
+          if ($content.Length -gt 60000) { $content = $content.Substring(0, 60000) + "`n...truncated" }
+          # The fence is built from single quotes: inside a double-quoted PowerShell
+          # string the three backticks would parse as escaped quotes and leave the
+          # line unterminated (the windows-installer job documents the same trap).
+          $fence = '```'
+          $body = "### Pilot Setup.exe build log" + "`n" + $fence + "text" + "`n" + $content + "`n" + $fence
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $body
+          Write-Host "pilot build log posted to the job summary"
+
+      - name: Generate SHA256SUMS.txt for the pilot artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = Get-ChildItem installer/output/HR-Manager-Setup-*.exe | Select-Object -First 1
+          if (-not $setup) { throw "Setup.exe missing" }
+          $hash = (Get-FileHash -Path $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifestHash = (Get-FileHash -Path installer/release-manifest.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          $lines = @(
+            "$hash  $($setup.Name)"
+            "$manifestHash  release-manifest.json"
+          )
+          $outPath = "installer/output/SHA256SUMS.txt"
+          Set-Content -Path $outPath -Value $lines -Encoding ASCII
+          Write-Host "SHA256SUMS.txt:"
+          Get-Content $outPath | Write-Host
+          Write-Host "release-manifest.json:"
+          Get-Content installer/release-manifest.json -Raw | Write-Host
+
+      - name: Publish the pilot artifact hashes as annotations (evidence without artifact download)
+        if: always()
+        shell: powershell
+        run: |
+          # The SHA256SUMS.txt file lives inside the uploaded artifact, and
+          # artifacts can only be fetched from the Actions UI. A notice annotation
+          # makes the same values readable through the check-run API. Each hash is
+          # printed as two 32-character halves: a 64+ hex run would be blanked by
+          # the redaction that keeps key material out of the logs.
+          $ErrorActionPreference = "Continue"
+          $sums = "installer/output/SHA256SUMS.txt"
+          if (-not (Test-Path $sums)) { Write-Host "no SHA256SUMS.txt - nothing to publish"; exit 0 }
+          $entries = @()
+          foreach ($line in (Get-Content -Path $sums)) {
+            $trimmed = ([string]$line).Trim()
+            if ($trimmed -notmatch '^([0-9a-fA-F]{64})\s+(.+)$') { continue }
+            $hash = $Matches[1].ToUpperInvariant()
+            $entries += ($Matches[2] + " sha256=" + $hash.Substring(0, 32) + " " + $hash.Substring(32))
+          }
+          if ($entries.Count -eq 0) { Write-Host "SHA256SUMS.txt had no parsable lines"; exit 0 }
+          Write-Host ("::notice title=pilot Setup.exe 0.15.0 (unsigned)::" + ($entries -join "; "))
+
+      - name: Upload the pilot Setup.exe + SHA256SUMS
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pilot-setup-0.15.0-unsigned
+          path: |
+            installer/output/HR-Manager-Setup-*.exe
+            installer/output/SHA256SUMS.txt
+            installer/release-manifest.json
+          if-no-files-found: error
+
   license-issuer-windows:
     name: License issuer bundle - Windows PowerShell 5.1 checks
     runs-on: windows-latest
