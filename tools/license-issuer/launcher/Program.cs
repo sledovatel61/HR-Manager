@@ -411,46 +411,73 @@ internal static class Program
                 Directory.CreateDirectory(payloadDir);
                 long extracted = 0;
                 int entries = 0;
-                fs.Seek(payloadOffset, SeekOrigin.Begin);
-                using (ZipArchive archive = new ZipArchive(fs, ZipArchiveMode.Read, true))
+                // The payload ZIP sits inside the .exe with the 32-byte trailer after
+                // it. Reading it straight from the .exe stream makes
+                // System.IO.Compression.ZipArchive scan the whole tail for the End Of
+                // Central Directory record, and .NET can settle on a wrong candidate:
+                // "Number of entries expected in End Of Central Directory does not
+                // correspond to number of entries in Central Directory" (seen in CI,
+                // where the first run of the artifact never got past this point). A
+                // copy of exactly the payload bytes is an ordinary ZIP file, so it
+                // always opens; the copy is removed in the finally block below.
+                string temporaryZip = Path.Combine(
+                    LocalRoot(),
+                    "payload-" + payloadLength.ToString(CultureInfo.InvariantCulture) + ".zip.tmp");
+                Trace("extract: copying " + payloadLength.ToString(CultureInfo.InvariantCulture) + " bytes to " + temporaryZip);
+                try
                 {
-                    int total = archive.Entries.Count;
-                    if (total <= 0) { throw new InvalidDataException("payload archive is empty"); }
-                    SetProgress(progressBar, 0);
-                    foreach (ZipArchiveEntry entry in archive.Entries)
+                    fs.Seek(payloadOffset, SeekOrigin.Begin);
+                    using (FileStream copy = new FileStream(temporaryZip, FileMode.Create, FileAccess.Write, FileShare.None))
                     {
-                        string name = entry.FullName.Replace('/', Path.DirectorySeparatorChar);
-                        string target = Path.Combine(payloadDir, name);
-                        if (entry.Name.Length == 0)
+                        CopyExactly(fs, copy, payloadLength);
+                    }
+                    Trace("extract: payload copy done");
+                    using (FileStream zipStream = new FileStream(temporaryZip, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    using (ZipArchive archive = new ZipArchive(zipStream, ZipArchiveMode.Read, false))
+                    {
+                        int total = archive.Entries.Count;
+                        if (total <= 0) { throw new InvalidDataException("payload archive is empty"); }
+                        SetProgress(progressBar, 0);
+                        foreach (ZipArchiveEntry entry in archive.Entries)
                         {
-                            Directory.CreateDirectory(target);
-                            continue;
-                        }
-                        string parent = Path.GetDirectoryName(target);
-                        if (!string.IsNullOrEmpty(parent)) { Directory.CreateDirectory(parent); }
-                        using (Stream source = entry.Open())
-                        using (FileStream destination = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None))
-                        {
-                            byte[] buffer = new byte[65536];
-                            int read;
-                            while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+                            string name = entry.FullName.Replace('/', Path.DirectorySeparatorChar);
+                            string target = Path.Combine(payloadDir, name);
+                            if (entry.Name.Length == 0)
                             {
-                                destination.Write(buffer, 0, read);
-                                extracted += read;
+                                Directory.CreateDirectory(target);
+                                continue;
                             }
-                        }
-                        entries++;
-                        if ((entries % 500) == 0) { Trace("extract: " + entries.ToString(CultureInfo.InvariantCulture) + "/" + total.ToString(CultureInfo.InvariantCulture)); }
-                        if (progressBar != null)
-                        {
-                            int percent = total > 0 ? (int)((entries * 100L) / total) : 0;
-                            if (percent > 100) { percent = 100; }
-                            SetProgress(progressBar, percent);
-                            if (progressLabel != null) { progressLabel.Text = UiPreparing() + " " + percent.ToString(CultureInfo.InvariantCulture) + "%"; }
-                            Application.DoEvents();
+                            string parent = Path.GetDirectoryName(target);
+                            if (!string.IsNullOrEmpty(parent)) { Directory.CreateDirectory(parent); }
+                            using (Stream source = entry.Open())
+                            using (FileStream destination = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None))
+                            {
+                                byte[] buffer = new byte[65536];
+                                int read;
+                                while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+                                {
+                                    destination.Write(buffer, 0, read);
+                                    extracted += read;
+                                }
+                            }
+                            entries++;
+                            if ((entries % 500) == 0) { Trace("extract: " + entries.ToString(CultureInfo.InvariantCulture) + "/" + total.ToString(CultureInfo.InvariantCulture)); }
+                            if (progressBar != null)
+                            {
+                                int percent = total > 0 ? (int)((entries * 100L) / total) : 0;
+                                if (percent > 100) { percent = 100; }
+                                SetProgress(progressBar, percent);
+                                if (progressLabel != null) { progressLabel.Text = UiPreparing() + " " + percent.ToString(CultureInfo.InvariantCulture) + "%"; }
+                                Application.DoEvents();
+                            }
                         }
                     }
                 }
+                finally
+                {
+                    TryDeleteFile(temporaryZip);
+                }
+                Trace("extract: " + entries.ToString(CultureInfo.InvariantCulture) + " files, " + extracted.ToString(CultureInfo.InvariantCulture) + " bytes");
                 File.WriteAllText(
                     Path.Combine(payloadDir, ReadyFileName),
                     "entries=" + entries.ToString(CultureInfo.InvariantCulture) + "\r\nbytes=" + extracted.ToString(CultureInfo.InvariantCulture) + "\r\n",
@@ -493,6 +520,26 @@ internal static class Program
     {
         try { Directory.Delete(path, true); }
         catch (Exception) { }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try { if (File.Exists(path)) { File.Delete(path); } }
+        catch (Exception) { }
+    }
+
+    private static void CopyExactly(Stream source, Stream destination, long count)
+    {
+        byte[] buffer = new byte[65536];
+        long remaining = count;
+        while (remaining > 0)
+        {
+            int want = remaining < buffer.Length ? (int)remaining : buffer.Length;
+            int read = source.Read(buffer, 0, want);
+            if (read <= 0) { throw new InvalidDataException("payload is shorter than the trailer says"); }
+            destination.Write(buffer, 0, read);
+            remaining -= read;
+        }
     }
 
     private static int SelfCheck(string exePath, string payloadDir, string appDir, string pythonDir, string outPath)
