@@ -114,8 +114,10 @@ PowerShell-наборы (Pester), сборка `Setup.exe` (Inno Setup) и porta
 
 ### В CI (Windows-раннеры GitHub Actions)
 
-Прогоны **`37640729694` (коммит `7a5ed7a`) и `37642930511` (итоговый head ветки `7633eef`),
-ветка `arena/4be5f952-hr-manager` — 8 из 8 джобов `success` в каждом;** таблица ниже — состав работ (одинаков в обоих):
+Каждый прогон ветки `arena/4be5f952-hr-manager` — 9 джобов; восемь работают всегда, девятый
+(`Docker Desktop publisher audit`) запускается только вручную и в обычных прогонах пропущен.
+Последние прогоны: `37677216789` (голова `84db169`), `37675733282` (`0a0e71d`), `37660015542` (`df25a39`),
+`37657489369` (`4829491`) — в каждом все обязательные джобы `success`. Таблица ниже — состав работ:
 
 | Джоб | Что реально выполнено на Windows |
 | --- | --- |
@@ -124,7 +126,7 @@ PowerShell-наборы (Pester), сборка `Setup.exe` (Inno Setup) и porta
 | `License issuer bundle - Windows PowerShell 5.1 checks` | фазы `parser` (все .ps1 через парсер 5.1), `build` (autonomous bundle), **`portable`** (сборка `LicenseIssuer-Portable.exe`, проверка трейлера, сверка SHA256 с `BUILD-INFO.txt`, `--hrm-selfcheck`, CLI-цепочка gen-keypair → issue → verify, отказ по подделанной лицензии, поиск ключей), `runtime` (свежий unzip, путь с пробелами, скрытый системный Python, loopback-only), `accept` (28 проверок: GUI Tk-окно, Edge + WebCrypto Ed25519, firewall/нулевой исходящий трафик, 20-кратная гонка запуска, отсутствие ключей), контракт portable-issuer, backend-проверка выпущенных лицензий (7/7) |
 | `Backend checks`, `Backend integration tests (PostgreSQL)`, `Frontend checks`, `Compose stack smoke test (dev + prod overlay)`, `Release pipeline fail-closed policy` | Полные наборы на том же коммите |
 
-Проверки движка дополнительно публикуют итог аннотацией: в прогоне `37660015542` —
+Проверки движка дополнительно публикуют итог аннотацией: в прогоне `37677216789` (и во всех соседних) —
 `HRM engine tests: ВСЕ ТЕСТЫ ПРОЙДЕНЫ (162); наборы: static, engine, channel, installer-roots, docker, stack,
 supervisor, pilot-final`. По числу видно, что наборы действительно выполнялись, а не были пропущены: в этой
 итерации добавились пять кейсов (предупреждение про приватность внутри архива отчёта, страховочный тест по
@@ -171,13 +173,13 @@ notice-аннотациями CI (шаг «Publish the pilot artifact hashes…�
 артефакты GitHub Actions скачиваются только через веб-интерфейс, поэтому аннотации и нужны как читаемое
 доказательство.
 
-| Артефакт | Где собран | SHA256 | Размер / где лежит |
+| Артефакт | Где собран | Как узнать его SHA256 | Размер / где лежит |
 | --- | --- | --- | --- |
-| `HR-Manager-Setup-0.15.0.exe` — **пилотный файл для Перепечай** (без подписи) | джоб `pilot-setup`, артефакт `pilot-setup-0.15.0-unsigned` | `1EDB1C593B8AE8BEECB7CADB1956A257D3E94CFF73E9C406DBC9CA00E88927B0` (сборка `7a5ed7a`: `3C3B4AF3683E97A74CAFF59FEF060E7DADACF60F29F887571A0BD7C3ED3B8051`) | `SHA256SUMS.txt` лежит рядом с exe в том же артефакте |
-| `installer/release-manifest.json` (манифест той же сборки) | там же | `C7082EBFFEB3ACF29B6314229EC51ADE0AA5013787E058EC5050FB2E79187508` (сборка `7a5ed7a`: `03AEFBFAE94FBFB2F83268BEF73E98A40743A4435C37D8FC1B14AAE1E4126EB7`) | в том же артефакте |
-| `LicenseIssuer-Portable.exe` — portable-выпуск лицензий для владельца | джоб `license-issuer-windows`, фаза `portable`, артефакт `license-issuer-portable` | `B4B07CA31F0848156DA01BD73B21758B38F52A39DD4121FCB67C7A7276A37323` (сборка `7a5ed7a`: `618B0174F154F1F7E9393DE1A85BE56FDC54E584AF9FD959FCF1E8BA534D741A`, сборка `3df0ae8`: `0BC7F5F2E2CE2BEDD2B8440F4F3D42EC064A17C7696321E767A214DE25B33167`) | 21 116 656 байт (payload 21 099 216); `sha256_exe` в `BUILD-INFO.txt` |
+| `HR-Manager-Setup-0.15.0.exe` — **пилотный файл для Перепечай** (без подписи) | джоб `pilot-setup`, артефакт `pilot-setup-0.15.0-unsigned` | из `SHA256SUMS.txt` рядом с exe в том же артефакте; исторические значения — в таблице сборок выше | ≈ 2,8 МБ; `SHA256SUMS.txt` лежит рядом с exe |
+| `installer/release-manifest.json` (манифест той же сборки) | там же | вторая строка того же `SHA256SUMS.txt`; в манифесте есть поле `release_sha` — CI теперь падает, если оно не совпадает с коммитом сборки (проверка `Verify the manifest names this exact commit as release_sha`) | в том же артефакте |
+| `LicenseIssuer-Portable.exe` — portable-выпуск лицензий для владельца | джоб `license-issuer-windows`, фаза `portable`, артефакт `license-issuer-portable` | строка `sha256_exe` в `BUILD-INFO.txt` того же артефакта | ≈ 21,1 МБ (payload ≈ 21,1 МБ) |
 | `license-issuer-dist.zip` (резервный вариант для владельца: папка + bat-файлы) | тот же джоб, артефакт `license-issuer-owner` | в `SHA256SUMS`/логе джоба | — |
-| **Диагностические** (не для пилота): `HR-Manager-Setup-0.13.0.exe` — smoke-сборка джоба `windows-installer`, перед загрузкой подписана ephemeral-тестовым сертификатом CI | прогон `37638116840`: как собрано `0DDA8261E9483D556327D9CF8D1BB0B9154E90994A6C54FB2DBCF9ACC403B9DD`, как загружено `5498CB2118755D92982BA49B39E941B8FC5CEC0D43F3FE0EC0AD0A01094C99D1` | 2 814 456 байт | артефакт `hr-manager-windows-setup` |
+| **Диагностические** (не для пилота): `HR-Manager-Setup-0.13.0.exe` — smoke-сборка джоба `windows-installer`, после сборки подписывается ephemeral-тестовым сертификатом CI | артефакт `hr-manager-windows-setup` | два разных значения в аннотациях — это норма: «build output» берётся из манифеста (файл **до** тестовой подписи), «uploaded artifact» — хэш фактического файла **после** подписи; значения обязаны отличаться, потому что подпись меняет байты, и путать их нельзя | ≈ 2,8 МБ |
 
 ### Подпись официального установщика Docker Desktop (измерено, не выдумано)
 
@@ -247,7 +249,10 @@ Get-Content .\SHA256SUMS.txt                                   # 3C3B4AF3... HR-
 * движок установки/обновления: 8 наборов Pester под Windows PowerShell 5.1 (в т.ч. отсутствие Docker, UAC,
   reboot-pending, занятый порт, повторный запуск без дублей, состояния стека, сохранность томов, откат);
 * установщик: сборка `Setup.exe` 0.15.0, `silent install` → проверка установленного движка → `silent uninstall`,
-  Phase 14 pilot drill (обновление/откат/resume/uninstall);
+  Phase 14 pilot drill (обновление/откат/resume/uninstall); пилотная сборка дополнительно сверяется с коммитом:
+  шаг `Verify the manifest names this exact commit as release_sha` падает, если `release_sha` в
+  `release-manifest.json` не равен 40-hex-хэшу собираемого коммита (закрыт открытый вопрос про
+  `HRM_RELEASE_SHA`: раньше значение бралось из `git rev-parse HEAD` и ничем не проверялось);
 * portable-выпуск лицензий: сборка exe, трейлер, `--hrm-selfcheck`, CLI-цепочка (gen-keypair → issue → verify),
   отказ по подделанной лицензии, отсутствие ключевого материала; на раннере дополнительно: Tk-окно GUI,
   выпуск лицензии через GUI и Edge (WebCrypto Ed25519), отсутствие исходящих соединений, 20-кратная гонка запуска;

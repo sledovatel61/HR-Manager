@@ -790,6 +790,11 @@ jobs:
 
       - name: Build the pilot Setup.exe (unsigned, no trust store)
         shell: pwsh
+        env:
+          # Явно, а не через «git rev-parse HEAD» внутри build.ps1: манифест должен
+          # называть тот же коммит, что и событие сборки, независимо от состояния
+          # checkout (в pull_request это коммит слияния — он же и собирается).
+          HRM_RELEASE_SHA: ${{ github.sha }}
         run: |
           # The same command the owner-triggered "Pilot release" workflow runs: the
           # pilot does not use the update channel, so no trust store is passed, and
@@ -804,6 +809,22 @@ jobs:
           $setup = Get-ChildItem installer/output/HR-Manager-Setup-*.exe | Select-Object -First 1
           if (-not $setup) { throw "Setup.exe was not produced" }
           Write-Host ("pilot Setup.exe: {0} ({1:N0} bytes)" -f $setup.Name, $setup.Length)
+
+      - name: Verify the manifest names this exact commit as release_sha
+        shell: pwsh
+        run: |
+          # Файл передаётся человеку вместе с манифестом, поэтому манифест обязан
+          # называть тот самый коммит, из которого он собран: иначе через месяц
+          # невозможно понять, что именно проверялось. Проверка fail-closed и
+          # стоит до загрузки артефакта.
+          $ErrorActionPreference = "Stop"
+          $manifest = Get-Content installer/release-manifest.json -Raw | ConvertFrom-Json
+          $sha = [string]$manifest.release_sha
+          if ($sha -notmatch '^[0-9a-f]{40}$') { throw ("release_sha не 40-hex: '" + $sha + "'") }
+          if ($sha -ne $env:GITHUB_SHA.ToLowerInvariant()) {
+            throw ("release_sha '" + $sha + "' не совпадает с коммитом сборки '" + $env:GITHUB_SHA + "'")
+          }
+          Write-Host ("release_sha = " + $sha + " (совпадает с коммитом сборки)")
 
       - name: Post the pilot build log to the job summary
         if: always()
