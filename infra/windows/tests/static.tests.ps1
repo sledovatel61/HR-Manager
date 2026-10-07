@@ -72,7 +72,8 @@ Test-Case "внешние процессы запускаются только �
 }
 
 Test-Case "разрешённые имена внешних команд — только белый список" {
-    $allowed = @("docker", "docker.exe", "icacls.exe", "git.exe", "netsh", "netsh.exe")
+    # wsl.exe — только чтение состояния WSL2 (--list/--status), без изменений системы.
+    $allowed = @("docker", "docker.exe", "icacls.exe", "git.exe", "netsh", "netsh.exe", "wsl.exe")
     foreach ($file in Get-HrmEngineFiles) {
         $text = Get-Content -Path $file -Raw -Encoding UTF8
         $matches = [regex]::Matches($text, 'Invoke-HrmExternal\s+-Name\s+"([^"]+)"')
@@ -287,6 +288,106 @@ Test-Case "production pre-flight PEM выполняется до signtool sign" 
     $call = $sign.IndexOf("Assert-HrmPinnedRootsPem -Mode")
     $signed = $sign.IndexOf('Label "signtool sign"')
     Assert-HrmTrue ($call -ge 0 -and $signed -gt $call) "pre-flight не раньше signtool sign"
+}
+
+# --- 0.15.0: пилотная установка, supervisor, трей, Docker -------------------
+
+Test-Case "пилотные модули 0.15.0 подключены и в движке, и в трее" {
+    $entry = Get-Content -Path (Join-Path $WindowsDir "hr-manager.ps1") -Raw -Encoding UTF8
+    $tray = Get-Content -Path (Join-Path $WindowsDir "hrm-tray.ps1") -Raw -Encoding UTF8
+    foreach ($module in @("Docker", "Supervisor", "Tray")) {
+        Assert-HrmContains $entry ('"' + $module + '"') ("движок не импортирует модуль " + $module)
+        Assert-HrmContains $tray ('"' + $module + '"') ("трей не импортирует модуль " + $module)
+    }
+    foreach ($file in @("Docker.psm1", "Supervisor.psm1", "Tray.psm1")) {
+        Assert-HrmTrue (Test-Path (Join-Path $EngineDir $file)) ("нет модуля " + $file)
+    }
+}
+
+Test-Case "меню трея содержит обязательные пункты и состояние" {
+    $tray = Get-Content -Path (Join-Path $EngineDir "Tray.psm1") -Raw -Encoding UTF8
+    foreach ($action in @("open", "check", "restart", "support-bundle", "stop", "exit")) {
+        Assert-HrmContains $tray ('action = "' + $action + '"') ("нет действия меню " + $action)
+    }
+    foreach ($label in @("Открыть HR Manager", "Перезапустить приложение", "Проверить состояние",
+            "Создать отчёт для поддержки", "Остановить приложение", "Выйти")) {
+        Assert-HrmContains $tray $label ("нет пункта меню " + $label)
+    }
+    Assert-HrmContains $tray "Get-HrmSupervisorStatusText" "состояние трея берётся не из supervisor'а"
+}
+
+Test-Case "supervisor: единственность, состояния и автозапуск реализованы" {
+    $supervisor = Get-Content -Path (Join-Path $EngineDir "Supervisor.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $supervisor "WaitOne" "нет блокировки единственного экземпляра"
+    Assert-HrmContains $supervisor "supervisor.json" "нет файла состояния"
+    Assert-HrmContains $supervisor "autostart.json" "нет настройки автозапуска"
+    Assert-HrmContains $supervisor "Remove-HrmLegacyAutostartEntries" "старый автозапуск -Action start не удаляется"
+    foreach ($stateText in @("Запускается", "Готово", "Ошибка")) {
+        Assert-HrmContains $supervisor $stateText ("нет понятного состояния " + $stateText)
+    }
+    Assert-HrmNotContains $supervisor "Get-Credential" "супервизор не должен запрашивать учётные данные"
+}
+
+Test-Case "Docker: официальный установщик, проверка подписи и отказ от автоматического принятия лицензии" {
+    $docker = Get-Content -Path (Join-Path $EngineDir "Docker.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $docker "desktop.docker.com" "установщик берётся не с официального адреса"
+    Assert-HrmContains $docker "Get-AuthenticodeSignature" "подпись установщика не проверяется"
+    Assert-HrmNotContains $docker "--accept-license" "лицензия Docker не принимается за пользователя"
+    Assert-HrmContains $docker "WSL" "нет проверки WSL2"
+    Assert-HrmContains $docker "VirtualizationFirmwareEnabled" "нет проверки аппаратной виртуализации"
+    Assert-HrmContains $docker "Wait-HrmDockerEngine" "нет ожидания готовности Docker Engine"
+    Assert-HrmNotContains $docker "rm -rf" "движок не должен удалять файлы командой rm"
+}
+
+Test-Case "движок никогда не удаляет тома данных (кроме явного purge с бэкапом)" {
+    foreach ($file in Get-HrmEngineFiles) {
+        $text = Get-Content -Path $file -Raw -Encoding UTF8
+        Assert-HrmNotContains $text '"down", "-v"' ("down -v запрещён: " + $file)
+        Assert-HrmNotContains $text '"volume", "prune"' ("volume prune запрещён: " + $file)
+    }
+    $install = Get-Content -Path (Join-Path $EngineDir "Install.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $install "Remove-HrmPilotDataVolume" "нет единственной явной точки удаления тома данных"
+    Assert-HrmContains $install "УДАЛИТЬ ДАННЫЕ HR MANAGER" "нет фразы подтверждения удаления данных"
+}
+
+Test-Case "обновление: показ версий, changelog и результат обновления" {
+    $update = Get-Content -Path (Join-Path $EngineDir "Update.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $update "Get-HrmUpdatePreview" "нет предпросмотра обновления"
+    Assert-HrmContains $update "Get-HrmReleaseChangelog" "нет списка изменений"
+    Assert-HrmContains $update "Write-HrmUpdateResult" "нет файла результата обновления"
+    Assert-HrmContains $update "Assert-HrmUpdatePreservedState" "нет проверки сохранности данных и лицензии"
+    Assert-HrmNotContains $update 'ExpectedHeadRevision' "голова миграций снова зашита константой"
+    Assert-HrmContains $update "Get-HrmMigrationsHead" "ожидаемая голова миграций не читается из образа"
+}
+
+Test-Case "установщик: значок в трее, галочка установки Docker и автозапуск supervisor'а" {
+    $installer = Get-Content -Path (Join-Path $RepoRoot "installer\installer.iss") -Raw -Encoding UTF8
+    Assert-HrmContains $installer "hrm-tray.ps1" "установщик не запускает значок в трее"
+    Assert-HrmContains $installer "[Tasks]" "нет галочки установки Docker Desktop"
+    Assert-HrmContains $installer "dockerinstall" "нет задачи установки Docker Desktop"
+    Assert-HrmContains $installer "GetEngineDockerArgs" "движку не передаётся выбор пользователя"
+    Assert-HrmContains $installer '"{userstartup}\HR Manager (трей)"' "автозапуск не запускает supervisor"
+    Assert-HrmNotContains $installer "-Action start" "автозапуск всё ещё консольный"
+}
+
+Test-Case "пользовательские тексты трея и Docker не содержат технических команд" {
+    $texts = @(
+        (Get-Content -Path (Join-Path $EngineDir "Tray.psm1") -Raw -Encoding UTF8),
+        (Get-Content -Path (Join-Path $EngineDir "Docker.psm1") -Raw -Encoding UTF8)
+    )
+    foreach ($text in $texts) {
+        foreach ($forbidden in @("docker compose up", "Исправьте DATABASE_URL", "проверьте переменную окружения")) {
+            Assert-HrmNotContains $text $forbidden ("техническая формулировка для пользователя: " + $forbidden)
+        }
+    }
+}
+
+Test-Case "лаунчер трея не содержит секретов и запускает только supervisor" {
+    $trayEntry = Get-Content -Path (Join-Path $WindowsDir "hrm-tray.ps1") -Raw -Encoding UTF8
+    Assert-HrmContains $trayEntry "Enter-HrmSupervisorLock" "нет защиты от второго supervisor'а"
+    Assert-HrmContains $trayEntry "Start-HrmTrayUi" "нет интерфейса значка"
+    Assert-HrmContains $trayEntry "#requires -Version 5.1" "нет требования PowerShell 5.1"
+    Assert-HrmNotContains $trayEntry "secrets.json" "трей не должен читать файл секретов"
 }
 
 Write-Host ("Статические проверки: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

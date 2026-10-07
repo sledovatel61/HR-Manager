@@ -108,7 +108,8 @@ def check_file(path: Path) -> None:
         # разрешаем упоминание имени в Common.psm1 и строках справки
         if re.search(r"Invoke-HrmExternal\s+-Name\s+\"docker", text) is None:
             fail(f"{path}: прямой вызов docker")
-    allowed = {"docker", "docker.exe", "icacls.exe", "git.exe", "netsh", "netsh.exe"}
+    allowed = {"docker", "docker.exe", "icacls.exe", "git.exe", "netsh", "netsh.exe",
+               "wsl.exe"}  # wsl.exe — только чтение состояния WSL2 (--list/--status)
     for name in re.findall(r'Invoke-HrmExternal\s+-Name\s+"([^"]+)"', text):
         if name not in allowed:
             fail(f"{path}: запрещённая внешняя команда '{name}'")
@@ -358,6 +359,71 @@ def main() -> int:
     ):
         if "${%s:?" % required not in overlay:
             fail(f"compose.pilot.yml: обязательная переменная {required} не затребована (:?)")
+
+
+    # --- 0.15.0: пилотный supervisor, трей и установка Docker Desktop ---------
+    engine_dir = WINDOWS / "engine"
+    tray_entry = WINDOWS / "hrm-tray.ps1"
+    tray_module = engine_dir / "Tray.psm1"
+    supervisor_module = engine_dir / "Supervisor.psm1"
+    docker_module = engine_dir / "Docker.psm1"
+    for path in (tray_entry, tray_module, supervisor_module, docker_module):
+        if not path.exists():
+            fail(f"0.15.0: отсутствует обязательный файл {path}")
+    pilot_modules = ["Docker", "Supervisor", "Tray"]
+    entry_text = entry
+    tray_entry_text = tray_entry.read_text(encoding="utf-8") if tray_entry.exists() else ""
+    for module in pilot_modules:
+        if f'"{module}"' not in entry_text:
+            fail(f"hr-manager.ps1: не импортирован модуль {module}")
+        if f'"{module}"' not in tray_entry_text:
+            fail(f"hrm-tray.ps1: не импортирован модуль {module}")
+
+    tray_text = tray_module.read_text(encoding="utf-8") if tray_module.exists() else ""
+    for required_action in ("open", "check", "restart", "support-bundle", "stop", "exit"):
+        if f'action = "{required_action}"' not in tray_text:
+            fail(f"Tray.psm1: в меню нет обязательного действия {required_action}")
+    for required_text in ("Открыть HR Manager", "Перезапустить приложение", "Проверить состояние",
+                          "Создать отчёт для поддержки", "Остановить приложение", "Выйти"):
+        if required_text not in tray_text:
+            fail(f"Tray.psm1: в меню нет пункта «{required_text}»")
+
+    docker_text = docker_module.read_text(encoding="utf-8") if docker_module.exists() else ""
+    # Лицензию Docker принимает человек: движок не передаёт --accept-license.
+    # Упоминания в комментариях разрешены (документируют отказ); важен код.
+    for path in engine_files:
+        code = _strip_ps_comments(path.read_text(encoding="utf-8"))
+        if "--accept-license" in code:
+            fail(f"{path}: движок не должен принимать лицензию Docker за пользователя (--accept-license)")
+    if "desktop.docker.com" not in docker_text:
+        fail("Docker.psm1: установщик Docker берётся не с официального адреса desktop.docker.com")
+    if "Get-AuthenticodeSignature" not in docker_text:
+        fail("Docker.psm1: подпись скачанного установщика Docker не проверяется")
+
+    # Supervisor: единственность, состояние, автозапуск.
+    supervisor_text = supervisor_module.read_text(encoding="utf-8") if supervisor_module.exists() else ""
+    for required in ("WaitOne", "supervisor.json", "autostart.json", "Get-HrmSupervisorStatusText"):
+        if required not in supervisor_text:
+            fail(f"Supervisor.psm1: нет обязательного механизма {required}")
+    for state_word in ("Запускается", "Готово", "Ошибка"):
+        if state_word not in supervisor_text:
+            fail(f"Supervisor.psm1: нет понятного состояния «{state_word}»")
+
+    # Данные не должны удаляться ни в одном сценарии, кроме явного purge.
+    for path in engine_files:
+        code = _strip_ps_comments(path.read_text(encoding="utf-8"))
+        if re.search(r'"down"[^\n]*"-v"', code) or re.search(r'"--volumes"', code):
+            fail(f"{path}: 'docker compose down -v' запрещён (удаление томов данных)")
+        if re.search(r'"volume",\s*"prune"', code) or "volume prune" in code:
+            fail(f"{path}: volume prune запрещён (удаление данных)")
+
+    # Установщик: значок в трее, установка Docker по галочке, автозапуск supervisor'а.
+    iss = (ROOT / "installer" / "installer.iss").read_text(encoding="utf-8")
+    for required in ("hrm-tray.ps1", "dockerinstall", "GetEngineDockerArgs", "{userstartup}"):
+        if required not in iss:
+            fail(f"installer.iss: нет обязательного элемента {required}")
+    if 'hr-manager.ps1"" -Action start' in iss:
+        fail("installer.iss: автозапуск всё ещё запускает консольный -Action start")
 
     print(f"Проверено файлов: {len(files)}")
     if FAILURES:

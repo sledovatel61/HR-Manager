@@ -79,13 +79,61 @@ def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return data
 
 
+PRIVATE_KEY_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}\s*$")
+PRIVATE_KEY_PEM_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+
+
+def detect_private_key_upload(text: str | bytes) -> str:
+    """Распознаёт типовой человеческий сбой: вместо лицензии загружен
+    приватный ключ владельца.
+
+    Возвращает "" если это не похоже на приватный ключ, иначе понятное
+    объяснение. Само содержимое нигде не логируется: сравниваются только
+    форма и опознавательные признаки — никакого хеширования секрета.
+    """
+    if isinstance(text, bytes):
+        try:
+            text = text.decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    if PRIVATE_KEY_PEM_RE.search(stripped):
+        return (
+            "Похоже, выбран файл ПРИВАТНОГО ключа, а не лицензии. "
+            "Приватный ключ не нужен на этом компьютере — загрузите файл лицензии *.hrmlicense."
+        )
+    # Приватный ключ issuer'а — 64 hex-символа без JSON-разметки.
+    if PRIVATE_KEY_HEX_RE.match(stripped):
+        return (
+            "Похоже, выбран файл ПРИВАТНОГО ключа (64 символа), а не лицензии. "
+            "Загрузите файл лицензии *.hrmlicense, полученный от владельца."
+        )
+    # JSON с полями, которых нет в лицензии, но которые есть в ключевой паре.
+    lowered = stripped.lower()
+    if "private_key" in lowered or "privatekey" in lowered:
+        return (
+            "В файле найден приватный ключ. Загрузите файл лицензии *.hrmlicense, "
+            "а приватный ключ удалите с этого компьютера."
+        )
+    return ""
+
+
 def parse_license_json(text: str | bytes) -> dict:
+    private_key_note = detect_private_key_upload(text)
+    if private_key_note:
+        raise LicenseError("private_key_upload", private_key_note)
     try:
         raw = json.loads(text, object_pairs_hook=_no_duplicates)
     except LicenseError:
         raise
     except Exception as exc:
-        raise LicenseError("malformed_json", f"некорректный JSON лицензии: {exc}") from exc
+        raise LicenseError(
+            "malformed_json",
+            "файл лицензии повреждён или это не лицензия (ожидается JSON *.hrmlicense): "
+            f"{exc}",
+        ) from exc
     if not isinstance(raw, dict):
         raise LicenseError("malformed_json", "лицензия должна быть JSON-объектом")
     return raw

@@ -4,10 +4,29 @@
 
 ## 1. Где взять программу для выдачи лицензий
 
-1. Откройте GitHub → ваш репозиторий `HR-Manager` → вкладка **Actions** → выберите последний успешный прогон `CI` (зелёная галочка).
-2. Прокрутите вниз до **Artifacts** → скачайте `license-issuer-owner` (внутри `license-issuer-dist.zip`).
-   *Альтернатива для пилота:* запустите workflow `Pilot release` → скачайте `pilot-release-<версия>` — внутри тоже есть `license-issuer-dist.zip`.*
-3. Распакуйте zip на свой Windows-ПК (например, в `C:\HR-License\`). Интернет и установка Python **не нужны** — всё внутри.
+**Основной путь — один файл `LicenseIssuer-Portable.exe`.**
+
+1. Откройте GitHub → ваш репозиторий `HR-Manager` → вкладка **Actions** → последний успешный прогон `CI` (зелёная галочка).
+2. Прокрутите вниз до **Artifacts** → скачайте `license-issuer-portable` (это один файл `LicenseIssuer-Portable.exe`).
+   *Резервный путь (если exe заблокирован политикой):* скачайте `license-issuer-owner` (внутри `license-issuer-dist.zip`) → распакуйте и запускайте `run-gui.bat`.
+   *Альтернатива для пилота:* workflow `Pilot release` → `pilot-release-<версия>` — внутри есть и exe, и zip.
+3. Положите файл на Windows-ПК (например, `C:\HR-License\`). Интернет, Python, Node, Docker, Visual Studio **не нужны** — всё внутри файла. Установка не требуется.
+4. Двойной клик по `LicenseIssuer-Portable.exe`. Первый запуск: окно «Подготавливаем программу (первый запуск, 10-30 секунд)...», затем открывается окно «License Issuer». Повторные запуски — сразу окно.
+
+Проверить, что файл настоящий (по желанию): рядом с артефактом в CI есть `BUILD-INFO.txt` с SHA256;
+в PowerShell: `Get-FileHash .\LicenseIssuer-Portable.exe -Algorithm SHA256` и сравните с `sha256_exe:` из `BUILD-INFO.txt`.
+
+CLI-режим (для проверки выпущенной лицензии; открывается тем же файлом):
+
+```
+LicenseIssuer-Portable.exe verify --public-key-file public_key.b64 --license-file pilot.hrmlicense
+```
+
+Покажет, действительна ли подпись, до какой даты действует лицензия и лимит пользователей.
+
+> Как это собирается (для сведения, делает CI, не вы): `tools/license-issuer/build.ps1` готовит
+> автономный Python + программу, затем `tools/license-issuer/build-portable.ps1` упаковывает всё в
+> один `LicenseIssuer-Portable.exe` и печатает SHA256. Подробности — `tools/license-issuer/README.md`.
 
 ## 2. Первый запуск — создать ключи (один раз)
 

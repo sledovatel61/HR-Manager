@@ -5,7 +5,12 @@
 Set-StrictMode -Version 2.0
 
 $script:ProjectName = "hr-manager-pilot"
-$script:ExpectedHeadRevision = "0013"
+
+function Get-HrmProjectName {
+    # Стабильное имя проекта пилота. Задаётся функцией, чтобы другие модули не
+    # зависели от переменной чужой области видимости.
+    return "hr-manager-pilot"
+}
 
 function Get-HrmComposeFiles {
     param([string]$InstallDir)
@@ -36,14 +41,22 @@ function Invoke-HrmCompose {
 }
 
 function Test-HrmComposeRunning {
+    # Есть ли запущенные контейнеры проекта (совместимая обёртка над Get-HrmStackState).
     param([string]$InstallDir, [string]$StateDir)
-    $ps = Invoke-HrmCompose $InstallDir $StateDir @("ps", "--format", "json") -IgnoreExitCode
-    if ($ps.ExitCode -ne 0) { return $false }
     try {
-        # Compose v2 may emit either one JSON array or newline-delimited JSON
-        # objects. Windows PowerShell 5.1 cannot parse several top-level JSON
-        # values in one ConvertFrom-Json call, so handle both formats.
-        $items = @()
+        $state = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+    }
+    catch { return $false }
+    return ($state.state -eq "running" -or $state.state -eq "partial" -or $state.state -eq "degraded")
+}
+
+function Get-HrmComposeContainers {
+    # Список контейнеров проекта (включая остановленные) в виде объектов.
+    param([string]$InstallDir, [string]$StateDir)
+    $ps = Invoke-HrmCompose $InstallDir $StateDir @("ps", "-a", "--format", "json") -IgnoreExitCode
+    if ($ps.ExitCode -ne 0) { return $null }
+    $items = @()
+    try {
         try { $items = @($ps.Stdout | ConvertFrom-Json -ErrorAction Stop) }
         catch {
             foreach ($line in ($ps.Stdout -split "`r?`n")) {
@@ -52,19 +65,112 @@ function Test-HrmComposeRunning {
                 }
             }
         }
-        if ($null -eq $items) { return $false }
-        $running = @($items | Where-Object { $_.State -eq "running" -or $_.State -like "Up*" })
-        return ($running.Count -gt 0)
     }
-    catch { return $false }
+    catch { return $null }
+    return @($items | Where-Object { $null -ne $_ })
+}
+
+function Test-HrmContainerRunning {
+    param($Container)
+    $state = [string]$Container.State
+    if ($state -eq "running" -or $state -like "Up*") { return $true }
+    return $false
+}
+
+function Test-HrmContainerHealthy {
+    # Неизвестное/отсутствующее здоровье не считается ошибкой: не все сервисы
+    # пилота имеют healthcheck.
+    param($Container)
+    $health = [string]$Container.Health
+    if (-not $health -or $health -eq "<none>" -or $health -eq "unknown") { return $true }
+    return ($health -eq "healthy")
+}
+
+function Get-HrmStackState {
+    # Состояния стека: absent | stopped | partial | running | degraded | unknown.
+    # Различает «уже запущен», «частично запущен», «зависший/unhealthy» и
+    # «сломан» — от этого зависит, что делать дальше (никогда не удаляем тома).
+    param([string]$InstallDir, [string]$StateDir)
+    $containers = Get-HrmComposeContainers -InstallDir $InstallDir -StateDir $StateDir
+    if ($null -eq $containers) {
+        # Compose недоступен (нет Docker/движок не отвечает).
+        return [pscustomobject]@{ state = "unknown"; total = 0; running = 0; unhealthy = 0; message = "Не удалось получить состояние контейнеров." }
+    }
+    $items = @($containers)
+    if ($items.Count -eq 0) {
+        return [pscustomobject]@{ state = "absent"; total = 0; running = 0; unhealthy = 0; message = "Контейнеры ещё не созданы." }
+    }
+    $running = @($items | Where-Object { Test-HrmContainerRunning $_ })
+    $unhealthy = @($running | Where-Object { -not (Test-HrmContainerHealthy $_) })
+    if ($running.Count -eq 0) {
+        return [pscustomobject]@{ state = "stopped"; total = $items.Count; running = 0; unhealthy = 0; message = "Контейнеры остановлены." }
+    }
+    if ($running.Count -lt $items.Count) {
+        return [pscustomobject]@{
+            state = "partial"; total = $items.Count; running = $running.Count; unhealthy = $unhealthy.Count
+            message = ("Запущена только часть сервисов ({0} из {1})." -f $running.Count, $items.Count)
+        }
+    }
+    if ($unhealthy.Count -gt 0) {
+        return [pscustomobject]@{
+            state = "degraded"; total = $items.Count; running = $running.Count; unhealthy = $unhealthy.Count
+            message = ("Часть сервисов работает нестабильно ({0})." -f $unhealthy.Count)
+        }
+    }
+    return [pscustomobject]@{ state = "running"; total = $items.Count; running = $running.Count; unhealthy = 0; message = "Все сервисы запущены." }
+}
+
+function Repair-HrmStack {
+    # Ремонт частично запущенного/нездорового стека БЕЗ удаления томов:
+    # пересоздаём только то, что не работает. `down -v` и удаление volume здесь
+    # невозможны по построению.
+    param([string]$InstallDir, [string]$StateDir)
+    $before = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+    if ($before.state -ne "partial" -and $before.state -ne "degraded") {
+        return $before
+    }
+    Write-HrmLog "info" ("Стек запущен не полностью ({0}) — перезапускаем только незапущенные сервисы…" -f $before.state)
+    $recreate = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans", "--force-recreate") -IgnoreExitCode
+    if ($recreate.ExitCode -ne 0) {
+        Write-HrmLog "warn" "Пересоздание не прошло — пробуем обычный запуск."
+        Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
+    }
+    $after = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+    return $after
 }
 
 function Start-HrmStack {
-    # Сборка (если образов ещё нет) и запуск. Идемпотентно.
+    # Сборка (если нужно) и запуск. Идемпотентно и безопасно для данных:
+    # уже запущенный стек не пересобирается повторно, томa не удаляются.
+    # Возвращает @{ ok; state; message }.
     param([string]$InstallDir, [string]$StateDir)
-    $build = Invoke-HrmCompose $InstallDir $StateDir @("build", "--pull=false")
-    Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
+    $current = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+    if ($current.state -eq "running") {
+        Write-HrmLog "info" "Контейнеры HR Manager уже запущены — пересборка не требуется."
+        return [pscustomobject]@{ ok = $true; state = "running"; message = "Контейнеры уже запущены." }
+    }
+    if ($current.state -eq "partial" -or $current.state -eq "degraded") {
+        $repaired = Repair-HrmStack -InstallDir $InstallDir -StateDir $StateDir
+        if ($repaired.state -eq "running") {
+            return [pscustomobject]@{ ok = $true; state = "running"; message = "Стек восстановлен без потери данных." }
+        }
+        # Полный up может собрать отсутствующие сервисы, не удаляя тома.
+    }
+    if ($current.state -eq "absent" -or $current.state -eq "stopped") {
+        Invoke-HrmCompose $InstallDir $StateDir @("build", "--pull=false") | Out-Null
+    }
+    $up = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") -IgnoreExitCode
+    if ($up.ExitCode -ne 0) {
+        $message = "Не удалось запустить контейнеры. Нажмите «Создать отчёт для поддержки»."
+        Write-HrmLog "error" (Redact-HrmText ("Запуск контейнеров не удался: " + $up.Stderr.Trim()))
+        return [pscustomobject]@{ ok = $false; state = "failed"; message = $message }
+    }
+    $after = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+    if ($after.state -eq "partial" -or $after.state -eq "degraded") {
+        $after = Repair-HrmStack -InstallDir $InstallDir -StateDir $StateDir
+    }
     Write-HrmLog "info" "Контейнеры пилота запущены (проект $script:ProjectName)."
+    return [pscustomobject]@{ ok = $true; state = $after.state; message = "Контейнеры запущены." }
 }
 
 function Stop-HrmStack {
@@ -101,6 +207,17 @@ function Wait-HrmReady {
         throw "Приложение не стало готовым за $TimeoutSeconds с (фронтенд: $frontendReady, бэкенд: $backendReady). Запустите diagnostics."
     }
     Write-HrmLog "info" "Приложение готово: $BaseUrl"
+}
+
+function Get-HrmMigrationsHead {
+    # Ожидаемая голова миграций из РАЗВЁРНУТОГО образа backend (alembic heads).
+    # Зашитая константа головы запрещена: она расходится с релизом.
+    param([string]$InstallDir, [string]$StateDir)
+    $out = Invoke-HrmCompose $InstallDir $StateDir @("exec", "-T", "backend", "alembic", "heads") -IgnoreExitCode
+    if ($out.ExitCode -ne 0) { return $null }
+    $match = [regex]::Match($out.Stdout, "(?m)^\s*([0-9a-zA-Z_]+)\s*(\(head\))?")
+    if ($match.Success) { return $match.Groups[1].Value }
+    return $null
 }
 
 function Get-HrmMigrationsState {

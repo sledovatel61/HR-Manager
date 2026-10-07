@@ -15,11 +15,20 @@
 
 ```
 powershell -ExecutionPolicy Bypass -File hr-manager.ps1 -Action install
-powershell -File hr-manager.ps1 -Action start | stop | status | open
+powershell -File hr-manager.ps1 -Action start | stop | status | open | restart
 powershell -File hr-manager.ps1 -Action update -ReleaseDir D:\hr-manager-1.1.0
+powershell -File hr-manager.ps1 -Action update-preview -ReleaseDir D:\hr-manager-1.1.0
 powershell -File hr-manager.ps1 -Action diagnostics [-Json]
 powershell -File hr-manager.ps1 -Action uninstall [-PurgeData]
 powershell -File hr-manager.ps1 -Action resume
+# 0.15.0: Docker-сценарий, supervisor и трей
+powershell -File hr-manager.ps1 -Action prepare            # что не хватает для запуска (Docker/WSL2/права/место/порт)
+powershell -File hr-manager.ps1 -Action docker-status      # состояние Docker Desktop и движка
+powershell -File hr-manager.ps1 -Action docker-install     # официальный установщик (UAC; exit 2 = нужна перезагрузка)
+powershell -File hr-manager.ps1 -Action docker-start       # запустить Docker Desktop и дождаться движка
+powershell -File hr-manager.ps1 -Action supervise          # один supervisor (mutex), файл состояния
+powershell -File hr-manager.ps1 -Action tray               # значок в трее (Windows Forms)
+powershell -File hr-manager.ps1 -Action autostart [-Enable|-Disable]
 ```
 
 | Действие | Что делает |
@@ -253,3 +262,24 @@ Ed25519, ротация ключей, сборка release).
   состояние `pass | warning | fail`, русское объяснение и следующее действие,
   итог «готово | готово с предупреждениями | запуск запрещён».
 - Автоматических «исправлений» нет: отчёт только читает состояние.
+
+## Пилот 0.15.0: Docker-сценарий, supervisor и трей
+
+Разделение ответственности: `installer/` (мастер), движок (`engine/*.psm1`, supervisor, трей),
+backend (FastAPI), frontend (React) и `tools/license-issuer` (лицензии) — независимые контуры.
+
+| Модуль | Ответственность |
+|---|---|
+| `engine/Docker.psm1` | Поиск Docker Desktop (реестр + App Paths), состояние движка (`engine_ready/starting/installed_stopped/not_installed`), WSL2, аппаратная виртуализация, права администратора, ожидающая перезагрузка, свободное место, свободный порт. Установка — **только** официальный `https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe` (проверка Authenticode + Subject, без `--accept-license`). Отмена UAC/перезагрузка → `docker-pending.json`, установка продолжается при следующем запуске. Ожидание движка — `Wait-HrmDockerEngine` (300 с) с прогрессом. |
+| `engine/Compose.psm1` | Состояния стека `absent/stopped/partial/running/degraded/unknown`, `Repair-HrmStack`/`Start-HrmStack` (тома не удаляются), голова миграций читается из образа. |
+| `engine/Supervisor.psm1` | Mutex `Local\HRManagerPilotSupervisor` (один supervisor), `supervisor.json` (состояние/сообщение/pid/порт/url), `action.lock` (одно действие за раз), безопасный настраиваемый автозапуск (`autostart.json` — источник истины). |
+| `engine/Tray.psm1` | NotifyIcon и меню: «Открыть HR Manager», «Проверить состояние», «Перезапустить приложение», «Создать отчёт для поддержки», «Остановить приложение», «Выйти»; окно состояния с кнопками «Повторить/Открыть приложение/Создать отчёт»; предупреждения при остановке и выходе. |
+| `engine/Update.psm1` | `Get-HrmUpdatePreview` (текущая/новая версия, changelog, проверки места/лицензии/настроек/порта/сети/Docker/тома бэкапов, предупреждение о данных), фазы prepare→backup→build→switch→migrate→smoke, автоматический откат образов, `update-result.json` (`done|rolled_back|failed`). Даунгрейд БД не выполняется никогда. |
+
+Файлы состояния (каталог `%LOCALAPPDATA%\HRManager`): `supervisor.json`, `autostart.json`, `action.lock`,
+`update-result.json`, `update-journal.json`, `docker-pending.json`, `license_public_key.b64`, `pilot.env`, `logs`.
+
+Установка Docker требует **подтверждения пользователя (UAC)** и иногда **перезагрузки** — это ограничение Windows и лицензии
+Docker Desktop, обходить его нельзя. Документы для людей: `docs/MARIA_GUIDE.md` (Перепечай, 2 страницы),
+`docs/UPDATE_GUIDE.md`, `docs/RECOVERY_GUIDE.md`, `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`,
+`docs/DOCKER_RUNTIME_DECISION.md`, итоги — `docs/PILOT_FINAL_REPORT.md`, аудит и план — `docs/PILOT_FINAL_AUDIT.md`.

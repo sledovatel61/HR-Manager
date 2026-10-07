@@ -12,11 +12,11 @@
 # installer/release-manifest.json (release_sha, версия, хеши пакета и exe).
 #
 # ИСПОЛЬЗОВАНИЕ (Windows 10/11, PowerShell 5.1+ или pwsh):
-#   powershell -ExecutionPolicy Bypass -File installer\build.ps1 [-Version 0.13.0]
+#   powershell -ExecutionPolicy Bypass -File installer\build.ps1 [-Version 0.15.0]
 
 [CmdletBinding()]
 param(
-    [string]$Version = "0.13.0",
+    [string]$Version = "0.15.0",
     [string]$TrustStoreFile = "",
     [string]$TrustStoreSha256 = ""
 )
@@ -125,11 +125,29 @@ else {
     $gitOut.Trim()
 }
 Write-Host "release_sha: $releaseSha"
+
+# Список изменений для экрана обновления («текущая версия → новая версия»):
+# берётся из CHANGELOG.md репозитория (строки-пункты), иначе — нейтральный
+# текст. Ничего секретного здесь нет: это то, что видит пользователь.
+$changelog = @()
+$changelogFile = Join-Path $repoRoot "CHANGELOG.md"
+if (Test-Path $changelogFile) {
+    foreach ($line in (Get-Content -Path $changelogFile -Encoding UTF8)) {
+        $trimmed = $line.Trim()
+        if ($trimmed -match '^[-*]\s+(.+)$') { $changelog += $Matches[1] }
+        if ($changelog.Count -ge 10) { break }
+    }
+}
+if ($changelog.Count -eq 0) {
+    $changelog = @("Улучшения установки, запуска, обновления и диагностики.")
+}
+
 $releaseJson = [ordered]@{
     release_sha = $releaseSha
     version = $Version
     built_at = (Get-Date).ToString("o")
     installer_commit = $releaseSha
+    changelog = $changelog
 }
 Write-HrmUtf8NoBom -Path (Join-Path $appStaging "release.json") -Text ($releaseJson | ConvertTo-Json)
 

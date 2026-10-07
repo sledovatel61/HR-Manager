@@ -31,6 +31,9 @@
 
 param(
     [string]$PythonVersion = "3.12.3",
+    # Pinned on purpose: the owner bundle must be reproducible. Bump this
+    # together with a fresh local+CI run and a BUILD-INFO/SHA256 update.
+    [string]$CryptographyVersion = "50.0.2",
     [string]$OutDir = "$PSScriptRoot\dist",
     [switch]$OfflineOnly  # if set, do not attempt any download, fail if python/ not present
 )
@@ -141,7 +144,7 @@ if (-not (Test-Path $pythonDir)) {
     Set-BundledPth
 
     # 2. Install pip + cryptography into embeddable (requires internet once)
-    Write-Warn "Installing pip and cryptography into embeddable Python (requires internet once)..."
+    Write-Warn "Installing pip and cryptography==$CryptographyVersion into embeddable Python (requires internet once)..."
     $getPipUrl = "https://bootstrap.pypa.io/get-pip.py"
     $getPip = Join-Path $OutDir "get-pip.py"
     if (-not (Test-Path $getPip)) {
@@ -158,7 +161,7 @@ if (-not (Test-Path $pythonDir)) {
         if ($code -eq 0) { Write-Info "pip installed" } else { Write-Warn "get-pip exited with code $code" }
     }
     # Install cryptography into site-packages with the bundled interpreter.
-    $code = Invoke-NativeLogged $pyExe @("-m", "pip", "install", "--no-warn-script-location", "--disable-pip-version-check", "cryptography", "--target", $sitePkg)
+    $code = Invoke-NativeLogged $pyExe @("-m", "pip", "install", "--no-warn-script-location", "--disable-pip-version-check", "cryptography==$CryptographyVersion", "--target", $sitePkg)
     if ($code -ne 0) {
         Write-Warn "bundled pip install cryptography failed (exit=$code)"
         Write-Warn "Trying system pip at BUILD time only (the artifact still uses the bundled interpreter)..."
@@ -167,7 +170,7 @@ if (-not (Test-Path $pythonDir)) {
             Write-Err "No bundled pip and no system python for the build-time install - cannot continue"
             exit 1
         }
-        $code = Invoke-NativeLogged $sysPy.Source @("-m", "pip", "install", "--disable-pip-version-check", "cryptography", "--target", $sitePkg, "--no-warn-script-location", "--only-binary", ":all:", "--platform", "win_amd64", "--python-version", $PythonVersion)
+        $code = Invoke-NativeLogged $sysPy.Source @("-m", "pip", "install", "--disable-pip-version-check", "cryptography==$CryptographyVersion", "--target", $sitePkg, "--no-warn-script-location", "--only-binary", ":all:", "--platform", "win_amd64", "--python-version", $PythonVersion)
         if ($code -ne 0) {
             Write-Err "Failed to install cryptography (exit=$code)"
             Write-Err "Build cannot continue without cryptography - embeddable Python must have cryptography in Lib/site-packages"
@@ -488,4 +491,4 @@ if (Test-Path $pythonDir) {
     exit 1
 }
 Write-Info "Next: unzip $zipPath on owner Windows PC and double-click run-gui.bat or run-html.bat"
-Write-Info "For reproducibility: this build used Python $PythonVersion embeddable from python.org + cryptography wheel"
+Write-Info "For reproducibility: this build used Python $PythonVersion embeddable from python.org + cryptography==$CryptographyVersion wheel"
