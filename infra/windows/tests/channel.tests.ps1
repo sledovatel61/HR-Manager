@@ -101,6 +101,12 @@ function New-HrmChannelWorld {
         installed_at = "2026-09-10T00:00:00Z"
         pilot_created = $true
     }
+    # Реальная установка копирует публичный ключ проверки лицензии из снимка в
+    # StateDir (Install-HrmApp → Install-HrmLicensePublicKey). Мок-мир создаёт
+    # установку копированием файлов, поэтому ключ кладём тем же путём: иначе
+    # обновление справедливо остановится на проверке сохранности состояния
+    # (Assert-HrmUpdatePreservedState: «не найдено: ключ проверки лицензии»).
+    $null = Install-HrmLicensePublicKey -SourceDir $sourceDir -InstallDir (Get-HrmTestInstallDir) -StateDir $state
     # Снимок приложения в install dir (установленная версия — 0.13.0).
     Copy-Item (Join-Path $sourceDir "backend") (Get-HrmTestInstallDir) -Recurse -Force
     Copy-Item (Join-Path $sourceDir "frontend") (Get-HrmTestInstallDir) -Recurse -Force
