@@ -105,6 +105,10 @@ if launcher_text:
     )
     check("--hrm-selfcheck" in launcher_text, "launcher exposes --hrm-selfcheck for CI evidence")
     check(
+        "HRM_PORTABLE_LOG" in launcher_text and "RunCliCaptured" in launcher_text,
+        "launcher captures the child CLI output into HRM_PORTABLE_LOG (CI evidence)",
+    )
+    check(
         re.search(r"return child\.ExitCode;", launcher_text) is not None,
         "CLI mode returns the bundled python exit code (verifiable in CI)",
     )
@@ -124,9 +128,19 @@ if builder_text:
         "build-portable.ps1 writes a 14-digit payload length",
     )
     check("D$lengthDigits" in builder_text, "build-portable.ps1 zero-pads the payload length")
+    builder_code = "\n".join(
+        line for line in builder_text.splitlines() if not line.lstrip().startswith("#")
+    )
     check(
-        'Compress-Archive -Path (Join-Path $staging "python"), (Join-Path $staging "license-issuer")' in builder_text,
-        'payload zip contains top-level "python" and "license-issuer" folders',
+        "foreach ($source in @($pythonDir, $appDir))" in builder_text
+        and '$baseName + "/" + $relative' in builder_text
+        and "$archive.CreateEntry($entryName" in builder_text,
+        'payload zip contains top-level "python" and "license-issuer" folders '
+        "(native ZipArchive, forward-slash entry names)",
+    )
+    check(
+        "Compress-Archive" not in builder_code,
+        "builder does not use Compress-Archive (minutes for ~10k files under PowerShell 5.1)",
     )
     check("--hrm-selfcheck" in builder_text, "builder smoke-tests --hrm-selfcheck")
     for step in ("gen-keypair", "issue", "verify"):
@@ -153,7 +167,22 @@ if builder_text:
         "Framework64\\v4.0.30319\\csc.exe" in builder_text,
         "builder falls back to the csc.exe that ships with Windows",
     )
-    check("Add-Type" not in builder_text, "builder does not compile through Add-Type (explicit csc invocation)")
+    check(
+        "Add-Type -TypeDefinition" not in builder_code,
+        "builder does not compile C# via Add-Type (explicit csc invocation)",
+    )
+    check(
+        "Find-CSharpCompiler" in builder_text and "@cscArgs" in builder_text,
+        "builder compiles the launcher with an explicit csc.exe invocation",
+    )
+    check(
+        "function Invoke-PortableExe" in builder_text and "Start-Process" in builder_text,
+        "builder waits for the GUI-subsystem launcher through Start-Process (exit code + timeout)",
+    )
+    check(
+        "HRM_PORTABLE_LOG" in builder_text,
+        "builder smoke test reads the real child CLI output through HRM_PORTABLE_LOG",
+    )
 
 # --- bundle builder: pinned, reproducible inputs ----------------------------
 bundle = read_bytes(BUNDLE_BUILDER)
@@ -188,6 +217,10 @@ if ci_text:
     check("build-portable.ps1" in ci_text, "the portable phase runs build-portable.ps1 under PowerShell 5.1")
     check("build-portable.ps1" in ci_text.split("foreach ($scriptName in @(")[1].split(")")[0], "parser phase covers build-portable.ps1")
     check("trailer marker mismatch" in ci_text, "portable phase validates the trailer independently")
+    check(
+        "HRM_PORTABLE_LOG" in ci_text and "function Invoke-PortableExe" in ci_text,
+        "portable phase captures CLI output through HRM_PORTABLE_LOG with an explicit timeout",
+    )
 
 # --- repository hygiene -----------------------------------------------------
 gitignore = read_bytes(GITIGNORE).decode("utf-8", "replace")

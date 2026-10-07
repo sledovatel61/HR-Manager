@@ -62,6 +62,27 @@ if ($failuresFile) {
         Set-Content -Path $failuresFile -Value $report -Encoding UTF8
         Write-Host ("Отчёт о провалах: " + $failuresFile)
     } catch { }
+    if ($global:HRM_TestFailed -gt 0 -and $env:GITHUB_ACTIONS) {
+        # Аннотаций ::error:: на шаг не больше 10 — остальные провалы видны
+        # только в файле артефакта. Дополнительно публикуем весь список
+        # notice-аннотациями (свой лимит 10), чтобы читать его через API.
+        $rx = "(?<![A-Za-z0-9+/_-])(?:[0-9a-fA-F]{64,}|[A-Za-z0-9+/_-]{40,}={0,2})(?![A-Za-z0-9+/_=-])"
+        $chunks = New-Object System.Collections.ArrayList
+        $cur = "failure list (" + $global:HRM_TestFailed + "):"
+        foreach ($failure in @($global:HRM_TestFailures)) {
+            $safe = [regex]::Replace([string]$failure, $rx, "<redacted>")
+            if ($safe.Length -gt 3000) { $safe = $safe.Substring(0, 3000) }
+            if (($cur.Length + $safe.Length + 3) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
+            if ($cur.Length -gt 0) { $cur += "`n" }
+            $cur += $safe
+        }
+        if ($cur.Length -gt 0) { [void]$chunks.Add($cur) }
+        $emitCount = [Math]::Min($chunks.Count, 10)
+        for ($i = 0; $i -lt $emitCount; $i++) {
+            $m = ([string]$chunks[$i]).Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host ("::notice title=HRM engine failures " + ($i + 1) + "/" + $chunks.Count + "::" + $m)
+        }
+    }
     if ($global:HRM_TestFailed -gt 0 -and $env:GITHUB_STEP_SUMMARY) {
         try {
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("### Провалы тестов движка" + "`n" + '```text' + "`n" + ($report -join "`n") + "`n" + '```' + "`n") -Encoding utf8
