@@ -39,11 +39,34 @@ function Get-HrmSetupUrlFile { param([string]$StateDir) return (Join-Path $State
 
 # --- Журнал -----------------------------------------------------------------
 
-function Write-HrmLog {
+function Format-HrmLogLine {
+    # Чистая функция: готовая строка журнала (метка времени + редакция секретов).
     param([string]$Level, [string]$Message)
     $clean = Redact-HrmText $Message
     $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    Write-Output "[$stamp] [$Level] $clean"
+    return "[$stamp] [$Level] $clean"
+}
+
+function Write-HrmLog {
+    # Журнал НЕ пишется в success stream. Раньше строки журнала уходили туда, из-за
+    # чего они примешивались к возвращаемым значениям функций
+    # (Start-HrmStack, Repair-HrmStack, Invoke-HrmDockerPrepare и др.): результат
+    # становился массивом, и обращение к его свойству ($stack.ok) под StrictMode
+    # давало "The property 'ok' cannot be found on this object".
+    # Адресаты: файл журнала фоновой операции (HRM_LOG_FILE, его задаёт
+    # Start-HrmEngineProcess) либо консоль/перенаправленный stdout.
+    param([string]$Level, [string]$Message)
+    $line = Format-HrmLogLine -Level $Level -Message $Message
+    $logFile = $env:HRM_LOG_FILE
+    if ($logFile) {
+        try {
+            # UTF-8 без BOM: файл журнала читается инструментами как обычный текст.
+            [System.IO.File]::AppendAllText($logFile, $line + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+            return
+        }
+        catch { }
+    }
+    Write-Host $line
 }
 
 # --- Редакция секретов -----------------------------------------------------
@@ -457,7 +480,12 @@ function Start-HrmEngineProcess {
     if ($null -ne $script:MockProcessLaunch) {
         return (& $script:MockProcessLaunch -FilePath "powershell.exe" -Arguments $arguments -Mode "engine" -LogFile $LogFile)
     }
-    return (Start-Process @startArgs)
+    # Потомок наследует HRM_LOG_FILE и пишет свой журнал туда сам (Write-HrmLog),
+    # поэтому окно можно держать скрытым; RedirectStandardOutput остаётся
+    # подстраховкой для всего, что процесс печатает напрямую.
+    if ($LogFile) { $env:HRM_LOG_FILE = $LogFile }
+    try { return (Start-Process @startArgs) }
+    finally { if ($LogFile) { Remove-Item Env:HRM_LOG_FILE -ErrorAction SilentlyContinue } }
 }
 
 function Get-HrmEngineLogsDir {

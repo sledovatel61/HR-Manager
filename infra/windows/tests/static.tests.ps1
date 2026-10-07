@@ -394,4 +394,16 @@ Test-Case "лаунчер трея не содержит секретов и з�
     Assert-HrmNotContains $trayEntry "secrets.json" "трей не должен читать файл секретов"
 }
 
+Test-Case "журнал движка не пишет в success stream (не смешивается с результатами функций)" {
+    $common = Get-Content -Path (Join-Path $EngineDir "Common.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $common 'function Format-HrmLogLine' 'нет чистой функции форматирования журнала'
+    Assert-HrmContains $common 'Write-Host $line' 'журнал не выводится в консоль'
+    # Внутри Write-HrmLog не должно быть записи в success stream: строки журнала
+    # попадали бы в возвращаемые значения функций (Start-HrmStack, Repair-HrmStack,
+    # Invoke-HrmDockerPrepare и др.) и под StrictMode давали бы
+    # "The property 'ok' cannot be found on this object" у вызывающего.
+    $body = [regex]::Match($common, '(?s)function Write-HrmLog \{.*?\n\}').Value
+    Assert-HrmNotContains $body 'Write-Output' 'журнал снова пишет в конвейер (ломает свойства результата под StrictMode)'
+}
+
 Write-Host ("Статические проверки: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

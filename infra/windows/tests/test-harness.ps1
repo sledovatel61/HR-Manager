@@ -102,6 +102,7 @@ function Initialize-HrmTestEngine {
     Remove-Item Env:HRM_AUTOSTART_DIR -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_AUTOSTART_MOCK -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_DESKTOP_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_LOG_FILE -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $env:HRM_STATE_DIR -Force | Out-Null
     New-Item -ItemType Directory -Path $env:HRM_INSTALL_DIR -Force | Out-Null
 }

@@ -170,9 +170,13 @@ Test-Case "редакция секретов: логи и вывод никог�
     $redacted = Redact-HrmText "текст topsecret-12345678 конец"
     Assert-HrmNotContains $redacted "topsecret-12345678" "секрет не отредактирован"
     Assert-HrmContains $redacted "<redacted>" "нет маркера редакции"
-    $log = (Write-HrmLog "info" "пароль topsecret-12345678 тут") | Out-String
+    $log = Format-HrmLogLine -Level "info" -Message "пароль topsecret-12345678 тут"
     Assert-HrmNotContains $log "topsecret-12345678" "секрет попал в журнал"
     Assert-HrmContains $log "<redacted>" "журнал без маркера редакции"
+    # Журнал не должен попадать в конвейер: иначе его строки примешиваются к
+    # структурированным результатам функций и ломают их свойства под StrictMode.
+    $piped = @(Write-HrmLog "info" "проверка конвейера")
+    Assert-HrmEqual 0 $piped.Count "Write-HrmLog попал в конвейер (success stream)"
     Reset-HrmRedaction
 }
 

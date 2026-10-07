@@ -27,6 +27,17 @@ Test-Case "первый запуск: контейнеров нет — стек
     Assert-HrmTrue ($world.BuildCount -ge 1) "образы должны собираться при первом запуске"
 }
 
+Test-Case "результат Start-HrmStack — ровно один объект с ok (журнал не в конвейере)" {
+    $null = New-HrmStackTestContext
+    $install = Get-HrmTestInstallDir
+    $state = Get-HrmTestStateDir
+    $result = Start-HrmStack -InstallDir $install -StateDir $state
+    # Регрессия: ранее Write-HrmLog писал в success stream, строки журнала
+    # примешивались к результату, и $result.ok падал с PropertyNotFoundException.
+    Assert-HrmEqual 1 @($result).Count "в результат Start-HrmStack попали лишние объекты (журнал?)"
+    Assert-HrmTrue $result.ok "первый запуск должен пройти"
+}
+
 Test-Case "повторный запуск: стек уже запущен — без пересборки и без дублей" {
     $world = New-HrmStackTestContext
     $install = Get-HrmTestInstallDir
