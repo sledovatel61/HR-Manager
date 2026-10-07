@@ -37,11 +37,32 @@ jobs:
         run: |
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Install PostgreSQL client tools (backup integration tests)
+        # 2026-10-07 два прогона подряд зависли на этом шаге больше чем на 80 минут
+        # (сеть раннера до зеркала apt), а отменить или перезапустить прогон из среды
+        # разработки нельзя — токен получает 403. Поэтому у шага есть границы: каждая
+        # сетевая команда ограничена по времени и повторяется до трёх раз, весь шаг —
+        # 12 минут. При недоступном зеркале шаг честно падает за минуты, а не висит
+        # часами; при обычной работе поведение то же самое (apt + pg_dump --version).
+        # ForceIPv4 и явные таймауты Acquire — известное лекарство от зависаний на
+        # IPv6-адресах зеркала.
+        timeout-minutes: 12
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates curl               postgresql-common
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          set -x
+          attempt() {
+            local limit="$1"; shift
+            for _ in 1 2 3; do
+              if timeout --kill-after=30s "$limit" "$@"; then return 0; fi
+              echo "attempt failed (limit ${limit}s); retrying in 15s" >&2
+              sleep 15
+            done
+            return 1
+          }
+          export DEBIAN_FRONTEND=noninteractive
+          APT_OPTS=(-o Acquire::Retries=3 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25 -o Acquire::ForceIPv4=true)
+          attempt 180 sudo apt-get "${APT_OPTS[@]}" update -q
+          attempt 300 sudo apt-get "${APT_OPTS[@]}" install -y -q --no-install-recommends ca-certificates curl postgresql-common
+          attempt 300 sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          attempt 300 sudo apt-get "${APT_OPTS[@]}" install -y -q --no-install-recommends postgresql-client-16
           pg_dump --version
       - name: Ruff lint
         run: ruff check .
