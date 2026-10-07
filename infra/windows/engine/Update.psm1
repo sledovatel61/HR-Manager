@@ -378,6 +378,12 @@ function Update-HrmApp {
             } else {
                 Write-HrmLog "info" "Каталог релиза совпадает с установкой — копирование пропущено."
             }
+            # Публичный ключ проверки лицензии уже установленного пилота лежит в
+            # StateDir и здесь не перезаписывается. Если файла нет (старая
+            # установка или ручная чистка), берём ключ из обновляемого снимка:
+            # без него приложение не проверит лицензию, а pilot.env с
+            # обязательной переменной (:?) не даст стеку подняться.
+            $null = Install-HrmLicensePublicKey -SourceDir $ReleaseDir -InstallDir $InstallDir -StateDir $StateDir
             $null = Write-HrmPilotEnv $StateDir $releaseData.release_sha $port
             Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
             Set-HrmUpdateJournal $StateDir "migrate" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }
