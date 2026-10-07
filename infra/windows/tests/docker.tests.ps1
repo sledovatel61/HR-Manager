@@ -114,6 +114,59 @@ Test-Case "установщик Docker с непроверенной подпи�
     Assert-HrmContains $result.message "подписи" "сообщение должно объяснять причину"
 }
 
+Test-Case "издатель установщика проверяется точно: «Docker» в имени не делает сертификат доверенным" {
+    # P2 ревью раунда 12. Раньше проверка была подстрокой «Docker», и любой
+    # корректно подписанный файл со словом Docker в subject считался доверенным.
+    Assert-HrmFalse (Test-HrmDockerPublisherSubject "CN=Fake Docker Signer, O=Evil Corp, C=US") `
+        "поддельный издатель со словом Docker в имени прошёл проверку"
+    Assert-HrmFalse (Test-HrmDockerPublisherSubject "CN=Dockerizer LLC, O=Dockerizer, C=US") `
+        "посторонний издатель со словом Docker в имени прошёл проверку"
+    Assert-HrmFalse (Test-HrmDockerPublisherSubject "CN=Docker Inc, O=Evil Corp, C=US") `
+        "совпал только CN: издатель не должен приниматься"
+    Assert-HrmFalse (Test-HrmDockerPublisherSubject "CN=Evil Corp, O=Docker Inc") `
+        "совпал только O: издатель не должен приниматься"
+    Assert-HrmFalse (Test-HrmDockerPublisherSubject "") "пустой subject должен считаться недоверенным"
+    Assert-HrmFalse (Test-HrmDockerPublisherSubject "CN=Docker Inc, CN=Docker Inc, O=Docker Inc") `
+        "два атрибута CN должны считаться недоверенными (неоднозначная строка)"
+}
+
+Test-Case "зафиксированный издатель Docker принимается по точному subject и по отпечатку" {
+    $subjects = @(Get-HrmDockerPublisherSubjects)
+    Assert-HrmTrue ($subjects.Count -ge 1) `
+        "список издателей пуст: официальный установщик Docker не будет принят (значения снимаются аудитом CI)"
+    foreach ($subject in $subjects) {
+        Assert-HrmTrue (Test-HrmDockerPublisherSubject $subject) ("зафиксированный издатель не проходит проверку: " + $subject)
+    }
+    # Значения из аудита CI (прогон 37653666837): subject настоящего установщика
+    # и его отпечаток. True-случай не выдуман — это реальная подпись.
+    $realSubject = "CN=Docker Inc, O=Docker Inc, L=Palo Alto, S=California, C=US, SERIALNUMBER=4817464, " +
+        "OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
+    Assert-HrmTrue (Test-HrmDockerPublisherSubject $realSubject) "настоящий subject установщика Docker не принят"
+    # Порядок атрибутов и лишние пробелы не должны ломать проверку.
+    $reordered = "O=Docker Inc, CN=Docker Inc, C=US, L=Palo Alto,  S=California"
+    Assert-HrmTrue (Test-HrmDockerPublisherSubject $reordered) "перестановка атрибутов ломает проверку издателя"
+    # Отпечаток сертификата — второй, независимый способ (переживает смену subject).
+    Assert-HrmTrue (Test-HrmDockerPublisherSubject -Subject "CN=Кто-то другой" `
+            -Thumbprints @("b6bd29272b07ad4d0f1322a739499d67ca3bac3f")) "отпечаток сертификата не принят"
+    Assert-HrmFalse (Test-HrmDockerPublisherSubject -Subject "CN=Кто-то другой" `
+            -Thumbprints @("0000000000000000000000000000000000000000")) "чужой отпечаток принят"
+}
+
+Test-Case "проверка издателя end-to-end: строка-subject проходит через настоящее решение" {
+    # Переопределение install_signature строкой заменяет только чтение подписи,
+    # а решение об издателе остаётся настоящим (см. Test-HrmDockerInstallerTrusted).
+    Set-HrmDockerOverride @{ install_signature = "CN=Fake Docker Signer, O=Evil Corp" }
+    $fake = Test-HrmDockerInstallerTrusted -Path "C:\нет-такого-файла.exe"
+    Assert-HrmFalse $fake.trusted "поддельный издатель прошёл end-to-end проверку"
+    Assert-HrmContains $fake.reason "не Docker Inc" "сообщение об отказе должно называть причину"
+    Set-HrmDockerOverride @{ install_signature = "CN=Docker Inc, O=Docker Inc, C=US" }
+    $real = Test-HrmDockerInstallerTrusted -Path "C:\нет-такого-файла.exe"
+    Assert-HrmTrue $real.trusted "настоящий издатель отвергнут"
+    Set-HrmDockerOverride @{ install_signature = $false }
+    $unsigned = Test-HrmDockerInstallerTrusted -Path "C:\нет-такого-файла.exe"
+    Assert-HrmFalse $unsigned.trusted "прежний смысл override = $false не сохранён"
+}
+
 Test-Case "пользователь отменил UAC: это штатный результат с понятным текстом, а не crash-loop" {
     New-HrmDockerTestContext
     Set-HrmDownloadMock {
