@@ -35,19 +35,24 @@ Test-Case "Docker Desktop не установлен: prepare не делает �
 
 Test-Case "Docker Desktop установлен, но не запущен: движок запускает его и ждёт Engine" {
     $world = New-HrmDockerTestContext
+    # Счётчик запусков принадлежит тесту: движок фиксирует действия в журнале и
+    # через docker-pending, а не в глобальных переменных, поэтому инициализируем
+    # его сами (иначе StrictMode падает на несуществующей переменной).
+    $global:HRM_DockerLaunches = @()
     Set-HrmProcessLaunchMock {
         param($FilePath, $Arguments, $Mode, $LogFile)
         $global:HRM_DockerLaunches += [pscustomobject]@{ FilePath = $FilePath; Mode = $Mode }
         return [pscustomobject]@{ Id = 4321 }
     }
-    $env:HRM_DOCKER_LAUNCH_RECORD = "1"
     $desktopExe = Join-Path $env:HRM_DESKTOP_DIR "Docker Desktop.exe"
     Set-Content -Path $desktopExe -Value "stub" -Encoding ASCII
-    Set-HrmDockerOverride @{ desktop = "installed_stopped"; desktop_path = $desktopExe; engine = $true; wsl = "ok"; virtualization = "enabled" }
+    # Готовность Engine НЕ подменяем: она должна подтвердиться настоящей
+    # проверкой через мок docker info (иначе вызова docker не было бы вовсе).
+    Set-HrmDockerOverride @{ desktop = "installed_stopped"; desktop_path = $desktopExe; wsl = "ok"; virtualization = "enabled" }
     $world = New-HrmMockWorld
-    # Engine готов сразу после старта Docker Desktop (мок docker info).
     $result = Start-HrmDockerDesktop -TimeoutSeconds 5
     Assert-HrmTrue $result.started "движок должен посчитать Docker Desktop запущенным"
+    Assert-HrmTrue ($global:HRM_DockerLaunches.Count -ge 1) "Docker Desktop должен быть запущен движком"
     $calls = @(Get-HrmWorldCallArgs $world)
     Assert-HrmTrue ($calls.Count -ge 1) "ожидался вызов docker (проверка Engine)"
 }

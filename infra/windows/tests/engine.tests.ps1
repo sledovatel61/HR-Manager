@@ -649,7 +649,9 @@ Test-Case "диагностика: редакция секретов в выво
     Register-HrmSecret $secret
     $json = (Get-HrmDiagnostics -InstallDir $install -StateDir $state -AsJson) | Out-String
     Assert-HrmNotContains $json $secret "секрет попал в вывод диагностики"
-    Assert-HrmContains $json "<redacted>" "нет маркера редакции в диагностике"
+    # ConvertTo-Json экранирует < > как \u003c/\u003e: читатель JSON видит
+    # <redacted>, поэтому проверяем обе формы.
+    Assert-HrmContainsRedacted $json "нет маркера редакции в диагностике"
 }
 
 Write-Host "== Возобновление =="

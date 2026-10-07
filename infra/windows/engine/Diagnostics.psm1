@@ -276,7 +276,11 @@ function Get-HrmDirFacts {
     return $facts
 }
 
-function Get-HrmFreeSpaceMb {
+function Get-HrmHostFreeSpaceMb {
+    # Свободное место на диске установки для отчёта о хосте. Имя отличается от
+    # Docker.psm1\Get-HrmFreeSpaceMb намеренно: одинаковые имена в двух модулях
+    # движка перекрываются в порядке импорта (Docker импортируется после
+    # Diagnostics) и делают проверку места непредсказуемой.
     param([string]$Path)
     try {
         $qualifier = Split-Path -Qualifier $Path
@@ -326,7 +330,7 @@ function Get-HrmHostReportPayload {
         compose = (Get-HrmComposeFacts)
         published_ports = @($published["ports"])
         ports_observed = [bool]$published["observed"]
-        free_space_mb = (Get-HrmFreeSpaceMb -Path $InstallDir)
+        free_space_mb = (Get-HrmHostFreeSpaceMb -Path $InstallDir)
         state_dir = (Get-HrmDirFacts -Path $StateDir)
         staging = (Get-HrmDirFacts -Path $staging)
         installed_version = $releaseVersion

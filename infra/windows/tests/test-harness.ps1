@@ -19,12 +19,17 @@ function Test-Case {
     catch {
         $global:HRM_TestFailed++
         $msg = ("{0}: {1}" -f $Name, $_.Exception.Message)
-        $global:HRM_TestFailures += $msg
-        Write-Host ("  [FAIL] $Name : {0}" -f $_.Exception.Message) -ForegroundColor Red
         # GitHub-аннотация: имя проваленного кейса + стек видны в check-runs
         # даже когда лог-приёмник недоступен.
         $stack = $_.ScriptStackTrace
         if (-not $stack) { $stack = "(без стектрейса)" }
+        # Компактный стектрейс кладём В САМ СПИСОК провалов: в аннотации
+        # ::error:: помещается только 10 записей на шаг, а notice-список через
+        # API виден целиком (логи и артефакты скачать из CI нельзя).
+        $shortStack = ($stack -replace "[`r`n]+", " | ")
+        if ($shortStack.Length -gt 400) { $shortStack = $shortStack.Substring(0, 400) }
+        $global:HRM_TestFailures += ($msg + " || " + $shortStack)
+        Write-Host ("  [FAIL] $Name : {0}" -f $_.Exception.Message) -ForegroundColor Red
         $flat = ($msg + " || " + $stack) -replace "[`r`n]+", " | "
         $title = $Name -replace "[`r`n:]+", " "
         Write-Host ("::error title={0}::{1}" -f $title, $flat)
@@ -51,6 +56,17 @@ function Assert-HrmEqual {
 function Assert-HrmContains {
     param([string]$Haystack, [string]$Needle, [string]$Message = "подстрока не найдена")
     if ([string]::IsNullOrEmpty($Haystack) -or -not $Haystack.Contains($Needle)) { throw $Message }
+}
+
+function Assert-HrmContainsRedacted {
+    # Маркер редакции в JSON-файлах: ConvertTo-Json (Windows PowerShell 5.1)
+    # экранирует ` < ` и ` > ` как \u003c/\u003e, поэтому проверяем и литерал, и
+    # экранированную форму — читатель JSON в обоих случаях видит <redacted>.
+    param([string]$Text, [string]$Message = "нет маркера редакции")
+    if ([string]::IsNullOrEmpty($Text)) { throw $Message }
+    $unescaped = [regex]::Replace($Text, "\\u003c", "<", "IgnoreCase")
+    $unescaped = [regex]::Replace($unescaped, "\\u003e", ">", "IgnoreCase")
+    Assert-HrmContains $unescaped "<redacted>" $Message
 }
 
 function Assert-HrmNotContains {
@@ -307,10 +323,19 @@ function New-HrmMockWorld {
                 }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "volume" -and $Arguments[1] -eq "inspect") {
-                if ($Arguments[2] -eq "hr-manager-pilot_pilot_pgdata" -and $global:HRM_MockWorld.PgVolumeMissing) {
+                $volumeName = ""
+                if ($Arguments.Count -ge 3) { $volumeName = [string]$Arguments[2] }
+                if ($volumeName -eq "hr-manager-pilot_pilot_pgdata" -and $global:HRM_MockWorld.PgVolumeMissing) {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "no such volume" }
                 }
-                return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ('[{"Name":"{0}"}]' -f $Arguments[2]); Stderr = "" }
+                # ВАЖНО: ответ собирается ConvertTo-Json, а НЕ оператором -f.
+                # Для оператора -f .NET-строка форматирования разбирает фигурные
+                # скобки как placeholder, поэтому JSON-шаблон с фигурными скобками
+                # падал с "Input string was not in a correct format" — мок отвечал
+                # ошибкой, и обновление считалось сломанным (rollback) при живых
+                # данных. Контракт guard-теста статики: JSON собираем ConvertTo-Json.
+                $volumeJson = ConvertTo-Json -InputObject ([pscustomobject]@{ Name = $volumeName }) -Compress
+                return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $volumeJson; Stderr = "" }
             }
             if ($Arguments.Count -eq 3 -and $Arguments[0] -eq "volume" -and $Arguments[1] -eq "rm") {
                 $global:HRM_MockWorld.RemovedVolumes += $Arguments[2]

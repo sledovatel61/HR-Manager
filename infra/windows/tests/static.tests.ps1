@@ -406,4 +406,31 @@ Test-Case "журнал движка не пишет в success stream (не с�
     Assert-HrmNotContains $body 'Write-Output' 'журнал снова пишет в конвейер (ломает свойства результата под StrictMode)'
 }
 
+Test-Case "формат-строки оператора -f корректны (JSON-шаблон .NET не принимает)" {
+    # Регрессия: '[{"Name":"{0}"}]' -f $x падает с «Input string was not in a
+    # correct format»: для оператора -f (.NET String.Format) фигурные скобки —
+    # это placeholder. JSON собираем ConvertTo-Json, литеральные скобки —
+    # экранируем как {{ / }}. Проверяем по AST: комментарии не дают шума.
+    $files = @(Get-HrmEngineFiles) + @(Get-ChildItem -Path (Join-Path $WindowsDir "tests") -File -Filter *.ps1 |
+            ForEach-Object { $_.FullName })
+    $validator = '^(?:[^{}]|\{\{|\}\}|\{\d+(?:,\s*-?\d+)?(?::[^{}]*)?\})*$'
+    foreach ($file in $files) {
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors)
+        $formats = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.BinaryExpressionAst] -and
+                    $node.Operator -eq [System.Management.Automation.Language.TokenKind]::Format -and
+                    $node.Left -is [System.Management.Automation.Language.StringConstantExpressionAst]
+                }, $true))
+        foreach ($format in $formats) {
+            $value = $format.Left.Value
+            if ($value -notmatch $validator) {
+                throw ("Некорректная строка -f в {0} (строка {1}): {2}" -f $file, $format.Extent.StartLineNumber, $value)
+            }
+        }
+    }
+}
+
 Write-Host ("Статические проверки: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

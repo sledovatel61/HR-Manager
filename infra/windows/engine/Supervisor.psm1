@@ -52,7 +52,12 @@ function Set-HrmSupervisorState {
     $merged["updated_at"] = (Get-Date).ToString("o")
     foreach ($key in $Extra.Keys) { $merged[$key] = $Extra[$key] }
     Set-HrmJsonFile $StateDir $script:SupervisorStateFile $merged
-    return $merged
+    # Наружу НЕ отдаём $merged: вызывающие (цикл supervisor'а, трей, установщик)
+    # возвращают свои объекты результата, и лишний объект в success stream
+    # превращал результат в массив (под StrictMode — «The property 'ok' cannot
+    # be found on this object» у читателя). Состояние читается через
+    # Get-HrmSupervisorState.
+    return
 }
 
 function Get-HrmSupervisorState {
