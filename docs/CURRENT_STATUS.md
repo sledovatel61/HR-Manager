@@ -264,10 +264,17 @@ PostgreSQL integration и Compose должны подтверждаться CI �
   notice-аннотациями (лимит `::error::` — 10 на шаг); контракт portable-issuer синхронизирован с новой упаковкой
   (74 проверки, локально все PASS).
 
-Остаётся (без этого GO нет): зелёный прогон CI на `e67f7a4` (`37630406320`, джобы `windows-installer` и
-`license-issuer-windows`), ручной чек-лист `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows и заполнение
-SHA256 артефактов в `docs/PILOT_FINAL_REPORT.md`. В среде разработки нет Windows/PowerShell/Docker/Inno Setup,
-поэтому Pester-наборы и реальная установка здесь не запускались.
+Закрыто (прогон `37640729694`, коммит `7a5ed7a`, ветка `arena/4be5f952-hr-manager`): **8 из 8 джобов зелёные** —
+Pester-наборы движка, сборка `Setup.exe` и `silent install/uninstall`, Phase 14 pilot drill, сборка portable exe
+(`selfcheck`, CLI-цепочка, отказ по подделанной лицензии), backend, backend-PG, frontend, compose, release-policy.
+Добавлен джоб `pilot-setup`: пилотный `Setup.exe` 0.15.0 без подписи + `SHA256SUMS.txt` + артефакт
+`pilot-setup-0.15.0-unsigned`; хэши артефактов публикуются notice-аннотациями (артефакты скачиваются только через
+веб-интерфейс Actions) и внесены в раздел 4 `docs/PILOT_FINAL_REPORT.md`.
+
+Остаётся (без этого GO нет): ручной чек-лист `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows с реальным
+Docker Desktop (UAC, перезагрузка, движок, порт 8080, трей в пользовательской сессии, автозапуск, LAN, активация
+лицензии, N→N+1 с данными и откатом) и письменный owner decision. В среде разработки нет Windows/PowerShell/Docker,
+поэтому живая установка здесь не запускалась.
 
 ## Пилотный релиз: что осталось сделать
 
@@ -290,11 +297,14 @@ SHA256 артефактов в `docs/PILOT_FINAL_REPORT.md`. В среде ра�
 
 ### Обязательные проверки пилота
 
-- [ ] Выполнить полный backend CI и backend test suite, PostgreSQL integration,
-  миграции с нуля, Compose smoke, frontend checks и Windows engine/installer
-  checks на exact release SHA. Ранее подтверждённый frontend-прогон: 25 файлов,
-  211 тестов; более поздние результаты Phase 16 описаны в её отчёте и также
-  требуют проверки против точного release baseline.
+- [x] Полный backend CI и backend test suite, PostgreSQL integration,
+  Compose smoke, frontend checks и Windows engine/installer checks на exact
+  release SHA `7a5ed7a` (прогон `37640729694`, 8/8 джобов зелёные):
+  backend, backend-PG, frontend, compose, release-policy, Windows-движок +
+  установщик (Pester + `Setup.exe` + silent install/uninstall + pilot drill),
+  `pilot-setup` (пилотный `Setup.exe` 0.15.0 + `SHA256SUMS.txt`) и
+  license-issuer (bundle + portable exe: `parser/build/portable/runtime/accept`,
+  контракт portable-issuer, backend-проверка выпущенных лицензий 7/7).
 - [ ] Провести чистую Windows 10/11 приёмку: установка, первый вход, loopback,
   readiness, backup/restore, update, rollback, resume, сохранность данных и
   uninstall.
@@ -322,10 +332,13 @@ SHA256 артефактов в `docs/PILOT_FINAL_REPORT.md`. В среде ра�
    диагностика), каждую — с зелёным CI.
 3. Запустить backend/интеграционные/Compose/Windows проверки на итоговом SHA и
    сохранить ссылки на CI evidence.
-4. Собрать пилотный Setup.exe (workflow `pilot-release`, без Authenticode),
-   проверить Ed25519-лицензию и SHA256SUMS.
-5. Выполнить одну живую проверку на Windows и только после всех PASS вынести
-   GO/NO-GO.
+4. Взять пилотный `Setup.exe` 0.15.0 из артефакта веточного CI
+   `pilot-setup-0.15.0-unsigned` (или собрать кнопкой workflow `pilot-release`,
+   без Authenticode), сверить SHA256 с `SHA256SUMS.txt` и разделом 4
+   `docs/PILOT_FINAL_REPORT.md`; проверить Ed25519-лицензию portable-issuer-ом.
+5. Выполнить `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows (реальный
+   Docker Desktop, трей, обновление с данными и откатом) и только после всех
+   PASS + письменного owner decision вынести GO/NO-GO.
 
 Главный стартовый документ следующего чата:
 [`handoff-release-0.14.0.md`](handoff-release-0.14.0.md).
