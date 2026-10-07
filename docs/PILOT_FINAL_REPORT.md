@@ -7,8 +7,8 @@
 
 > **NO-GO — остался только ручной чек-лист на реальной Windows.**
 > Всё, что можно проверить машинно, проверено и зелёное. Последние прогоны ветки:
-> `37646226479` (голова ветки `5d6aaf3`), `37642930511` (`7633eef`), `37640729694` (`7a5ed7a`) —
-> **8 из 8 джобов успешны в каждом**, включая сборку пилотного `Setup.exe` 0.15.0, сборку
+> `37657489369` (голова ветки `4829491`; это текущий итог), `37654388276` (`9324f52`), `37646226479` (`5d6aaf3`),
+> `37642930511` (`7633eef`), `37640729694` (`7a5ed7a`) — **все обязательные джобы успешны в каждом**, включая сборку пилотного `Setup.exe` 0.15.0, сборку
 > `LicenseIssuer-Portable.exe`, Pester-наборы движка, silent install/uninstall и pilot drill
 > (обновление/откат/resume) на Windows-раннере.
 > Хэши артефактов — в разделе 4 (там же строка «какой файл отдаём Перепечай»).
@@ -120,6 +120,11 @@ PowerShell-наборы (Pester), сборка `Setup.exe` (Inno Setup) и porta
 | `License issuer bundle - Windows PowerShell 5.1 checks` | фазы `parser` (все .ps1 через парсер 5.1), `build` (autonomous bundle), **`portable`** (сборка `LicenseIssuer-Portable.exe`, проверка трейлера, сверка SHA256 с `BUILD-INFO.txt`, `--hrm-selfcheck`, CLI-цепочка gen-keypair → issue → verify, отказ по подделанной лицензии, поиск ключей), `runtime` (свежий unzip, путь с пробелами, скрытый системный Python, loopback-only), `accept` (28 проверок: GUI Tk-окно, Edge + WebCrypto Ed25519, firewall/нулевой исходящий трафик, 20-кратная гонка запуска, отсутствие ключей), контракт portable-issuer, backend-проверка выпущенных лицензий (7/7) |
 | `Backend checks`, `Backend integration tests (PostgreSQL)`, `Frontend checks`, `Compose stack smoke test (dev + prod overlay)`, `Release pipeline fail-closed policy` | Полные наборы на том же коммите |
 
+Проверки движка дополнительно публикуют итог аннотацией: `HRM engine tests: ВСЕ ТЕСТЫ ПРОЙДЕНЫ (N); наборы:
+static, engine, channel, installer-roots, docker, stack, supervisor, pilot-final` — по числу видно, что наборы
+действительно выполнялись (в том числе новые кейсы: предупреждение про приватность внутри архива отчёта,
+страховочный тест по документации и три кейса проверки издателя Docker).
+
 Ключевые строки из аннотаций прогона: `[portable] selfcheck PASS: payload 1994 files, 50,810,936 bytes`,
 `[portable] portable CLI chain PASS: gen-keypair -> issue -> verify (exit codes 0)`,
 `[portable] tampered license correctly rejected (exit=1)`,
@@ -132,16 +137,18 @@ PowerShell-наборы (Pester), сборка `Setup.exe` (Inno Setup) и porta
 
 ## 4. Артефакты и их SHA256
 
-**Хэш артефакта берётся из `SHA256SUMS.txt` / `BUILD-INFO.txt` той сборки, которую скачали, а не из этой
-таблицы.** Сборка, включающая правки итерации ревью 12 (точная проверка издателя Docker, предупреждение про
-приватность внутри архива отчёта) — прогон `37655251039`, коммит `7324db3`:
-`HR-Manager-Setup-0.15.0.exe` = `F6A2417C024D39F2740FDA327DB6F0E1C0A237DAE14511E8802815465C1A19FF`,
-`LicenseIssuer-Portable.exe` = `1D507BD9A2EB978C8121BBAE1E626783B93FB7AF3B5FD85FA7061FF879654A37`,
-`release-manifest.json` = `98C72CF1F3B27E954615740113E9218AF6CF4D85B6548B9BE9D19AF6E448F2BC`.
+**Правило: берётся `pilot-setup-0.15.0-unsigned` (и `license-issuer-portable`) последнего зелёного прогона
+на голове ветки, а хэш — из `SHA256SUMS.txt` / `BUILD-INFO.txt` именно этого артефакта.** Любой новый коммит
+(даже только документация) пересобирает `Setup.exe`, поэтому записанные здесь значения — исторические, а не
+«текущий хэш проекта».
 
-Ранее (голова ветки `5d6aaf3`, прогон `37646226479`) те же файлы имели хэши
-`084032F54C12F3B96EB38C48DAFBBB3A4825F44EF71280EA5F8ED739E4978349` и
-`1EEDA1E719B7B2330DECDB5C82A6D1E5D0CE6DC0186E81038B27BFD572457C59`.
+| Сборка (коммит, прогон) | `HR-Manager-Setup-0.15.0.exe` | `LicenseIssuer-Portable.exe` |
+| --- | --- | --- |
+| `7324db3` + `4829491` (правки ревью 12, последний зелёный прогон `37657489369`) | `F6A2417C024D39F2740FDA327DB6F0E1C0A237DAE14511E8802815465C1A19FF` | `1D507BD9A2EB978C8121BBAE1E626783B93FB7AF3B5FD85FA7061FF879654A37` |
+| `5d6aaf3` (до правок ревью 12, прогон `37646226479`) | `084032F54C12F3B96EB38C48DAFBBB3A4825F44EF71280EA5F8ED739E4978349` | `1EEDA1E719B7B2330DECDB5C82A6D1E5D0CE6DC0186E81038B27BFD572457C59` |
+| `7633eef` (прогон `37642930511`) | `1EDB1C593B8AE8BEECB7CADB1956A257D3E94CFF73E9C406DBC9CA00E88927B0` | `B4B07CA31F0848156DA01BD73B21758B38F52A39DD4121FCB67C7A7276A37323` |
+
+`release-manifest.json` сборки `7324db3` — `98C72CF1F3B27E954615740113E9218AF6CF4D85B6548B9BE9D19AF6E448F2BC`.
 
 Ниже — сборка коммита `7633eef` (прогон `37642930511`); в скобках рядом сборки того же кода из `7a5ed7a`
 (прогон `37640729694`) и `3df0ae8` (`37638116840`), чтобы было видно: разные прогоны одного и того же кода дают
@@ -185,7 +192,7 @@ notice-аннотациями CI (шаг «Publish the pilot artifact hashes…�
 
 | Что именно | Из какого прогона | SHA256 | Откуда скачать |
 | --- | --- | --- | --- |
-| `HR-Manager-Setup-0.15.0.exe` — **файл для Марии** (без подписи, SmartScreen «Подробнее → Выполнить в любом случае») | `37655251039` (коммит `7324db3`), джоб `Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS` | `F6A2417C024D39F2740FDA327DB6F0E1C0A237DAE14511E8802815465C1A19FF` | артефакт `pilot-setup-0.15.0-unsigned`; рядом с exe лежит `SHA256SUMS.txt` с той же строкой |
+| `HR-Manager-Setup-0.15.0.exe` — **файл для Марии** (без подписи, SmartScreen «Подробнее → Выполнить в любом случае») | последний зелёный прогон головы ветки; на момент сдачи — `37657489369` (коммит `4829491`, код правок ревью — `7324db3`), джоб `Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS` | `F6A2417C024D39F2740FDA327DB6F0E1C0A237DAE14511E8802815465C1A19FF` | артефакт `pilot-setup-0.15.0-unsigned`; рядом с exe лежит `SHA256SUMS.txt` — в нём та же строка, и её же печатает notice-аннотация джоба |
 | `LicenseIssuer-Portable.exe` — portable-выпуск лицензий для владельца | тот же прогон, джоб `License issuer bundle - Windows PowerShell 5.1 checks` (фаза `portable`) | `1D507BD9A2EB978C8121BBAE1E626783B93FB7AF3B5FD85FA7061FF879654A37` | артефакт `license-issuer-portable`, строка `sha256_exe` в `BUILD-INFO.txt` |
 
 Проверка на машине: `Get-FileHash .\HR-Manager-Setup-0.15.0.exe -Algorithm SHA256` совпадает со `SHA256SUMS.txt`
@@ -296,6 +303,6 @@ Get-Content .\SHA256SUMS.txt                                   # 3C3B4AF3... HR-
 
 ---
 
-*Отчёт подготовлен по итогам работ P1–P12; подробная таблица состояния и план — `docs/PILOT_FINAL_AUDIT.md`.
-Последние CI-прогоны ветки: `37646226479` (голова `5d6aaf3`), `37642930511` (`7633eef`), `37640729694`
-(`7a5ed7a`) — в каждом все 8 джобов зелёные.*
+*Отчёт подготовлен по итогам работ P1–P12 и итерации по ревью раунда 12 (P1–P3); подробная таблица состояния и
+план — `docs/PILOT_FINAL_AUDIT.md`. Последние CI-прогоны ветки: `37657489369` (голова `4829491`),
+`37654388276` (`9324f52`), `37646226479` (`5d6aaf3`) — в каждом все обязательные джобы зелёные.*
