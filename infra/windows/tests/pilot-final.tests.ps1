@@ -232,7 +232,9 @@ Test-Case "support-bundle: внутри архива README-ПЕРЕД-ОТПР�
 Test-Case "документация про отчёт для поддержки не обещает вырезание личных данных" {
     # Обещание «пароли, ключи, токены и данные кандидатов в отчёт не попадают»
     # было неправдой: Redact-HrmPii вырезает только адреса почты и телефоны,
-    # а имена/свободный текст — нет. Тест не даёт обещанию вернуться.
+    # а имена/свободный текст — нет. Та же формулировка нашлась в генераторах
+    # отчётов пилотного drill (агрегатный и live Compose) — она переписана, и
+    # тест не даёт обещанию вернуться ни в документации, ни в этих отчётах.
     $guardFiles = @(
         "docs\MARIA_GUIDE.md",
         "docs\CURRENT_STATUS.md",
@@ -240,7 +242,9 @@ Test-Case "документация про отчёт для поддержки 
         "docs\RECOVERY_GUIDE.md",
         "docs\UPDATE_GUIDE.md",
         "infra\windows\README.md",
-        "infra\windows\engine\SupportBundle.psm1"
+        "infra\windows\engine\SupportBundle.psm1",
+        "infra\scripts\pilot_drill.py",
+        "infra\scripts\pilot_drill_live_compose.py"
     )
     foreach ($rel in $guardFiles) {
         $full = Join-Path $script:RepoRoot $rel
