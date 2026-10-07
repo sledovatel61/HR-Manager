@@ -80,13 +80,29 @@ function Invoke-PortableExe {
     foreach ($argument in $Arguments) {
         if ($argument -match '[\s"]') { $quoted += ('"' + ($argument -replace '"', '\"') + '"') } else { $quoted += $argument }
     }
-    $process = Start-Process -FilePath $Exe -ArgumentList ($quoted -join " ") -PassThru -NoNewWindow -ErrorAction Stop
+    # The process is started through .NET rather than Start-Process: Windows
+    # PowerShell 5.1 does not always expose the exit code of a GUI-subsystem
+    # process (in CI the -PassThru object returned an empty ExitCode), and the
+    # verdict must never depend on that. An exit code that still cannot be read is
+    # reported as a hard failure instead of being treated as success.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = ($quoted -join " ")
+    $psi.UseShellExecute = $false
+    $psi.WorkingDirectory = (Split-Path $Exe -Parent)
+    $process = [System.Diagnostics.Process]::Start($psi)
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         Show-PortableDiagnostics ("timeout after {0}s (stage '{1}'): {2}" -f $TimeoutSeconds, $Stage, ($quoted -join " "))
         try { $process.Kill() } catch { }
         throw ("TIMEOUT: {0} did not finish in {1} seconds" -f $Exe, $TimeoutSeconds)
     }
-    return [pscustomobject]@{ ExitCode = $process.ExitCode }
+    $exitCode = $null
+    try { $process.Refresh(); $exitCode = $process.ExitCode } catch { $exitCode = $null }
+    if ($null -eq $exitCode) {
+        Show-PortableDiagnostics ("exit code of {0} is not readable (stage '{1}')" -f $Exe, $Stage)
+        throw ("cannot read the exit code of {0}" -f $Exe)
+    }
+    return [pscustomobject]@{ ExitCode = $exitCode }
 }
 
 $pythonDir = Join-Path $OutDir "python"
@@ -132,6 +148,10 @@ try {
                 if ($file.Extension -eq ".pyc") { continue }
                 $entryName = ($baseName + "/" + $relative).Replace('\', '/')
                 $entry = $archive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+                # Fixed entry time (1980-01-01 is the earliest the ZIP format can
+                # store): the payload must not depend on when it was built, so the
+                # portable exe stays reproducible from the pinned inputs.
+                $entry.LastWriteTime = [datetime]::new(1980, 1, 1, 0, 0, 0)
                 $target = $entry.Open()
                 try {
                     $sourceStream = [System.IO.File]::OpenRead($file.FullName)
@@ -151,6 +171,28 @@ $payloadSize = (Get-Item $payloadZip).Length
 Write-Info ("payload zip: {0} files, {1:N0} bytes, packed in {2:N1}s" -f $fileTotal, $payloadSize, ((Get-Date) - $packStarted).TotalSeconds)
 if ($fileTotal -eq 0) { Write-Err "payload zip is empty - nothing to pack"; exit 1 }
 if ($payloadSize -ge 10000000000) { Write-Err "payload is too large for the 14-digit trailer"; exit 1 }
+
+# 1b. Read the payload archive back with the same API the launcher uses. The
+#     first run of the artifact in CI failed inside ZipArchive while opening the
+#     payload that was appended to the exe, so the archive itself is now verified
+#     here, in the build, before the exe is assembled: a payload that cannot be
+#     opened must stop the build, not the owner's double-click.
+try {
+    $checkStream = [System.IO.File]::OpenRead($payloadZip)
+    try {
+        $checkArchive = New-Object System.IO.Compression.ZipArchive($checkStream, [System.IO.Compression.ZipArchiveMode]::Read)
+        try { $checkEntries = $checkArchive.Entries.Count } finally { $checkArchive.Dispose() }
+    } finally { $checkStream.Dispose() }
+}
+catch {
+    Write-Err ("payload zip cannot be read back: " + $_.Exception.Message)
+    exit 1
+}
+if ($checkEntries -ne $fileTotal) {
+    Write-Err ("payload zip entry count mismatch: {0} in the archive, {1} packed" -f $checkEntries, $fileTotal)
+    exit 1
+}
+Write-Info ("payload zip verified: {0} entries readable" -f $checkEntries)
 
 # 2. Compile the launcher. Roslyn csc (from Visual Studio / Build Tools) is
 #    preferred: it emits a deterministic PE header. The .NET Framework csc that

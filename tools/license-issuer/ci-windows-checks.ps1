@@ -38,13 +38,29 @@ function Invoke-PortableExe {
     foreach ($argument in $Arguments) {
         if ($argument -match '[\s"]') { $quoted += ('"' + ($argument -replace '"', '\"') + '"') } else { $quoted += $argument }
     }
-    $process = Start-Process -FilePath $Exe -ArgumentList ($quoted -join " ") -PassThru -NoNewWindow -ErrorAction Stop
+    # The process is started through .NET rather than Start-Process: Windows
+    # PowerShell 5.1 does not always expose the exit code of a GUI-subsystem
+    # process (in CI the -PassThru object returned an empty ExitCode), and the
+    # verdict must never depend on that. An exit code that still cannot be read is
+    # reported as a hard failure instead of being treated as success.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = ($quoted -join " ")
+    $psi.UseShellExecute = $false
+    $psi.WorkingDirectory = (Split-Path $Exe -Parent)
+    $process = [System.Diagnostics.Process]::Start($psi)
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         Show-PortableDiagnostics ("timeout after {0}s (stage '{1}'): {2}" -f $TimeoutSeconds, $Stage, ($quoted -join " "))
         try { $process.Kill() } catch { }
         throw ("TIMEOUT: {0} did not finish in {1} seconds" -f $Exe, $TimeoutSeconds)
     }
-    return [pscustomobject]@{ ExitCode = $process.ExitCode }
+    $exitCode = $null
+    try { $process.Refresh(); $exitCode = $process.ExitCode } catch { $exitCode = $null }
+    if ($null -eq $exitCode) {
+        Show-PortableDiagnostics ("exit code of {0} is not readable (stage '{1}')" -f $Exe, $Stage)
+        throw ("cannot read the exit code of {0}" -f $Exe)
+    }
+    return [pscustomobject]@{ ExitCode = $exitCode }
 }
 
 # A hung or failing portable exe must not stay a black box: the launcher keeps

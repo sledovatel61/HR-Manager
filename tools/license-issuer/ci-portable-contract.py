@@ -176,8 +176,14 @@ if builder_text:
         "builder compiles the launcher with an explicit csc.exe invocation",
     )
     check(
-        "function Invoke-PortableExe" in builder_text and "Start-Process" in builder_text,
-        "builder waits for the GUI-subsystem launcher through Start-Process (exit code + timeout)",
+        "function Invoke-PortableExe" in builder_text
+        and "[System.Diagnostics.Process]::Start" in builder_text
+        and "WaitForExit" in builder_text,
+        "builder waits for the GUI-subsystem launcher with an explicit timeout and reads its exit code",
+    )
+    check(
+        "cannot read the exit code" in builder_text,
+        "an unreadable exit code fails the build instead of counting as success",
     )
     check(
         "HRM_PORTABLE_LOG" in builder_text,

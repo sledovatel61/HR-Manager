@@ -50,6 +50,7 @@ Name: "dockerinstall"; Description: "{cm:DockerTaskInstall}"; GroupDescription: 
 [CustomMessages]
 russian.RolePageCaption=Роль владельца
 russian.RolePageDescription=Выберите режим работы единственной учётной записи пилота. Роль можно будет изменить позже в настройках приложения.
+russian.RolePageSubCaption=Данные остаются на этом компьютере. Доступ по сети выключен, пока вы не включите его отдельно.
 russian.RoleHR=HR — работа с кандидатами и документами
 russian.RoleManager=Руководитель — согласования и обзор
 russian.RoleAdmin=Администратор — полное администрирование
@@ -133,11 +134,14 @@ var
   TimezonePage: TInputQueryWizardPage;
 
 procedure InitializeWizard();
+var
+  WelcomeNote: String;
 begin
   RolePage := CreateInputOptionPage(
     wpWelcome,
     CustomMessage('RolePageCaption'),
     CustomMessage('RolePageDescription'),
+    CustomMessage('RolePageSubCaption'),
     True, False);
   RolePage.Add(CustomMessage('RoleHR'));
   RolePage.Add(CustomMessage('RoleManager'));
@@ -159,6 +163,15 @@ begin
     'Часовой пояс (IANA):');
   TimezonePage.Add('Часовой пояс (IANA):', False);
   TimezonePage.Values[0] := 'Europe/Moscow';
+
+  // Первый экран сразу объясняет, что потребуется от человека: Docker Desktop,
+  // официальный установщик с docker.com, запрос UAC и лицензия Docker, которую
+  // принимает сам пользователь. %n из [CustomMessages] превращаем в переводы
+  // строк сами: CustomMessage() не обязан раскрывать эти последовательности.
+  WelcomeNote := CustomMessage('DockerNote');
+  StringChange(WelcomeNote, '%n', #13#10);
+  WizardForm.WelcomeLabel2.Caption :=
+    WizardForm.WelcomeLabel2.Caption + #13#10 + #13#10 + WelcomeNote;
 end;
 
 function GetWorkingMode(): string;
