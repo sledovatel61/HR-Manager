@@ -399,6 +399,7 @@ Test-Case "обновление с падающей миграцией отка�
     Assert-HrmTrue ([bool]$result.rolled_back) "флаг rolled_back должен быть выставлен"
     Assert-HrmContains ([string]$result.message) "прежняя версия" "сообщение не объясняет откат простыми словами"
     Assert-HrmNotContains ([string]$result.message) "Выполните" "сообщение об откате не должно требовать ручных действий от Марии"
+    Assert-HrmEqual "1.0.0" ([string]$result.from_version) "не зафиксирована прежняя версия при откате"
     Remove-Item $sourceN1 -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $sourceN2 -Recurse -Force -ErrorAction SilentlyContinue
     Clear-HrmExternalMock

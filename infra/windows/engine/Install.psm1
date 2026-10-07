@@ -210,8 +210,18 @@ function Install-HrmApp {
     }
 
     $releaseSha = Get-HrmReleaseSha $InstallDir $StateDir
+    # Версия снимка — для предпросмотра обновления и отчёта «текущая → новая».
+    $installedVersion = ""
+    $releaseFile = Join-Path $InstallDir "release.json"
+    if (Test-Path $releaseFile) {
+        $releaseData = Get-HrmJsonFile $releaseFile
+        if ($null -ne $releaseData -and $releaseData.PSObject.Properties["version"] -and $releaseData.version) {
+            $installedVersion = [string]$releaseData.version
+        }
+    }
     Set-HrmInstallRecord $StateDir @{
         release_sha = $releaseSha
+        version = $installedVersion
         install_dir = $InstallDir
         state_dir = $StateDir
         port = $port
