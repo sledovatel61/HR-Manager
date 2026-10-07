@@ -205,15 +205,16 @@ export function LibraryPage() {
     <section className="templates-page library-page" aria-label="Библиотека материалов">
       <header className="library-header">
         <div>
-          <h1 className="library-title">
+          <h2 className="library-title">
             <Icon name="book" size={22} />
             Библиотека HR
-          </h1>
+          </h2>
           <p className="library-subtitle">
             Готовые материалы для подбора, собеседования, оформления и адаптации:
             вопросники, чек-листы, скрипты и памятки. Откройте, прочитайте,
             распечатайте или скачайте копию.
           </p>
+          {library && <p className="page-sub">Материалов в каталоге: {items.length}</p>}
         </div>
         {library?.can_manage && (
           <Button
@@ -262,7 +263,8 @@ export function LibraryPage() {
                 aria-pressed={category === ""}
                 onClick={() => setCategory("")}
               >
-                Все <span className="library-chip-count">{items.length}</span>
+                <Icon name="book" size={18} />
+                <span>Все</span>{" "}<span className="library-chip-count">{items.length}</span>
               </button>
               {categories.map((option) => (
                 <button
@@ -272,7 +274,8 @@ export function LibraryPage() {
                   aria-pressed={category === option.value}
                   onClick={() => setCategory(option.value)}
                 >
-                  {option.label}{" "}
+                  <Icon name="book" size={18} />
+                  <span>{option.label}</span>{" "}
                   <span className="library-chip-count">{counts.get(option.value) ?? 0}</span>
                 </button>
               ))}
@@ -335,7 +338,11 @@ export function LibraryPage() {
 
           <div className="library-grid">
             {visible.map((material) => (
-              <article key={material.id} className="library-card">
+              <article key={material.id} className="library-card" aria-label={material.name}>
+                <div className="library-card-top">
+                  <Icon name="book" size={20} />
+                  <Badge tone="neutral">{libraryCategoryLabel(material.category)}</Badge>
+                </div>
                 <div className="library-card-body">
                   <h2 className="library-card-title">
                     <button
@@ -350,7 +357,6 @@ export function LibraryPage() {
                     {material.summary || "Материал для работы HR."}
                   </p>
                   <p className="library-card-meta">
-                    <Badge tone="neutral">{libraryCategoryLabel(material.category)}</Badge>
                     <span>{kindLabelOf(material.kind)}</span>
                     <span aria-hidden="true">·</span>
                     <span>Текст / HTML</span>
@@ -358,6 +364,15 @@ export function LibraryPage() {
                     <span>{scopeLabel(material.scope)}</span>
                   </p>
                 </div>
+                <p className="library-card-meta library-card-version">
+                  <span>Версия {material.version_number}</span>
+                  <span aria-hidden="true">·</span>
+                  {material.published_at ? (
+                    <time dateTime={material.published_at}>
+                      Опубликовано {formatDate(material.published_at)}
+                    </time>
+                  ) : <span>Дата публикации не указана</span>}
+                </p>
                 <div className="library-card-actions">
                   <Button
                     size="sm"

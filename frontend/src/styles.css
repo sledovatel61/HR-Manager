@@ -24,15 +24,15 @@ body {
 
 .header p {
   margin: 0 0 24px;
-  color: #5a6478;
+  color: var(--text-secondary);
 }
 
 .panel {
-  background: #ffffff;
-  border: 1px solid #e2e6ee;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
   padding: 24px;
-  box-shadow: 0 1px 3px rgba(20, 30, 60, 0.06);
+  box-shadow: var(--shadow-1);
 }
 
 .status-card {
@@ -45,18 +45,18 @@ body {
 }
 
 .status-card.good {
-  background: #ecf7ef;
-  border-color: #bde5c9;
+  background: var(--status-success-bg);
+  border-color: var(--status-success-border);
 }
 
 .status-card.bad {
-  background: #fdeeee;
-  border-color: #f2c3c3;
+  background: var(--status-danger-bg);
+  border-color: var(--status-danger-border);
 }
 
 .status-card.neutral {
-  background: #f0f3f9;
-  border-color: #d9dfeb;
+  background: var(--surface-hover);
+  border-color: var(--border-default);
 }
 
 .status-dot {
@@ -67,15 +67,15 @@ body {
 }
 
 .good .status-dot {
-  background: #22a05d;
+  background: var(--status-success-fg);
 }
 
 .bad .status-dot {
-  background: #d64545;
+  background: var(--status-danger-fg);
 }
 
 .neutral .status-dot {
-  background: #8a94a8;
+  background: var(--text-tertiary);
 }
 
 .status-title {
@@ -85,7 +85,7 @@ body {
 
 .status-detail {
   margin: 2px 0 0;
-  color: #5a6478;
+  color: var(--text-secondary);
   font-size: 0.92rem;
 }
 
@@ -96,7 +96,7 @@ body {
 .details h3 {
   margin: 0 0 12px;
   font-size: 1rem;
-  color: #39414f;
+  color: var(--text-secondary);
 }
 
 .detail-list {
@@ -110,13 +110,13 @@ body {
   justify-content: space-between;
   gap: 16px;
   padding: 8px 12px;
-  background: #f8fafc;
+  background: var(--surface-sunken);
   border-radius: 8px;
   font-size: 0.95rem;
 }
 
 .detail-row dt {
-  color: #5a6478;
+  color: var(--text-secondary);
 }
 
 .detail-row dd {
@@ -125,11 +125,11 @@ body {
 }
 
 .good {
-  color: #1c7a46;
+  color: var(--status-success-fg);
 }
 
 .bad {
-  color: #b33232;
+  color: var(--status-danger-fg);
 }
 
 .badge {
@@ -137,8 +137,8 @@ body {
   margin-left: 8px;
   padding: 1px 8px;
   border-radius: 999px;
-  background: #f6e3b4;
-  color: #7a5b10;
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
   font-size: 0.78rem;
   font-weight: 700;
   vertical-align: 1px;
@@ -155,17 +155,17 @@ body {
 
 .refresh-button {
   padding: 8px 18px;
-  border: 1px solid #c9d2e0;
+  border: 1px solid var(--border-default);
   border-radius: 8px;
-  background: #ffffff;
-  color: #1f2430;
+  background: var(--surface-raised);
+  color: var(--text-primary);
   font-size: 0.95rem;
   font-weight: 600;
   cursor: pointer;
 }
 
 .refresh-button:hover:not(:disabled) {
-  background: #f0f3f9;
+  background: var(--surface-hover);
 }
 
 .refresh-button:disabled {
@@ -174,7 +174,7 @@ body {
 }
 
 .last-updated {
-  color: #8a94a8;
+  color: var(--text-tertiary);
   font-size: 0.85rem;
 }
 
@@ -191,7 +191,7 @@ body {
 
 .panel-subtitle {
   margin: 0 0 18px;
-  color: #5a6478;
+  color: var(--text-secondary);
   font-size: 0.92rem;
 }
 
@@ -205,32 +205,32 @@ body {
   gap: 6px;
   font-size: 0.9rem;
   font-weight: 600;
-  color: #39414f;
+  color: var(--text-secondary);
 }
 
 .form-field input {
   padding: 10px 12px;
-  border: 1px solid #c9d2e0;
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   font-size: 0.98rem;
   font-weight: 400;
-  color: #1f2430;
-  background: #ffffff;
+  color: var(--text-primary);
+  background: var(--surface-raised);
 }
 
 .form-field input:focus {
-  outline: 2px solid #3a6ea5;
+  outline: 2px solid var(--border-focus);
   outline-offset: 1px;
-  border-color: #3a6ea5;
+  border-color: var(--border-focus);
 }
 
 .form-error {
   margin: 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: #fdeeee;
-  border: 1px solid #f2c3c3;
-  color: #b33232;
+  background: var(--status-danger-bg);
+  border: 1px solid var(--status-danger-border);
+  color: var(--status-danger-fg);
   font-size: 0.9rem;
 }
 
@@ -238,15 +238,15 @@ body {
   padding: 11px 20px;
   border: none;
   border-radius: 8px;
-  background: #2f6db3;
-  color: #ffffff;
+  background: var(--accent-default);
+  color: var(--text-on-accent);
   font-size: 0.98rem;
   font-weight: 700;
   cursor: pointer;
 }
 
 .primary-button:hover:not(:disabled) {
-  background: #275d99;
+  background: var(--accent-hover);
 }
 
 .primary-button:disabled {
@@ -256,17 +256,17 @@ body {
 
 .secondary-button {
   padding: 9px 18px;
-  border: 1px solid #c9d2e0;
+  border: 1px solid var(--border-default);
   border-radius: 8px;
-  background: #ffffff;
-  color: #1f2430;
+  background: var(--surface-raised);
+  color: var(--text-primary);
   font-size: 0.92rem;
   font-weight: 600;
   cursor: pointer;
 }
 
 .secondary-button:hover:not(:disabled) {
-  background: #f0f3f9;
+  background: var(--surface-hover);
 }
 
 .secondary-button:disabled {
@@ -289,7 +289,7 @@ body {
 .section-title {
   margin: 0 0 12px;
   font-size: 1rem;
-  color: #39414f;
+  color: var(--text-secondary);
 }
 
 .data-table {
@@ -320,7 +320,7 @@ body {
 }
 
 /* Конфликт из design-review §2.2: мокап задаёт .muted как --text-tertiary,
-   прод — серый #8a94a8. В палитре «Лазурь» серый не в тон, берём токен. */
+   прод — серый var(--text-tertiary). В палитре «Лазурь» серый не в тон, берём токен. */
 .muted {
   color: var(--text-tertiary);
 }
@@ -343,5 +343,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  background: var(--surface-canvas);
+}
+
+/* Native popup menus and date/checkbox controls follow the explicit theme. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+select option, select optgroup {
+  color: var(--text-primary);
   background: var(--surface-canvas);
 }

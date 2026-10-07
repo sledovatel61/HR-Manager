@@ -12,6 +12,7 @@ vi.mock("../../api", async (importOriginal) => {
     listCandidates: vi.fn(),
     listPositionOptions: vi.fn(),
     listHrUsers: vi.fn(),
+    getCandidate: vi.fn(),
     deleteCandidate: vi.fn(),
     restoreCandidate: vi.fn(),
   };
@@ -107,6 +108,26 @@ beforeEach(() => {
 });
 
 describe("CandidatesListPage", () => {
+  it("counts the rows actually returned, not the requested page size", async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue({ items: [candidate()], total: 7, limit: 20, offset: 0 });
+    renderPage();
+    expect(await screen.findByText("Показано 1–1 из 7")).toBeInTheDocument();
+  });
+
+  it("keeps an empty later page readable and allows returning after the list shrinks", async () => {
+    vi.mocked(api.listCandidates).mockImplementation(async (query) => ({
+      items: query?.offset ? [] : [candidate()], total: query?.offset ? 0 : 21,
+      limit: 20, offset: query?.offset ?? 0,
+    }));
+    renderPage();
+    await screen.findByText("Показано 1–1 из 21");
+    await userEvent.click(screen.getByRole("button", { name: "Вперёд" }));
+    expect(await screen.findByText("Показано 0–0 из 0")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Назад" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Назад" }));
+    expect(await screen.findByText("Показано 1–1 из 21")).toBeInTheDocument();
+  });
+
   it("shows a skeleton while loading and then renders rows", async () => {
     vi.mocked(api.listCandidates).mockResolvedValue({
       items: [candidate()],
@@ -127,6 +148,7 @@ describe("CandidatesListPage", () => {
     vi.mocked(api.listCandidates).mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
     renderPage();
     expect(await screen.findByText("Кандидаты не найдены")).toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "Пагинация списка кандидатов" })).getByRole("status")).toHaveTextContent("Показано 0–0 из 0");
   });
 
   it("shows an explicit unassigned label in the manager candidate list", async () => {
@@ -251,10 +273,12 @@ describe("CandidatesListPage", () => {
     renderPage();
 
     expect(await screen.findByText("Кандидат 0")).toBeInTheDocument();
-    expect(screen.getByText("1–20 из 25")).toBeInTheDocument();
+    expect(screen.getByText("Показано 1–20 из 25")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Вперёд" }));
     expect(await screen.findByText("Кандидат 20")).toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "Пагинация списка кандидатов" })).getByRole("status")).toHaveTextContent("Показано 21–25 из 25");
+    expect(screen.getByRole("button", { name: "Вперёд" })).toBeDisabled();
 
     expect(vi.mocked(api.listCandidates).mock.calls.at(-1)?.[0]).toMatchObject({ offset: 20 });
   });
@@ -388,4 +412,55 @@ describe("CandidatesListPage", () => {
       expect(api.deleteCandidate).toHaveBeenCalledWith("44444444-4444-4444-4444-444444444444")
     );
   });
+
+  it("opens the candidate drawer when the row name is clicked", async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue({
+      items: [candidate()],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+    vi.mocked(api.getCandidate).mockResolvedValue(candidate());
+    renderPage();
+
+    const rowName = await screen.findByRole("button", {
+      name: (accessibleName) => accessibleName.startsWith("Петров Пётр Петрович"),
+    });
+    await userEvent.click(rowName);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "Петров Пётр Петрович" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not open the drawer when a row action (delete) is clicked", async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue({
+      items: [candidate()],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+    renderPage();
+
+    await screen.findByText("Петров Пётр Петрович");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Удалить кандидата Петров Пётр Петрович" }),
+    );
+
+    // Подтверждение удаления появляется, а drawer кандидата — нет.
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});
+
+
+it("shows the API attachment count without fetching files for each candidate", async () => {
+  vi.mocked(api.listCandidates).mockResolvedValue({
+    items: [candidate({ attachment_count: 2 }), candidate({ id: "without-files", full_name: "Без файлов", attachment_count: 0 })],
+    total: 2, limit: 20, offset: 0,
+  });
+  renderPage();
+  expect(await screen.findByLabelText("Вложений: 2")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Вложений: 0")).not.toBeInTheDocument();
 });

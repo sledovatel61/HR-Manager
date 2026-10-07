@@ -5,14 +5,16 @@ import {
   listHrUsers,
   updateCandidate,
 } from "../../api";
+import { Icon } from "../../design-system/icons/Icon";
 import { Button } from "../../design-system/components/Button";
 import { Field, SelectInput } from "../../design-system/components/Field";
 import { EmptyState, ErrorState } from "../../design-system/components/StateViews";
-import { StageChip } from "../../design-system/components/StatusChip";
+import { Badge, StageChip } from "../../design-system/components/StatusChip";
 import { useToast } from "../../design-system/components/ToastContext";
 import {
   CANDIDATE_STAGE_ORDER,
   STAGE_LABELS,
+  SOURCE_LABELS,
   type Candidate,
   type CandidateStage,
   type User,
@@ -22,6 +24,7 @@ import { CandidateDrawer } from "./CandidateDrawer";
 import { StartDateModal } from "../schedule/StartDateModal";
 import { CandidateFormModal } from "./CandidateFormModal";
 import { EDGE_SPEED_PX, edgeScrollDirection } from "./boardScroll";
+import { formatDate } from "./format";
 import { usePositionOptions } from "./usePositionOptions";
 import "./kanban.css";
 
@@ -61,6 +64,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   const [columns, setColumns] = useState<Columns>(emptyColumns);
   const [directory, setDirectory] = useState<UserListItem[]>([]);
   const [busy, setBusy] = useState(false);
+  const [dropStage, setDropStage] = useState<CandidateStage | null>(null);
   const [drawerCandidateId, setDrawerCandidateId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
@@ -271,6 +275,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   const anyLoading = CANDIDATE_STAGE_ORDER.some((stage) => columns[stage].loading);
   const anyError = CANDIDATE_STAGE_ORDER.find((stage) => columns[stage].error);
   const anyItems = CANDIDATE_STAGE_ORDER.some((stage) => columns[stage].items.length > 0);
+  const totalCount = CANDIDATE_STAGE_ORDER.reduce((sum, stage) => sum + columns[stage].total, 0);
 
   const openCandidate = (id: string) => setDrawerCandidateId(id);
 
@@ -281,6 +286,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
   const handleDrop = (event: React.DragEvent, to: CandidateStage) => {
     event.preventDefault();
     stopAutoScroll();
+    setDropStage(null);
     const dragging = draggingRef.current;
     draggingRef.current = null;
     if (!dragging) return;
@@ -291,6 +297,17 @@ export default function KanbanPage({ user }: KanbanPageProps) {
 
   return (
     <div className="kanban-page">
+      <header className="page-head">
+        <div>
+          <div className="eyebrow">Подбор</div>
+          <p className="page-sub">
+            {anyLoading ? "Загрузка доски…" : anyError ? "Не все колонки загружены" : totalCount > 0
+              ? `Всего на доске: ${totalCount} · перетащите карточку, чтобы сменить этап`
+              : "Доска пуста"}
+          </p>
+        </div>
+      </header>
+
       <div className="kanban-toolbar">
         <Field label="Должность" error={positionOptions.error ?? undefined}>
           {(id) => (
@@ -334,7 +351,7 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         )}
         <span className="kanban-hint">
           Перетащите карточку между колонками (у краёв доски список прокручивается
-          сам) или выберите этап прямо на карточке — так можно перевести кандидата
+          сам) или откройте «Перенести» на карточке — так можно перевести кандидата
           в любой этап за одно действие.
         </span>
         {positionOptions.error && (
@@ -346,6 +363,40 @@ export default function KanbanPage({ user }: KanbanPageProps) {
           Добавить кандидата
         </Button>
       </div>
+
+      {(position || (canSeeAll && ownerId)) && (
+        <div className="kanban-active-filters" role="group" aria-label="Активные фильтры доски">
+          {position && (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="close"
+              aria-label={`Снять фильтр должности: ${position}`}
+              onClick={() => {
+                setPosition("");
+                setColumns(emptyColumns());
+              }}
+            >
+              {position}
+            </Button>
+          )}
+          {canSeeAll && ownerId && (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="close"
+              aria-label="Снять фильтр ответственного"
+              onClick={() => {
+                setOwnerId("");
+                setColumns(emptyColumns());
+              }}
+            >
+              {directory.find((item) => item.id === ownerId)?.full_name ||
+                directory.find((item) => item.id === ownerId)?.username || "Выбранный HR"}
+            </Button>
+          )}
+        </div>
+      )}
 
       {anyError && !anyItems && <ErrorState onRetry={reloadBoard} />}
       {!anyError && !anyLoading && !anyItems && (
@@ -360,8 +411,16 @@ export default function KanbanPage({ user }: KanbanPageProps) {
         />
       )}
 
+      <div className="kanban-scroll-tools" role="group" aria-label="Прокрутка воронки">
+        <Button variant="secondary" size="sm" aria-label="Прокрутить воронку влево"
+          onClick={() => boardRef.current?.scrollBy({ left: -520, behavior: "auto" })}>← Влево</Button>
+        <Button variant="secondary" size="sm" aria-label="Прокрутить воронку вправо"
+          onClick={() => boardRef.current?.scrollBy({ left: 520, behavior: "auto" })}>Вправо →</Button>
+      </div>
       <div
+        tabIndex={0}
         className="kanban-board"
+        aria-busy={busy}
         role="list"
         aria-label="Воронка кандидатов по этапам"
         ref={boardRef}
@@ -382,10 +441,18 @@ export default function KanbanPage({ user }: KanbanPageProps) {
           return (
             <section
               key={stage}
-              className="kanban-column"
+              className={`kanban-column${dropStage === stage ? " is-drop-target" : ""}`}
               role="listitem"
               aria-label={`Колонка: ${STAGE_LABELS[stage]}`}
-              onDragOver={(event) => event.preventDefault()}
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (!busy && draggingRef.current) setDropStage(stage);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setDropStage(null);
+                }
+              }}
               onDrop={(event) => handleDrop(event, stage)}
             >
               <header className="kanban-column-head">
@@ -418,6 +485,8 @@ export default function KanbanPage({ user }: KanbanPageProps) {
                       }}
                       onDragEnd={() => {
                         draggingRef.current = null;
+                        setDropStage(null);
+                        stopAutoScroll();
                       }}
                     >
                       <button
@@ -425,38 +494,55 @@ export default function KanbanPage({ user }: KanbanPageProps) {
                         className="kanban-card-name"
                         onClick={() => openCandidate(candidate.id)}
                       >
-                        {candidate.full_name}
+                        <span className="kanban-avatar" aria-hidden="true">
+                          {candidate.full_name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}
+                        </span>
+                        <span>{candidate.full_name}</span>
                       </button>
                       {candidate.position && (
                         <span className="kanban-card-position">{candidate.position}</span>
                       )}
+                      <div className="kanban-card-meta">
+                        <Badge>{SOURCE_LABELS[candidate.source]}</Badge>
+                        {(candidate.attachment_count ?? 0) > 0 && (
+                          <span className="kanban-attachments" aria-label={`Вложений: ${candidate.attachment_count}`}>
+                            <Icon name="file-text" size={13} /> {candidate.attachment_count}
+                          </span>
+                        )}
+                        <time dateTime={candidate.updated_at} title="Обновлён">
+                          {formatDate(candidate.updated_at)}
+                        </time>
+                      </div>
                       <div className="kanban-card-foot">
                         {canSeeAll && (
                           <span className="kanban-card-owner">{candidate.owner_username ?? "Не назначен"}</span>
                         )}
-                        <label className="kanban-move-label" htmlFor={`move-${candidate.id}`}>
-                          Перенести в этап
-                        </label>
-                        <SelectInput
-                          id={`move-${candidate.id}`}
-                          aria-label={`Изменить этап: ${candidate.full_name}`}
-                          className="kanban-move-select"
-                          value={candidate.stage}
-                          disabled={busy}
-                          onChange={(event) =>
-                            handleStageSelect(
-                              candidate,
-                              stage,
-                              event.target.value as CandidateStage
-                            )
-                          }
-                        >
-                          {CANDIDATE_STAGE_ORDER.map((item) => (
-                            <option key={item} value={item}>
-                              {STAGE_LABELS[item]}
-                            </option>
-                          ))}
-                        </SelectInput>
+                        <details className="kanban-move">
+                          <summary>Перенести</summary>
+                          <label className="kanban-move-label" htmlFor={`move-${candidate.id}`}>
+                            Перенести в этап
+                          </label>
+                          <SelectInput
+                            id={`move-${candidate.id}`}
+                            aria-label={`Изменить этап: ${candidate.full_name}`}
+                            className="kanban-move-select"
+                            value={candidate.stage}
+                            disabled={busy}
+                            onChange={(event) =>
+                              handleStageSelect(
+                                candidate,
+                                stage,
+                                event.target.value as CandidateStage
+                              )
+                            }
+                          >
+                            {CANDIDATE_STAGE_ORDER.map((item) => (
+                              <option key={item} value={item}>
+                                {STAGE_LABELS[item]}
+                              </option>
+                            ))}
+                          </SelectInput>
+                        </details>
                       </div>
                     </article>
                   ))}

@@ -966,3 +966,72 @@ def test_position_filter_is_normalized(client: TestClient, db_session: Session) 
     assert (
         _dash(client, "?period=week&position=%20монтажник%20рэа%20")["kpis"]["new_candidates"] == 1
     )
+
+
+def test_admin_queue_aggregates_exclude_other_hr_unless_explicitly_selected(
+    client: TestClient, db_session: Session
+) -> None:
+    """Opening the admin section must never default to the shared base.
+
+    Summary is always personal (it has no owner_id parameter); only dashboard
+    supports an explicit colleague selection. Assert samples as well as counts.
+    """
+    admin = make_user(db_session, username="admin1", role=UserRole.ADMIN)
+    hr = make_user(db_session, username="hr1", role=UserRole.HR)
+    own = _seed(
+        db_session,
+        owner=admin,
+        created_at=_now() - timedelta(days=5),
+        source=CandidateSource.SITE,
+    )
+    foreign = [
+        _seed(
+            db_session,
+            owner=hr,
+            created_at=_now() - timedelta(days=5),
+            source=CandidateSource.REFERRAL,
+        )
+        for _ in range(3)
+    ]
+    for candidate, owner in [(own, admin), *((row, hr) for row in foreign)]:
+        make_event(
+            db_session,
+            candidate=candidate,
+            author=owner,
+            assignee=owner,
+            starts_at=_now() + timedelta(days=1),
+        )
+    _login(client, "admin1")
+
+    response = client.get("/candidates/queue/summary")
+    assert response.status_code == 200
+    summary = response.json()
+    assert summary["owner_id"] == str(admin.id)
+    assert summary["total"] == summary["in_work"] == summary["stuck"] == 1
+    assert sum(row["count"] for row in summary["by_stage"]) == 1
+    assert [row["id"] for row in summary["stuck_sample"]] == [str(own.id)]
+    assert summary["upcoming_events_total"] == 1
+    assert {row["candidate_id"] for row in summary["upcoming_events"]} == {str(own.id)}
+
+    payload = _dash(client, "?period=all")
+    assert payload["scope"]["personal"] is True
+    assert payload["scope"]["owner_id"] == str(admin.id)
+    assert payload["kpis"]["total_candidates"] == payload["kpis"]["in_work"] == 1
+    assert payload["kpis"]["new_candidates"] == 1
+    assert sum(row["count"] for row in payload["funnel"]) == 1
+    assert [row["source"] for row in payload["sources"]] == ["site"]
+    assert [row["id"] for row in payload["attention_candidates"]] == [str(own.id)]
+    assert payload["upcoming_events_total"] == 1
+    assert {row["candidate_id"] for row in payload["upcoming_events"]} == {str(own.id)}
+
+    selected = _dash(client, f"?period=all&owner_id={hr.id}")
+    assert selected["scope"]["personal"] is False
+    assert selected["scope"]["owner_id"] == str(hr.id)
+    assert selected["kpis"]["total_candidates"] == selected["kpis"]["new_candidates"] == 3
+    assert [row["source"] for row in selected["sources"]] == ["referral"]
+    assert {row["id"] for row in selected["attention_candidates"]} == {
+        str(row.id) for row in foreign
+    }
+    # Switching the dashboard does not mutate the caller's default scope.
+    assert _dash(client)["kpis"]["total_candidates"] == 1
+    assert client.get("/candidates/queue/summary").json()["total"] == 1

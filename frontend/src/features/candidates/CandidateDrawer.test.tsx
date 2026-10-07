@@ -10,6 +10,7 @@ vi.mock("../../api", async (importOriginal) => {
   return {
     ...original,
     getCandidate: vi.fn(),
+    listCandidateAttachments: vi.fn(),
     updateCandidate: vi.fn(),
     listCandidateInteractions: vi.fn(),
     createCandidateInteraction: vi.fn(),
@@ -496,4 +497,17 @@ describe("CandidateDrawer events tab — related reminders", () => {
       await screen.findByText("Не удалось загрузить напоминания кандидата.")
     ).toBeInTheDocument();
   });
+});
+
+
+it.each(["admin", "hr", "manager"] as const)("%s can reach questionnaire files by a visible header action and tab", async (role) => {
+  vi.mocked(api.listCandidateAttachments).mockResolvedValue({
+    items: [], total: 0, total_bytes: 0, can_manage: true,
+    limits: { max_count: 30, max_file_bytes: 10000000, max_total_bytes: 100000000 },
+  });
+  renderDrawer({ user: { ...HR, role } });
+  await userEvent.click(await screen.findByRole("button", { name: "Загрузить анкету" }));
+  expect(screen.getByRole("tab", { name: "Документы и анкеты" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByLabelText("Файл анкеты или скана")).toBeEnabled();
+  expect(api.listCandidateAttachments).toHaveBeenCalledWith(CANDIDATE.id);
 });

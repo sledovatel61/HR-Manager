@@ -97,6 +97,25 @@ beforeEach(() => {
 });
 
 describe("Библиотека HR: главный экран", () => {
+  it("shows real catalog counts, publication date and version on cards", async () => {
+    renderLibrary();
+    expect(await screen.findByText("Материалов в каталоге: 3")).toBeInTheDocument();
+    const categories = screen.getByRole("group", { name: "Категории материалов" });
+    expect(within(categories).getByRole("button", { name: "Все 3" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(categories).getByRole("button", { name: "Собеседование 1" })).toBeInTheDocument();
+    const card = screen.getByRole("article", { name: catalog.items[0].name });
+    expect(within(card).getByText("Версия 1")).toBeInTheDocument();
+    expect(within(card).getByText("Опубликовано 25.09.2026")).toHaveAttribute("dateTime", catalog.items[0].published_at);
+    expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+  });
+
+  it("does not fabricate a date when publication metadata is missing", async () => {
+    vi.mocked(api.listLibraryMaterials).mockResolvedValue({ ...catalog, items: [material({ published_at: null })] });
+    renderLibrary();
+    expect(await screen.findByText("Дата публикации не указана")).toBeInTheDocument();
+    expect(screen.queryByText(/Опубликовано/)).not.toBeInTheDocument();
+  });
+
   it("открывается как библиотека с готовыми карточками, а не редактор", async () => {
     renderLibrary();
     expect(await screen.findByRole("heading", { name: /Библиотека HR/ })).toBeInTheDocument();

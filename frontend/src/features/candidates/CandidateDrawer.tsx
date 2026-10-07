@@ -184,6 +184,9 @@ export function CandidateDrawer({
       headerActions={
         candidate && !candidate.is_deleted ? (
           <>
+            <Button variant="secondary" size="sm" icon="plus" onClick={() => setTab("attachments")}>
+              Загрузить анкету
+            </Button>
             <IconButton
               icon="trash"
               label="Удалить кандидата"
@@ -237,7 +240,7 @@ export function CandidateDrawer({
           {tab === "messages" && <MessagesTab candidate={candidate} />}
           {tab === "documents" && <DocumentsTab candidateId={candidate.id} stage={candidate.stage} />}
 
-          {tab === "attachments" && <AttachmentsTab candidateId={candidate.id} />}
+          {tab === "attachments" && <AttachmentsTab key={candidate.id} candidateId={candidate.id} onChanged={onChanged} />}
 
           {tab === "generated" && (
             <GeneratedDocumentsTab candidateId={candidate.id} candidateStage={candidate.stage} />
@@ -380,28 +383,28 @@ function InfoTab({ candidate, stageBusy, onChangeStage, onSaved, onOpenCandidate
 
       {!editing ? (
         <div className="info-view">
-          <dl className="detail-list">
-            <div className="detail-row">
+          <dl className="candidate-detail-list">
+            <div className="candidate-detail-row">
               <dt>ФИО</dt>
               <dd>{candidate.full_name}</dd>
             </div>
-            <div className="detail-row">
+            <div className="candidate-detail-row">
               <dt>Телефон</dt>
               <dd>{candidate.phone || "—"}</dd>
             </div>
-            <div className="detail-row">
+            <div className="candidate-detail-row">
               <dt>Email</dt>
               <dd>{candidate.email || "—"}</dd>
             </div>
-            <div className="detail-row">
+            <div className="candidate-detail-row">
               <dt>Источник</dt>
               <dd>{SOURCE_LABELS[candidate.source]}</dd>
             </div>
-            <div className="detail-row">
+            <div className="candidate-detail-row">
               <dt>Должность</dt>
               <dd>{candidate.position || "—"}</dd>
             </div>
-            <div className="detail-row">
+            <div className="candidate-detail-row">
               <dt>Ответственный</dt>
               <dd>{candidate.owner_username ?? "Не назначен"}</dd>
             </div>
@@ -615,28 +618,28 @@ function StartScheduleBlock({ candidate, onSaved }: StartScheduleBlockProps) {
       )}
 
       {!editing ? (
-        <dl className="detail-list">
-          <div className="detail-row">
+        <dl className="candidate-detail-list">
+          <div className="candidate-detail-row">
             <dt>Дата выхода</dt>
             <dd>{candidate.start_date ? formatShortDate(candidate.start_date) : "—"}</dd>
           </div>
-          <div className="detail-row">
+          <div className="candidate-detail-row">
             <dt>Время</dt>
             <dd>{displayTime(candidate.start_time, null) || "—"}</dd>
           </div>
-          <div className="detail-row">
+          <div className="candidate-detail-row">
             <dt>Организация</dt>
             <dd>{candidate.start_organization || "—"}</dd>
           </div>
-          <div className="detail-row">
+          <div className="candidate-detail-row">
             <dt>Отдел</dt>
             <dd>{candidate.start_department || "—"}</dd>
           </div>
-          <div className="detail-row">
+          <div className="candidate-detail-row">
             <dt>Смена</dt>
             <dd>{candidate.shift || "—"}</dd>
           </div>
-          <div className="detail-row">
+          <div className="candidate-detail-row">
             <dt>Комментарий</dt>
             <dd>{candidate.start_comment || "—"}</dd>
           </div>

@@ -54,3 +54,9 @@
   overflow-y: auto;
   flex: 1;
 }
+
+.drawer-panel, .drawer-body { min-width: 0; }
+.drawer-body { min-height: 0; }
+.drawer-title { min-width: 0; overflow-wrap: anywhere; }
+.drawer-head { flex-wrap: wrap; }
+.drawer-head-actions { flex-wrap: wrap; }
