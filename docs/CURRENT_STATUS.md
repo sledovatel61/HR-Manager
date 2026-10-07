@@ -237,7 +237,7 @@ PostgreSQL integration и Compose должны подтверждаться CI �
   распознавание загрузки приватного ключа в backend, 15 новых UX-тестов активации.
 - **Тесты**: `docker.tests.ps1` (12), `stack.tests.ps1` (8), `supervisor.tests.ps1` (13),
   `pilot-final.tests.ps1` (18, включая предпросмотр, сохранность данных и откат), статические 0.15.0-контракты;
-  `lint-engine.py` — 29 файлов, 0 провалов; контракт portable-issuer — 74 проверки; backend — 1200 passed / 146 skipped.
+  `lint-engine.py` — 29 файлов, 0 провалов; контракт portable-issuer — 77 проверок (на момент первой итерации было 74); backend — 1200 passed / 146 skipped.
 - **Документы**: `docs/MARIA_GUIDE.md` (0.15.0), `docs/UPDATE_GUIDE.md`, `docs/RECOVERY_GUIDE.md`,
   `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`, `docs/DOCKER_RUNTIME_DECISION.md` (Docker Desktop остаётся runtime,
   с юридическим обоснованием), `docs/OWNER_QUICKSTART.md` (один `.exe` для владельца).
