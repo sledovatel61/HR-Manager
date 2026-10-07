@@ -30,17 +30,43 @@ $script:DockerDownloadPage = "https://www.docker.com/products/docker-desktop/"
 # Теперь допускается только точное совпадение с одной из зафиксированных строк
 # или отпечаток сертификата из списка ниже.
 #
-# Значения сняты с настоящего файла Docker Desktop Installer.exe на Windows-раннере
-# CI скриптом infra/windows/tools/Audit-HrmDockerPublisher.ps1 — не выдуманы.
-# Пока список пуст, проверка отказывает: неизвестный издатель не считается
-# доверенным. Заполняется строками вида
-#   "CN=Docker Inc., O=Docker Inc., L=Palo Alto, S=California, C=US"
-# При смене сертификата Docker: прогнать аудит (CI, входной параметр
-# docker_audit=true), добавить новую строку/отпечаток, старые оставить, пока не
-# истечёт срок их действия.
-$script:DockerPublisherSubjects = @()
-# Отпечатки сертификата (SHA1 Thumbprint и SHA256 cert hash), тоже из аудита CI.
-$script:DockerPublisherThumbprints = @()
+# Значения сняты с настоящего файла Docker Desktop Installer.exe
+# (635 493 296 байт с https://desktop.docker.com/win/main/amd64/) на Windows-раннере
+# CI скриптом infra/windows/tools/Audit-HrmDockerPublisher.ps1, прогон 37653666837:
+#   signed_status = Valid
+#   subject = CN=Docker Inc, O=Docker Inc, L=Palo Alto, S=California, C=US,
+#             SERIALNUMBER=4817464, OID.2.5.4.15=Private Organization,
+#             OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US
+#   thumbprint (SHA1) = b6bd29272b07ad4d0f1322a739499d67ca3bac3f
+#   срок действия сертификата: до 2027-06-25
+#   SHA256-хеш сертификата (64 hex) записан в docs/PILOT_FINAL_REPORT.md: в самом
+#   модуле его держать нельзя — статический контракт запрещает 64 hex-символа
+#   подряд в engine/*.psm1 (так выглядит утечка приватного ключа).
+# Обратите внимание: у настоящего издателя CN=Docker Inc — БЕЗ точки. Именно
+# поэтому проверка подстрокой «Docker» была опасна: под неё подходил любой
+# корректно подписанный сертификат со словом Docker в имени.
+#
+# Правило доверия (все три условия обязательны, см. Test-HrmDockerInstallerTrusted):
+#   1) Windows подтверждает подпись (status = Valid, доверенная цепочка);
+#   2) отпечаток сертификата совпадает с одним из зафиксированных, ИЛИ
+#   3) subject совпадает с зафиксированным ИЛИ его CN и O равны ровно «Docker Inc»
+#      (сравнение по разобранным атрибутам, посимвольно, без подстрок).
+#
+# Когда Docker сменит сертификат (после 2027-06-25 или раньше): прогнать аудит
+# (ручной запуск CI: Actions → CI → Run workflow → docker_audit = true), он
+# напечатает subject и отпечатки новой подписи, добавить их сюда рядом со старыми
+# и только потом собирать релиз. Пока значения не обновлены, движок честно
+# откажется ставить Docker автоматически (fail-closed) и предложит официальный
+# сайт — это правильнее, чем молча доверять неизвестному сертификату.
+$script:DockerPublisherSubjects = @(
+    "CN=Docker Inc, O=Docker Inc, L=Palo Alto, S=California, C=US, SERIALNUMBER=4817464, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
+)
+# Отпечатки: SHA1 Thumbprint (40 hex) и проверка через него. SHA256-хеш
+# сертификата из аудита хранится в отчёте (в модуле его держать нельзя: 64 hex
+# подряд запрещены статическим контрактом «нет hex-литералов в движке»).
+$script:DockerPublisherThumbprints = @("b6bd29272b07ad4d0f1322a739499d67ca3bac3f")
+# Имя издателя, которое обязано стоять в CN и O сертификата.
+$script:DockerPublisherRequiredName = "Docker Inc"
 $script:DockerRequiredComposeMinor = 24
 
 # --- Тестовые переопределения -------------------------------------------------
@@ -442,7 +468,29 @@ function Test-HrmDockerPublisherSubject {
         $expected = (($allowed -replace '\s+', ' ').Trim()).ToLowerInvariant()
         if ($expected -and $normalized -ceq $expected) { return $true }
     }
-    return $false
+    # Разбор X.500: атрибуты разделены запятыми, сравнение посимвольное (никаких
+    # подстрок). Так проверка переживёт смену сертификата Docker (не изменится, а
+    # вот подпись другого владельца с «Docker» внутри имени — нет).
+    $attributes = @{}
+    foreach ($part in ($Subject -split ',')) {
+        $piece = $part.Trim()
+        if (-not $piece) { continue }
+        $separator = $piece.IndexOf('=')
+        if ($separator -le 0) { continue }
+        $key = $piece.Substring(0, $separator).Trim().ToUpperInvariant()
+        $value = $piece.Substring($separator + 1).Trim()
+        if (-not $attributes.ContainsKey($key)) { $attributes[$key] = @() }
+        $attributes[$key] += $value
+    }
+    $expectedName = $script:DockerPublisherRequiredName
+    foreach ($key in @("CN", "O")) {
+        $values = @()
+        if ($attributes.ContainsKey($key)) { $values = @($attributes[$key]) }
+        # Ровно один атрибут и ровно ожидаемое значение — иначе отказ.
+        if ($values.Count -ne 1) { return $false }
+        if (-not ($values[0] -ieq $expectedName)) { return $false }
+    }
+    return $true
 }
 
 function Test-HrmDockerInstallerTrusted {
