@@ -448,8 +448,10 @@ Test-Case "P2: мастер установки готовит снимок из 
     Assert-HrmContains $iss "hrm-snapshot.ps1" "мастер не использует вспомогательный скрипт снимка"
     Assert-HrmContains $iss "ExtractTemporaryFile" "мастер не распаковывает вспомогательный скрипт из своего пакета"
     Assert-HrmNotContains $iss "-Action snapshot-previous" "мастер снова полагается на действие УСТАНОВЛЕННОГО движка"
+    # В [Files] кавычка стоит вокруг всего пути (Source: "staging\app\...\hrm-snapshot.ps1"),
+    # поэтому имя файла ищется без открывающей кавычки.
     foreach ($name in @("hrm-snapshot.ps1", "Common.psm1", "Install.psm1", "Secrets.psm1", "Snapshot.psm1", "release.json")) {
-        Assert-HrmContains $iss ('"' + $name + '"; Flags: dontcopy noencryption') ("нет записи dontcopy для " + $name)
+        Assert-HrmContains $iss ($name + '"; Flags: dontcopy noencryption') ("нет записи dontcopy для " + $name)
     }
     # Код возврата и файл результата проверяются, отказ виден человеку.
     Assert-HrmContains $iss "(ResultCode = 0)" "мастер не проверяет код возврата вспомогательного скрипта"
@@ -468,7 +470,7 @@ Test-Case "P2: мастер установки готовит снимок из 
     $appIndex = -1
     $lines = @(Get-Content -Path $issPath -Encoding UTF8)
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($helperIndex -lt 0 -and $lines[$i] -like '*"hrm-snapshot.ps1"; Flags: dontcopy*') { $helperIndex = $i }
+        if ($helperIndex -lt 0 -and $lines[$i] -like '*hrm-snapshot.ps1"; Flags: dontcopy*') { $helperIndex = $i }
         if ($appIndex -lt 0 -and $lines[$i] -match '^Source: "staging\\app\\\*"') { $appIndex = $i }
     }
     Assert-HrmTrue ($helperIndex -ge 0) "в [Files] нет записи dontcopy для вспомогательного скрипта"
