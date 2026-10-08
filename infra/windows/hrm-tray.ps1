@@ -46,23 +46,35 @@ if (-not $lock.acquired) {
 }
 
 try {
-    Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Запускаем HR Manager…"
-    $record = Get-HrmInstallRecord $StateDir
-    if ($null -eq $record) {
-        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message "HR Manager не установлен."
+    # Автозапуск: включён по умолчанию после установки, отключается пользователем
+    # из меню трея (StateDir\autostart.json — источник истины). Явное «выключено»
+    # больше НЕ переигрывается: значок только приводит ярлык в соответствие с
+    # выбором человека — в том числе если мастер установки положил ярлык заново
+    # при повторной установке или обновлении.
+    try { Sync-HrmAutostart -InstallDir $InstallDir -StateDir $StateDir | Out-Null }
+    catch { Write-HrmLog "warn" ("Автозапуск не настроен автоматически: " + (Redact-HrmText $_.Exception.Message)) }
+
+    # Что делать значку: идёт установка, установка упала/прервалась, нужно
+    # продолжить операцию или начинается обычная работа.
+    $plan = Get-HrmTrayCurrentPlan -StateDir $StateDir -InstallDir $InstallDir
+    Set-HrmSupervisorState -StateDir $StateDir -State $plan.state -Message $plan.message -Busy $plan.busy
+    if ($plan.mode -eq "not_installed") {
+        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $plan.message
         exit 1
     }
-    # Автозапуск: включён по умолчанию после установки, отключается пользователем
-    # из меню трея (StateDir\autostart.json — источник истины).
-    $autostart = Get-HrmAutostartState -StateDir $StateDir
-    if (-not $autostart.shortcut_exists -and -not $autostart.enabled) {
-        try { Enable-HrmAutostart -InstallDir $InstallDir -StateDir $StateDir | Out-Null } catch { }
+    if ($plan.start_engine) {
+        # Полный цикл подготовки и запуска (или продолжение прерванной операции) —
+        # отдельным скрытым процессом, чтобы значок в трее оставался отзывчивым.
+        $engineScript = Join-Path $PSScriptRoot "hr-manager.ps1"
+        $logFile = Get-HrmTimestampedLogFile -StateDir $StateDir -Action $plan.engine_action
+        Start-HrmEngineProcess -ScriptPath $engineScript -Action $plan.engine_action -InstallDir $InstallDir -StateDir $StateDir -LogFile $logFile | Out-Null
     }
-    # Полный цикл подготовки и запуска — отдельным скрытым процессом, чтобы
-    # значок в трее оставался отзывчивым.
-    $engineScript = Join-Path $PSScriptRoot "hr-manager.ps1"
-    $logFile = Get-HrmTimestampedLogFile -StateDir $StateDir -Action "supervise"
-    Start-HrmEngineProcess -ScriptPath $engineScript -Action "supervise" -InstallDir $InstallDir -StateDir $StateDir -LogFile $logFile | Out-Null
+    else {
+        $note = ("Значок работает в состоянии «{0}»: {1}" -f $plan.mode, $plan.message)
+        Write-HrmLog "info" $note
+    }
+    # Во время установки значок НЕ выходит: он показывает ход и остаётся
+    # доступным, если установка не удалась (дефект P2 ревью).
     Start-HrmTrayUi -InstallDir $InstallDir -StateDir $StateDir | Out-Null
 }
 catch {

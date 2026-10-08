@@ -264,6 +264,11 @@ function Invoke-HrmChannelOnce {
         $resultSha = $installedSha
         $errorCode = ""
         $errorDetail = ""
+        # Отметка времени результата ДО установки: по ней видно, писал ли движок
+        # update-result.json именно в этой попытке (старый файл не считается).
+        $resultFile = Join-Path $StateDir "update-result.json"
+        $resultStampBefore = ""
+        if (Test-Path $resultFile) { $resultStampBefore = (Get-Item $resultFile).LastWriteTimeUtc.ToString("o") }
         try {
             $outcome = Invoke-HrmChannelInstall -InstallDir $InstallDir -StateDir $StateDir -ManifestPath $manifestPath -PackagePath $packagePath -JobId $jobId
             $resultVersion = $outcome.version
@@ -271,12 +276,34 @@ function Invoke-HrmChannelOnce {
             Write-HrmLog "info" ("Канал: установка завершена ({0})." -f $outcome.version)
         }
         catch {
-            # Phase 12 update engine выполнил rollback сам; отчёт — честный.
+            # Движок сам решает, что произошло: failed, rolled_back (откат
+            # ПОДТВЕРЖДЁН готовностью прежней версии) или rollback_failed
+            # (восстановление не подтверждено). Отчёт серверу обязан это
+            # различать: «откат выполнен» при неподтверждённом восстановлении —
+            # то же ложное сообщение, которое убрано из движка.
             $resultState = "rolled_back"
             $errorCode = "update_failed"
             $stackDetail = if ($_.ScriptStackTrace) { [string]$_.ScriptStackTrace } else { "" }
             $errorDetail = Redact-HrmText (($_.Exception.Message) + " [stack: " + $stackDetail + "]")
-            Write-HrmLog "error" ("Канал: установка не удалась, откат выполнен: {0}" -f $errorDetail)
+            $engineResult = $null
+            try {
+                if (Test-Path $resultFile) {
+                    $resultStampAfter = (Get-Item $resultFile).LastWriteTimeUtc.ToString("o")
+                    if ($resultStampAfter -ne $resultStampBefore) { $engineResult = Get-HrmUpdateResult $StateDir }
+                }
+            }
+            catch { $engineResult = $null }
+            $engineStatus = ""
+            if ($null -ne $engineResult -and $engineResult.PSObject.Properties["status"]) { $engineStatus = [string]$engineResult.status }
+            if ($engineStatus -and $engineStatus -ne "rolled_back") {
+                # failed / rollback_failed / неожиданный статус после ошибки.
+                $resultState = "failed"
+                if ($engineResult.PSObject.Properties["message"] -and $engineResult.message) {
+                    $errorDetail = (Redact-HrmText ([string]$engineResult.message)) + " | " + $errorDetail
+                }
+            }
+            $outcomeNote = $resultState
+            Write-HrmLog "error" ("Канал: установка не удалась, итог для сервера: {0}: {1}" -f $outcomeNote, $errorDetail)
         }
         $report = @{
             job_id = $jobId

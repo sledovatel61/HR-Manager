@@ -216,19 +216,74 @@ function New-HrmShortcut {
 }
 
 function Get-HrmAutostartState {
+    # ВАЖНО (дефект P2 ревью): enabled=false и «пользователь ещё не выбирал» —
+    # это РАЗНЫЕ состояния. Раньше трей смотрел только на пару
+    # (shortcut_exists, enabled) и повторно включал автозапуск, который человек
+    # явно выключил. Признак выбора — свойство enabled: файл autostart.json
+    # существует и содержит «enabled».
     param([string]$StateDir = "")
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $stateFile = Join-Path $StateDir "autostart.json"
     $enabled = $false
+    $configured = $false
     if (Test-Path $stateFile) {
         try {
             $data = Get-HrmJsonFile $stateFile
-            if ($null -ne $data -and $data.PSObject.Properties["enabled"]) { $enabled = [bool]$data.enabled }
+            if ($null -ne $data -and $data.PSObject.Properties["enabled"]) {
+                $enabled = [bool]$data.enabled
+                $configured = $true
+            }
         }
-        catch { $enabled = $false }
+        catch {
+            # Повреждённый файл: считаем, что выбор не записан (безопаснее
+            # показать автозапуск включённым по умолчанию, чем угадывать).
+            $enabled = $false
+            $configured = $false
+        }
     }
     $shortcut = Get-HrmAutostartShortcutPath
-    return [pscustomobject]@{ enabled = $enabled; shortcut_exists = (Test-Path $shortcut); shortcut = $shortcut }
+    return [pscustomobject]@{
+        enabled = $enabled
+        configured = $configured
+        shortcut_exists = (Test-Path $shortcut)
+        shortcut = $shortcut
+    }
+}
+
+function Sync-HrmAutostart {
+    # Приводит ярлык автозапуска в соответствие с ВЫБОРОМ пользователя.
+    # Правила:
+    #   * выбора ещё не было  → автозапуск включён по умолчанию: ярлыка нет —
+    #     создаём; ярлык уже создан мастером установки — фиксируем выбор;
+    #   * выбран автозапуск   → восстанавливаем пропавший ярлык;
+    #   * автозапуск выключен → ярлык не создаётся и удаляется, если его
+    #     заново положил мастер установки при повторной установке/обновлении.
+    # Ничего не делает, если ярлык уже соответствует выбору.
+    param([string]$InstallDir = "", [string]$StateDir = "")
+    if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $state = Get-HrmAutostartState -StateDir $StateDir
+    if ($state.configured -and -not $state.enabled) {
+        if ($state.shortcut_exists) {
+            $null = Disable-HrmAutostart -StateDir $StateDir
+            $null = Write-HrmLog "info" "Автозапуск выключен пользователем — ярлык автозапуска не создаём."
+            return (Get-HrmAutostartState -StateDir $StateDir)
+        }
+        return $state
+    }
+    if ($state.shortcut_exists) {
+        if (-not $state.configured) {
+            # Мастер установки уже положил ярлык — просто фиксируем состояние
+            # (иначе меню трея показывало бы «выключен» при работающем автозапуске).
+            Set-HrmJsonFile $StateDir "autostart.json" ([ordered]@{
+                    enabled = $true
+                    updated_at = (Get-Date).ToString("o")
+                    source = "setup"
+                })
+        }
+        return (Get-HrmAutostartState -StateDir $StateDir)
+    }
+    return (Enable-HrmAutostart -InstallDir $InstallDir -StateDir $StateDir)
 }
 
 function Remove-HrmLegacyAutostartEntries {

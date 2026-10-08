@@ -40,7 +40,7 @@ param(
         "uninstall", "diagnostics", "resume", "channel", "channel-config",
         "support-bundle", "lan-access", "restart", "help",
         "prepare", "docker-status", "docker-install", "docker-start",
-        "supervise", "tray", "autostart", "update-preview")]
+        "supervise", "tray", "autostart", "update-preview", "snapshot-previous")]
     [string]$Action = "help",
 
     # Обновление: доверенный каталог релиза (trust boundary — см. README).
@@ -97,6 +97,9 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
 $script:EngineDir = Join-Path $PSScriptRoot "engine"
+# Владеет ли этот процесс отметкой установки (setup-run.json): снимаем её
+# только при успешном завершении установки/обновления.
+$script:SetupMarkerOwner = $false
 foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update",
         "Diagnostics", "Install", "Crypto", "Channel", "Lan", "SupportBundle",
         "Docker", "Supervisor", "Tray")) {
@@ -133,6 +136,7 @@ function Show-HrmUsage {
         "  tray           Показать значок HR Manager в системном трее",
         "  autostart      Автозапуск после входа в Windows: -Enable / -Disable",
         "  update-preview Показать текущую/новую версию и проверки перед обновлением",
+        "  snapshot-previous Сохранить снимок установленной версии перед обновлением (вызывает мастер установки)",
         "",
         "Параметры: -SourceDir, -InstallDir, -StateDir, -Port, -NonInteractive, -OpenBrowser",
         "           -ReleaseDir, -Watch, -SetUrl, -KeysJson, -Enable, -Disable",
@@ -145,6 +149,15 @@ try {
     switch ($Action) {
         "help" { Show-HrmUsage }
         "install" {
+            # Отметка «идёт установка/обновление»: значок в трее, запущенный
+            # мастером установки, показывает ход и не выходит с ошибкой
+            # «HR Manager не установлен» (дефект P2 ревью).
+            if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+            $isUpdate = ($null -ne (Get-HrmInstallRecord $StateDir))
+            $setupMessage = if ($isUpdate) { "Обновляем HR Manager…" } else { "Устанавливаем HR Manager…" }
+            $null = Set-HrmSetupMarker -StateDir $StateDir -Status "running" -Message $setupMessage
+            $script:SetupMarkerOwner = $true
+            Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
             Install-HrmApp -SourceDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir -Port $Port -AllowDockerInstall:($InstallDocker -or $Interactive)
         }
         "start" {
@@ -173,6 +186,20 @@ try {
         }
         "resume" {
             Resume-HrmOperation -InstallDir $InstallDir -StateDir $StateDir
+        }
+        "snapshot-previous" {
+            # Быстрое действие без Docker и без диалогов: сохранить снимок
+            # УСТАНОВЛЕННОЙ версии до того, как мастер установки заменит файлы.
+            # Вызывает Setup.exe (см. installer/installer.iss, CurStep=ssInstall).
+            $snapshotResult = Save-HrmInstalledSnapshotForSetup -InstallDir $InstallDir -StateDir $StateDir
+            if ($snapshotResult.saved) {
+                Write-HrmLog "info" "Снимок предыдущей версии сохранён для отката."
+            }
+            else {
+                # Это подготовка к обновлению, а не сама установка: молча
+                # сообщаем причину и продолжаем (решение принимает движок).
+                Write-HrmLog "warn" ("Снимок предыдущей версии не сохранён: " + $snapshotResult.message)
+            }
         }
         "channel" {
             if ($Watch) {
@@ -274,6 +301,13 @@ try {
             foreach ($line in (Format-HrmUpdatePreview $preview)) { Write-Output $line }
         }
     }
+    if ($script:SetupMarkerOwner) {
+        # Установка/обновление завершились успешно: отметка больше не нужна,
+        # значок в трее переходит в обычный режим.
+        $markerStateDir = $StateDir
+        if (-not $markerStateDir) { $markerStateDir = Get-HrmStateDir }
+        Clear-HrmSetupMarker -StateDir $markerStateDir
+    }
     exit 0
 }
 catch {
@@ -281,8 +315,19 @@ catch {
     Write-Host "ОШИБКА: $message" -ForegroundColor Red
     Write-HrmLog "error" ("fatal: " + $message)
     try {
+        # Значок в трее должен остаться и показать понятную причину: отметка
+        # установки переводится в failed. Если движок успел записать результат
+        # обновления («прежняя версия восстановлена и отвечает»), показываем
+        # именно его — это текст для человека, а не техническая ошибка.
         $stateDirForError = if ($StateDir) { $StateDir } else { Get-HrmStateDir }
-        Set-HrmSupervisorState -StateDir $stateDirForError -State "error" -Message $message
+        $markerMessage = $message
+        try {
+            $updateResult = Get-HrmUpdateResult $stateDirForError
+            if ($null -ne $updateResult -and $updateResult.message) { $markerMessage = [string]$updateResult.message }
+        }
+        catch { }
+        Set-HrmSupervisorState -StateDir $stateDirForError -State "error" -Message $markerMessage
+        $null = Set-HrmSetupMarker -StateDir $stateDirForError -Status "failed" -Message $markerMessage
     }
     catch { }
     exit 1

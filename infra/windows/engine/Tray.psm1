@@ -13,6 +13,110 @@ Set-StrictMode -Version 2.0
 
 $script:TrayRequiredMenuActions = @("open", "check", "restart", "support-bundle", "stop", "exit")
 
+function Get-HrmTrayStartupPlan {
+    # Что должен делать значок ПРЯМО СЕЙЧАС. Одна точка правды и для запуска
+    # (hrm-tray.ps1), и для обновления значка каждые 5 секунд — расхождений
+    # между «что видит пользователь» и «что делает компонент» быть не должно.
+    #
+    #   installing      — идёт установка/обновление (отметка мастера установки
+    #                     свежая): значок живой, показывает ход, но не даёт
+    #                     мешать работе мастера (дефект P2 ревью: раньше значок
+    #                     выходил с ошибкой и до конца установки его не было);
+    #   install_failed  — установка/обновление завершились ошибкой: значок
+    #                     остаётся и показывает, что делать;
+    #   install_stale   — отметка установки осталась, но установка не идёт и
+    #                     приложения нет: честно просим запустить Setup.exe заново;
+    #   resuming        — есть незавершённое обновление/подготовка среды: значок
+    #                     продолжает операцию (resume) — «после перезагрузки
+    #                     HR Manager продолжит сам»;
+    #   not_installed   — приложения нет (значок в каталоге установки, поэтому
+    #                     это редкий случай) — честная ошибка;
+    #   normal          — обычная работа: поднять среду и показать состояние.
+    param(
+        [bool]$HasRecord = $false,
+        [string]$MarkerStatus = "",
+        [bool]$MarkerFresh = $false,
+        [string]$MarkerMessage = "",
+        [bool]$ResumePending = $false,
+        [bool]$InstallDirReady = $false
+    )
+    if ($MarkerStatus -eq "failed") {
+        $message = if ($MarkerMessage) { $MarkerMessage } else { "Установка HR Manager не завершилась." }
+        return [pscustomobject]@{
+            mode = "install_failed"; state = "error"; busy = $false; start_engine = $false
+            engine_action = ""; notify_event = "install"; message = $message
+        }
+    }
+    if ($MarkerStatus -and $MarkerStatus -ne "failed" -and $MarkerFresh) {
+        $message = if ($MarkerMessage) { $MarkerMessage } else { "Устанавливаем HR Manager…" }
+        return [pscustomobject]@{
+            mode = "installing"; state = "starting"; busy = $true; start_engine = $false
+            engine_action = ""; notify_event = "install"; message = $message
+        }
+    }
+    if ($MarkerStatus -and $MarkerStatus -ne "failed" -and -not $HasRecord) {
+        if ($InstallDirReady) {
+            # Отметка устарела (перезагрузка/закрытие мастера), но файлы
+            # установки уже разложены: движок сам доведёт первичную установку —
+            # человеку не нужно искать Setup.exe и запускать его заново.
+            return [pscustomobject]@{
+                mode = "resuming"; state = "starting"; busy = $true; start_engine = $true
+                engine_action = "resume"; notify_event = "install"; message = "Продолжаем установку HR Manager…"
+            }
+        }
+        return [pscustomobject]@{
+            mode = "install_stale"; state = "error"; busy = $false; start_engine = $false
+            engine_action = ""; notify_event = "install"
+            message = "Установка не завершилась. Запустите Setup.exe заново — данные и настройки не пострадали."
+        }
+    }
+    if ($ResumePending) {
+        return [pscustomobject]@{
+            mode = "resuming"; state = "starting"; busy = $true; start_engine = $true
+            engine_action = "resume"; notify_event = "install"; message = "Продолжаем установку HR Manager…"
+        }
+    }
+    if (-not $HasRecord) {
+        return [pscustomobject]@{
+            mode = "not_installed"; state = "error"; busy = $false; start_engine = $false
+            engine_action = ""; notify_event = ""; message = "HR Manager не установлен."
+        }
+    }
+    return [pscustomobject]@{
+        mode = "normal"; state = "starting"; busy = $false; start_engine = $true
+        engine_action = "supervise"; notify_event = ""; message = "Запускаем HR Manager…"
+    }
+}
+
+function Get-HrmTrayCurrentPlan {
+    # Планировщик по РЕАЛЬНЫМ файлам состояния: отметка установки, запись об
+    # установке, незавершённое обновление (журнал обновления), отложенная
+    # подготовка среды после перезагрузки.
+    param([string]$StateDir = "", [string]$InstallDir = "")
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
+    $marker = Get-HrmSetupMarker -StateDir $StateDir
+    $hasRecord = ($null -ne (Get-HrmInstallRecord $StateDir))
+    # Файлы установки уже разложены мастером ({app})\infra\compose.pilot.yml —
+    # значит первичную установку можно довести без повторного запуска Setup.exe.
+    $installDirReady = (Test-Path (Join-Path $InstallDir "infra\compose.pilot.yml"))
+    $resumePending = $false
+    $journal = Get-HrmUpdateJournal $StateDir
+    if (Test-Path $journal) {
+        $phase = ""
+        try {
+            $data = Get-HrmJsonFile $journal
+            if ($null -ne $data -and $data.PSObject.Properties["phase"]) { $phase = [string]$data.phase }
+        }
+        catch { $phase = "" }
+        # Откат завершён (phase=rollback) — это НЕ незавершённая работа:
+        # автоматически повторять обновление нельзя, решает владелец.
+        if ($phase -and $phase -ne "rollback") { $resumePending = $true }
+    }
+    if (-not $resumePending -and $null -ne (Get-HrmPendingDockerOperation $StateDir)) { $resumePending = $true }
+    return (Get-HrmTrayStartupPlan -HasRecord $hasRecord -MarkerStatus $marker.status -MarkerFresh $marker.fresh -MarkerMessage $marker.message -ResumePending $resumePending -InstallDirReady $installDirReady)
+}
+
 function Get-HrmTrayIconKind {
     # ready | starting | error | stopped
     param([string]$State, [bool]$Busy = $false)
@@ -101,6 +205,10 @@ function Get-HrmTrayBalloon {
     }
     if ($Event -eq "action-done") {
         return [pscustomobject]@{ title = "HR Manager"; text = $Message; kind = "info" }
+    }
+    if ($Event -eq "install") {
+        # Установка/обновление: понятный заголовок и ход операции.
+        return [pscustomobject]@{ title = "HR Manager устанавливается"; text = $Message; kind = "info" }
     }
     if ($State -eq "ready") {
         return [pscustomobject]@{ title = "HR Manager готов"; text = "Приложение открывается в браузере. Значок остаётся в трее."; kind = "info" }
@@ -233,7 +341,7 @@ function Start-HrmTrayUi {
     $viewState = @{ last = "" }
 
     $applyState = {
-        param([string]$State, [string]$Message, [bool]$Busy, [bool]$Notify)
+        param([string]$State, [string]$Message, [bool]$Busy, [bool]$Notify, [string]$Event = "")
         $kind = Get-HrmTrayIconKind -State $State -Busy $Busy
         switch ($kind) {
             "ready" { $icon.Icon = [System.Drawing.SystemIcons]::Application }
@@ -258,7 +366,7 @@ function Start-HrmTrayUi {
             [void]$menu.Items.Add($entry)
         }
         if ($Notify -and $State -ne $viewState.last) {
-            $balloon = Get-HrmTrayBalloon -State $State -Message $Message
+            $balloon = Get-HrmTrayBalloon -State $State -Message $Message -Event $Event
             $icon.ShowBalloonTip(7000, $balloon.title, $balloon.text, [System.Windows.Forms.ToolTipIcon]::Info)
         }
         $viewState.last = $State
@@ -266,6 +374,19 @@ function Start-HrmTrayUi {
 
     $refresh = {
         try {
+            $plan = Get-HrmTrayCurrentPlan -StateDir $StateDir -InstallDir $InstallDir
+            if ($plan.mode -ne "normal") {
+                $message = $plan.message
+                if ($plan.mode -eq "installing" -or $plan.mode -eq "resuming") {
+                    # Пока идёт установка/обновление, показываем более подробный
+                    # ход от движка («Подготавливаем рабочую среду…», «Ожидаем
+                    # запуск службы контейнеров…»), если он уже записан.
+                    $stored = Get-HrmSupervisorState -StateDir $StateDir
+                    if ($stored.message -and ($stored.state -eq "starting" -or $stored.state -eq "error")) { $message = $stored.message }
+                }
+                & $applyState $plan.state $message $plan.busy $true $plan.notify_event
+                return
+            }
             $running = Test-HrmTrayActionRunning -StateDir $StateDir
             $stored = Get-HrmSupervisorState -StateDir $StateDir
             if ($running) {

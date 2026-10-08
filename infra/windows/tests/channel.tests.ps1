@@ -345,6 +345,23 @@ Test-Case "наблюдатель: провал update → отчёт rolled_bac
     Assert-HrmEqual ("3" * 40) (Get-HrmInstallRecord $state).release_sha "версия изменилась при провале"
 }
 
+Test-Case "наблюдатель: неподтверждённый откат НЕ отправляется серверу как rolled_back" {
+    Initialize-HrmTestEngine
+    $t = New-HrmChannelWorld -QueueInstall "yes"
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    # Стек не поднимается ни в новой, ни в прежней версии: Update-HrmApp
+    # завершается статусом rollback_failed (восстановление не подтверждено).
+    $t.World.UpFails = $true
+    Invoke-HrmChannelOnce -InstallDir $install -StateDir $state | Out-Null
+    $channelWorld = $global:HRM_ChannelWorld
+    Assert-HrmEqual 1 $channelWorld.Reports.Count "отчёт не отправлен"
+    Assert-HrmEqual "failed" ([string]$channelWorld.Reports[0].Body.state) "неподтверждённый откат объявлен как rolled_back"
+    Assert-HrmEqual "update_failed" ([string]$channelWorld.Reports[0].Body.error_code) "код ошибки"
+    # В отчёте владельцу видно, что восстановление не подтверждено и нужна копия.
+    Assert-HrmContains ([string]$channelWorld.Reports[0].Body.error_detail) "не подтверждено" "причина неподтверждённого восстановления не передана"
+}
+
 Test-Case "наблюдатель: без команд — только фоновая проверка, установки нет" {
     Initialize-HrmTestEngine
     $t = New-HrmChannelWorld -QueueInstall "" -EngineCheckState "available"

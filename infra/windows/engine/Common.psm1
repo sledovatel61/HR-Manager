@@ -36,6 +36,14 @@ function Get-HrmInstalledFile { param([string]$StateDir) return (Join-Path $Stat
 function Get-HrmUpdateLock  { param([string]$StateDir) return (Join-Path $StateDir "update.lock") }
 function Get-HrmUpdateJournal { param([string]$StateDir) return (Join-Path $StateDir "update-journal.json") }
 function Get-HrmSetupUrlFile { param([string]$StateDir) return (Join-Path $StateDir "first-run-url.txt") }
+# Маркер «мастер установки сейчас работает»: его пишет Setup.exe перед запуском
+# движка и значка в трее, а движок удаляет, когда установка/обновление закончились.
+function Get-HrmSetupMarkerFile { param([string]$StateDir) return (Join-Path $StateDir "setup-run.json") }
+# Снимок ПРЕДЫДУЩЕЙ версии (файлы infra/backend/frontend/release.json) и копия
+# нового релиза под управлением движка — нужны для согласованного отката и
+# повторяемых фаз обновления (см. Update.psm1).
+function Get-HrmPreviousSnapshotDir { param([string]$StateDir) return (Join-Path $StateDir "previous-snapshot") }
+function Get-HrmReleaseStagingDir { param([string]$StateDir) return (Join-Path $StateDir "release-staging") }
 
 # --- Журнал -----------------------------------------------------------------
 
@@ -114,6 +122,64 @@ function Set-HrmExternalMock {
 }
 
 function Clear-HrmExternalMock { $script:MockExternal = $null }
+
+function Get-HrmSetupMarker {
+    # Состояние мастера установки (файл пишет Setup.exe перед запуском движка и
+    # значка в трее; движок обновляет/удаляет его по ходу установки).
+    # Возвращает @{ status; message; fresh; age_seconds; file }.
+    # «Свежесть» считается по времени изменения файла: так не нужно разбирать
+    # дату из JSON, которую пишет мастер установки (Inno Setup).
+    param([string]$StateDir = "", [int]$MaxAgeMinutes = 30)
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $file = Get-HrmSetupMarkerFile $StateDir
+    $result = [pscustomobject]@{ status = ""; message = ""; fresh = $false; age_seconds = -1; file = $file }
+    if (-not (Test-Path $file)) { return $result }
+    $age = -1
+    try { $age = [int]((Get-Date) - (Get-Item $file).LastWriteTime).TotalSeconds } catch { $age = -1 }
+    $status = ""
+    $message = ""
+    try {
+        $data = Get-HrmJsonFile $file
+        if ($null -ne $data) {
+            if ($data.PSObject.Properties["status"]) { $status = [string]$data.status }
+            if ($data.PSObject.Properties["message"]) { $message = [string]$data.message }
+        }
+    }
+    catch {
+        # Повреждённый файл = незавершённая установка, а не «всё хорошо».
+        $status = "failed"
+        $message = "Файл состояния установки повреждён."
+    }
+    $limit = [int]($MaxAgeMinutes * 60)
+    $fresh = ($age -ge 0 -and $age -le $limit)
+    return [pscustomobject]@{ status = $status; message = $message; fresh = $fresh; age_seconds = $age; file = $file }
+}
+
+function Set-HrmSetupMarker {
+    # Отметить ход установки/обновления: status = running | failed.
+    # Сообщение пишется в редакции секретов — в трее и журнале не должно быть
+    # ни паролей, ни путей к секретам.
+    param([string]$StateDir = "", [string]$Status = "running", [string]$Message = "")
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
+    $data = [ordered]@{
+        status = $Status
+        message = (Redact-HrmText $Message)
+        updated_at = (Get-Date).ToString("o")
+    }
+    Set-HrmJsonFile $StateDir "setup-run.json" $data
+    # Время изменения файла — источник «свежести» для значка в трее.
+    try { (Get-Item (Get-HrmSetupMarkerFile $StateDir)).LastWriteTime = (Get-Date) } catch { }
+    return (Get-HrmSetupMarker -StateDir $StateDir)
+}
+
+function Clear-HrmSetupMarker {
+    # Успешная установка завершена: отметка больше не нужна.
+    param([string]$StateDir = "")
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $file = Get-HrmSetupMarkerFile $StateDir
+    if (Test-Path $file) { Remove-Item -Path $file -Force -ErrorAction SilentlyContinue }
+}
 
 function Set-HrmHttpMock {
     # Тестовый шов: подменяет ВСЕ HTTP-вызовы (loopback).

@@ -836,6 +836,9 @@ function Invoke-HrmDockerPrepare {
         $desktop = Get-HrmDockerDesktopState
     }
     if ($desktop.state -eq "installed_stopped" -or $desktop.state -eq "starting") {
+        # Прогресс для значка в трее: установка идёт долго, человек должен
+        # видеть, что происходит, а не пустой значок (дефект P2 ревью).
+        try { Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Ожидаем запуск службы контейнеров…" -Busy $true } catch { }
         $start = Start-HrmDockerDesktop -TimeoutSeconds $TimeoutSeconds
         if (-not $start.started) {
             return [pscustomobject]@{ ok = $false; state = "engine_timeout"; needs_install = $false; needs_reboot = (Test-HrmRebootPending); message = $start.message }

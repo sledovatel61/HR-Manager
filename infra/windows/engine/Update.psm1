@@ -7,15 +7,40 @@
 #
 # Порядок (журнал фаз в update-journal.json, возобновляемость после сбоя):
 #   prepare → backup → build → switch → migrate → smoke → done | rollback
+#   - prepare: ДО любого изменения установленной версии сохраняется снимок
+#     ПРЕЖНЕЙ версии (StateDir\previous-snapshot), прежние образы закрепляются
+#     тегами :previous, в журнал пишутся идентичность релиза (release_sha,
+#     version), ревизия схемы БД и копия НОВОГО релиза под управлением движка
+#     (StateDir\release-staging). Копия нужна, чтобы фазы оставались
+#     повторяемыми, даже если исходный каталог релиза исчез: Inno Setup удаляет
+#     свой временный каталог {tmp} при выходе мастера;
 #   - валидный шифрованный бэкап + проверка целостности ДО миграции
 #     (backup-now + backup-check --deep; ошибка останавливает обновление);
 #   - новые образы собираются, НЕ разрушая работающие контейнеры;
-#   - однократный `alembic upgrade head`;
+#   - фаза switch заменяет файлы снимка только после успешного backup gate;
+#   - однократный `alembic upgrade head`; в журнале migration_done пишется по
+#     факту успешного применения;
 #   - ограниченная готовность + smoke: фронтенд, /api/health, /api/ops/status
 #     (release_sha, миграции), worker-check, отсутствие дрейфа миграций;
-#   - при провале — возврат к ПРЕДЫДУЩИМ образам (перетегирование);
-#     даунгрейд БД НЕ выполняется никогда;
+#   - при провале решение принимает Get-HrmRollbackPlan:
+#       * сбой до фазы switch → установленная версия не менялась, восстанавливать
+#         нечего (возвращаются только теги образов), статус — failed;
+#       * сбой до применения миграций → согласованный откат (файлы из
+#         previous-snapshot + образы + release_sha в окружении) и ПРОВЕРКА
+#         готовности прежней версии;
+#       * миграция уже применена → тот же согласованный откат, но статус
+#         «восстановлено» ставится только если прежняя версия ответила и в работе
+#         НЕ сбойный релиз; иначе — rollback_failed, needs_backup_restore=true и
+#         отсылка к проверенной резервной копии из фазы backup;
+#       * состояние схемы или снимок прежней версии проверить не удалось →
+#         безопасного автоматического восстановления нет, статус об этом и говорит.
+#     Статус «восстановлено» пишется ТОЛЬКО после подтверждённой готовности:
+#     ложное «Предыдущая версия восстановлена» — дефект, который здесь закрыт.
+#     Даунгрейд БД не выполняется никогда; журнал и бэкапы при неудаче остаются.
 #   - предыдущая рабочая версия остаётся активной, пока smoke не прошёл.
+#   - resume: незавершённая попытка продолжается с записанной фазы; попытка,
+#     завершённая откатом (блокировка снята), начинается заново, а не повторяет
+#     откат.
 
 Set-StrictMode -Version 2.0
 
@@ -241,7 +266,9 @@ function Write-HrmUpdateResult {
         [string]$FromVersion = "",
         [string]$ToVersion = "",
         [string]$ReleaseSha = "",
-        [switch]$RolledBack
+        [switch]$RolledBack,
+        [bool]$RecoveryConfirmed = $true,
+        [bool]$NeedsBackupRestore = $false
     )
     $data = [ordered]@{
         status = $Status
@@ -250,6 +277,11 @@ function Write-HrmUpdateResult {
         to_version = $ToVersion
         release_sha = $ReleaseSha
         rolled_back = [bool]$RolledBack
+        # Честность статуса: «восстановлено» только при подтверждённой
+        # готовности, иначе трей/мастер/диагностика видят, что восстановление
+        # не подтверждено и нужна резервная копия или отчёт для поддержки.
+        recovery_confirmed = [bool]$RecoveryConfirmed
+        needs_backup_restore = [bool]$NeedsBackupRestore
         finished_at = (Get-Date).ToString("o")
     }
     Set-HrmJsonFile $StateDir "update-result.json" $data
@@ -278,12 +310,263 @@ function Assert-HrmUpdatePreservedState {
         $lan = Get-HrmLanConfig $StateDir
         if ($lan.enabled -and $lan.bind -ne "0.0.0.0") { $problems += "настройка доступа по сети" }
     }
-    $volume = Invoke-HrmDocker -Arguments @("volume", "inspect", ((Get-HrmProjectName) + "_pilot_pgdata")) -IgnoreExitCode
-    if ($volume.ExitCode -ne 0) { $problems += "том данных PostgreSQL" }
+    foreach ($volumeName in @(((Get-HrmProjectName) + "_pilot_pgdata"), ((Get-HrmProjectName) + "_pilot_backups"))) {
+        $volume = Invoke-HrmDocker -Arguments @("volume", "inspect", $volumeName) -IgnoreExitCode
+        if ($volume.ExitCode -ne 0) { $problems += ("том " + $volumeName) }
+    }
     if ($problems.Count -gt 0) {
         throw ("После обновления не найдено: {0}. Обновление остановлено." -f ($problems -join ", "))
     }
     return $true
+}
+
+function Get-HrmInstallDirReleaseSha {
+    # Идентичность файлов В КАТАЛОГЕ УСТАНОВКИ (release.json). Отличается от
+    # Get-HrmInstalledVersionInfo тем, что не подменяет значение записью
+    # установки: нужно уметь отличить «в {app} лежит установленная версия» от
+    # «мастер установки уже перезаписал файлы новой версией» (иначе проверка
+    # сравнивала бы запись саму с собой и всегда «совпадала»).
+    param([string]$InstallDir)
+    $file = Join-Path $InstallDir "release.json"
+    if (-not (Test-Path $file)) { return "" }
+    try {
+        $data = Get-HrmJsonFile $file
+        if ($null -ne $data -and $data.PSObject.Properties["release_sha"] -and $data.release_sha) {
+            return [string]$data.release_sha
+        }
+    }
+    catch { return "" }
+    return ""
+}
+
+function Save-HrmPreviousSnapshot {
+    # Снимок ПРЕДЫДУЩЕЙ (работающей) версии ДО того, как {app} будет перезаписан
+    # новой версией. Без него откат возвращал только теги образов, а файлы
+    # оставались от новой версии: старое приложение поднималось поверх новой
+    # конфигурации (дефект P1 ревью).
+    param([string]$InstallDir, [string]$StateDir)
+    $target = Get-HrmPreviousSnapshotDir $StateDir
+    try {
+        if (Test-Path $target) { Remove-Item -Path $target -Recurse -Force -ErrorAction Stop }
+        New-Item -ItemType Directory -Path $target -Force -ErrorAction Stop | Out-Null
+        # Копирование тем же безопасным копировщиком: он проверяет полноту
+        # снимка, поэтому половинчатая копия не станет «предыдущей версией».
+        Copy-HrmSnapshot -SourceDir $InstallDir -InstallDir $target
+        return [pscustomobject]@{ saved = $true; reason = ""; dir = $target; message = "Снимок предыдущей версии сохранён." }
+    }
+    catch {
+        $message = Redact-HrmText $_.Exception.Message
+        if (Test-Path $target) { Remove-Item -Path $target -Recurse -Force -ErrorAction SilentlyContinue }
+        return [pscustomobject]@{ saved = $false; reason = "copy_failed"; dir = ""; message = $message }
+    }
+}
+
+function Test-HrmPreviousSnapshotMatches {
+    # Снимок прежней версии уже сохранён — например мастером установки
+    # (Setup.exe → ssInstall) до того, как он перезапиcал {app} файлами новой
+    # версии. Такой снимок нельзя затирать: в {app} уже лежит НОВЫЙ код, и
+    # «предыдущей версией» стала бы не та версия.
+    param([string]$StateDir, [string]$ReleaseSha = "")
+    if (-not $ReleaseSha) { return $false }
+    $releaseFile = Join-Path (Get-HrmPreviousSnapshotDir $StateDir) "release.json"
+    if (-not (Test-Path $releaseFile)) { return $false }
+    try {
+        $data = Get-HrmJsonFile $releaseFile
+        if ($null -eq $data -or -not $data.release_sha) { return $false }
+        return ([string]$data.release_sha -eq $ReleaseSha)
+    }
+    catch { return $false }
+}
+
+function Save-HrmInstalledSnapshotForSetup {
+    # Действие «snapshot-previous»: сохранить снимок УСТАНОВЛЕННОЙ версии ДО
+    # того, как мастер установки заменит файлы при обновлении. Вызывается из
+    # installer.iss (CurStep = ssInstall) — best-effort: не мешает установке,
+    # но благодаря нему откат возвращает настоящую прежнюю версию, а не файлы,
+    # которые мастер уже успел перезаписать.
+    param([string]$InstallDir = "", [string]$StateDir = "")
+    if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $record = Get-HrmInstallRecord $StateDir
+    if ($null -eq $record) {
+        return [pscustomobject]@{ saved = $false; skipped = $true; message = "Установка не найдена — сохранять нечего." }
+    }
+    $installedSha = ""
+    if ($record.PSObject.Properties["release_sha"] -and $record.release_sha) { $installedSha = [string]$record.release_sha }
+    if (-not $installedSha) {
+        return [pscustomobject]@{ saved = $false; skipped = $true; message = "В записи установки нет версии — снимок не сохраняем." }
+    }
+    if (Test-HrmPreviousSnapshotMatches -StateDir $StateDir -ReleaseSha $installedSha) {
+        return [pscustomobject]@{ saved = $false; skipped = $true; message = "Снимок этой версии уже сохранён." }
+    }
+    # Сверка: в {app} должна лежать ИМЕННО установленная версия, иначе снимок
+    # был бы недостоверным («предыдущей версией» стал бы не тот код). Сверяем
+    # release.json В КАТАЛОГЕ (файлы), а не запись установки.
+    $fileSha = Get-HrmInstallDirReleaseSha $InstallDir
+    if ($fileSha -and $fileSha -ne $installedSha) {
+        return [pscustomobject]@{
+            saved = $false; skipped = $true
+            message = ("Файлы в каталоге установки уже не совпадают с установленной версией ({0} ≠ {1}) — снимок не сохраняем." -f $fileSha, $installedSha)
+        }
+    }
+    $result = Save-HrmPreviousSnapshot -InstallDir $InstallDir -StateDir $StateDir
+    return [pscustomobject]@{ saved = $result.saved; skipped = $false; message = $result.message }
+}
+
+function Copy-HrmReleaseToStaging {
+    # Копия НОВОГО релиза в управляемый движком каталог StateDir\release-staging.
+    # Так предыдущая версия в {app} не теряется до backup gate, а фазы
+    # build/switch/migrate/smoke повторяемы, даже если исходный каталог релиза
+    # исчез (Setup.exe кладёт снимок во временный {tmp} и удаляет его при выходе).
+    param([string]$ReleaseDir, [string]$StateDir)
+    $staging = Get-HrmReleaseStagingDir $StateDir
+    if (Test-HrmSamePath $ReleaseDir $staging) {
+        # Источник уже и есть копия движка: удалять его нельзя (idempotent).
+        return $staging
+    }
+    if (Test-Path $staging) { Remove-Item -Path $staging -Recurse -Force -ErrorAction Stop }
+    New-Item -ItemType Directory -Path $staging -Force -ErrorAction Stop | Out-Null
+    Copy-HrmSnapshot -SourceDir $ReleaseDir -InstallDir $staging
+    return $staging
+}
+
+function Get-HrmRollbackPlan {
+    # Политика отката после сбоя обновления (полное описание и что делать
+    # владельцу — docs/UPDATE_GUIDE.md, раздел «Если обновление не удалось»).
+    #
+    #   no_changes                    — сбой до фазы switch: установленная версия
+    #                                   не менялась; откат не нужен, статус failed;
+    #   restore_previous              — схема БД не менялась (сбой до миграции либо
+    #                                   upgrade не сдвинул ревизию): автооткат
+    #                                   файлов/образов/окружения + проверка готовности;
+    #   restore_previous_after_migration — миграция применена: откат тоже выполняется
+    #                                   (даунгрейда БД нет), но «восстановлено»
+    #                                   подтверждается только ответившим приложением,
+    #                                   где в работе НЕ сбойный релиз; иначе —
+    #                                   восстановление из проверенной резервной копии;
+    #   unknown_schema                — схему или снимок прежней версии проверить не
+    #                                   удалось: безопасного автоотката нет, статус
+    #                                   об этом и говорит (журнал и бэкапы сохранены).
+    param(
+        [string]$FailedPhase = "",
+        [bool]$MigrationDone = $false,
+        [string]$DbRevisionBefore = "",
+        [string]$DbRevisionNow = "",
+        [bool]$PreviousSnapshotSaved = $true,
+        [bool]$FilesSwitched = $true
+    )
+    if (-not $FilesSwitched -and -not $MigrationDone) {
+        # Сбой до фазы switch: установленная версия не менялась, она продолжает
+        # работать. Возвращать нечего, сообщать «откат» было бы неправдой.
+        return [pscustomobject]@{ plan = "no_changes"; reason = ("сбой на фазе {0} до замены файлов" -f $FailedPhase) }
+    }
+    if (-not $PreviousSnapshotSaved) {
+        return [pscustomobject]@{ plan = "unknown_schema"; reason = "снимок прежней версии не сохранён (файлы каталога установки уже заменены новой версией)" }
+    }
+    if ($MigrationDone) {
+        return [pscustomobject]@{ plan = "restore_previous_after_migration"; reason = "миграция схемы уже применена" }
+    }
+    if ($FailedPhase -ne "migrate" -and $FailedPhase -ne "smoke") {
+        return [pscustomobject]@{ plan = "restore_previous"; reason = ("сбой на фазе {0} до миграции схемы" -f $FailedPhase) }
+    }
+    if (-not $DbRevisionBefore -or -not $DbRevisionNow) {
+        return [pscustomobject]@{ plan = "unknown_schema"; reason = "ревизию схемы БД прочитать не удалось" }
+    }
+    if ($DbRevisionBefore -eq $DbRevisionNow) {
+        return [pscustomobject]@{ plan = "restore_previous"; reason = ("схема БД осталась на ревизии {0}" -f $DbRevisionNow) }
+    }
+    return [pscustomobject]@{ plan = "restore_previous_after_migration"; reason = ("схема БД ушла с {0} на {1}" -f $DbRevisionBefore, $DbRevisionNow) }
+}
+
+function Restore-HrmPreviousVersion {
+    # Согласованный возврат прежней версии: файлы из previous-snapshot, прежние
+    # образы по тегам, прежний release_sha в pilot.env и записи установки, затем
+    # ЗАПУСК и ПРОВЕРКА готовности. Возвращает @{ restored; confirmed; message }.
+    # Никогда не сообщает об успехе без подтверждённой готовности.
+    param(
+        [string]$InstallDir,
+        [string]$StateDir,
+        [hashtable]$PreviousIds,
+        [string]$PreviousReleaseSha = "",
+        [string]$PreviousVersion = "",
+        [string]$FailedReleaseSha = "",
+        [int]$Port = 0,
+        [int]$ReadyTimeoutSeconds = 240
+    )
+    $problems = @()
+    $snapshotDir = Get-HrmPreviousSnapshotDir $StateDir
+    if (Test-Path $snapshotDir) {
+        try {
+            Copy-HrmSnapshot -SourceDir $snapshotDir -InstallDir $InstallDir
+        }
+        catch {
+            $problems += ("файлы прежней версии не восстановлены: " + (Redact-HrmText $_.Exception.Message))
+        }
+    }
+    else {
+        $problems += "сохранённый снимок прежней версии не найден"
+    }
+    if ($PreviousIds.Count -gt 0) {
+        try { Invoke-HrmRollbackImages $PreviousIds } catch { $problems += ("образы не восстановлены: " + (Redact-HrmText $_.Exception.Message)) }
+    }
+    # Прежняя идентичность релиза в окружении и записи установки: иначе стек
+    # поднимется с новым release_sha и smoke снова покажет расхождение.
+    if ($PreviousReleaseSha) {
+        try {
+            $null = Write-HrmPilotEnv $StateDir $PreviousReleaseSha $Port
+            $fields = @{ release_sha = $PreviousReleaseSha; rolled_back_at = (Get-Date).ToString("o") }
+            if ($PreviousVersion) { $fields["version"] = $PreviousVersion }
+            Set-HrmInstallRecord $StateDir $fields
+        }
+        catch {
+            $problems += ("окружение прежней версии не восстановлено: " + (Redact-HrmText $_.Exception.Message))
+        }
+    }
+    $started = $false
+    if ($problems.Count -eq 0) {
+        try {
+            $up = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") -IgnoreExitCode
+            if ($up.ExitCode -ne 0) {
+                $problems += ("стек прежней версии не запустился (код {0})" -f $up.ExitCode)
+            }
+            else { $started = $true }
+        }
+        catch { $problems += ("запуск прежней версии не удался: " + (Redact-HrmText $_.Exception.Message)) }
+    }
+    $confirmed = $false
+    if ($started) {
+        $baseUrl = Get-HrmBaseUrl $Port
+        try {
+            Wait-HrmReady $baseUrl $ReadyTimeoutSeconds
+            $ops = Get-HrmOpsStatus $baseUrl
+            if ($null -eq $ops) {
+                $problems += "готовность прежней версии не подтверждена (нет ответа о состоянии приложения)"
+            }
+            else {
+                $sha = ""
+                if ($ops.PSObject.Properties["release_sha"]) { $sha = [string]$ops.release_sha }
+                if ($FailedReleaseSha -and $sha -and $sha -eq $FailedReleaseSha) {
+                    # В работе по-прежнему сбойная новая версия: откат НЕ удался.
+                    $problems += "в работе осталась сбойная версия — откат не применился"
+                }
+                else {
+                    if ($PreviousReleaseSha -and $sha -and $sha -ne $PreviousReleaseSha) {
+                        # Не сбойная версия, но и не тот sha, что записан в установке
+                        # (например, прежняя версия не сообщала sha). Готовность
+                        # подтверждена, о расхождении честно пишем в журнал.
+                        $null = Write-HrmLog "warn" ("Откат: приложение отвечает с sha {0}, в записи установки прежний sha {1}." -f $sha, $PreviousReleaseSha)
+                    }
+                    $confirmed = $true
+                }
+            }
+        }
+        catch { $problems += ("готовность прежней версии не подтверждена: " + (Redact-HrmText $_.Exception.Message)) }
+    }
+    if ($confirmed -and $problems.Count -eq 0) {
+        return [pscustomobject]@{ restored = $true; confirmed = $true; message = "Прежняя версия восстановлена и отвечает." }
+    }
+    if ($problems.Count -eq 0) { $problems += "готовность не подтверждена" }
+    return [pscustomobject]@{ restored = $started; confirmed = $false; message = ("Восстановление не подтверждено: {0}." -f ($problems -join "; ")) }
 }
 
 function Update-HrmApp {
@@ -292,16 +575,42 @@ function Update-HrmApp {
         [string]$InstallDir = "",
         [string]$StateDir = ""
     )
+    if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $sourceReleaseDir = $ReleaseDir
+    # Возобновление прерванного обновления: каталог релиза может быть уже
+    # недоступен — Setup.exe кладёт снимок во временный {tmp} и удаляет его при
+    # выходе мастера. Тогда (и только тогда) работаем из копии движка
+    # StateDir\release-staging, записанной в журнал.
+    $resumeJournalData = $null
+    $journalFile = Get-HrmUpdateJournal $StateDir
+    if (Test-Path $journalFile) {
+        $candidate = Get-HrmJsonFile $journalFile
+        if ($null -ne $candidate -and $candidate.PSObject.Properties["release_dir"] -and $candidate.release_dir) {
+            $resumeJournalData = $candidate
+        }
+    }
+    $usingStagedRelease = $false
+    if ($resumeJournalData -and -not (Test-Path (Join-Path $ReleaseDir "infra\compose.pilot.yml"))) {
+        $stagedCandidate = [string]$resumeJournalData.release_dir
+        if (Test-Path (Join-Path $stagedCandidate "infra\compose.pilot.yml")) {
+            $ReleaseDir = $stagedCandidate
+            $usingStagedRelease = $true
+            Write-HrmLog "info" ("Каталог релиза недоступен — продолжаю из копии движка: {0}" -f $ReleaseDir)
+        }
+    }
     if (-not $ReleaseDir) { throw "Укажите -ReleaseDir (доверенный каталог релиза)." }
     if (-not (Test-Path (Join-Path $ReleaseDir "infra\compose.pilot.yml"))) {
         throw "Каталог релиза не содержит infra\compose.pilot.yml: $ReleaseDir"
     }
-    $releaseData = Get-HrmJsonFile (Join-Path $ReleaseDir "release.json")
-    if ($null -eq $releaseData -or -not $releaseData.release_sha) {
+    $sourceReleaseData = Get-HrmJsonFile (Join-Path $ReleaseDir "release.json")
+    if ($null -eq $sourceReleaseData -or -not $sourceReleaseData.release_sha) {
         throw "В каталоге релиза нет release.json с release_sha."
     }
-    if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
-    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    if ($usingStagedRelease) {
+        # Копию движка повторно не копируем: она и есть источник этой попытки.
+        $sourceReleaseDir = $ReleaseDir
+    }
     $record = Get-HrmInstallRecord $StateDir
     if ($null -eq $record) { throw "Установка не найдена. Выполните -Action install." }
     $port = [int]$record.port
@@ -325,31 +634,124 @@ function Update-HrmApp {
 
     $journal = Get-HrmUpdateJournal $StateDir
     $resume = (Test-Path $journal)
+    $data = $null
     $phase = "prepare"
     if ($resume) {
         $data = Get-HrmJsonFile $journal
-        $phase = [string]$data.phase
-        Write-HrmLog "info" ("Возобновление обновления с фазы {0}." -f $phase)
-    }
-
-    # Возобновление: нужные состояния восстанавливаются из журнала.
-    $previousIds = @{}
-    if ($resume -and $data.previous_ids) {
-        foreach ($pair in $data.previous_ids.PSObject.Properties) {
-            $previousIds[$pair.Name] = [string]$pair.Value
+        if ($null -ne $data -and $data.PSObject.Properties["phase"]) { $phase = [string]$data.phase }
+        # Предыдущая попытка уже откатилась и сняла блокировку: это НОВАЯ
+        # попытка, повторять откат нельзя (иначе повторная установка прежней
+        # версии вместо попытки обновления).
+        if ($phase -eq "rollback") {
+            Write-HrmLog "info" "Предыдущая попытка завершилась откатом — начинаем новую попытку обновления."
+            Clear-HrmUpdateJournal $StateDir
+            $resume = $false
+            $phase = "prepare"
+        }
+        else {
+            Write-HrmLog "info" ("Возобновление обновления с фазы {0}." -f $phase)
         }
     }
 
+    # Возобновление: нужные состояния восстанавливаются из журнала. Каталог
+    # релиза берётся из журнала: у Setup.exe исходный каталог лежал во временном
+    # {tmp} и после выхода мастера его уже нет.
+    $previousIds = @{}
+    $previousSnapshotSaved = $true
+    $dbRevisionBefore = ""
+    $migrationDone = $false
+    $dbRevisionNow = ""
+    # Файлы снимка в {app} уже заменены (фаза switch началась): от этого зависит
+    # и политика отката, и честность сообщения о состоянии.
+    $filesSwitched = ($phase -eq "switch" -or $phase -eq "migrate" -or $phase -eq "smoke")
+    $releaseDir = $sourceReleaseDir
+    if ($resume -and $null -ne $data) {
+        if ($data.previous_ids) {
+            foreach ($pair in $data.previous_ids.PSObject.Properties) {
+                $previousIds[$pair.Name] = [string]$pair.Value
+            }
+        }
+        if ($data.PSObject.Properties["release_dir"] -and $data.release_dir) { $releaseDir = [string]$data.release_dir }
+        if ($data.PSObject.Properties["db_revision_before"]) { $dbRevisionBefore = [string]$data.db_revision_before }
+        if ($data.PSObject.Properties["migration_done"]) { $migrationDone = [bool]$data.migration_done }
+        if ($data.PSObject.Properties["previous_snapshot_saved"]) { $previousSnapshotSaved = [bool]$data.previous_snapshot_saved }
+    }
+    $releaseData = Get-HrmJsonFile (Join-Path $releaseDir "release.json")
+    if ($null -eq $releaseData) { $releaseData = $sourceReleaseData }
+    $releaseSha = [string]$releaseData.release_sha
+    if (-not $releaseSha) { $releaseSha = [string]$sourceReleaseData.release_sha }
+
+    $newVersion = ""
+    if ($releaseData.PSObject.Properties["version"] -and $releaseData.version) { $newVersion = [string]$releaseData.version }
+
     try {
+        # --- prepare: сохранить прежнюю версию и скопировать новый релиз ----
         if (-not $resume -or $phase -eq "prepare") {
+            # Требует установленного Docker и работающего движка: и то, и другое
+            # обязательно для фаз backup/build/switch, а на фазах после отката
+            # (resume) повторный снимок не нужен — он уже в previous-snapshot.
             $previousIds = Get-HrmImageIds
-            Set-HrmUpdateJournal $StateDir "prepare" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }
+            $saved = $null
+            $previousSnapshotSaved = $false
+            $installedSha = [string]$record.release_sha
+            $currentSha = Get-HrmInstallDirReleaseSha $InstallDir
+            if (Test-HrmPreviousSnapshotMatches -StateDir $StateDir -ReleaseSha $installedSha) {
+                # Setup.exe сохранил прежнюю версию до перезаписи файлов: она и
+                # есть предыдущая, повторный снимок только испортил бы картину.
+                Write-HrmLog "info" "Снимок прежней версии уже сохранён перед установкой — используем его."
+                $saved = [pscustomobject]@{ saved = $true; reason = ""; message = "Снимок прежней версии уже сохранён." }
+            }
+            elseif ($currentSha -and $installedSha -and $currentSha -ne $installedSha) {
+                # Файлы в {app} уже заменены новой версией (Setup.exe копирует
+                # файлы ДО запуска движка), а снимка прежней версии нет: значит
+                # сохранить её невозможно. Сохранять НОВЫЕ файлы как «прежнюю
+                # версию» нельзя — откат вернул бы сбойный код и объявил успех.
+                # Обновление продолжаем (единственная возможность получить
+                # работающую версию), но политика отката честно скажет, что
+                # автоматическое восстановление недоступно.
+                Write-HrmLog "warn" ("Прежняя версия файлов недоступна: в каталоге установки уже новая версия ({0}), снимок прежней версии ({1}) не сохранён." -f $currentSha, $installedSha)
+                $saved = [pscustomobject]@{ saved = $false; reason = "files_replaced"; message = "Прежняя версия файлов уже перезаписана установщиком." }
+            }
+            else {
+                $saved = Save-HrmPreviousSnapshot -InstallDir $InstallDir -StateDir $StateDir
+            }
+            if ($saved.saved) {
+                $previousSnapshotSaved = $true
+            }
+            elseif ($saved.reason -eq "files_replaced") {
+                # Продолжаем: файлы уже заменены, откатывать их нечем и незачем.
+                $previousSnapshotSaved = $false
+            }
+            else {
+                throw ("Не удалось сохранить снимок предыдущей версии ({0}) — обновление остановлено, файлы не изменены." -f $saved.message)
+            }
+            if ($usingStagedRelease) {
+                # Уже работаем из копии движка (возобновление): копировать нечего.
+                $releaseDir = $ReleaseDir
+            }
+            else {
+                $staged = Copy-HrmReleaseToStaging -ReleaseDir $sourceReleaseDir -StateDir $StateDir
+                $releaseDir = $staged
+            }
+            $dbRevisionBefore = [string](Get-HrmMigrationsState -InstallDir $InstallDir -StateDir $StateDir)
+            if (-not $dbRevisionBefore) { $dbRevisionBefore = "unknown" }
+            Set-HrmUpdateJournal $StateDir "prepare" @{
+                release_dir = $releaseDir
+                source_release_dir = $sourceReleaseDir
+                previous_ids = $previousIds
+                release_sha = $releaseSha
+                previous_version = $previousVersion
+                previous_release_sha = [string]$record.release_sha
+                db_revision_before = $dbRevisionBefore
+                previous_snapshot_saved = $previousSnapshotSaved
+                migration_done = $false
+            }
             $phase = "backup"
         }
 
         if ($phase -eq "backup") {
             Invoke-HrmBackupGate $InstallDir $StateDir
-            Set-HrmUpdateJournal $StateDir "build" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }
+            Set-HrmUpdateJournal $StateDir "build" @{ release_dir = $releaseDir; previous_ids = $previousIds; release_sha = $releaseSha }
             $phase = "build"
         }
 
@@ -357,36 +759,34 @@ function Update-HrmApp {
             Write-HrmLog "info" "Сборка новых образов (работающее приложение не останавливается)…"
             # Сборка идёт по базовому compose-файлу и пилотному overlay из
             # обновляемого снимка. Overlay намеренно не является автономным.
-            $newBaseCompose = Join-Path $ReleaseDir "infra\docker-compose.yml"
-            $newPilotCompose = Join-Path $ReleaseDir "infra\compose.pilot.yml"
+            $newBaseCompose = Join-Path $releaseDir "infra\docker-compose.yml"
+            $newPilotCompose = Join-Path $releaseDir "infra\compose.pilot.yml"
             $envFile = Get-HrmEnvFile $StateDir
             Invoke-HrmDocker @("compose", "--project-name", "hr-manager-pilot", "--env-file", $envFile, "-f", $newBaseCompose, "-f", $newPilotCompose, "build", "--pull=false") | Out-Null
-            Set-HrmUpdateJournal $StateDir "switch" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }
+            Set-HrmUpdateJournal $StateDir "switch" @{ release_dir = $releaseDir; previous_ids = $previousIds; release_sha = $releaseSha }
             $phase = "switch"
         }
 
         if ($phase -eq "switch") {
             Write-HrmLog "info" "Замена файлов снимка и пересоздание контейнеров…"
-            $samePath = $false
-            try {
-                $fullRelease = [System.IO.Path]::GetFullPath($ReleaseDir).TrimEnd('\','/')
-                $fullInstall = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\','/')
-                $samePath = ($fullRelease -eq $fullInstall)
-            } catch {}
-            if (-not $samePath) {
-                Copy-HrmSnapshot $ReleaseDir $InstallDir
-            } else {
-                Write-HrmLog "info" "Каталог релиза совпадает с установкой — копирование пропущено."
-            }
+            # С этого момента прежние файлы могут быть уже частично заменены:
+            # любая ошибка ниже обязана пройти через согласованное восстановление.
+            $filesSwitched = $true
+            # Безопасный копировщик сам разбирает границы путей: одинаковые пути
+            # (Setup уже разложил снимок в {app}) не удаляют источник, вложенные
+            # пути отклоняются до изменений, ошибки копирования останавливают
+            # установку. Благодаря этому файлы прежней версии в {app} не
+            # теряются до успешного backup gate (дефект P1 ревью).
+            Copy-HrmSnapshot $releaseDir $InstallDir
             # Публичный ключ проверки лицензии уже установленного пилота лежит в
             # StateDir и здесь не перезаписывается. Если файла нет (старая
             # установка или ручная чистка), берём ключ из обновляемого снимка:
             # без него приложение не проверит лицензию, а pilot.env с
             # обязательной переменной (:?) не даст стеку подняться.
-            $null = Install-HrmLicensePublicKey -SourceDir $ReleaseDir -InstallDir $InstallDir -StateDir $StateDir
-            $null = Write-HrmPilotEnv $StateDir $releaseData.release_sha $port
+            $null = Install-HrmLicensePublicKey -SourceDir $releaseDir -InstallDir $InstallDir -StateDir $StateDir
+            $null = Write-HrmPilotEnv $StateDir $releaseSha $port
             Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
-            Set-HrmUpdateJournal $StateDir "migrate" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }
+            Set-HrmUpdateJournal $StateDir "migrate" @{ release_dir = $releaseDir; previous_ids = $previousIds; release_sha = $releaseSha }
             $phase = "migrate"
         }
 
@@ -395,11 +795,14 @@ function Update-HrmApp {
             # A resumed operation may enter directly at migrate after the
             # switch was persisted. Reassert the release env and running
             # containers before migration so smoke observes the target SHA.
-            $null = Write-HrmPilotEnv $StateDir $releaseData.release_sha $port
+            $null = Write-HrmPilotEnv $StateDir $releaseSha $port
             Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
             $migrate = Invoke-HrmCompose $InstallDir $StateDir @("exec", "-T", "backend", "alembic", "upgrade", "head")
             Write-HrmLog "info" (($migrate.Stdout -split "`n" | Select-Object -Last 3) -join " ")
-            Set-HrmUpdateJournal $StateDir "smoke" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }
+            # Факт успешного применения миграции: от него зависит политика
+            # отката (прежний код поверх новой схемы не поднимается).
+            $migrationDone = $true
+            Set-HrmUpdateJournal $StateDir "smoke" @{ release_dir = $releaseDir; previous_ids = $previousIds; release_sha = $releaseSha; migration_done = $true }
             $phase = "smoke"
         }
 
@@ -408,8 +811,8 @@ function Update-HrmApp {
             $ops = Get-HrmOpsStatus $baseUrl
             if ($null -eq $ops) { throw "Smoke: /api/ops/status недоступен." }
             $sha = [string]$ops.release_sha
-            if ($releaseData.release_sha -and $sha -and $sha -ne $releaseData.release_sha) {
-                throw ("Smoke: несовпадение версии в работе ({0}) и релиза ({1})." -f $sha, $releaseData.release_sha)
+            if ($releaseSha -and $sha -and $sha -ne $releaseSha) {
+                throw ("Smoke: несовпадение версии в работе ({0}) и релиза ({1})." -f $sha, $releaseSha)
             }
             # Дрейф миграций: сначала серверный вердикт (/api/ops/status уже
             # знает ожидаемую голову релиза), затем сверка с головой РАЗВЁРНУТОГО
@@ -437,12 +840,10 @@ function Update-HrmApp {
             Assert-HrmUpdatePreservedState -InstallDir $InstallDir -StateDir $StateDir | Out-Null
             $worker = Invoke-HrmCompose $InstallDir $StateDir @("exec", "-T", "worker", "python", "-m", "app.cli", "worker-check") -IgnoreExitCode
             if ($worker.ExitCode -ne 0) { throw "Smoke: worker-check не прошёл." }
-            $installedVersion = ""
-            if ($releaseData.PSObject.Properties["version"] -and $releaseData.version) { $installedVersion = [string]$releaseData.version }
-            Set-HrmInstallRecord $StateDir @{ release_sha = $releaseData.release_sha; updated_at = (Get-Date).ToString("o"); version = $installedVersion }
-            Set-HrmUpdateJournal $StateDir "done" @{ release_dir = $ReleaseDir; previous_ids = $previousIds; release_sha = $releaseData.release_sha }
+            Set-HrmInstallRecord $StateDir @{ release_sha = $releaseSha; updated_at = (Get-Date).ToString("o"); version = $newVersion }
+            Set-HrmUpdateJournal $StateDir "done" @{ release_dir = $releaseDir; previous_ids = $previousIds; release_sha = $releaseSha }
             Clear-HrmUpdateJournal $StateDir
-            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "done" -Message "Обновление завершено." -FromVersion $previousVersion -ToVersion $installedVersion -ReleaseSha $releaseData.release_sha
+            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "done" -Message "Обновление завершено." -FromVersion $previousVersion -ToVersion $newVersion -ReleaseSha $releaseSha
             Write-HrmLog "info" "Обновление завершено."
             return
         }
@@ -456,21 +857,64 @@ function Update-HrmApp {
     catch {
         $failureMessage = Redact-HrmText $_.Exception.Message
         Write-HrmLog "error" ("Обновление не удалось: {0}" -f $failureMessage)
-        if ($previousIds.Count -gt 0) {
-            Write-HrmLog "info" "Возврат к предыдущей рабочей версии (без даунгрейда БД)…"
-            Invoke-HrmRollbackImages $previousIds
-            Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
-            # Keep the journal for diagnostics/resume, but release the lock:
-            # rollback has completed and a corrected release may be retried.
-            $lock = Get-HrmUpdateLock $StateDir
-            if (Test-Path $lock) { Remove-Item $lock -Force }
-            Write-HrmLog "info" "Предыдущая версия восстановлена."
-            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "rolled_back" -Message ("Обновление не удалось, восстановлена прежняя версия. Причина: {0}" -f $failureMessage) -FromVersion $previousVersion -ToVersion $previousVersion -RolledBack
+        $recoveryConfirmed = $true
+        $needsBackupRestore = $false
+        $resultStatus = "failed"
+        $resultMessage = ("Обновление не удалось: {0}" -f $failureMessage)
+        if ($previousIds.Count -eq 0) {
+            # Прежних образов нет (первичная установка/чистый каталог): откатывать
+            # нечего, но причину и журнал сохраняем для диагностики.
+            Set-HrmUpdateJournal $StateDir "rollback" @{ release_dir = $releaseDir; release_sha = $releaseSha }
         }
         else {
-            Set-HrmUpdateJournal $StateDir "rollback" @{ release_dir = $ReleaseDir; release_sha = $releaseData.release_sha }
-            $null = Write-HrmUpdateResult -StateDir $StateDir -Status "failed" -Message ("Обновление не удалось: {0}" -f $failureMessage) -FromVersion $previousVersion -ToVersion ([string]$releaseData.version)
+            $dbRevisionNow = [string](Get-HrmMigrationsState -InstallDir $InstallDir -StateDir $StateDir)
+            $plan = Get-HrmRollbackPlan -FailedPhase $phase -MigrationDone $migrationDone -DbRevisionBefore $dbRevisionBefore -DbRevisionNow $dbRevisionNow -PreviousSnapshotSaved $previousSnapshotSaved -FilesSwitched $filesSwitched
+            Write-HrmLog "info" ("Политика восстановления: {0} ({1})." -f $plan.plan, $plan.reason)
+            Set-HrmUpdateJournal $StateDir "rollback" @{ release_dir = $releaseDir; release_sha = $releaseSha; plan = $plan.plan }
+            if ($plan.plan -eq "no_changes") {
+                # Установленная версия не менялась: возвращаем только теги образов
+                # (сборка могла переписать :pilot), контейнеры не перезапускаем.
+                try { Invoke-HrmRollbackImages $previousIds } catch { Write-HrmLog "warn" ("Образы не возвращены по тегам: {0}" -f (Redact-HrmText $_.Exception.Message)) }
+                $resultMessage = ("Обновление не удалось: {0} Установленная версия не изменялась и продолжает работать, данные в порядке." -f $failureMessage)
+                Write-HrmLog "info" "Установленная версия не изменялась — приложение продолжает работу."
+            }
+            else {
+                # Согласованный возврат прежней версии: файлы + образы + release_sha,
+                # затем запуск и проверка готовности. Успех — только если прежняя
+                # версия отвечает и в работе НЕ сбойный релиз.
+                $previousReleaseSha = ""
+                $previousVersionSaved = $previousVersion
+                if ($resume -and $null -ne $data) {
+                    if ($data.PSObject.Properties["previous_release_sha"]) { $previousReleaseSha = [string]$data.previous_release_sha }
+                    if (-not $previousVersionSaved -and $data.PSObject.Properties["previous_version"]) { $previousVersionSaved = [string]$data.previous_version }
+                }
+                if (-not $previousReleaseSha) { $previousReleaseSha = [string]$record.release_sha }
+                $restore = Restore-HrmPreviousVersion -InstallDir $InstallDir -StateDir $StateDir -PreviousIds $previousIds -PreviousReleaseSha $previousReleaseSha -PreviousVersion $previousVersionSaved -FailedReleaseSha $releaseSha -Port $port
+                if ($restore.confirmed) {
+                    Write-HrmLog "info" $restore.message
+                    $resultStatus = "rolled_back"
+                    $resultMessage = ("Обновление не удалось, прежняя версия восстановлена и отвечает. Причина: {0}" -f $failureMessage)
+                    if ($plan.plan -eq "restore_previous_after_migration" -or $migrationDone) {
+                        # Честность для владельца: схема БД не откатывается.
+                        $resultMessage += " Схема базы данных остаётся на новой ревизии, данные не удалялись; если приложение прежней версии сообщит об ошибке, восстановите базу из проверенной резервной копии, созданной перед обновлением."
+                    }
+                }
+                else {
+                    # Ложное «восстановлено» запрещено: пишем честный статус,
+                    # сохраняем журнал и бэкапы.
+                    Write-HrmLog "error" $restore.message
+                    $resultStatus = "rollback_failed"
+                    $recoveryConfirmed = $false
+                    $needsBackupRestore = $true
+                    $resultMessage = ("Обновление не удалось: {0} {1} Журнал обновления и резервные копии сохранены — создайте отчёт и передайте его в поддержку." -f $failureMessage, $restore.message)
+                }
+            }
         }
+        # Блокировка снимается всегда: после отката исправленный релиз можно
+        # повторить, а незавершённые данные остаются в журнале для разбора.
+        $lock = Get-HrmUpdateLock $StateDir
+        if (Test-Path $lock) { Remove-Item $lock -Force }
+        $null = Write-HrmUpdateResult -StateDir $StateDir -Status $resultStatus -Message $resultMessage -FromVersion $previousVersion -ToVersion $newVersion -ReleaseSha $releaseSha -RolledBack:($resultStatus -eq "rolled_back") -RecoveryConfirmed:$recoveryConfirmed -NeedsBackupRestore:$needsBackupRestore
         throw
     }
 }
