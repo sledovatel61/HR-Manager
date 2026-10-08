@@ -19,19 +19,131 @@ function Get-HrmReleaseSha {
     return ""
 }
 
+function Get-HrmNormalizedPath {
+    # Абсолютный путь для сравнения: без хвостовых разделителей, кроме корня
+    # диска («C:\»), с единым разделителем. Нужен, потому что Setup передаёт
+    # движку -SourceDir «{app}» — то есть источник и назначение формально разные
+    # строки, а на диске один и тот же каталог.
+    param([string]$Path)
+    if (-not $Path) { return "" }
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $trimmed = $full.TrimEnd([char[]]@('\', '/'))
+    if (-not $trimmed) { return $full }
+    if ($trimmed -match '^[A-Za-z]:$') { return ($trimmed + '\') }
+    return $trimmed
+}
+
+function Test-HrmSamePath {
+    # Один и тот же каталог (регистр в Windows не важен).
+    param([string]$Left, [string]$Right)
+    $l = Get-HrmNormalizedPath $Left
+    $r = Get-HrmNormalizedPath $Right
+    if (-not $l -or -not $r) { return $false }
+    return [string]::Equals($l, $r, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-HrmPathInside {
+    # $Child лежит внутри $Parent (или совпадает с ним).
+    param([string]$Parent, [string]$Child)
+    $p = Get-HrmNormalizedPath $Parent
+    $c = Get-HrmNormalizedPath $Child
+    if (-not $p -or -not $c) { return $false }
+    if ([string]::Equals($p, $c, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $prefix = $p
+    if (-not $prefix.EndsWith('\')) { $prefix = $prefix + '\' }
+    return $c.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-HrmSnapshotComplete {
+    # Снимок приложения полон: по infra\compose.pilot.yml движок собирает стек,
+    # backend/ и frontend/ нужны для сборки образов. Проверка выполняется ДО
+    # подмены файлов и ПОСЛЕ копирования: иначе установка могла бы «успешно»
+    # завершиться с пустым или половинчатым снимком.
+    param([string]$Dir, [string]$Label = "снимок")
+    $missing = @()
+    if (-not (Test-Path -Path (Join-Path $Dir "infra\compose.pilot.yml") -PathType Leaf)) { $missing += "infra\compose.pilot.yml" }
+    foreach ($name in @("backend", "frontend")) {
+        if (-not (Test-Path -Path (Join-Path $Dir $name) -PathType Container)) { $missing += $name }
+    }
+    if ($missing.Count -gt 0) {
+        throw ("{0} неполный ({1}): нет {2}." -f $Label, $Dir, ($missing -join ", "))
+    }
+    return $true
+}
+
 function Copy-HrmSnapshot {
     # Копирует снимок приложения (infra/, backend/, frontend/, release.json)
     # из SourceDir в InstallDir. Не трогает .git каталог назначения.
+    #
+    # ГРАНИЦЫ (дефект P1 первичной установки):
+    #   * одинаковые пути — так работает Setup.exe: он сам раскладывает файлы в
+    #     {app} и запускает движок с -SourceDir «{app}». Раньше функция удаляла
+    #     каталог назначения перед копированием и в этом случае уничтожала сам
+    #     снимок (удаляла источник), после чего копировать было нечего. Теперь
+    #     одинаковые пути — не копирование, а проверка снимка на месте: ничего
+    #     не удаляется;
+    #   * вложенные пути (источник внутри назначения или назначение внутри
+    #     источника) — отказ ДО любых изменений файлов: копирование каталога
+    #     внутрь себя зациклилось бы, а предварительная очистка удалила бы
+    #     источник;
+    #   * обычное копирование идёт через временный каталог рядом с назначением,
+    #     поэтому источник никогда не оказывается местом очистки;
+    #   * любая ошибка копирования или неполный результат — исключение:
+    #     установка не может «успешно» завершиться с наполовину скопированным
+    #     снимком (раньше ошибки Copy-Item не останавливали установку).
     param([string]$SourceDir, [string]$InstallDir)
-    foreach ($name in @("infra", "backend", "frontend", "release.json")) {
-        $source = Join-Path $SourceDir $name
-        if (-not (Test-Path $source)) {
-            if ($name -eq "release.json") { continue }
-            throw "В исходном каталоге нет ${name}: $SourceDir"
+    $sourceFull = Get-HrmNormalizedPath $SourceDir
+    $installFull = Get-HrmNormalizedPath $InstallDir
+    if (-not $sourceFull -or -not $installFull) {
+        throw "Copy-HrmSnapshot: не заданы -SourceDir и -InstallDir."
+    }
+    if (Test-HrmSamePath $sourceFull $installFull) {
+        Assert-HrmSnapshotComplete -Dir $installFull -Label "Каталог установки" | Out-Null
+        $null = Write-HrmLog "info" "Снимок приложения уже разложен в каталог установки — копирование не требуется."
+        return
+    }
+    if (Test-HrmPathInside -Parent $installFull -Child $sourceFull) {
+        throw ("Каталог релиза ({0}) находится внутри каталога установки ({1}): копирование снимка внутрь самого себя запрещено — файлы не изменены." -f $sourceFull, $installFull)
+    }
+    if (Test-HrmPathInside -Parent $sourceFull -Child $installFull) {
+        throw ("Каталог установки ({0}) находится внутри каталога релиза ({1}): копирование снимка в собственный подкаталог запрещено — файлы не изменены." -f $installFull, $sourceFull)
+    }
+    Assert-HrmSnapshotComplete -Dir $sourceFull -Label "Каталог релиза" | Out-Null
+
+    $components = @("infra", "backend", "frontend")
+    if (-not (Test-Path $installFull)) { New-Item -ItemType Directory -Path $installFull -Force | Out-Null }
+    $staging = Join-Path $installFull (".hrm-snapshot-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
+    $copyRoot = Join-Path $staging "new"
+    try {
+        New-Item -ItemType Directory -Path $copyRoot -Force -ErrorAction Stop | Out-Null
+        foreach ($name in ($components + "release.json")) {
+            $source = Join-Path $sourceFull $name
+            if (-not (Test-Path $source)) {
+                if ($name -eq "release.json") { continue }
+                throw ("В каталоге релиза нет {0}: {1}." -f $name, $sourceFull)
+            }
+            # -ErrorAction Stop: ошибка копирования обязана остановить установку,
+            # а не оставить «успешный» статус при неполном снимке.
+            Copy-Item -Path $source -Destination (Join-Path $copyRoot $name) -Recurse -Force -ErrorAction Stop
         }
-        $destination = Join-Path $InstallDir $name
-        if (Test-Path $destination) { Remove-Item $destination -Recurse -Force }
-        Copy-Item -Path $source -Destination $destination -Recurse -Force
+        Assert-HrmSnapshotComplete -Dir $copyRoot -Label "Временная копия снимка" | Out-Null
+        # Подмена только после успешной копии и проверки. Источник уже не
+        # является местом очистки, поэтому удаление каталогов назначения не
+        # может уничтожить снимок релиза.
+        foreach ($name in $components) {
+            $destination = Join-Path $installFull $name
+            if (Test-Path $destination) { Remove-Item -Path $destination -Recurse -Force -ErrorAction Stop }
+            Move-Item -Path (Join-Path $copyRoot $name) -Destination $destination -Force -ErrorAction Stop
+        }
+        $releaseSource = Join-Path $sourceFull "release.json"
+        if (Test-Path $releaseSource) {
+            Move-Item -Path (Join-Path $copyRoot "release.json") -Destination (Join-Path $installFull "release.json") -Force -ErrorAction Stop
+        }
+        Assert-HrmSnapshotComplete -Dir $installFull -Label "Каталог установки" | Out-Null
+        $null = Write-HrmLog "info" ("Снимок приложения разложен из {0}." -f $sourceFull)
+    }
+    finally {
+        if (Test-Path $staging) { Remove-Item -Path $staging -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -150,6 +262,8 @@ function Install-HrmApp {
     if (Test-Path $inputFile) { Protect-HrmFile $StateDir $inputFile }
     if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
     Copy-HrmSnapshot $SourceDir $InstallDir
+    # Снимок обязан быть полным: с этого каталога движок собирает стек.
+    Assert-HrmSnapshotComplete -Dir $InstallDir -Label "Каталог установки" | Out-Null
 
     # Лицензия: публичный ключ проверки — внешний локальный файл
     # StateDir\license_public_key.b64 (см. Secrets.psm1\Install-HrmLicensePublicKey).
@@ -353,12 +467,41 @@ function Resume-HrmOperation {
         $kind = ""
         if ($pending.PSObject.Properties["kind"]) { $kind = [string]$pending.kind }
         Write-HrmLog "info" "Найдена незавершённая установка рабочей среды — продолжаю автоматически."
+        $null = Set-HrmSetupMarker -StateDir $StateDir -Status "running" -Message "Продолжаем установку HR Manager…"
+        Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
         $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -AllowInstall -Interactive
         if (-not $prepare.ok) {
             Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
             throw $prepare.message
         }
         if ($kind -eq "reboot") { Clear-HrmPendingDockerOperation $StateDir }
+        # Записи об установке может ещё НЕ быть: перезагрузка после установки
+        # Docker прерывает ПЕРВИЧНУЮ установку до её записи. Продолжаем её —
+        # файлы снимка уже разложены мастером установки, поэтому запускаем
+        # обычную установку из каталога установки (одинаковые пути безопасны:
+        # снимок проверяется, а не копируется поверх самого себя).
+        $record = Get-HrmInstallRecord $StateDir
+        if ($null -eq $record -and (Test-Path (Join-Path $InstallDir "infra\compose.pilot.yml"))) {
+            Write-HrmLog "info" "Продолжаю первичную установку HR Manager (файлы уже на месте)."
+            Install-HrmApp -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir -AllowDockerInstall
+            Clear-HrmSetupMarker -StateDir $StateDir
+            return
+        }
+    }
+    # Записи об установке может ещё НЕ быть: перезагрузка Windows или закрытие
+    # мастера прерывают ПЕРВИЧНУЮ установку до её записи. Файлы снимка уже
+    # разложены мастером установки — продолжаем установку из каталога установки
+    # (одинаковые пути безопасны: снимок проверяется, а не копируется поверх
+    # самого себя). Так «после перезагрузки HR Manager продолжит сам» становится
+    # правдой и для первичной установки, а не только для обновления.
+    $recordForResume = Get-HrmInstallRecord $StateDir
+    if ($null -eq $recordForResume -and (Test-Path (Join-Path $InstallDir "infra\compose.pilot.yml"))) {
+        Write-HrmLog "info" "Продолжаю первичную установку HR Manager (файлы уже на месте)."
+        $null = Set-HrmSetupMarker -StateDir $StateDir -Status "running" -Message "Продолжаем установку HR Manager…"
+        Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
+        Install-HrmApp -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir -AllowDockerInstall
+        Clear-HrmSetupMarker -StateDir $StateDir
+        return
     }
     Write-HrmLog "info" "Прерванных операций нет; поднимаю приложение."
     Start-HrmApp -InstallDir $InstallDir -StateDir $StateDir

@@ -207,10 +207,51 @@ begin
   SaveStringToFile(InputFile, Json, False);
 end;
 
+procedure PreservePreviousSnapshot();
+var
+  ResultCode: Integer;
+  EngineScript, Params: String;
+begin
+  // Обновление поверх установленной версии: файлы {app} будут перезаписаны
+  // файлами новой версии, поэтому прежняя версия сохраняется ДО этого шага —
+  // действием snapshot-previous УЖЕ УСТАНОВЛЕННОГО движка (он кладёт снимок
+  // в каталог состояния, откуда движок берёт его для отката). Это подготовка:
+  // неудача не останавливает установку, причина попадает в журнал движка.
+  if not FileExists(ExpandConstant('{app}\infra\windows\hr-manager.ps1')) then
+    Exit;
+  EngineScript := ExpandConstant('{app}\infra\windows\hr-manager.ps1');
+  Params := '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
+    EngineScript + '" -Action snapshot-previous -InstallDir "' +
+    ExpandConstant('{app}') + '" -StateDir "' +
+    ExpandConstant('{localappdata}\HRManager') + '"';
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params,
+    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure WriteSetupMarker();
+var
+  StateDir, MarkerFile, Marker: String;
+begin
+  // Отметка «идёт установка»: значок в трее, который мастер запускает сразу
+  // после копирования файлов, показывает ход установки и НЕ выходит с ошибкой
+  // «HR Manager не установлен» (дефект P2 ревью). Движок обновляет отметку по
+  // ходу установки и снимает её при успешном завершении.
+  StateDir := ExpandConstant('{localappdata}\HRManager');
+  ForceDirectories(StateDir);
+  MarkerFile := StateDir + '\setup-run.json';
+  Marker := '{"status": "running", "message": "Устанавливаем HR Manager…"}';
+  SaveStringToFile(MarkerFile, Marker, False);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssInstall then
+    PreservePreviousSnapshot();
   if CurStep = ssPostInstall then
+  begin
     WriteFirstRunInput();
+    WriteSetupMarker();
+  end;
 end;
 
 function GetEngineDockerArgs(Param: String): String;
