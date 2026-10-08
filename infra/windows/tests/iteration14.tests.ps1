@@ -215,10 +215,13 @@ Test-Case "P1-2: откат без подтверждённой готовнос
     $null = Save-HrmInstalledSnapshotForSetup -InstallDir $install -StateDir $state
     $releaseB = New-HrmIteration14Dir "release-b"
     New-HrmFakeSnapshot -Root $releaseB -ReleaseSha $shaB
-    # После отката приложение ОТВЕЧАЕТ, но в работе по-прежнему сбойная версия:
-    # готовность не подтверждена — статус обязан быть честным.
+    # Приложение отвечает, но в работе по-прежнему сбойная версия: обновление
+    # падает уже после замены файлов (проверка worker), а мок после отката
+    # продолжает сообщать сбойный release_sha — готовность не подтверждена,
+    # статус обязан быть честным.
     $world.SimulateStaleRelease = $true
     $world.OpsBody.release_sha = $shaB
+    $world.WorkerCheckOk = $false
     $caught = $false
     try { Update-HrmApp -ReleaseDir $releaseB -InstallDir $install -StateDir $state } catch { $caught = $true }
     Assert-HrmTrue $caught "провал обновления не дошёл до вызывающего"
@@ -533,6 +536,7 @@ Test-Case "P2-4: план значка — установка упала, пре
 Test-Case "P2-4: план значка по реальным файлам состояния (отметка, запись, журнал обновления)" {
     Initialize-HrmTestEngine
     New-HrmMockWorld | Out-Null
+    Set-HrmPreflightOverride @{ windows = $true; powershell = $true; docker = $true; daemon = $true; compose = "v2.29.7 (mock)"; port = $true; state_dir = $true; space = $true; config = $true }
     $state = Get-HrmTestStateDir
     $install = Get-HrmTestInstallDir
     # Мастер установки только что записал отметку, приложения ещё нет.

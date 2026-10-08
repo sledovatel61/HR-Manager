@@ -350,8 +350,12 @@ Test-Case "наблюдатель: неподтверждённый откат �
     $t = New-HrmChannelWorld -QueueInstall "yes"
     $state = Get-HrmTestStateDir
     $install = Get-HrmTestInstallDir
-    # Стек не поднимается ни в новой, ни в прежней версии: Update-HrmApp
-    # завершается статусом rollback_failed (восстановление не подтверждено).
+    # Обновление терпит неудачу (версия в работе не меняется), а стек не
+    # поднимается и при откате: Update-HrmApp завершается статусом
+    # rollback_failed (восстановление не подтверждено) — серверу обязан уйти
+    # failed, а не ложное rolled_back.
+    $t.World.SimulateStaleRelease = $true
+    $t.World.OpsBody.release_sha = "3" * 40
     $t.World.UpFails = $true
     Invoke-HrmChannelOnce -InstallDir $install -StateDir $state | Out-Null
     $channelWorld = $global:HRM_ChannelWorld
