@@ -453,4 +453,57 @@ Test-Case "формат-строки оператора -f корректны (J
     }
 }
 
+Test-Case "сценарий CI-смоука установки читается Windows PowerShell 5.1 (BOM + парсер)" {
+    # Регрессия: сценарий смоука лежал текстом прямо в шаге workflow. Раннер
+    # пишет временный скрипт шага в UTF-8 БЕЗ BOM, а Windows PowerShell 5.1
+    # читает такой файл в ANSI-кодировке: кириллица превращается в мусор, шаг
+    # падал на разборе и не оставлял ни одной аннотации — причину сбоя не было
+    # видно вообще. Теперь сценарий (вместе со всей кириллицей) лежит в файле
+    # репозитория с BOM, а шаг workflow — тонкая ASCII-обёртка.
+    $smokePath = Join-Path $WindowsDir "tests\ci-silent-smoke.ps1"
+    Assert-HrmTrue (Test-Path -LiteralPath $smokePath) "нет сценария смоука установки"
+    $bytes = [System.IO.File]::ReadAllBytes($smokePath)
+    Assert-HrmTrue ($bytes.Length -gt 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) `
+        "у сценария смоука нет UTF-8 BOM: PowerShell 5.1 прочитает кириллицу как ANSI"
+    $tokens = $null
+    $errors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($smokePath, [ref]$tokens, [ref]$errors) | Out-Null
+    if ($errors -and $errors.Count -gt 0) {
+        throw ("Ошибки парсера в сценарии смоука (строка {0}): {1}" -f $errors[0].Extent.StartLineNumber, $errors[0].Message)
+    }
+    $smoke = Get-Content -Path $smokePath -Raw -Encoding UTF8
+    # Причину сбоя обязано быть видно в check-runs: логи шагов из среды
+    # сопровождения не читаются.
+    Assert-HrmContains $smoke "::error" "сбой смоука не виден в check-runs (нет аннотации)"
+    # Причина остановки мастера есть только в его журнале: запуск с /LOG и хвост
+    # журнала в аннотации.
+    Assert-HrmContains $smoke "/LOG=" "мастер запускается без журнала — причина остановки останется неизвестной"
+    Assert-HrmContains $smoke "-Tail" "хвост журнала мастера не читается"
+    # Код возврата мастера обязан проверяться: остановка до перезаписи файлов
+    # (гейт снимка) видна только так.
+    Assert-HrmContains $smoke "ExitCode" "код возврата мастера не проверяется"
+    # Чистая установка: мастер не должен запускать помощник снимка, и это
+    # проверяется по журналу мастера.
+    Assert-HrmContains $smoke "HRM: snapshot decision needed=0" "смоук не проверяет решение мастера на чистой установке"
+}
+
+Test-Case "шаг CI-смоука — ASCII-обёртка над сценарием из репозитория" {
+    $lines = @(Get-Content -Path (Join-Path $RepoRoot ".github\workflows\ci.yml") -Encoding UTF8)
+    $start = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i].Trim() -eq "- name: Silent install and uninstall smoke") { $start = $i; break }
+    }
+    Assert-HrmTrue ($start -ge 0) "в ci.yml нет шага смоука установки"
+    $end = $lines.Count - 1
+    for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -like "      - name:*") { $end = $i - 1; break }
+    }
+    $step = ($lines[$start..$end] -join "`n")
+    $nonAscii = 0
+    foreach ($ch in $step.ToCharArray()) { if ([int]$ch -gt 127) { $nonAscii++ } }
+    Assert-HrmEqual 0 $nonAscii "в критичном шаге смоука есть нелатиница: временный скрипт шага читается PowerShell 5.1 в ANSI-кодировке"
+    Assert-HrmContains $step "ci-silent-smoke.ps1" "шаг смоука не вызывает сценарий из репозитория"
+    Assert-HrmContains $step "exit 1" "шаг смоука не возвращает код возврата сценария"
+}
+
 Write-Host ("Статические проверки: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

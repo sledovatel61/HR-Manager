@@ -253,9 +253,53 @@ def check_no_backtick_fence(path: Path) -> None:
 WORKFLOWS = ROOT / ".github" / "workflows"
 
 
+SMOKE_STEP_NAME = "- name: Silent install and uninstall smoke"
+SMOKE_SCRIPT = "infra/windows/tests/ci-silent-smoke.ps1"
+
+
+def check_smoke_step(path: Path, required: bool = False) -> None:
+    """Шаг CI-смоука — ASCII-обёртка над сценарием из репозитория.
+
+    Регрессия, стоившая нескольких прогонов: сценарий смоука лежал текстом в
+    шаге workflow. Раннер пишет временный скрипт шага в UTF-8 БЕЗ BOM, а
+    Windows PowerShell 5.1 читает такой файл в ANSI — кириллица превращается в
+    мусор, шаг падает на разборе и НЕ оставляет аннотаций, по которым можно
+    понять причину. Поэтому текст шага — только ASCII, а вся кириллица живёт в
+    файле с BOM (его проверяют и lint, и static.tests.ps1 на Windows).
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != SMOKE_STEP_NAME:
+            continue
+        body = []
+        for follower in lines[index + 1:]:
+            if follower.startswith("      - name:"):
+                break
+            body.append(follower)
+        step = "\n".join(body)
+        if not all(ord(ch) < 128 for ch in step):
+            bad = sorted({ch for ch in step if ord(ch) > 127})
+            fail(
+                f"{path}:{index + 1}: в шаге смоука есть нелатиница "
+                f"({''.join(bad)[:20]!r}) — временный скрипт шага читается "
+                "PowerShell 5.1 в ANSI-кодировке; текст переносите в файл с BOM"
+            )
+        if SMOKE_SCRIPT not in step:
+            fail(f"{path}:{index + 1}: шаг смоука не вызывает {SMOKE_SCRIPT}")
+        if "exit 1" not in step:
+            fail(f"{path}:{index + 1}: шаг смоука не возвращает код возврата сценария")
+        return
+    # Шаг смоука живёт только в CI, который собирает установщик. В этом файле
+    # его отсутствие (например, переименование при правке) — провал проверки,
+    # а не «нечего проверять»: иначе защита молча исчезла бы вместе с шагом.
+    if required:
+        fail(f"{path}: не найден шаг смоука установки ({SMOKE_STEP_NAME})")
+
+
 def check_workflows() -> None:
     for path in sorted(WORKFLOWS.glob("*.yml")):
         check_no_backtick_fence(path)
+        check_smoke_step(path, required=path.name == "ci.yml")
 
 def check_no_self_referential_trust(path: Path, code: str) -> None:
     """Доверенные якоря Authenticode не должны браться из проверяемого файла.

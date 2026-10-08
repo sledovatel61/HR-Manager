@@ -722,88 +722,35 @@ jobs:
       - name: Silent install and uninstall smoke
         shell: powershell
         run: |
-          # Диагностика шага идёт в АННОТАЦИИ (::error/::notice): логи этого
-          # шага не читаются из среды сопровождения, а аннотации видны через API.
-          function Write-HrmJson {
-            # Как installer/build.ps1: UTF-8 без BOM.
-            param([string]$Path, [string]$Json)
-            [System.IO.File]::WriteAllText($Path, $Json, (New-Object System.Text.UTF8Encoding($false)))
+          # Thin ASCII-only wrapper. The scenario (and every Russian message)
+          # lives in infra\windows\tests\ci-silent-smoke.ps1, which is committed
+          # as UTF-8 with BOM: the runner writes the temporary step script
+          # without BOM, and Windows PowerShell 5.1 then reads Russian text as
+          # ANSI - that already hid a failure reason together with its
+          # annotations once. The child output is echoed line by line and, on
+          # failure, re-emitted as one annotation: step logs cannot be read from
+          # the support environment, check-run annotations can.
+          $ErrorActionPreference = "Continue"
+          $smokeScript = Join-Path $env:GITHUB_WORKSPACE "infra/windows/tests/ci-silent-smoke.ps1"
+          if (-not (Test-Path -LiteralPath $smokeScript)) {
+            Write-Host ("::error title=Silent smoke wrapper::script is missing: " + $smokeScript)
+            exit 1
           }
-          function Read-HrmJson {
-            param([string]$Path)
-            return (Get-Content -Path $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+          $outLog = Join-Path $env:RUNNER_TEMP "ci-silent-smoke.out.log"
+          Remove-Item -LiteralPath $outLog -Force -ErrorAction SilentlyContinue
+          Write-Host "::notice title=Silent smoke wrapper::launching ci-silent-smoke.ps1"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $smokeScript 2>&1 |
+            Tee-Object -FilePath $outLog | ForEach-Object { Write-Host ([string]$_) }
+          $smokeCode = $LASTEXITCODE
+          Write-Host ("Silent smoke script exit code: " + $smokeCode)
+          if ($smokeCode -ne 0) {
+            $tail = @(Get-Content -LiteralPath $outLog -Encoding UTF8 -ErrorAction SilentlyContinue | Select-Object -Last 45) -join "`n"
+            $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            if ($tail.Length -gt 3500) { $tail = $tail.Substring($tail.Length - 3500) }
+            Write-Host ("::error title=Silent smoke wrapper::exit " + $smokeCode + " :: " + $tail)
+            exit 1
           }
-          function Invoke-HrmSetup {
-            # Обычные и обновляющие прогоны мастера: код возврата обязателен к
-            # проверке — «остановка до перезаписи файлов» обязана быть видна.
-            param([string]$Exe, [string]$Label)
-            $process = Start-Process $Exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
-            if ($process.ExitCode -ne 0) { throw "$Label failed: $($process.ExitCode)" }
-          }
-          try {
-            $setup = Get-ChildItem installer/output/HR-Manager-Setup-*.exe | Select-Object -First 1
-            if (-not $setup) { throw "Setup.exe was not produced" }
-            $appDir = Join-Path $env:LOCALAPPDATA "Programs\HRManager"
-            $stateDir = Join-Path $env:LOCALAPPDATA "HRManager"
-            Invoke-HrmSetup $setup.FullName "Silent install"
-            Write-Host "::notice title=Silent smoke phase=install::exit 0"
-            if (-not (Test-Path (Join-Path $appDir "infra\windows\hr-manager.ps1"))) {
-              throw "Installed Windows engine is missing"
-            }
-            $uninstaller = Join-Path $appDir "unins000.exe"
-            if (-not (Test-Path $uninstaller)) { throw "Uninstaller is missing" }
-
-            # --- Обновление ПОВЕРХ существующей установки (регрессия итерации 15) --
-            # 1) Показываем мастеру «прежнюю версию»: её release.json в {app} и
-            #    запись установки. Идентификаторы обязаны отличаться от нового
-            #    пакета, иначе снимок прежней версии делать запрещено (files_replaced).
-            #    Дату файла отодвигаем назад: пакетный release.json должен быть
-            #    новее, иначе мастер вправе оставить существующий файл.
-            $previousSha = "old-pilot-version-sha"
-            $releasePath = Join-Path $appDir "release.json"
-            $release = Read-HrmJson $releasePath
-            $newSha = [string]$release.release_sha
-            if (-not $newSha) { throw "release.json пакета без release_sha" }
-            $release.release_sha = $previousSha
-            $release.version = "0.0.1"
-            Write-HrmJson $releasePath ($release | ConvertTo-Json -Depth 5)
-            (Get-Item $releasePath).LastWriteTime = (Get-Date).AddDays(-1)
-            $record = [ordered]@{ version = "0.0.1"; release_sha = $previousSha; port = 8080; installed_at = (Get-Date).AddDays(-1).ToString("o") }
-            Write-HrmJson (Join-Path $stateDir "installed.json") ($record | ConvertTo-Json)
-            # 2) Повторный запуск мастера = обновление. Раньше мастер проверял
-            #    готовность снимка РАНЬШЕ, чем его создавал, и останавливался на
-            #    любой существующей установке (код возврата != 0).
-            Invoke-HrmSetup $setup.FullName "Silent upgrade"
-            Write-Host "::notice title=Silent smoke phase=upgrade::exit 0"
-            # 3) Снимок прежней версии обязан быть создан ДО перезаписи: он
-            #    проверен, сделан мастером (origin=installer) и содержит прежние
-            #    файлы, а {app} уже перезаписан новым релизом.
-            $descriptor = Join-Path $stateDir "previous-snapshot.json"
-            if (-not (Test-Path $descriptor)) { throw "Снимок прежней версии не создан: previous-snapshot.json" }
-            $meta = Read-HrmJson $descriptor
-            if (-not $meta.verified) { throw "Снимок прежней версии не подтверждён (verified=false)" }
-            if ($meta.origin -ne "installer") { throw "Снимок сделан не мастером установки: origin=$($meta.origin)" }
-            if ($meta.release_sha -ne $previousSha) { throw "Снимок сделан не из прежней версии: $($meta.release_sha)" }
-            $snapshotRelease = Read-HrmJson (Join-Path $stateDir "previous-snapshot\release.json")
-            if ($snapshotRelease.release_sha -ne $previousSha) { throw "В снимке нет файлов прежней версии" }
-            $nowSha = [string](Read-HrmJson $releasePath).release_sha
-            if ($nowSha -ne $newSha) { throw "Мастер не заменил файлы программы: $($nowSha) вместо $($newSha)" }
-            $newHalf = $newSha.Substring(0, [Math]::Min(16, $newSha.Length))
-            Write-Host ("::notice title=Silent upgrade smoke::снимок прежней версии проверен до перезаписи, файлов " + [string]$meta.files + ", релиз " + $newHalf)
-
-            $process = Start-Process $uninstaller -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
-            if ($process.ExitCode -ne 0) { throw "Silent uninstall failed: $($process.ExitCode)" }
-            if (Test-Path (Join-Path $appDir "infra\windows\hr-manager.ps1")) {
-              throw "Installed application files survived uninstall"
-            }
-            Write-Host "::notice title=Silent smoke phase=uninstall::exit 0"
-          }
-          catch {
-            # Без этой аннотации причина падения шага не читается ни из среды
-            # сопровождения, ни из check-run API (только «exit code 1»).
-            Write-Host ("::error title=Silent install/upgrade smoke::" + $_.Exception.Message)
-            throw
-          }
+          Write-Host "::notice title=Silent smoke wrapper::script finished with exit code 0"
       - name: Phase 14 pilot drill (Windows engine update/rollback/resume/uninstall)
         shell: powershell
         run: |
