@@ -101,6 +101,12 @@ function New-HrmChannelWorld {
         installed_at = "2026-09-10T00:00:00Z"
         pilot_created = $true
     }
+    # Реальная установка копирует публичный ключ проверки лицензии из снимка в
+    # StateDir (Install-HrmApp → Install-HrmLicensePublicKey). Мок-мир создаёт
+    # установку копированием файлов, поэтому ключ кладём тем же путём: иначе
+    # обновление справедливо остановится на проверке сохранности состояния
+    # (Assert-HrmUpdatePreservedState: «не найдено: ключ проверки лицензии»).
+    $null = Install-HrmLicensePublicKey -SourceDir $sourceDir -InstallDir (Get-HrmTestInstallDir) -StateDir $state
     # Снимок приложения в install dir (установленная версия — 0.13.0).
     Copy-Item (Join-Path $sourceDir "backend") (Get-HrmTestInstallDir) -Recurse -Force
     Copy-Item (Join-Path $sourceDir "frontend") (Get-HrmTestInstallDir) -Recurse -Force
@@ -337,6 +343,27 @@ Test-Case "наблюдатель: провал update → отчёт rolled_bac
     Assert-HrmEqual "update_failed" ([string]$channelWorld.Reports[0].Body.error_code) "код ошибки"
     Assert-HrmEqual 6 $t.World.TagCount ("откат к прежним образам не выполнен (detail: " + $reportDetail + ")")
     Assert-HrmEqual ("3" * 40) (Get-HrmInstallRecord $state).release_sha "версия изменилась при провале"
+}
+
+Test-Case "наблюдатель: неподтверждённый откат НЕ отправляется серверу как rolled_back" {
+    Initialize-HrmTestEngine
+    $t = New-HrmChannelWorld -QueueInstall "yes"
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    # Обновление терпит неудачу (версия в работе не меняется), а стек не
+    # поднимается и при откате: Update-HrmApp завершается статусом
+    # rollback_failed (восстановление не подтверждено) — серверу обязан уйти
+    # failed, а не ложное rolled_back.
+    $t.World.SimulateStaleRelease = $true
+    $t.World.OpsBody.release_sha = "3" * 40
+    $t.World.UpFails = $true
+    Invoke-HrmChannelOnce -InstallDir $install -StateDir $state | Out-Null
+    $channelWorld = $global:HRM_ChannelWorld
+    Assert-HrmEqual 1 $channelWorld.Reports.Count "отчёт не отправлен"
+    Assert-HrmEqual "failed" ([string]$channelWorld.Reports[0].Body.state) "неподтверждённый откат объявлен как rolled_back"
+    Assert-HrmEqual "update_failed" ([string]$channelWorld.Reports[0].Body.error_code) "код ошибки"
+    # В отчёте владельцу видно, что восстановление не подтверждено и нужна копия.
+    Assert-HrmContains ([string]$channelWorld.Reports[0].Body.error_detail) "не подтверждено" "причина неподтверждённого восстановления не передана"
 }
 
 Test-Case "наблюдатель: без команд — только фоновая проверка, установки нет" {

@@ -19,12 +19,17 @@ function Test-Case {
     catch {
         $global:HRM_TestFailed++
         $msg = ("{0}: {1}" -f $Name, $_.Exception.Message)
-        $global:HRM_TestFailures += $msg
-        Write-Host ("  [FAIL] $Name : {0}" -f $_.Exception.Message) -ForegroundColor Red
         # GitHub-аннотация: имя проваленного кейса + стек видны в check-runs
         # даже когда лог-приёмник недоступен.
         $stack = $_.ScriptStackTrace
         if (-not $stack) { $stack = "(без стектрейса)" }
+        # Компактный стектрейс кладём В САМ СПИСОК провалов: в аннотации
+        # ::error:: помещается только 10 записей на шаг, а notice-список через
+        # API виден целиком (логи и артефакты скачать из CI нельзя).
+        $shortStack = ($stack -replace "[`r`n]+", " | ")
+        if ($shortStack.Length -gt 400) { $shortStack = $shortStack.Substring(0, 400) }
+        $global:HRM_TestFailures += ($msg + " || " + $shortStack)
+        Write-Host ("  [FAIL] $Name : {0}" -f $_.Exception.Message) -ForegroundColor Red
         $flat = ($msg + " || " + $stack) -replace "[`r`n]+", " | "
         $title = $Name -replace "[`r`n:]+", " "
         Write-Host ("::error title={0}::{1}" -f $title, $flat)
@@ -53,6 +58,17 @@ function Assert-HrmContains {
     if ([string]::IsNullOrEmpty($Haystack) -or -not $Haystack.Contains($Needle)) { throw $Message }
 }
 
+function Assert-HrmContainsRedacted {
+    # Маркер редакции в JSON-файлах: ConvertTo-Json (Windows PowerShell 5.1)
+    # экранирует ` < ` и ` > ` как \u003c/\u003e, поэтому проверяем и литерал, и
+    # экранированную форму — читатель JSON в обоих случаях видит <redacted>.
+    param([string]$Text, [string]$Message = "нет маркера редакции")
+    if ([string]::IsNullOrEmpty($Text)) { throw $Message }
+    $unescaped = [regex]::Replace($Text, "\\u003c", "<", "IgnoreCase")
+    $unescaped = [regex]::Replace($unescaped, "\\u003e", ">", "IgnoreCase")
+    Assert-HrmContains $unescaped "<redacted>" $Message
+}
+
 function Assert-HrmNotContains {
     param([string]$Haystack, [string]$Needle, [string]$Message = "запрещённая подстрока найдена")
     if (-not [string]::IsNullOrEmpty($Haystack) -and $Haystack.Contains($Needle)) { throw $Message }
@@ -79,7 +95,9 @@ function Initialize-HrmTestEngine {
         $TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM тест движка " + [System.Guid]::NewGuid().ToString("N").Substring(0, 8))
     }
     $engineDir = Join-Path $PSScriptRoot "..\engine"
-    foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update", "Diagnostics", "Install", "Crypto", "Channel", "Lan", "SupportBundle")) {
+    foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update",
+            "Diagnostics", "Install", "Snapshot", "Crypto", "Channel", "Lan", "SupportBundle",
+            "Docker", "Supervisor", "Tray")) {
         Import-Module (Join-Path $engineDir "$module.psm1") -Force -ErrorAction Stop
     }
     $env:HRM_NONINTERACTIVE = "1"
@@ -93,7 +111,14 @@ function Initialize-HrmTestEngine {
     Clear-HrmExternalMock
     Clear-HrmHttpMock
     Clear-HrmPreflightOverride
+    Clear-HrmDockerOverride
+    Clear-HrmDownloadMock
+    Clear-HrmProcessLaunchMock
     Reset-HrmRedaction
+    Remove-Item Env:HRM_AUTOSTART_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_AUTOSTART_MOCK -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_DESKTOP_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_LOG_FILE -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $env:HRM_STATE_DIR -Force | Out-Null
     New-Item -ItemType Directory -Path $env:HRM_INSTALL_DIR -Force | Out-Null
 }
@@ -155,6 +180,15 @@ function New-HrmMockWorld {
         TagCount = 0
         BuildCount = 0
         SimulateStaleRelease = $false
+        # 0.15.0: пилотный supervisor/Docker
+        PgVolumeMissing = $false
+        AlembicHeads = "0013"
+        ContainersUp = $true
+        WslAvailable = $true
+        SuspendEngine = $false
+        ContainersJson = ""
+        UpFails = $false
+        UpCount = 0
     }
     $world.OpsBody = [pscustomobject]@{
         status = "ok"
@@ -183,6 +217,9 @@ function New-HrmMockWorld {
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "Docker version 27.3.1, build ce12230"; Stderr = "" }
             }
             if ($Arguments.Count -ge 1 -and $Arguments[0] -eq "info") {
+                if ($global:HRM_MockWorld.SuspendEngine) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "engine is not running" }
+                }
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "27.3.1"; Stderr = "" }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "version")) {
@@ -192,12 +229,19 @@ function New-HrmMockWorld {
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ""; Stderr = "" }
             }
             if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "ps")) {
+                if ($global:HRM_MockWorld.ContainersJson) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.ContainersJson; Stderr = "" }
+                }
                 if ($global:HRM_MockWorld.Running) {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = '[{"Name":"backend","State":"running"},{"Name":"frontend","State":"running"}]'; Stderr = "" }
                 }
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "[]"; Stderr = "" }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "up")) {
+                $global:HRM_MockWorld.UpCount++
+                if ($global:HRM_MockWorld.UpFails) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "container failed to start" }
+                }
                 $global:HRM_MockWorld.Running = $true
                 if (-not $global:HRM_MockWorld.SimulateStaleRelease) {
                     $envIndex = [array]::IndexOf([object[]]$Arguments, "--env-file")
@@ -239,6 +283,9 @@ function New-HrmMockWorld {
                     }
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "INFO [alembic.runtime.migration] Running upgrade -> 0013"; Stderr = "" }
                 }
+                if ($joined -match "alembic heads") {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.AlembicHeads; Stderr = "" }
+                }
                 if ($joined -match "worker-check") {
                     if ($global:HRM_MockWorld.WorkerCheckOk) {
                         return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "worker ok"; Stderr = "" }
@@ -275,6 +322,21 @@ function New-HrmMockWorld {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "2026-09-09T01:00:00Z ok abc.enc"; Stderr = "" }
                 }
             }
+            if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "volume" -and $Arguments[1] -eq "inspect") {
+                $volumeName = ""
+                if ($Arguments.Count -ge 3) { $volumeName = [string]$Arguments[2] }
+                if ($volumeName -eq "hr-manager-pilot_pilot_pgdata" -and $global:HRM_MockWorld.PgVolumeMissing) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "no such volume" }
+                }
+                # ВАЖНО: ответ собирается ConvertTo-Json, а НЕ оператором -f.
+                # Для оператора -f .NET-строка форматирования разбирает фигурные
+                # скобки как placeholder, поэтому JSON-шаблон с фигурными скобками
+                # падал с "Input string was not in a correct format" — мок отвечал
+                # ошибкой, и обновление считалось сломанным (rollback) при живых
+                # данных. Контракт guard-теста статики: JSON собираем ConvertTo-Json.
+                $volumeJson = ConvertTo-Json -InputObject ([pscustomobject]@{ Name = $volumeName }) -Compress
+                return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $volumeJson; Stderr = "" }
+            }
             if ($Arguments.Count -eq 3 -and $Arguments[0] -eq "volume" -and $Arguments[1] -eq "rm") {
                 $global:HRM_MockWorld.RemovedVolumes += $Arguments[2]
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "removed"; Stderr = "" }
@@ -297,6 +359,12 @@ function New-HrmMockWorld {
         }
         if ($Name -eq "git.exe") {
             return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.ReleaseSha; Stderr = "" }
+        }
+        if ($Name -eq "wsl.exe") {
+            if (-not $global:HRM_MockWorld.WslAvailable) {
+                return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "WSL is not installed" }
+            }
+            return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "  NAME      STATE           VERSION`n* Ubuntu    Running         2"; Stderr = "" }
         }
         return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "unexpected command: $Name $($Arguments -join ' ')" }
     }

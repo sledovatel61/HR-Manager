@@ -1,4 +1,4 @@
-# Executable production PEM preflight tests, Windows PowerShell 5.1 and pwsh.
+﻿# Executable production PEM preflight tests, Windows PowerShell 5.1 and pwsh.
 # Import ONLY function ASTs: never run sign.ps1, signtool or import a PFX.
 param([string]$HarnessPath = $PSScriptRoot)
 . (Join-Path $HarnessPath "test-harness.ps1")

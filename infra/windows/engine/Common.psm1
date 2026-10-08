@@ -36,14 +36,45 @@ function Get-HrmInstalledFile { param([string]$StateDir) return (Join-Path $Stat
 function Get-HrmUpdateLock  { param([string]$StateDir) return (Join-Path $StateDir "update.lock") }
 function Get-HrmUpdateJournal { param([string]$StateDir) return (Join-Path $StateDir "update-journal.json") }
 function Get-HrmSetupUrlFile { param([string]$StateDir) return (Join-Path $StateDir "first-run-url.txt") }
+# Маркер «мастер установки сейчас работает»: его пишет Setup.exe перед запуском
+# движка и значка в трее, а движок удаляет, когда установка/обновление закончились.
+function Get-HrmSetupMarkerFile { param([string]$StateDir) return (Join-Path $StateDir "setup-run.json") }
+# Снимок ПРЕДЫДУЩЕЙ версии (файлы infra/backend/frontend/release.json) и копия
+# нового релиза под управлением движка — нужны для согласованного отката и
+# повторяемых фаз обновления (см. Update.psm1).
+function Get-HrmPreviousSnapshotDir { param([string]$StateDir) return (Join-Path $StateDir "previous-snapshot") }
+function Get-HrmReleaseStagingDir { param([string]$StateDir) return (Join-Path $StateDir "release-staging") }
 
 # --- Журнал -----------------------------------------------------------------
 
-function Write-HrmLog {
+function Format-HrmLogLine {
+    # Чистая функция: готовая строка журнала (метка времени + редакция секретов).
     param([string]$Level, [string]$Message)
     $clean = Redact-HrmText $Message
     $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    Write-Output "[$stamp] [$Level] $clean"
+    return "[$stamp] [$Level] $clean"
+}
+
+function Write-HrmLog {
+    # Журнал НЕ пишется в success stream. Раньше строки журнала уходили туда, из-за
+    # чего они примешивались к возвращаемым значениям функций
+    # (Start-HrmStack, Repair-HrmStack, Invoke-HrmDockerPrepare и др.): результат
+    # становился массивом, и обращение к его свойству ($stack.ok) под StrictMode
+    # давало "The property 'ok' cannot be found on this object".
+    # Адресаты: файл журнала фоновой операции (HRM_LOG_FILE, его задаёт
+    # Start-HrmEngineProcess) либо консоль/перенаправленный stdout.
+    param([string]$Level, [string]$Message)
+    $line = Format-HrmLogLine -Level $Level -Message $Message
+    $logFile = $env:HRM_LOG_FILE
+    if ($logFile) {
+        try {
+            # UTF-8 без BOM: файл журнала читается инструментами как обычный текст.
+            [System.IO.File]::AppendAllText($logFile, $line + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+            return
+        }
+        catch { }
+    }
+    Write-Host $line
 }
 
 # --- Редакция секретов -----------------------------------------------------
@@ -81,6 +112,8 @@ function Protect-HrmOutput {
 
 $script:MockExternal = $null
 $script:MockHttp = $null
+$script:MockDownload = $null
+$script:MockProcessLaunch = $null
 
 function Set-HrmExternalMock {
     # Тестовый шов: подменяет ВСЕ внешние команды (docker/icacls/…).
@@ -89,6 +122,64 @@ function Set-HrmExternalMock {
 }
 
 function Clear-HrmExternalMock { $script:MockExternal = $null }
+
+function Get-HrmSetupMarker {
+    # Состояние мастера установки (файл пишет Setup.exe перед запуском движка и
+    # значка в трее; движок обновляет/удаляет его по ходу установки).
+    # Возвращает @{ status; message; fresh; age_seconds; file }.
+    # «Свежесть» считается по времени изменения файла: так не нужно разбирать
+    # дату из JSON, которую пишет мастер установки (Inno Setup).
+    param([string]$StateDir = "", [int]$MaxAgeMinutes = 30)
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $file = Get-HrmSetupMarkerFile $StateDir
+    $result = [pscustomobject]@{ status = ""; message = ""; fresh = $false; age_seconds = -1; file = $file }
+    if (-not (Test-Path $file)) { return $result }
+    $age = -1
+    try { $age = [int]((Get-Date) - (Get-Item $file).LastWriteTime).TotalSeconds } catch { $age = -1 }
+    $status = ""
+    $message = ""
+    try {
+        $data = Get-HrmJsonFile $file
+        if ($null -ne $data) {
+            if ($data.PSObject.Properties["status"]) { $status = [string]$data.status }
+            if ($data.PSObject.Properties["message"]) { $message = [string]$data.message }
+        }
+    }
+    catch {
+        # Повреждённый файл = незавершённая установка, а не «всё хорошо».
+        $status = "failed"
+        $message = "Файл состояния установки повреждён."
+    }
+    $limit = [int]($MaxAgeMinutes * 60)
+    $fresh = ($age -ge 0 -and $age -le $limit)
+    return [pscustomobject]@{ status = $status; message = $message; fresh = $fresh; age_seconds = $age; file = $file }
+}
+
+function Set-HrmSetupMarker {
+    # Отметить ход установки/обновления: status = running | failed.
+    # Сообщение пишется в редакции секретов — в трее и журнале не должно быть
+    # ни паролей, ни путей к секретам.
+    param([string]$StateDir = "", [string]$Status = "running", [string]$Message = "")
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
+    $data = [ordered]@{
+        status = $Status
+        message = (Redact-HrmText $Message)
+        updated_at = (Get-Date).ToString("o")
+    }
+    Set-HrmJsonFile $StateDir "setup-run.json" $data
+    # Время изменения файла — источник «свежести» для значка в трее.
+    try { (Get-Item (Get-HrmSetupMarkerFile $StateDir)).LastWriteTime = (Get-Date) } catch { }
+    return (Get-HrmSetupMarker -StateDir $StateDir)
+}
+
+function Clear-HrmSetupMarker {
+    # Успешная установка завершена: отметка больше не нужна.
+    param([string]$StateDir = "")
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $file = Get-HrmSetupMarkerFile $StateDir
+    if (Test-Path $file) { Remove-Item -Path $file -Force -ErrorAction SilentlyContinue }
+}
 
 function Set-HrmHttpMock {
     # Тестовый шов: подменяет ВСЕ HTTP-вызовы (loopback).
@@ -147,6 +238,56 @@ function Invoke-HrmExternal {
         throw ("Команда '{0}' завершилась с кодом {1}: {2}" -f $Name, $process.ExitCode, (Redact-HrmText $stderr.Trim()))
     }
     return $result
+}
+
+function Set-HrmDownloadMock {
+    # Тестовый шов: подменяет скачивание файла (официальный установщик).
+    param([scriptblock]$Mock)
+    $script:MockDownload = $Mock
+}
+
+function Clear-HrmDownloadMock { $script:MockDownload = $null }
+
+function Set-HrmProcessLaunchMock {
+    # Тестовый шов: подменяет запуск процессов (Docker Desktop, установщик,
+    # процесс движка). В тестах реальные программы не запускаются.
+    param([scriptblock]$Mock)
+    $script:MockProcessLaunch = $Mock
+}
+
+function Clear-HrmProcessLaunchMock { $script:MockProcessLaunch = $null }
+
+function Save-HrmDownload {
+    # Скачивание файла (только официальные источники, вызывающий обязан
+    # проверить источник и подпись). Единственная точка скачивания — мокабельна.
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    # Каталог назначения создаём ДО мока: иначе тестовый шов вёл бы себя
+    # иначе, чем настоящая загрузка (мок писал файл в несуществующий каталог,
+    # установка Docker падала с «Не удалось скачать установщик»).
+    $dir = Split-Path $Destination -Parent
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    if ($null -ne $script:MockDownload) {
+        return (& $script:MockDownload -Uri $Uri -Destination $Destination)
+    }
+    $previous = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+        Invoke-WebRequest -Uri $Uri -OutFile $Destination -UseBasicParsing -TimeoutSec 600
+    }
+    finally { $ProgressPreference = $previous }
+    if (-not (Test-Path $Destination)) {
+        throw "Не удалось скачать файл: $Uri"
+    }
+    return $Destination
+}
+
+function Get-HrmFileSha256 {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return "" }
+    return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
 function Invoke-HrmDocker {
@@ -320,4 +461,121 @@ function Get-HrmBaseUrl {
     param([int]$Port = 0)
     $p = Get-HrmPort $Port
     return ("http://127.0.0.1:{0}" -f $p)
+}
+
+# --- Запуск процессов движка и внешних программ -------------------------------
+# ЕДИНСТВЕННОЕ место, где допускается Start-Process/Process.Start: статический
+# тест (static.tests.ps1) запрещает эти вызовы в остальных модулях движка.
+# Никакие секреты сюда не передаются: только пути, действия и флаги.
+
+function Start-HrmDetached {
+    # Запуск внешней программы без ожидания завершения.
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [switch]$Hidden,
+        [string]$WorkingDirectory = "",
+        [switch]$RunAsAdmin
+    )
+    $startArgs = @{ FilePath = $FilePath }
+    if ($Arguments.Count -gt 0) { $startArgs["ArgumentList"] = $Arguments }
+    if ($WorkingDirectory) { $startArgs["WorkingDirectory"] = $WorkingDirectory }
+    if ($Hidden) { $startArgs["WindowStyle"] = "Hidden" }
+    if ($RunAsAdmin) { $startArgs["Verb"] = "RunAs" }
+    if ($null -ne $script:MockProcessLaunch) {
+        return (& $script:MockProcessLaunch -FilePath $FilePath -Arguments $Arguments -Mode $(if ($RunAsAdmin) { "elevated_detached" } else { "detached" }))
+    }
+    $process = Start-Process @startArgs -PassThru
+    return $process
+}
+
+function Start-HrmElevatedAndWait {
+    # Запуск программы с повышением прав (UAC) и ожиданием завершения.
+    # Возвращает @{ Started; CanceledByUser; ExitCode }.
+    # Отмена UAC пользователем — штатный результат, а не сбой движка.
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [string]$WorkingDirectory = ""
+    )
+    $startArgs = @{ FilePath = $FilePath; Verb = "RunAs"; PassThru = $true }
+    if ($Arguments.Count -gt 0) { $startArgs["ArgumentList"] = $Arguments }
+    if ($WorkingDirectory) { $startArgs["WorkingDirectory"] = $WorkingDirectory }
+    if ($null -ne $script:MockProcessLaunch) {
+        return (& $script:MockProcessLaunch -FilePath $FilePath -Arguments $Arguments -Mode "elevated_wait")
+    }
+    try {
+        $process = Start-Process @startArgs
+    }
+    catch {
+        return [pscustomobject]@{ Started = $false; CanceledByUser = $true; ExitCode = -1 }
+    }
+    $process.WaitForExit()
+    return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = $process.ExitCode }
+}
+
+function Start-HrmEngineProcess {
+    # Скрытый процесс движка (действие hr-manager.ps1) с журналом в StateDir.
+    # Трей и установщик используют это, чтобы долгие операции не блокировали
+    # интерфейс и не открывали пользователю консоль.
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [Parameter(Mandatory = $true)][string]$Action,
+        [string]$InstallDir = "",
+        [string]$StateDir = "",
+        [string]$ExtraArguments = "",
+        [string]$LogFile = ""
+    )
+    $arguments = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-NonInteractive",
+        "-File", ('"{0}"' -f $ScriptPath),
+        "-Action", $Action
+    )
+    if ($InstallDir) { $arguments += @("-InstallDir", ('"{0}"' -f $InstallDir)) }
+    if ($StateDir) { $arguments += @("-StateDir", ('"{0}"' -f $StateDir)) }
+    if ($ExtraArguments) { $arguments += $ExtraArguments.Split(" ") }
+    $startArgs = @{
+        FilePath = "powershell.exe"
+        ArgumentList = $arguments
+        WindowStyle = "Hidden"
+        PassThru = $true
+    }
+    if ($LogFile) {
+        $logDir = Split-Path $LogFile -Parent
+        if ($logDir -and -not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+        $startArgs["RedirectStandardOutput"] = $LogFile
+        $startArgs["RedirectStandardError"] = "$LogFile.err"
+    }
+    if ($null -ne $script:MockProcessLaunch) {
+        return (& $script:MockProcessLaunch -FilePath "powershell.exe" -Arguments $arguments -Mode "engine" -LogFile $LogFile)
+    }
+    # Потомок наследует HRM_LOG_FILE и пишет свой журнал туда сам (Write-HrmLog),
+    # поэтому окно можно держать скрытым; RedirectStandardOutput остаётся
+    # подстраховкой для всего, что процесс печатает напрямую.
+    if ($LogFile) { $env:HRM_LOG_FILE = $LogFile }
+    try { return (Start-Process @startArgs) }
+    finally { if ($LogFile) { Remove-Item Env:HRM_LOG_FILE -ErrorAction SilentlyContinue } }
+}
+
+function Get-HrmEngineLogsDir {
+    param([string]$StateDir)
+    return (Join-Path $StateDir "logs")
+}
+
+function Get-HrmTimestampedLogFile {
+    # Путь журнала операции: StateDir\logs\<action>-<дата-время>.log
+    param([string]$StateDir, [string]$Action)
+    $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+    return (Join-Path (Get-HrmEngineLogsDir $StateDir) ("{0}-{1}.log" -f $Action, $stamp))
+}
+
+function Get-HrmProcessRunning {
+    # Проверка запущенного процесса по имени (без запуска внешних команд).
+    param([string]$Name)
+    if (-not $Name) { return $false }
+    try {
+        $processes = @(Get-Process -Name $Name -ErrorAction SilentlyContinue)
+        return ($processes.Count -gt 0)
+    }
+    catch { return $false }
 }

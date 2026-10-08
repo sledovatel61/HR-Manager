@@ -80,8 +80,8 @@ function Add-HrmFirewallRule {
     # пользователь увидит UAC при повторном запуске из-под админа (один запрос).
     param([string]$StateDir)
     $record = Get-HrmInstallRecord $StateDir
-    $port = 8080
-    if ($null -ne $record -and $record.port) { $port = [int]$record.port }
+    $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+    if ($port -le 0) { $port = Get-HrmPort }
     $ruleArgs = @("advfirewall", "firewall", "add", "rule", ("name=`"{0}`"" -f $script:FirewallRuleName), "dir=in", "action=allow", "protocol=TCP", ("localport={0}" -f $port), "profile=private,domain", "enable=yes")
     $result = Invoke-HrmExternal -Name "netsh.exe" -Arguments $ruleArgs -IgnoreExitCode
     if ($result.ExitCode -ne 0) {
@@ -131,7 +131,8 @@ function Invoke-HrmLanAccess {
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
     if ($null -eq $record) { throw "Установка не найдена. Выполните -Action install." }
-    $port = if ($record.port) { [int]$record.port } else { Get-HrmPort }
+    $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+    if ($port -le 0) { $port = Get-HrmPort }
     $current = Get-HrmLanConfig $StateDir
     $wantEnable = $null
     if ($Enable.IsPresent -and $Disable.IsPresent) { throw "Укажите только -Enable или -Disable." }
@@ -161,7 +162,8 @@ function Invoke-HrmLanAccess {
     } else {
         $null = Set-HrmLanConfig $StateDir $wantEnable
         # Перезаписать pilot.env с новым биндом и пересоздать контейнеры
-        $releaseSha = if ($record.release_sha) { [string]$record.release_sha } else { Get-HrmReleaseSha $InstallDir $StateDir }
+        $releaseSha = [string](Get-HrmInstallRecordField -Record $record -Field "release_sha")
+        if (-not $releaseSha) { $releaseSha = Get-HrmReleaseSha $InstallDir $StateDir }
         $null = Write-HrmPilotEnv $StateDir $releaseSha $port
         if ($wantEnable) { Add-HrmFirewallRule $StateDir } else { Remove-HrmFirewallRule }
         # Пересоздать frontend с новым биндом

@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      docker_audit:
+        description: "Снять подпись официального установщика Docker Desktop (~600 МБ) и сверить с зафиксированным издателем"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,11 +37,32 @@ jobs:
         run: |
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Install PostgreSQL client tools (backup integration tests)
+        # 2026-10-07 два прогона подряд зависли на этом шаге больше чем на 80 минут
+        # (сеть раннера до зеркала apt), а отменить или перезапустить прогон из среды
+        # разработки нельзя — токен получает 403. Поэтому у шага есть границы: каждая
+        # сетевая команда ограничена по времени и повторяется до трёх раз, весь шаг —
+        # 12 минут. При недоступном зеркале шаг честно падает за минуты, а не висит
+        # часами; при обычной работе поведение то же самое (apt + pg_dump --version).
+        # ForceIPv4 и явные таймауты Acquire — известное лекарство от зависаний на
+        # IPv6-адресах зеркала.
+        timeout-minutes: 12
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates curl               postgresql-common
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          set -x
+          attempt() {
+            local limit="$1"; shift
+            for _ in 1 2 3; do
+              if timeout --kill-after=30s "$limit" "$@"; then return 0; fi
+              echo "attempt failed (limit ${limit}s); retrying in 15s" >&2
+              sleep 15
+            done
+            return 1
+          }
+          export DEBIAN_FRONTEND=noninteractive
+          APT_OPTS=(-o Acquire::Retries=3 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25 -o Acquire::ForceIPv4=true)
+          attempt 180 sudo apt-get "${APT_OPTS[@]}" update -q
+          attempt 300 sudo apt-get "${APT_OPTS[@]}" install -y -q --no-install-recommends ca-certificates curl postgresql-common
+          attempt 300 sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          attempt 300 sudo apt-get "${APT_OPTS[@]}" install -y -q --no-install-recommends postgresql-client-16
           pg_dump --version
       - name: Ruff lint
         run: ruff check .
@@ -463,31 +490,44 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
 
+      - name: Upload engine test failures (if any)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-engine-test-failures
+          path: ${{ runner.temp }}/hr-engine-test-failures.txt
+          if-no-files-found: ignore
+
       - name: Validate ephemeral CI trust store (Phase 14 contract)
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          # Python пишет UTF-8 (PYTHONUTF8=1); научим PowerShell 5.1 так же его
-          # декодировать, иначе в логе будет кракозябра вместо русского текста.
-          # Косметика, поэтому под try/catch: на раннере без консольного хендла
-          # сеттер бросает IOException, а падать из-за этого шаг не должен.
-          # Ключевая строка TRUST_STORE_SHA256= — чистый ASCII, она парсится
-          # одинаково в любой кодовой странице.
+          # ASCII only: this step runs on Windows PowerShell 5.1. The runner writes the
+          # temporary step script as UTF-8 WITHOUT a BOM and 5.1 then reads it in the
+          # ANSI code page, which turns Russian letters into characters the parser takes
+          # for string delimiters - the step dies on parse with no annotation at all.
+          # Russian text belongs in a repository file with a BOM; lint-engine.py now
+          # enforces this rule for every "shell: powershell" step.
+          # Python writes UTF-8 (PYTHONUTF8=1); the console encoding is switched below so
+          # the log is readable. Cosmetic, hence try/catch: on a runner without a console
+          # handle the setter throws IOException and the step must not fail because of it.
+          # The marker line TRUST_STORE_SHA256= is pure ASCII, so it reads the same in any
+          # code page.
           try {
             [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
           }
           catch {
-            Write-Host "Console.OutputEncoding не переключён: $($_.Exception.Message)"
+            Write-Host "Console.OutputEncoding not switched: $($_.Exception.Message)"
           }
           Write-Host "=== Trust store: CI fixture contract (Phase 14) ==="
           $trustStorePath = "infra/release/testdata/trusted_keys.json"
           if (-not (Test-Path $trustStorePath)) { throw "trust store not found: $trustStorePath" }
-          # ci-contract проверяет строгую схему, наличие активного и ОТОЗВАННОГО
-          # ключей и то, что production-политика по-прежнему отклоняет этот
-          # набор (--require-unrevoked и assert_no_fixture_keys). Ошибка -> код 1.
-          # В Windows PowerShell 5.1 связка ErrorActionPreference=Stop и 2>&1
-          # превращает stderr внешней программы в terminating error, поэтому на
-          # время вызова предпочтение снижается, а вердикт читается из кода.
+          # ci-contract checks the strict schema, the presence of an active and a REVOKED
+          # key, and that the production policy still rejects this fixture
+          # (--require-unrevoked and assert_no_fixture_keys). A failure exits with 1.
+          # In Windows PowerShell 5.1 the combination ErrorActionPreference=Stop with 2>&1
+          # turns an external program stderr into a terminating error, so the preference
+          # is lowered for the call and the verdict is read from the exit code instead.
           $previousEap = $ErrorActionPreference
           $ErrorActionPreference = "Continue"
           try {
@@ -563,6 +603,37 @@ jobs:
             $body = "### Build log" + "`n" + $fence + "text" + "`n" + $content + "`n" + $fence
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $body
             Write-Host "Build log posted to the job summary"
+            # Аннотации — единственный канал, который виден снаружи через
+            # check-run API: логи шагов и артефакты приватного репозитория
+            # отдаются только подписанными ссылками на сторонний хост. Без
+            # аннотаций причина падения сборки осталась бы невидимой.
+            $all = @(Get-Content -Path $logFile -Encoding utf8)
+            $lines = @()
+            $lines += ("=== build.log: {0} lines ===" -f $all.Count)
+            $lines += "--- head (first 25) ---"
+            $lines += @($all | Select-Object -First 25)
+            $lines += "--- tail (last 80) ---"
+            $lines += @($all | Select-Object -Last 80)
+            $lines += "--- error-like lines ---"
+            $lines += @($all | Where-Object {
+              $_ -match "(?i)(error|fail|exception|throw|traceback|не совпал|ошиб|отказ|не удалось|missing|not found|cannot)"
+            } | Select-Object -First 40)
+            $rx = "(?i)(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+"
+            $chunks = New-Object System.Collections.ArrayList
+            $cur = ""
+            foreach ($l in $lines) {
+              $l = [regex]::Replace([string]$l, $rx, '$1=<redacted>')
+              if ($l.Length -gt 3500) { $l = $l.Substring(0, 3500) + " ..." }
+              if ($cur.Length -gt 0 -and ($cur.Length + $l.Length + 1) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
+              if ($cur.Length -gt 0) { $cur += "`n" }
+              $cur += $l
+            }
+            if ($cur.Length -gt 0) { [void]$chunks.Add($cur) }
+            $n = [Math]::Min($chunks.Count, 8)
+            for ($i = 0; $i -lt $n; $i++) {
+              $m = ([string]$chunks[$i]).Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+              Write-Host ("::error title=build.log " + ($i + 1) + "/" + $chunks.Count + "::" + $m)
+            }
           }
           else {
             Write-Host "No build log at $logFile (сборка не запускалась)"
@@ -656,22 +727,35 @@ jobs:
       - name: Silent install and uninstall smoke
         shell: powershell
         run: |
-          $setup = Get-ChildItem installer/output/HR-Manager-Setup-*.exe | Select-Object -First 1
-          if (-not $setup) { throw "Setup.exe was not produced" }
-          $process = Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Silent install failed: $($process.ExitCode)" }
-          $appDir = Join-Path $env:LOCALAPPDATA "Programs\HRManager"
-          if (-not (Test-Path (Join-Path $appDir "infra\windows\hr-manager.ps1"))) {
-            throw "Installed Windows engine is missing"
+          # Thin ASCII-only wrapper. The scenario (and every Russian message)
+          # lives in infra\windows\tests\ci-silent-smoke.ps1, which is committed
+          # as UTF-8 with BOM: the runner writes the temporary step script
+          # without BOM, and Windows PowerShell 5.1 then reads Russian text as
+          # ANSI - that already hid a failure reason together with its
+          # annotations once. The child output is echoed line by line and, on
+          # failure, re-emitted as one annotation: step logs cannot be read from
+          # the support environment, check-run annotations can.
+          $ErrorActionPreference = "Continue"
+          $smokeScript = Join-Path $env:GITHUB_WORKSPACE "infra/windows/tests/ci-silent-smoke.ps1"
+          if (-not (Test-Path -LiteralPath $smokeScript)) {
+            Write-Host ("::error title=Silent smoke wrapper::script is missing: " + $smokeScript)
+            exit 1
           }
-          $uninstaller = Join-Path $appDir "unins000.exe"
-          if (-not (Test-Path $uninstaller)) { throw "Uninstaller is missing" }
-          $process = Start-Process $uninstaller -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Silent uninstall failed: $($process.ExitCode)" }
-          if (Test-Path (Join-Path $appDir "infra\windows\hr-manager.ps1")) {
-            throw "Installed application files survived uninstall"
+          $outLog = Join-Path $env:RUNNER_TEMP "ci-silent-smoke.out.log"
+          Remove-Item -LiteralPath $outLog -Force -ErrorAction SilentlyContinue
+          Write-Host "::notice title=Silent smoke wrapper::launching ci-silent-smoke.ps1"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $smokeScript 2>&1 |
+            Tee-Object -FilePath $outLog | ForEach-Object { Write-Host ([string]$_) }
+          $smokeCode = $LASTEXITCODE
+          Write-Host ("Silent smoke script exit code: " + $smokeCode)
+          if ($smokeCode -ne 0) {
+            $tail = @(Get-Content -LiteralPath $outLog -Encoding UTF8 -ErrorAction SilentlyContinue | Select-Object -Last 45) -join "`n"
+            $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            if ($tail.Length -gt 3500) { $tail = $tail.Substring($tail.Length - 3500) }
+            Write-Host ("::error title=Silent smoke wrapper::exit " + $smokeCode + " :: " + $tail)
+            exit 1
           }
-
+          Write-Host "::notice title=Silent smoke wrapper::script finished with exit code 0"
       - name: Phase 14 pilot drill (Windows engine update/rollback/resume/uninstall)
         shell: powershell
         run: |
@@ -699,6 +783,225 @@ jobs:
             installer/authenticode-roots.pem
             installer/authenticode-verification.json
           if-no-files-found: error
+
+      - name: Publish the installer hashes as an annotation (evidence without artifact download)
+        if: always()
+        shell: powershell
+        run: |
+          # docs/PILOT_FINAL_REPORT.md (section 4) records the SHA256 of the files
+          # handed to the owner, but artifacts can only be fetched from the Actions
+          # UI, so the same values are published here as notice annotations: the
+          # check-run API exposes them. Each hash is printed as two 32-character
+          # halves, because a 64+ hex run is blanked by the annotation redaction
+          # that keeps key material out of the logs.
+          $ErrorActionPreference = "Continue"
+          function Get-SplitHash([string]$hash) {
+            if ($hash.Length -ne 64) { return "" }
+            $h = $hash.ToUpperInvariant()
+            return ($h.Substring(0, 32) + " " + $h.Substring(32))
+          }
+          $manifestPath = "installer/release-manifest.json"
+          $manifest = $null
+          if (Test-Path $manifestPath) {
+            try { $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json } catch { $manifest = $null }
+          }
+          if ($manifest) {
+            $built = Get-SplitHash ([string]$manifest.installer_exe.sha256)
+            if ($built) {
+              Write-Host ("::notice title=pilot Setup.exe (build output, unsigned)::file=" + $manifest.installer_exe.file + " sha256=" + $built)
+            }
+          }
+          $setup = Get-ChildItem -Path "installer/output" -Filter "HR-Manager-Setup-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $setup) { Write-Host "no Setup.exe in installer/output"; exit 0 }
+          $onDisk = (Get-FileHash -Path $setup.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+          Write-Host ("::notice title=pilot Setup.exe (on disk, signed)::file=" + $setup.Name + " bytes=" + $setup.Length + " sha256=" + (Get-SplitHash $onDisk))
+          # The release manifest hash is computed BEFORE Authenticode signing, and
+          # signing rewrites the file: two different values here are expected, not
+          # a non-reproducible build. What must hold is that the file on disk is
+          # the exact file the signing step attested to - otherwise the artifact
+          # is not the one whose signature was verified.
+          $attestationPath = "installer/authenticode-attestation.json"
+          if (Test-Path $attestationPath) {
+            $attestation = $null
+            try { $attestation = Get-Content -Path $attestationPath -Raw | ConvertFrom-Json } catch { $attestation = $null }
+            if ($attestation -and $attestation.installer_sha256) {
+              $attested = ([string]$attestation.installer_sha256).ToUpperInvariant()
+              if ($attested -eq $onDisk) {
+                Write-Host "::notice title=pilot Setup.exe (signature evidence)::on-disk sha256 equals authenticode-attestation.json"
+              }
+              else {
+                Write-Host ("::error title=pilot Setup.exe (signature evidence)::on-disk sha256 " + (Get-SplitHash $onDisk) + " differs from attestation " + (Get-SplitHash $attested))
+                exit 1
+              }
+            }
+          }
+
+  pilot-setup:
+    name: Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Build the pilot Setup.exe (unsigned, no trust store)
+        shell: pwsh
+        env:
+          # Явно, а не через «git rev-parse HEAD» внутри build.ps1: манифест должен
+          # называть тот же коммит, что и событие сборки, независимо от состояния
+          # checkout (в pull_request это коммит слияния — он же и собирается).
+          HRM_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          # The same command the owner-triggered "Pilot release" workflow runs: the
+          # pilot does not use the update channel, so no trust store is passed, and
+          # the license public key comes from infra/license/public_key.b64 (build.ps1
+          # fails closed when it is missing). Keeping this in the branch CI means
+          # every push produces the file handed to the pilot user, together with the
+          # SHA256 that goes into docs/PILOT_FINAL_REPORT.md.
+          $ErrorActionPreference = "Stop"
+          Write-Host "Pilot Setup.exe build, commit $env:GITHUB_SHA"
+          & ./installer/build.ps1 -Version 0.15.0 *>&1 | Tee-Object pilot-build.log
+          if (-not (Test-Path "installer/release-manifest.json")) { throw "release-manifest.json was not written" }
+          $setup = Get-ChildItem installer/output/HR-Manager-Setup-*.exe | Select-Object -First 1
+          if (-not $setup) { throw "Setup.exe was not produced" }
+          Write-Host ("pilot Setup.exe: {0} ({1:N0} bytes)" -f $setup.Name, $setup.Length)
+
+      - name: Verify the manifest names this exact commit as release_sha
+        shell: pwsh
+        run: |
+          # Файл передаётся человеку вместе с манифестом, поэтому манифест обязан
+          # называть тот самый коммит, из которого он собран: иначе через месяц
+          # невозможно понять, что именно проверялось. Проверка fail-closed и
+          # стоит до загрузки артефакта.
+          $ErrorActionPreference = "Stop"
+          $manifest = Get-Content installer/release-manifest.json -Raw | ConvertFrom-Json
+          $sha = [string]$manifest.release_sha
+          if ($sha -notmatch '^[0-9a-f]{40}$') { throw ("release_sha не 40-hex: '" + $sha + "'") }
+          if ($sha -ne $env:GITHUB_SHA.ToLowerInvariant()) {
+            throw ("release_sha '" + $sha + "' не совпадает с коммитом сборки '" + $env:GITHUB_SHA + "'")
+          }
+          Write-Host ("release_sha = " + $sha + " (совпадает с коммитом сборки)")
+
+      - name: Post the pilot build log to the job summary
+        if: always()
+        shell: pwsh
+        run: |
+          $logFile = "pilot-build.log"
+          if (-not (Test-Path $logFile)) { Write-Host "no build log at $logFile"; exit 0 }
+          $content = Get-Content -Path $logFile -Raw
+          if ($content.Length -gt 60000) { $content = $content.Substring(0, 60000) + "`n...truncated" }
+          # The fence is built from single quotes: inside a double-quoted PowerShell
+          # string the three backticks would parse as escaped quotes and leave the
+          # line unterminated (the windows-installer job documents the same trap).
+          $fence = '```'
+          $body = "### Pilot Setup.exe build log" + "`n" + $fence + "text" + "`n" + $content + "`n" + $fence
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $body
+          Write-Host "pilot build log posted to the job summary"
+
+      - name: Generate SHA256SUMS.txt for the pilot artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = Get-ChildItem installer/output/HR-Manager-Setup-*.exe | Select-Object -First 1
+          if (-not $setup) { throw "Setup.exe missing" }
+          $hash = (Get-FileHash -Path $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifestHash = (Get-FileHash -Path installer/release-manifest.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          $lines = @(
+            "$hash  $($setup.Name)"
+            "$manifestHash  release-manifest.json"
+          )
+          $outPath = "installer/output/SHA256SUMS.txt"
+          Set-Content -Path $outPath -Value $lines -Encoding ASCII
+          Write-Host "SHA256SUMS.txt:"
+          Get-Content $outPath | Write-Host
+          Write-Host "release-manifest.json:"
+          Get-Content installer/release-manifest.json -Raw | Write-Host
+
+      - name: Publish the pilot artifact hashes as annotations (evidence without artifact download)
+        if: always()
+        shell: powershell
+        run: |
+          # The SHA256SUMS.txt file lives inside the uploaded artifact, and
+          # artifacts can only be fetched from the Actions UI. A notice annotation
+          # makes the same values readable through the check-run API. Each hash is
+          # printed as two 32-character halves: a 64+ hex run would be blanked by
+          # the redaction that keeps key material out of the logs.
+          $ErrorActionPreference = "Continue"
+          $sums = "installer/output/SHA256SUMS.txt"
+          if (-not (Test-Path $sums)) { Write-Host "no SHA256SUMS.txt - nothing to publish"; exit 0 }
+          $entries = @()
+          foreach ($line in (Get-Content -Path $sums)) {
+            $trimmed = ([string]$line).Trim()
+            if ($trimmed -notmatch '^([0-9a-fA-F]{64})\s+(.+)$') { continue }
+            $hash = $Matches[1].ToUpperInvariant()
+            $entries += ($Matches[2] + " sha256=" + $hash.Substring(0, 32) + " " + $hash.Substring(32))
+          }
+          if ($entries.Count -eq 0) { Write-Host "SHA256SUMS.txt had no parsable lines"; exit 0 }
+          Write-Host ("::notice title=pilot Setup.exe 0.15.0 (unsigned)::" + ($entries -join "; "))
+
+      - name: Upload the pilot Setup.exe + SHA256SUMS
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pilot-setup-0.15.0-unsigned
+          path: |
+            installer/output/HR-Manager-Setup-*.exe
+            installer/output/SHA256SUMS.txt
+            installer/release-manifest.json
+          if-no-files-found: error
+
+  docker-publisher-audit:
+    name: Docker Desktop publisher audit (official installer signature)
+    # Ручной аудит: скачивает официальный установщик Docker Desktop и снимает с
+    # него подпись (subject, отпечатки сертификата), сверяя с издателем,
+    # зафиксированным в infra/windows/engine/Docker.psm1. Нужен при смене
+    # сертификата Docker и как доказательство, что список издателей не выдуман.
+    # Запуск только вручную: скачивание 635 МБ на каждый push было бы
+    # неоправданной тратой. Проверка на машине пилота выполняется всегда — перед
+    # запуском установщика, поэтому ручного прогона для годичного цикла хватает.
+    # Значения сняты прогонами 37653666837 (измерение) и 37654388276 (сверка с
+    # зафиксированным издателем, результат — «издатель совпал»).
+    # github.event.inputs вместо inputs: контекст inputs существует только у
+    # workflow_dispatch/workflow_call, поэтому пишем переносимую форму (для
+    # dispatch значение приходит строкой, отсюда сравнение с 'true').
+    # Отдельно про прогон 37655251039 (коммит 7324db3): в нём GitHub не создал
+    # джоб «Compose stack smoke test» и пометил прогон failure, хотя все
+    # созданные джобы были зелёные («cannot be rerun; its workflow file may be
+    # broken»). Файл при этом валиден: те же 9 джобов определены в обоих
+    # коммитах, а следующий прогон (37657489369) создал все 9 джобов и завершился
+    # успешно. Причина осталась необъяснённой — воспроизвести не удалось, кода
+    # это не касается; на всякий случай прогон после такого сбоя перезапускается
+    # новым коммитом, а не считается доказательством.
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.docker_audit == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Audit the official installer signature
+        shell: powershell
+        run: |
+          # ASCII only (see the trust store step above): this step runs on Windows
+          # PowerShell 5.1.
+          # Audit exit codes: 0 - measured (and the publisher matched the pinned one),
+          # 1 - alarm (signature or publisher differs from the pinned values),
+          # 2 - could not measure (no network / timeout). Code 2 must not turn the build
+          # red: it is not a publisher change.
+          $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tools/Audit-HrmDockerPublisher.ps1 *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
+          $code = $LASTEXITCODE
+          if ($code -eq 2) {
+            Write-Host "::warning::Docker publisher audit could not download the installer (code 2) - not a publisher change"
+            exit 0
+          }
+          if ($code -ne 0) {
+            Write-Host "::error::Docker publisher audit failed with code $code"
+            exit $code
+          }
+          Write-Host "Docker Desktop publisher audit passed"
 
   license-issuer-windows:
     name: License issuer bundle - Windows PowerShell 5.1 checks
@@ -790,6 +1093,49 @@ jobs:
           if ($code -ne 0) { & $emit "error" "license-issuer-windows failure tail" (@($lines | Select-Object -Last 30) + ("exit code: " + $code)) }
           exit $code
 
+      - name: "Portable single-file issuer exe (P8): build, trailer, selfcheck, CLI chain under PowerShell 5.1"
+        id: portable
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 30
+        shell: powershell
+        run: |
+          # Windows PowerShell 5.1 logic lives in checked-in helpers (ASCII + UTF-8 BOM).
+          # Output goes to the log and to RUNNER_TEMP; the helper's own "[phase] ..."
+          # result lines become a notice annotation (readable via the check-run API),
+          # a failure tail becomes an error annotation. Key-like runs are redacted.
+          # HRM_ISSUER_VERSION stamps dist/BUILD-INFO.txt (falls back to 0.15.0).
+          $env:HRM_ISSUER_VERSION = "0.15.0"
+          $ErrorActionPreference = "Continue"
+          $diag = Join-Path $env:RUNNER_TEMP "diag-portable.txt"
+          $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File tools/license-issuer/ci-windows-checks.ps1 -Phase portable *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
+          $code = $LASTEXITCODE
+          Set-Content -Path $diag -Value ($lines + ("exit code: " + $code)) -Encoding UTF8
+          # Annotations are capped at 4096 chars each and 10 per level per step:
+          # evidence is emitted in chunks. Key-like tokens are redacted (64+ hex,
+          # 40+ base64/base64url chars containing digits and letters).
+          $emit = {
+            param([string]$kind, [string]$title, [string[]]$src)
+            $rx = "(?<![A-Za-z0-9+/_-])(?:[0-9a-fA-F]{64,}|(?=[A-Za-z0-9+/_-]*[0-9])(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}={0,2})(?![A-Za-z0-9+/_=-])"
+            $chunks = New-Object System.Collections.ArrayList
+            $cur = ""
+            foreach ($l in $src) {
+              $l = [regex]::Replace([string]$l, $rx, "<redacted>")
+              if ($l.Length -gt 3500) { $l = $l.Substring(0, 3500) + " ..." }
+              if ($cur.Length -gt 0 -and ($cur.Length + $l.Length + 1) -gt 3800) { [void]$chunks.Add($cur); $cur = "" }
+              if ($cur.Length -gt 0) { $cur += "`n" }
+              $cur += $l
+            }
+            if ($cur.Length -gt 0) { [void]$chunks.Add($cur) }
+            $n = [Math]::Min($chunks.Count, 9)
+            for ($i = 0; $i -lt $n; $i++) {
+              $m = ([string]$chunks[$i]).Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+              Write-Host ("::" + $kind + " title=" + $title + " " + ($i + 1) + "/" + $chunks.Count + "::" + $m)
+            }
+          }
+          & $emit "notice" "license-issuer-windows evidence" @($lines | Where-Object { $_ -match "^\[(parser|build|runtime|portable|accept|backend)\] " })
+          if ($code -ne 0) { & $emit "error" "license-issuer-windows failure tail" (@($lines | Select-Object -Last 30) + ("exit code: " + $code)) }
+          exit $code
+
       - name: Runtime checks from a fresh unzip (spaces in path, no system Python, loopback, fail-closed)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 10
@@ -877,6 +1223,17 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Portable issuer contract checks (python, no Windows needed)
+        if: ${{ !cancelled() && steps.accept.outcome != 'skipped' }}
+        shell: powershell
+        run: |
+          # Static contract for launcher/Program.cs + build-portable.ps1 (ASCII-only,
+          # no network/private-key handling, trailer byte-compatibility, pinned
+          # cryptography wheel for win_amd64). Runs after setup-python.
+          $env:PYTHONUTF8 = "1"
+          python tools/license-issuer/ci-portable-contract.py
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::portable issuer contract checks failed"; exit 1 }
+
       - name: Backend verification of the Windows-issued licenses (backend service-layer code)
         if: ${{ !cancelled() && steps.accept.outcome != 'skipped' }}
         timeout-minutes: 10
@@ -925,6 +1282,16 @@ jobs:
           if (Test-Path $h) { Remove-Item $h -Recurse -Force }
           if (Test-Path $h) { Write-Host "::warning::could not remove $h"; exit 1 }
           Write-Host "handoff directory removed"
+
+      - name: Upload portable license issuer for owner (P8, single file + SHA256 evidence)
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: license-issuer-portable
+          path: |
+            tools/license-issuer/dist/LicenseIssuer-Portable.exe
+            tools/license-issuer/dist/BUILD-INFO.txt
+          if-no-files-found: error
 
       - name: Upload license-issuer bundle for owner (B2, no private keys)
         if: success()
