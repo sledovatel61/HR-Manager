@@ -327,90 +327,66 @@ function Get-HrmInstallDirReleaseSha {
     # «мастер установки уже перезаписал файлы новой версией» (иначе проверка
     # сравнивала бы запись саму с собой и всегда «совпадала»).
     param([string]$InstallDir)
-    $file = Join-Path $InstallDir "release.json"
-    if (-not (Test-Path $file)) { return "" }
-    try {
-        $data = Get-HrmJsonFile $file
-        if ($null -ne $data -and $data.PSObject.Properties["release_sha"] -and $data.release_sha) {
-            return [string]$data.release_sha
-        }
-    }
-    catch { return "" }
-    return ""
+    # Чтение ровно то же, что и в engine\Snapshot.psm1: одна реализация, чтобы
+    # мастер установки (CLI hrm-snapshot.ps1) и движок понимали идентичность
+    # одинаково.
+    return (Get-HrmSnapshotReleaseSha -Directory $InstallDir)
 }
 
 function Save-HrmPreviousSnapshot {
     # Снимок ПРЕДЫДУЩЕЙ (работающей) версии ДО того, как {app} будет перезаписан
-    # новой версией. Без него откат возвращал только теги образов, а файлы
-    # оставались от новой версии: старое приложение поднималось поверх новой
-    # конфигурации (дефект P1 ревью).
-    param([string]$InstallDir, [string]$StateDir)
-    $target = Get-HrmPreviousSnapshotDir $StateDir
-    try {
-        if (Test-Path $target) { Remove-Item -Path $target -Recurse -Force -ErrorAction Stop }
-        New-Item -ItemType Directory -Path $target -Force -ErrorAction Stop | Out-Null
-        # Копирование тем же безопасным копировщиком: он проверяет полноту
-        # снимка, поэтому половинчатая копия не станет «предыдущей версией».
-        Copy-HrmSnapshot -SourceDir $InstallDir -InstallDir $target
-        return [pscustomobject]@{ saved = $true; reason = ""; dir = $target; message = "Снимок предыдущей версии сохранён." }
-    }
-    catch {
-        $message = Redact-HrmText $_.Exception.Message
-        if (Test-Path $target) { Remove-Item -Path $target -Recurse -Force -ErrorAction SilentlyContinue }
-        return [pscustomobject]@{ saved = $false; reason = "copy_failed"; dir = ""; message = $message }
+    # новой версией. Снимок получает манифест файлов и описание с
+    # идентификатором версии (engine\Snapshot.psm1): без идентификатора откат не
+    # мог доказать, что вернул именно прежнюю версию, а без снимка файлов откат
+    # возвращал только теги образов (дефекты ревью итераций 14 и 15).
+    param([string]$InstallDir, [string]$StateDir, [string]$ReleaseSha = "", [string]$Version = "")
+    $identity = $ReleaseSha
+    if (-not $identity) { $identity = Get-HrmSnapshotIdentity -InstallDir $InstallDir -StateDir $StateDir }
+    if (-not $Version) { $Version = Get-HrmSnapshotVersionInDir -Directory $InstallDir }
+    $snapshot = New-HrmVerifiedSnapshotFromDir -SourceDir $InstallDir -StateDir $StateDir -ReleaseSha $identity -Version $Version -Origin "engine"
+    return [pscustomobject]@{
+        saved = [bool]$snapshot.saved
+        verified = [bool]$snapshot.verified
+        reason = [string]$snapshot.reason
+        dir = (Get-HrmPreviousSnapshotDir $StateDir)
+        release_sha = [string]$snapshot.release_sha
+        digest = [string]$snapshot.digest
+        files = [int]$snapshot.files
+        message = [string]$snapshot.message
     }
 }
 
 function Test-HrmPreviousSnapshotMatches {
-    # Снимок прежней версии уже сохранён — например мастером установки
-    # (Setup.exe → ssInstall) до того, как он перезапиcал {app} файлами новой
-    # версии. Такой снимок нельзя затирать: в {app} уже лежит НОВЫЙ код, и
-    # «предыдущей версией» стала бы не та версия.
+    # Снимок прежней версии уже сохранён и ПРОВЕРЕН — например мастер установки
+    # сохранил его до того, как перезаписал {app}. Такой снимок нельзя затирать:
+    # в {app} уже лежит НОВЫЙ код, и «предыдущей версией» стала бы не та
+    # версия.
+    #
+    # Годность определяется описанием снимка (verified), манифестом файлов и
+    # совпадением release_sha — это engine\Snapshot.psm1. Снимок БЕЗ описания
+    # (его оставила предыдущая версия движка) принимается только тогда, когда
+    # release.json снимка совпадает с ожидаемым идентификатором: иначе «прежней
+    # версией» мог бы оказаться чужой код.
     param([string]$StateDir, [string]$ReleaseSha = "")
-    if (-not $ReleaseSha) { return $false }
-    $releaseFile = Join-Path (Get-HrmPreviousSnapshotDir $StateDir) "release.json"
-    if (-not (Test-Path $releaseFile)) { return $false }
-    try {
-        $data = Get-HrmJsonFile $releaseFile
-        if ($null -eq $data -or -not $data.release_sha) { return $false }
-        return ([string]$data.release_sha -eq $ReleaseSha)
+    $resolved = Resolve-HrmPreviousSnapshot -StateDir $StateDir -ReleaseSha $ReleaseSha
+    if (-not $resolved.usable) {
+        $null = Write-HrmLog "info" ("Сохранённый снимок прежней версии не принят: {0}." -f (Format-HrmSnapshotProblem -Reason $resolved.reason))
     }
-    catch { return $false }
+    return [bool]$resolved.usable
 }
 
 function Save-HrmInstalledSnapshotForSetup {
     # Действие «snapshot-previous»: сохранить снимок УСТАНОВЛЕННОЙ версии ДО
-    # того, как мастер установки заменит файлы при обновлении. Вызывается из
-    # installer.iss (CurStep = ssInstall) — best-effort: не мешает установке,
-    # но благодаря нему откат возвращает настоящую прежнюю версию, а не файлы,
-    # которые мастер уже успел перезаписать.
-    param([string]$InstallDir = "", [string]$StateDir = "")
-    if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
-    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
-    $record = Get-HrmInstallRecord $StateDir
-    if ($null -eq $record) {
-        return [pscustomobject]@{ saved = $false; skipped = $true; message = "Установка не найдена — сохранять нечего." }
-    }
-    $installedSha = ""
-    if ($record.PSObject.Properties["release_sha"] -and $record.release_sha) { $installedSha = [string]$record.release_sha }
-    if (-not $installedSha) {
-        return [pscustomobject]@{ saved = $false; skipped = $true; message = "В записи установки нет версии — снимок не сохраняем." }
-    }
-    if (Test-HrmPreviousSnapshotMatches -StateDir $StateDir -ReleaseSha $installedSha) {
-        return [pscustomobject]@{ saved = $false; skipped = $true; message = "Снимок этой версии уже сохранён." }
-    }
-    # Сверка: в {app} должна лежать ИМЕННО установленная версия, иначе снимок
-    # был бы недостоверным («предыдущей версией» стал бы не тот код). Сверяем
-    # release.json В КАТАЛОГЕ (файлы), а не запись установки.
-    $fileSha = Get-HrmInstallDirReleaseSha $InstallDir
-    if ($fileSha -and $fileSha -ne $installedSha) {
-        return [pscustomobject]@{
-            saved = $false; skipped = $true
-            message = ("Файлы в каталоге установки уже не совпадают с установленной версией ({0} ≠ {1}) — снимок не сохраняем." -f $fileSha, $installedSha)
-        }
-    }
-    $result = Save-HrmPreviousSnapshot -InstallDir $InstallDir -StateDir $StateDir
-    return [pscustomobject]@{ saved = $result.saved; skipped = $false; message = $result.message }
+    # того, как мастер установки заменит файлы при обновлении.
+    #
+    # Тонкая обёртка над общей реализацией (engine\Snapshot.psm1): ровно ту же
+    # логику выполняет CLI hrm-snapshot.ps1, который мастер установки
+    # распаковывает из СВОЕГО пакета и запускает до первой перезаписи {app}.
+    # Действие сохранено как совместимый путь: его вызывает старое поведение
+    # мастера и диагностика, и оно обязано честно сообщать отказ (saved=false),
+    # а не «продолжать как будто всё хорошо».
+    param([string]$InstallDir = "", [string]$StateDir = "", [string]$ResultFile = "")
+    return (Save-HrmVerifiedPreviousSnapshot -InstallDir $InstallDir -StateDir $StateDir -ResultFile $ResultFile)
 }
 
 function Copy-HrmReleaseToStaging {
@@ -479,10 +455,21 @@ function Get-HrmRollbackPlan {
 }
 
 function Restore-HrmPreviousVersion {
-    # Согласованный возврат прежней версии: файлы из previous-snapshot, прежние
-    # образы по тегам, прежний release_sha в pilot.env и записи установки, затем
-    # ЗАПУСК и ПРОВЕРКА готовности. Возвращает @{ restored; confirmed; message }.
-    # Никогда не сообщает об успехе без подтверждённой готовности.
+    # Согласованный возврат прежней версии: файлы из проверенного снимка
+    # previous-snapshot, прежние образы по тегам, прежний release_sha в pilot.env
+    # и записи установки, затем ЗАПУСК и ПРОВЕРКА ИДЕНТИЧНОСТИ.
+    #
+    # «ВОССТАНОВЛЕНО» — только при совпадении ожидаемого идентификатора с тем,
+    # что сообщает приложение В РАБОТЕ: HTTP 200 и наличие JSON доказательством не
+    # считаются. Пустой release_sha при известном ожидаемом, чужой sha или sha
+    # сбойной сборки, недостоверный/чужой снимок — отказ (confirmed = false).
+    #
+    # Legacy-версии без release_sha: строгий документированный фолбэк
+    # (docs/UPDATE_GUIDE.md, «Правило прежней идентичности») — он требует
+    # проверенного описания снимка, совпадения версии в работе с версией снимка,
+    # известного идентификатора сбойной сборки и того, что приложение НЕ
+    # сообщает чужой release_sha. Плюс файлы до и после восстановления сверяются
+    # с манифестом снимка.
     param(
         [string]$InstallDir,
         [string]$StateDir,
@@ -490,31 +477,66 @@ function Restore-HrmPreviousVersion {
         [string]$PreviousReleaseSha = "",
         [string]$PreviousVersion = "",
         [string]$FailedReleaseSha = "",
+        [string]$FailedReleaseVersion = "",
         [int]$Port = 0,
         [int]$ReadyTimeoutSeconds = 240
     )
     $problems = @()
     $snapshotDir = Get-HrmPreviousSnapshotDir $StateDir
-    if (Test-Path $snapshotDir) {
-        try {
-            Copy-HrmSnapshot -SourceDir $snapshotDir -InstallDir $InstallDir
-        }
-        catch {
-            $problems += ("файлы прежней версии не восстановлены: " + (Redact-HrmText $_.Exception.Message))
+    # Ожидаемая идентичность прежней версии. Явно переданный sha приоритетен; при
+    # пустом (старая установка без release_sha) идентификатором становится sha
+    # самого снимка — и он всё равно проверяется, по версии в работе.
+    $expectedSha = $PreviousReleaseSha
+    # Снимок ДОЛЖЕН пройти проверку идентичности и целостности: чужой или
+    # повреждённый снимок не имеет права перезаписывать работающую версию.
+    $resolved = Resolve-HrmPreviousSnapshot -StateDir $StateDir -ReleaseSha $expectedSha
+    if (-not $resolved.usable) {
+        $problems += (Format-HrmSnapshotProblem -Reason $resolved.reason)
+    }
+    $snapshotMetadata = $resolved.metadata
+    $snapshotVerified = [bool](Get-HrmSnapshotField -Metadata $snapshotMetadata -Field "verified")
+    $snapshotSha = [string](Get-HrmSnapshotField -Metadata $snapshotMetadata -Field "release_sha")
+    $snapshotVersion = [string](Get-HrmSnapshotField -Metadata $snapshotMetadata -Field "version")
+    $snapshotManifest = @(Get-HrmSnapshotField -Metadata $snapshotMetadata -Field "manifest")
+    if (-not $expectedSha -and $snapshotVerified) { $expectedSha = $snapshotSha }
+    if ($problems.Count -eq 0) {
+        if ($snapshotManifest.Count -eq 0) {
+            # Без манифеста нельзя доказать, что в {app} легла именно прежняя
+            # версия: отсутствие манифеста — отказ, а не «попробуем».
+            $problems += "у снимка прежней версии нет манифеста файлов — достоверность недоказуема"
         }
     }
-    else {
-        $problems += "сохранённый снимок прежней версии не найден"
+    if ($problems.Count -eq 0) {
+        # Целостность снимка проверяется ДО подмены файлов: повреждённый снимок
+        # не должен затирать работающую версию.
+        $snapshotCheck = Test-HrmSnapshotManifest -Root $snapshotDir -Manifest $snapshotManifest
+        if (-not $snapshotCheck.ok) {
+            $problems += ("снимок прежней версии повреждён: " + (($snapshotCheck.problems | Select-Object -First 3) -join "; "))
+        }
     }
-    if ($PreviousIds.Count -gt 0) {
+    if ($problems.Count -eq 0) {
+        try { Copy-HrmSnapshot -SourceDir $snapshotDir -InstallDir $InstallDir }
+        catch { $problems += ("файлы прежней версии не восстановлены: " + (Redact-HrmText $_.Exception.Message)) }
+    }
+    if ($problems.Count -eq 0) {
+        # Восстановленные файлы обязаны совпасть со снимком: иначе в каталоге
+        # установки не прежняя версия, и «восстановлено» было бы неправдой.
+        $restoredCheck = Test-HrmSnapshotManifest -Root $InstallDir -Manifest $snapshotManifest
+        if (-not $restoredCheck.ok) {
+            $problems += ("восстановленные файлы не совпали со снимком прежней версии: " + (($restoredCheck.problems | Select-Object -First 3) -join "; "))
+        }
+    }
+    if ($PreviousIds -and $PreviousIds.Count -gt 0) {
         try { Invoke-HrmRollbackImages $PreviousIds } catch { $problems += ("образы не восстановлены: " + (Redact-HrmText $_.Exception.Message)) }
     }
-    # Прежняя идентичность релиза в окружении и записи установки: иначе стек
-    # поднимется с новым release_sha и smoke снова покажет расхождение.
-    if ($PreviousReleaseSha) {
+    if ($problems.Count -eq 0) {
+        # Идентичность релиза в окружении и записи установки: даже пустой sha
+        # (legacy) обязан снова стоять в pilot.env — иначе стек поднимется с
+        # release_sha сбойной сборки и проверка идентичности снова не сойдётся.
         try {
-            $null = Write-HrmPilotEnv $StateDir $PreviousReleaseSha $Port
-            $fields = @{ release_sha = $PreviousReleaseSha; rolled_back_at = (Get-Date).ToString("o") }
+            $null = Write-HrmPilotEnv $StateDir $expectedSha $Port
+            $fields = @{ rolled_back_at = (Get-Date).ToString("o") }
+            if ($expectedSha) { $fields["release_sha"] = $expectedSha }
             if ($PreviousVersion) { $fields["version"] = $PreviousVersion }
             Set-HrmInstallRecord $StateDir $fields
         }
@@ -543,27 +565,63 @@ function Restore-HrmPreviousVersion {
                 $problems += "готовность прежней версии не подтверждена (нет ответа о состоянии приложения)"
             }
             else {
-                $sha = ""
-                if ($ops.PSObject.Properties["release_sha"]) { $sha = [string]$ops.release_sha }
-                if ($FailedReleaseSha -and $sha -and $sha -eq $FailedReleaseSha) {
+                $opsSha = ""
+                $opsVersion = ""
+                if ($ops.PSObject.Properties["release_sha"] -and $null -ne $ops.release_sha) { $opsSha = ([string]$ops.release_sha).Trim() }
+                if ($ops.PSObject.Properties["version"] -and $null -ne $ops.version) { $opsVersion = ([string]$ops.version).Trim() }
+                if ($FailedReleaseSha -and $opsSha -and ($opsSha -eq $FailedReleaseSha)) {
                     # В работе по-прежнему сбойная новая версия: откат НЕ удался.
                     $problems += "в работе осталась сбойная версия — откат не применился"
                 }
-                else {
-                    if ($PreviousReleaseSha -and $sha -and $sha -ne $PreviousReleaseSha) {
-                        # Не сбойная версия, но и не тот sha, что записан в установке
-                        # (например, прежняя версия не сообщала sha). Готовность
-                        # подтверждена, о расхождении честно пишем в журнал.
-                        $null = Write-HrmLog "warn" ("Откат: приложение отвечает с sha {0}, в записи установки прежний sha {1}." -f $sha, $PreviousReleaseSha)
+                elseif ($PreviousReleaseSha) {
+                    # Ожидаемый идентификатор передан явно (журнал/запись
+                    # установки): подтверждение — ТОЛЬКО при точном совпадении.
+                    if (-not $opsSha) {
+                        $problems += ("приложение не сообщило версию в работе (пустой release_sha): прежняя версия {0} не подтверждена" -f $PreviousReleaseSha)
                     }
-                    $confirmed = $true
+                    elseif ($opsSha -ne $PreviousReleaseSha) {
+                        $problems += ("в работе другая версия ({0}), ожидалась прежняя ({1}) — восстановление не подтверждено" -f $opsSha, $PreviousReleaseSha)
+                    }
+                    else { $confirmed = $true }
+                }
+                elseif ($opsSha -and -not $snapshotSha) {
+                    $problems += ("приложение сообщило версию в работе ({0}), но у прежней версии release_sha нет — подтвердить восстановление нельзя" -f $opsSha)
+                }
+                elseif ($opsSha -and ($opsSha -ne $snapshotSha)) {
+                    $problems += ("в работе версия {0}, а в проверенном снимке прежней версии {1} — восстановление не подтверждено" -f $opsSha, $snapshotSha)
+                }
+                else {
+                    # Строгий фолбэк для версий БЕЗ release_sha (он документирован
+                    # в docs/UPDATE_GUIDE.md, «Правило прежней идентичности»):
+                    # требуется проверенное описание снимка с версией, известный
+                    # идентификатор сбойной сборки, отсутствие чужого release_sha
+                    # в ответе и совпадение версии в работе с версией снимка.
+                    # Файлы до и после восстановления уже сверены с манифестом.
+                    if ($FailedReleaseVersion -and $opsVersion -and ($opsVersion -eq $FailedReleaseVersion)) {
+                        $problems += ("в работе версия сбойной сборки ({0}) — откат не применился" -f $opsVersion)
+                    }
+                    elseif (-not $snapshotVerified -or -not $snapshotVersion) {
+                        $problems += "прежняя версия не имеет release_sha, а у снимка нет проверенного описания с версией — подтвердить восстановление нельзя"
+                    }
+                    elseif (-not $FailedReleaseSha) {
+                        $problems += "идентификатор сбойного релиза неизвестен — подтвердить восстановление нельзя"
+                    }
+                    elseif (-not $opsVersion -or $opsVersion -ne $snapshotVersion) {
+                        $problems += ("в работе версия {0}, в проверенном снимке прежней версии {1} — восстановление не подтверждено" -f $opsVersion, $snapshotVersion)
+                    }
+                    else {
+                        Write-HrmLog "info" "Откат подтверждён по содержимому снимка и версии: прежняя версия не сообщает release_sha."
+                        $confirmed = $true
+                    }
                 }
             }
         }
         catch { $problems += ("готовность прежней версии не подтверждена: " + (Redact-HrmText $_.Exception.Message)) }
     }
     if ($confirmed -and $problems.Count -eq 0) {
-        return [pscustomobject]@{ restored = $true; confirmed = $true; message = "Прежняя версия восстановлена и отвечает." }
+        $identityLabel = $expectedSha
+        if (-not $identityLabel) { $identityLabel = $snapshotVersion }
+        return [pscustomobject]@{ restored = $true; confirmed = $true; message = ("Прежняя версия ({0}) восстановлена и отвечает." -f $identityLabel) }
     }
     if ($problems.Count -eq 0) { $problems += "готовность не подтверждена" }
     return [pscustomobject]@{ restored = $started; confirmed = $false; message = ("Восстановление не подтверждено: {0}." -f ($problems -join "; ")) }
@@ -625,7 +683,14 @@ function Update-HrmApp {
     # Re-render the protected env before the backup gate. Besides keeping the
     # current release/port authoritative, this upgrades legacy phase-12
     # backup-key encoding before the backup container reads it.
-    $null = Write-HrmPilotEnv $StateDir ([string]$record.release_sha) $port
+    # Legacy-запись установки может НЕ содержать release_sha (идентификатора у
+    # старой версии нет). Обращение к отсутствующему свойству под StrictMode 2.0
+    # обрывает обновление до первой фазы, поэтому значение читается через
+    # PSObject и передаётся пустым — это документированный случай
+    # (docs/UPDATE_GUIDE.md, «Правило прежней идентичности»).
+    $recordShaForEnv = ""
+    if ($record.PSObject.Properties["release_sha"] -and $record.release_sha) { $recordShaForEnv = [string]$record.release_sha }
+    $null = Write-HrmPilotEnv $StateDir $recordShaForEnv $port
 
     if (-not (Test-HrmUpdateLockAvailable $StateDir)) {
         throw "Обновление уже выполняется (блокировка update.lock). Подождите или запустите -Action resume."
@@ -661,9 +726,38 @@ function Update-HrmApp {
     $dbRevisionBefore = ""
     $migrationDone = $false
     $dbRevisionNow = ""
-    # Файлы снимка в {app} уже заменены (фаза switch началась): от этого зависит
-    # и политика отката, и честность сообщения о состоянии.
+    # Файлы снимка в {app} уже заменены: от этого зависит и политика отката, и
+    # честность сообщения о состоянии. Фаза switch означает замену силами
+    # движка; ниже к этому добавляется замена силами Setup.exe (он копирует
+    # файлы ДО запуска движка) — иначе ошибка после такой замены возвращала бы
+    # ложное «Установленная версия не изменялась».
     $filesSwitched = ($phase -eq "switch" -or $phase -eq "migrate" -or $phase -eq "smoke")
+    # Доказательство ИЗ ФАЙЛОВ, а не из журнала: в каталоге установки лежит не
+    # та версия, что записана установленной. Мастер установки раскладывает файлы
+    # новой версии ДО запуска движка, поэтому сбой даже на первых фазах (бэкап,
+    # сборка) — это НЕ «установленная версия не изменялась»: политика отката
+    # обязана вернуть прежнюю версию, а если снимка нет — честно сообщить, что
+    # автоматическое восстановление невозможно (журнал мог быть записан прежней
+    # версией движка и об этом не знать).
+    $recordShaForEvidence = ""
+    if ($record.PSObject.Properties["release_sha"] -and $record.release_sha) { $recordShaForEvidence = [string]$record.release_sha }
+    $currentFileSha = Get-HrmInstallDirReleaseSha $InstallDir
+    # Второе доказательство, работающее и для СТАРЫХ установок без release_sha:
+    # версия в каталоге установки отличается от версии в записи установки —
+    # значит, в {app} уже не та версия, что записана установленной.
+    $recordVersionForEvidence = ""
+    if ($record.PSObject.Properties["version"] -and $record.version) { $recordVersionForEvidence = [string]$record.version }
+    $currentFileVersion = Get-HrmSnapshotVersionInDir -Directory $InstallDir
+    $filesReplacedEvidence = ($currentFileSha -ne $recordShaForEvidence)
+    if (-not $filesReplacedEvidence -and $currentFileVersion -and $recordVersionForEvidence -and
+        ($currentFileVersion -ne $recordVersionForEvidence)) {
+        $filesReplacedEvidence = $true
+        Write-HrmLog "info" ("В каталоге установки версия {0}, а записана установленной {1} — файлы заменены установщиком." -f $currentFileVersion, $recordVersionForEvidence)
+    }
+    if ($filesReplacedEvidence) {
+        $filesSwitched = $true
+        Write-HrmLog "info" ("Файлы каталога установки не совпадают с установленной версией ({0} вместо {1}) — политика отката учитывает возможную замену файлов." -f $currentFileSha, $recordShaForEvidence)
+    }
     $releaseDir = $sourceReleaseDir
     if ($resume -and $null -ne $data) {
         if ($data.previous_ids) {
@@ -675,6 +769,7 @@ function Update-HrmApp {
         if ($data.PSObject.Properties["db_revision_before"]) { $dbRevisionBefore = [string]$data.db_revision_before }
         if ($data.PSObject.Properties["migration_done"]) { $migrationDone = [bool]$data.migration_done }
         if ($data.PSObject.Properties["previous_snapshot_saved"]) { $previousSnapshotSaved = [bool]$data.previous_snapshot_saved }
+        if ($data.PSObject.Properties["files_switched"]) { $filesSwitched = $filesSwitched -or [bool]$data.files_switched }
     }
     $releaseData = Get-HrmJsonFile (Join-Path $releaseDir "release.json")
     if ($null -eq $releaseData) { $releaseData = $sourceReleaseData }
@@ -693,15 +788,27 @@ function Update-HrmApp {
             $previousIds = Get-HrmImageIds
             $saved = $null
             $previousSnapshotSaved = $false
-            $installedSha = [string]$record.release_sha
-            $currentSha = Get-HrmInstallDirReleaseSha $InstallDir
-            if (Test-HrmPreviousSnapshotMatches -StateDir $StateDir -ReleaseSha $installedSha) {
-                # Setup.exe сохранил прежнюю версию до перезаписи файлов: она и
-                # есть предыдущая, повторный снимок только испортил бы картину.
-                Write-HrmLog "info" "Снимок прежней версии уже сохранён перед установкой — используем его."
-                $saved = [pscustomobject]@{ saved = $true; reason = ""; message = "Снимок прежней версии уже сохранён." }
+            $installedSha = $recordShaForEvidence
+            $currentSha = $currentFileSha
+            # Идентификатор прежней версии: запись установки, а если её нет
+            # (старые релизы) — release.json каталога. Пустая строка означает
+            # «идентификатора нет» — отдельный документированный случай (см.
+            # docs/UPDATE_GUIDE.md, «Правило прежней идентичности»).
+            $previousReleaseSha = $installedSha
+            if (-not $previousReleaseSha) { $previousReleaseSha = $currentSha }
+            # Файлы {app} уже заменены новой версией (Setup.exe копирует файлы
+            # ДО запуска движка): снимок прежней версии из них делать нельзя, а
+            # ошибка после такой замены НЕ «ничего не менялось».
+            $filesReplacedBySetup = $filesReplacedEvidence
+            if (Test-HrmPreviousSnapshotMatches -StateDir $StateDir -ReleaseSha $previousReleaseSha) {
+                # Снимок прежней версии уже сохранён и проверен (мастер
+                # установки сохранил его ДО перезаписи {app}). Повторный снимок
+                # испортил бы картину: он был бы сделан уже из файлов новой
+                # версии.
+                Write-HrmLog "info" "Проверенный снимок прежней версии уже сохранён — используем его."
+                $saved = [pscustomobject]@{ saved = $true; reason = "reused"; message = "Снимок прежней версии уже сохранён." }
             }
-            elseif ($currentSha -and $installedSha -and $currentSha -ne $installedSha) {
+            elseif ($filesReplacedBySetup) {
                 # Файлы в {app} уже заменены новой версией (Setup.exe копирует
                 # файлы ДО запуска движка), а снимка прежней версии нет: значит
                 # сохранить её невозможно. Сохранять НОВЫЕ файлы как «прежнюю
@@ -709,11 +816,11 @@ function Update-HrmApp {
                 # Обновление продолжаем (единственная возможность получить
                 # работающую версию), но политика отката честно скажет, что
                 # автоматическое восстановление недоступно.
-                Write-HrmLog "warn" ("Прежняя версия файлов недоступна: в каталоге установки уже новая версия ({0}), снимок прежней версии ({1}) не сохранён." -f $currentSha, $installedSha)
+                Write-HrmLog "warn" ("Прежняя версия файлов недоступна: в каталоге установки уже файлы новой версии ({0}), снимок прежней версии ({1}) не сохранён." -f $currentSha, $previousReleaseSha)
                 $saved = [pscustomobject]@{ saved = $false; reason = "files_replaced"; message = "Прежняя версия файлов уже перезаписана установщиком." }
             }
             else {
-                $saved = Save-HrmPreviousSnapshot -InstallDir $InstallDir -StateDir $StateDir
+                $saved = Save-HrmPreviousSnapshot -InstallDir $InstallDir -StateDir $StateDir -ReleaseSha $previousReleaseSha -Version $previousVersion
             }
             if ($saved.saved) {
                 $previousSnapshotSaved = $true
@@ -724,6 +831,13 @@ function Update-HrmApp {
             }
             else {
                 throw ("Не удалось сохранить снимок предыдущей версии ({0}) — обновление остановлено, файлы не изменены." -f $saved.message)
+            }
+            if ($filesReplacedBySetup) {
+                # Файлы {app} заменены ДО движка: сбой на любой следующей фазе
+                # (в том числе до бэкап-ворот) обязан приводить к восстановлению
+                # прежней версии, а не к «установленная версия не изменялась».
+                $filesSwitched = $true
+                Write-HrmLog "info" "Файлы каталога установки заменены установщиком — политика отката учитывает это до начала фаз."
             }
             if ($usingStagedRelease) {
                 # Уже работаем из копии движка (возобновление): копировать нечего.
@@ -741,9 +855,10 @@ function Update-HrmApp {
                 previous_ids = $previousIds
                 release_sha = $releaseSha
                 previous_version = $previousVersion
-                previous_release_sha = [string]$record.release_sha
+                previous_release_sha = $previousReleaseSha
                 db_revision_before = $dbRevisionBefore
                 previous_snapshot_saved = $previousSnapshotSaved
+                files_switched = $filesSwitched
                 migration_done = $false
             }
             $phase = "backup"
@@ -868,6 +983,27 @@ function Update-HrmApp {
         }
         else {
             $dbRevisionNow = [string](Get-HrmMigrationsState -InstallDir $InstallDir -StateDir $StateDir)
+            # Ожидаемая идентичность прежней версии вычисляется ЯВНО и заранее:
+            # журнал (если он был) либо запись установки. Она же передаётся в
+            # проверку отката — «успех» без совпадения с ней запрещён.
+            $expectedPreviousSha = ""
+            $previousVersionSaved = $previousVersion
+            if ($resume -and $null -ne $data) {
+                if ($data.PSObject.Properties["previous_release_sha"]) { $expectedPreviousSha = [string]$data.previous_release_sha }
+                if (-not $previousVersionSaved -and $data.PSObject.Properties["previous_version"]) { $previousVersionSaved = [string]$data.previous_version }
+            }
+            if (-not $expectedPreviousSha -and $record.PSObject.Properties["release_sha"] -and $record.release_sha) {
+                $expectedPreviousSha = [string]$record.release_sha
+            }
+            # Политика отката должна отражать фактическое состояние: пригодный
+            # (проверенный, совпадающий по идентификатору) снимок обязан быть
+            # учтён, даже если журнал об этом молчит — журнал мог быть записан
+            # прежней версией движка.
+            $snapshotForPlan = Resolve-HrmPreviousSnapshot -StateDir $StateDir -ReleaseSha $expectedPreviousSha
+            if (-not $previousSnapshotSaved -and $snapshotForPlan.usable) {
+                Write-HrmLog "info" "Снимок прежней версии проверен и пригоден — политика отката учитывает его."
+                $previousSnapshotSaved = $true
+            }
             $plan = Get-HrmRollbackPlan -FailedPhase $phase -MigrationDone $migrationDone -DbRevisionBefore $dbRevisionBefore -DbRevisionNow $dbRevisionNow -PreviousSnapshotSaved $previousSnapshotSaved -FilesSwitched $filesSwitched
             Write-HrmLog "info" ("Политика восстановления: {0} ({1})." -f $plan.plan, $plan.reason)
             Set-HrmUpdateJournal $StateDir "rollback" @{ release_dir = $releaseDir; release_sha = $releaseSha; plan = $plan.plan }
@@ -882,14 +1018,7 @@ function Update-HrmApp {
                 # Согласованный возврат прежней версии: файлы + образы + release_sha,
                 # затем запуск и проверка готовности. Успех — только если прежняя
                 # версия отвечает и в работе НЕ сбойный релиз.
-                $previousReleaseSha = ""
-                $previousVersionSaved = $previousVersion
-                if ($resume -and $null -ne $data) {
-                    if ($data.PSObject.Properties["previous_release_sha"]) { $previousReleaseSha = [string]$data.previous_release_sha }
-                    if (-not $previousVersionSaved -and $data.PSObject.Properties["previous_version"]) { $previousVersionSaved = [string]$data.previous_version }
-                }
-                if (-not $previousReleaseSha) { $previousReleaseSha = [string]$record.release_sha }
-                $restore = Restore-HrmPreviousVersion -InstallDir $InstallDir -StateDir $StateDir -PreviousIds $previousIds -PreviousReleaseSha $previousReleaseSha -PreviousVersion $previousVersionSaved -FailedReleaseSha $releaseSha -Port $port
+                $restore = Restore-HrmPreviousVersion -InstallDir $InstallDir -StateDir $StateDir -PreviousIds $previousIds -PreviousReleaseSha $expectedPreviousSha -PreviousVersion $previousVersionSaved -FailedReleaseSha $releaseSha -FailedReleaseVersion $newVersion -Port $port
                 if ($restore.confirmed) {
                     Write-HrmLog "info" $restore.message
                     $resultStatus = "rolled_back"

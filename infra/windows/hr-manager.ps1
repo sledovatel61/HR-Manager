@@ -101,7 +101,7 @@ $script:EngineDir = Join-Path $PSScriptRoot "engine"
 # только при успешном завершении установки/обновления.
 $script:SetupMarkerOwner = $false
 foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update",
-        "Diagnostics", "Install", "Crypto", "Channel", "Lan", "SupportBundle",
+        "Diagnostics", "Install", "Snapshot", "Crypto", "Channel", "Lan", "SupportBundle",
         "Docker", "Supervisor", "Tray")) {
     Import-Module (Join-Path $script:EngineDir "$module.psm1") -Force -ErrorAction Stop
 }
@@ -190,15 +190,18 @@ try {
         "snapshot-previous" {
             # Быстрое действие без Docker и без диалогов: сохранить снимок
             # УСТАНОВЛЕННОЙ версии до того, как мастер установки заменит файлы.
-            # Вызывает Setup.exe (см. installer/installer.iss, CurStep=ssInstall).
+            # Совместимый путь для мастера установки и диагностики.
+            #
+            # ОТКАЗ ВИДЕН ВЫЗЫВАЮЩЕМУ: если снимок нужен (установка есть), но не
+            # получился, действие обязано завершиться ошибкой (ненулевой код), а
+            # не «напечатать предупреждение и продолжить» — иначе замена файлов
+            # прошла бы без возможности отката.
             $snapshotResult = Save-HrmInstalledSnapshotForSetup -InstallDir $InstallDir -StateDir $StateDir
-            if ($snapshotResult.saved) {
-                Write-HrmLog "info" "Снимок предыдущей версии сохранён для отката."
+            if ($snapshotResult.verified -or $snapshotResult.skipped) {
+                Write-HrmLog "info" ("Снимок предыдущей версии: " + $snapshotResult.message)
             }
             else {
-                # Это подготовка к обновлению, а не сама установка: молча
-                # сообщаем причину и продолжаем (решение принимает движок).
-                Write-HrmLog "warn" ("Снимок предыдущей версии не сохранён: " + $snapshotResult.message)
+                throw ("Снимок предыдущей версии не сохранён: " + $snapshotResult.message)
             }
         }
         "channel" {

@@ -28,7 +28,7 @@ Set-StrictMode -Version 2.0
 
 $script:EngineDir = Join-Path $PSScriptRoot "engine"
 foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update",
-        "Diagnostics", "Install", "Crypto", "Channel", "Lan", "SupportBundle",
+        "Diagnostics", "Install", "Snapshot", "Crypto", "Channel", "Lan", "SupportBundle",
         "Docker", "Supervisor", "Tray")) {
     Import-Module (Join-Path $script:EngineDir "$module.psm1") -Force -ErrorAction Stop
 }

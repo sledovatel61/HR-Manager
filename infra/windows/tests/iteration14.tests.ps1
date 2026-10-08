@@ -188,7 +188,11 @@ Test-Case "P1-2: снимок для мастера не берётся из у�
     New-HrmFakeSnapshot -Root $install -ReleaseSha $shaB
     $skipped = Save-HrmInstalledSnapshotForSetup -InstallDir $install -StateDir $state
     Assert-HrmFalse ([bool]$skipped.saved) "недостоверный снимок сохранён как прежняя версия"
-    Assert-HrmTrue ([bool]$skipped.skipped) "пропуск недостоверного снимка не отмечен"
+    # Итерация 15: отказ снимка при уже заменённых файлах — это ЖЁСТКИЙ отказ
+    # (skipped=false, reason=files_replaced), а не «предупреждение и продолжаем»:
+    # мастер обязан остановиться ДО перезаписи файлов.
+    Assert-HrmFalse ([bool]$skipped.skipped) "отказ снимка замаскирован как «пропущено»"
+    Assert-HrmEqual "files_replaced" ([string]$skipped.reason) "неверная причина отказа снимка"
     Assert-HrmContains ([string]$skipped.message) "не совпадают" "сообщение не объясняет, почему снимок не сохранён"
     Assert-HrmFalse (Test-Path (Join-Path (Get-HrmPreviousSnapshotDir $state) "release.json")) "недостоверный снимок всё же записан на диск"
     # Если release.json в {app} нет, сверять нечего: файлы не противоречат записи,
@@ -592,7 +596,12 @@ Test-Case "P2-4: статические контракты входных точ
     $iss = Get-Content -Path (Join-Path $script:RepoRoot "installer\installer.iss") -Raw -Encoding UTF8
     Assert-HrmContains $iss "PreservePreviousSnapshot" "мастер не сохраняет прежнюю версию перед обновлением"
     Assert-HrmContains $iss "ssInstall" "снимок прежней версии делается не до копирования файлов"
-    Assert-HrmContains $iss "-Action snapshot-previous" "мастер не вызывает сохранение снимка"
+    # Итерация 15: мастер готовит снимок вспомогательным скриптом из СВОЕГО
+    # пакета и проверяет его результат, а не полагается на действие прежнего
+    # движка (та версия может его не знать) — см. iteration15.tests.ps1.
+    Assert-HrmNotContains $iss "-Action snapshot-previous" "мастер полагается на действие УСТАНОВЛЕННОГО движка"
+    Assert-HrmContains $iss "hrm-snapshot.ps1" "мастер не использует вспомогательный скрипт снимка"
+    Assert-HrmContains $iss "(ResultCode = 0)" "мастер не проверяет код возврата снимка"
     Assert-HrmContains $iss "WriteSetupMarker" "мастер не отмечает начало установки"
     Assert-HrmContains $iss "setup-run.json" "нет файла отметки установки"
     # Откат не объявляет успех без проверки готовности.
