@@ -803,13 +803,33 @@ jobs:
           if ($manifest) {
             $built = Get-SplitHash ([string]$manifest.installer_exe.sha256)
             if ($built) {
-              Write-Host ("::notice title=pilot Setup.exe (build output)::file=" + $manifest.installer_exe.file + " sha256=" + $built)
+              Write-Host ("::notice title=pilot Setup.exe (build output, unsigned)::file=" + $manifest.installer_exe.file + " sha256=" + $built)
             }
           }
           $setup = Get-ChildItem -Path "installer/output" -Filter "HR-Manager-Setup-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $setup) { Write-Host "no Setup.exe in installer/output"; exit 0 }
-          $uploaded = Get-SplitHash ((Get-FileHash -Path $setup.FullName -Algorithm SHA256).Hash)
-          Write-Host ("::notice title=pilot Setup.exe (uploaded artifact)::file=" + $setup.Name + " bytes=" + $setup.Length + " sha256=" + $uploaded)
+          $onDisk = (Get-FileHash -Path $setup.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+          Write-Host ("::notice title=pilot Setup.exe (on disk, signed)::file=" + $setup.Name + " bytes=" + $setup.Length + " sha256=" + (Get-SplitHash $onDisk))
+          # The release manifest hash is computed BEFORE Authenticode signing, and
+          # signing rewrites the file: two different values here are expected, not
+          # a non-reproducible build. What must hold is that the file on disk is
+          # the exact file the signing step attested to - otherwise the artifact
+          # is not the one whose signature was verified.
+          $attestationPath = "installer/authenticode-attestation.json"
+          if (Test-Path $attestationPath) {
+            $attestation = $null
+            try { $attestation = Get-Content -Path $attestationPath -Raw | ConvertFrom-Json } catch { $attestation = $null }
+            if ($attestation -and $attestation.installer_sha256) {
+              $attested = ([string]$attestation.installer_sha256).ToUpperInvariant()
+              if ($attested -eq $onDisk) {
+                Write-Host "::notice title=pilot Setup.exe (signature evidence)::on-disk sha256 equals authenticode-attestation.json"
+              }
+              else {
+                Write-Host ("::error title=pilot Setup.exe (signature evidence)::on-disk sha256 " + (Get-SplitHash $onDisk) + " differs from attestation " + (Get-SplitHash $attested))
+                exit 1
+              }
+            }
+          }
 
   pilot-setup:
     name: Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS
