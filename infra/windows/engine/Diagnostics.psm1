@@ -53,8 +53,8 @@ function Get-HrmDiagnostics {
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
-    $port = Get-HrmPort
-    if ($null -ne $record -and $record.port) { $port = [int]$record.port }
+    $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+    if ($port -le 0) { $port = Get-HrmPort }
     $baseUrl = Get-HrmBaseUrl $port
 
     $docker = Get-HrmDockerState
@@ -116,7 +116,7 @@ function Get-HrmDiagnostics {
 
     # Установленная и работающая версии.
     $version = "unknown"
-    $installedSha = if ($record) { [string]$record.release_sha } else { "" }
+    $installedSha = [string](Get-HrmInstallRecordField -Record $record -Field "release_sha")
     $runningSha = if ($ops) { [string]$ops.release_sha } else { "" }
     if ($installedSha -and $runningSha) {
         $version = if ($installedSha -eq $runningSha) { "match" } else { "mismatch" }

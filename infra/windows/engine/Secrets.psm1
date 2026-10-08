@@ -278,6 +278,19 @@ function Get-HrmInstallRecord {
     return Get-HrmJsonFile $file
 }
 
+function Get-HrmInstallRecordField {
+    # Безопасное чтение поля записи установки. У записи СТАРОЙ установки поля
+    # может не быть вовсе, а прямой доступ к отсутствующему свойству под
+    # StrictMode 2.0 — исключение PropertyNotFound: установка, обновление,
+    # диагностика и трей обрывались бы на ровном месте.
+    param($Record, [string]$Field, $Default = "")
+    if ($null -eq $Record) { return $Default }
+    if (-not $Record.PSObject.Properties[$Field]) { return $Default }
+    $value = $Record.PSObject.Properties[$Field].Value
+    if ($null -eq $value) { return $Default }
+    return $value
+}
+
 function Set-HrmInstallRecord {
     # Windows PowerShell 5.1 не умеет Add-Member на Hashtable — пересборка.
     param([string]$StateDir, [hashtable]$Fields)

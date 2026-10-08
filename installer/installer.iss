@@ -279,6 +279,19 @@ begin
   end;
 end;
 
+function HrmReadResultKeySafe(const DataFile, Key: String): String;
+// Чтение файла результата для путей БЕЗ обёртки try/except. Ошибка чтения не
+// имеет права прерывать установку «техническим» сообщением: пустой статус
+// означает «снимок не подтверждён», и мастер честно останавливается.
+begin
+  try
+    Result := HrmReadResultKey(DataFile, Key);
+  except
+    Log('HRM: файл результата снимка не прочитан: ' + GetExceptionMessage);
+    Result := '';
+  end;
+end;
+
 function HrmExtractSnapshotHelper(): Boolean;
 // Вспомогательные файлы снимка распаковываются из СВОЕГО пакета (флаг
 // dontcopy), а не берутся у установленного движка: прежняя версия может не
@@ -360,8 +373,8 @@ begin
   DeleteFile(ResultFile);
   Log('HRM: сохраняем снимок предыдущей версии до копирования файлов.');
   RunOk := HrmRunSnapshotHelper(ResultFile);
-  Status := HrmReadResultKey(ResultFile, 'status');
-  Reason := HrmReadResultKey(ResultFile, 'reason');
+  Status := HrmReadResultKeySafe(ResultFile, 'status');
+  Reason := HrmReadResultKeySafe(ResultFile, 'reason');
   SnapshotStatus := Status;
   SnapshotReason := Reason;
   if RunOk then
@@ -409,7 +422,7 @@ begin
     SnapshotGuardPassed := True;
     Exit;
   end;
-  Status := HrmReadResultKey(ExpandConstant('{tmp}\hrm-snapshot-result.txt'), 'status');
+  Status := HrmReadResultKeySafe(ExpandConstant('{tmp}\hrm-snapshot-result.txt'), 'status');
   if (Status = 'verified') or (Status = 'skipped') then
   begin
     SnapshotGuardPassed := True;
@@ -457,17 +470,19 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   GuardError: String;
 begin
+  // Порядок обязателен и проверяется статикой тестов: СНАЧАЛА снимок прежней
+  // версии, и только потом последняя проверка. Обратный порядок (проверка
+  // раньше снимка) останавливал бы ЛЮБОЕ обновление существующей установки ещё
+  // до того, как снимок вообще попытались создать.
+  Result := PreservePreviousSnapshot();
+  if Result <> '' then Exit;
   // Подготовка завершается ДО копирования файлов: если подтверждённого снимка
   // прежней версии нет, установка останавливается на этой странице — и в
   // обычном, и в неинтерактивном режиме (Inno завершает установку с отдельным
   // кодом возврата, поэтому «остановка» видна и автоматике).
   GuardError := HrmVerifySnapshotGuard();
   if GuardError <> '' then
-  begin
     Result := GuardError;
-    Exit;
-  end;
-  Result := PreservePreviousSnapshot();
 end;
 
 function GetEngineDockerArgs(Param: String): String;
