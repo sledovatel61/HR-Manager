@@ -534,7 +534,12 @@ Test-Case "P2: мастер сначала СОХРАНЯЕТ снимок, по
     # Чтение файла результата не имеет права пробивать обработку снимка
     # исключением: статус читается только через безопасную обёртку.
     Assert-HrmContains $iss "HrmReadResultKeySafe" "файл результата читается без защиты от исключения"
-    $rawReads = @([regex]::Matches($iss, 'HrmReadResultKey\('))
+    $rawReads = @()
+    foreach ($match in [regex]::Matches($iss, 'HrmReadResultKey\(')) {
+        # Объявление самой функции чтением не считается.
+        if ($iss.Substring(0, $match.Index).TrimEnd().EndsWith("function")) { continue }
+        $rawReads += $match
+    }
     Assert-HrmEqual 1 $rawReads.Count "прямое чтение файла результата мимо безопасной обёртки"
     $safeStart = $iss.IndexOf("function HrmReadResultKeySafe")
     Assert-HrmTrue ($safeStart -ge 0) "нет безопасной обёртки чтения файла результата"
