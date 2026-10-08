@@ -502,27 +502,32 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          # Python пишет UTF-8 (PYTHONUTF8=1); научим PowerShell 5.1 так же его
-          # декодировать, иначе в логе будет кракозябра вместо русского текста.
-          # Косметика, поэтому под try/catch: на раннере без консольного хендла
-          # сеттер бросает IOException, а падать из-за этого шаг не должен.
-          # Ключевая строка TRUST_STORE_SHA256= — чистый ASCII, она парсится
-          # одинаково в любой кодовой странице.
+          # ASCII only: this step runs on Windows PowerShell 5.1. The runner writes the
+          # temporary step script as UTF-8 WITHOUT a BOM and 5.1 then reads it in the
+          # ANSI code page, which turns Russian letters into characters the parser takes
+          # for string delimiters - the step dies on parse with no annotation at all.
+          # Russian text belongs in a repository file with a BOM; lint-engine.py now
+          # enforces this rule for every "shell: powershell" step.
+          # Python writes UTF-8 (PYTHONUTF8=1); the console encoding is switched below so
+          # the log is readable. Cosmetic, hence try/catch: on a runner without a console
+          # handle the setter throws IOException and the step must not fail because of it.
+          # The marker line TRUST_STORE_SHA256= is pure ASCII, so it reads the same in any
+          # code page.
           try {
             [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
           }
           catch {
-            Write-Host "Console.OutputEncoding не переключён: $($_.Exception.Message)"
+            Write-Host "Console.OutputEncoding not switched: $($_.Exception.Message)"
           }
           Write-Host "=== Trust store: CI fixture contract (Phase 14) ==="
           $trustStorePath = "infra/release/testdata/trusted_keys.json"
           if (-not (Test-Path $trustStorePath)) { throw "trust store not found: $trustStorePath" }
-          # ci-contract проверяет строгую схему, наличие активного и ОТОЗВАННОГО
-          # ключей и то, что production-политика по-прежнему отклоняет этот
-          # набор (--require-unrevoked и assert_no_fixture_keys). Ошибка -> код 1.
-          # В Windows PowerShell 5.1 связка ErrorActionPreference=Stop и 2>&1
-          # превращает stderr внешней программы в terminating error, поэтому на
-          # время вызова предпочтение снижается, а вердикт читается из кода.
+          # ci-contract checks the strict schema, the presence of an active and a REVOKED
+          # key, and that the production policy still rejects this fixture
+          # (--require-unrevoked and assert_no_fixture_keys). A failure exits with 1.
+          # In Windows PowerShell 5.1 the combination ErrorActionPreference=Stop with 2>&1
+          # turns an external program stderr into a terminating error, so the preference
+          # is lowered for the call and the verdict is read from the exit code instead.
           $previousEap = $ErrorActionPreference
           $ErrorActionPreference = "Continue"
           try {
@@ -980,21 +985,23 @@ jobs:
       - name: Audit the official installer signature
         shell: powershell
         run: |
-          # Коды возврата аудита: 0 — измерено (и издатель совпал, если он уже
-          # зафиксирован), 1 — тревога (подпись/издатель не совпали с
-          # зафиксированными), 2 — измерить не удалось (нет сети/таймаут).
-          # Код 2 не должен красить сборку: это не смена издателя.
+          # ASCII only (see the trust store step above): this step runs on Windows
+          # PowerShell 5.1.
+          # Audit exit codes: 0 - measured (and the publisher matched the pinned one),
+          # 1 - alarm (signature or publisher differs from the pinned values),
+          # 2 - could not measure (no network / timeout). Code 2 must not turn the build
+          # red: it is not a publisher change.
           $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tools/Audit-HrmDockerPublisher.ps1 *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
           $code = $LASTEXITCODE
           if ($code -eq 2) {
-            Write-Host "::warning::аудит издателя Docker не смог скачать установщик (код 2) - это не смена издателя"
+            Write-Host "::warning::Docker publisher audit could not download the installer (code 2) - not a publisher change"
             exit 0
           }
           if ($code -ne 0) {
-            Write-Host "::error::аудит издателя Docker завершился с кодом $code"
+            Write-Host "::error::Docker publisher audit failed with code $code"
             exit $code
           }
-          Write-Host "Аудит издателя Docker Desktop пройден"
+          Write-Host "Docker Desktop publisher audit passed"
 
   license-issuer-windows:
     name: License issuer bundle - Windows PowerShell 5.1 checks
