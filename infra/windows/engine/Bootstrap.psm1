@@ -77,7 +77,7 @@ function Start-HrmFirstRun {
     param([string]$InstallDir, [string]$StateDir, [int]$Port = 0)
     $baseUrl = Get-HrmBaseUrl $Port
     $record = Get-HrmInstallRecord $StateDir
-    if ($null -ne $record -and $record.pilot_created) {
+    if ([bool](Get-HrmInstallRecordField -Record $record -Field "pilot_created" -Default $false)) {
         # Repair stale artifacts left by an interrupted/older first-run flow.
         # The database is authoritative: once the owner exists, no raw
         # exchange token or setup URL/input should remain on disk.
@@ -90,7 +90,7 @@ function Start-HrmFirstRun {
         Write-HrmLog "info" "Владелец уже создан — первый запуск не требуется."
         return
     }
-    if ($null -eq $record -or -not $record.release_sha) {
+    if ($null -eq $record -or -not (Get-HrmInstallRecordField -Record $record -Field "release_sha")) {
         throw "Запись установки отсутствует: сначала выполните -Action install."
     }
     $input = Get-HrmFirstRunInput $StateDir

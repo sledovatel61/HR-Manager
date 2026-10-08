@@ -32,6 +32,16 @@ from tests.conftest import FIXTURE_PASSWORD, make_candidate, make_event, make_us
 
 NOW = datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC)
 
+# Даты собеседований привязаны к текущему моменту, а не к календарю: иначе
+# напоминание «за 24 часа» оказывается в прошлом и планер (правильно) его
+# не создаёт — тест «протухал» через сутки после написания.
+INTERVIEW_1_AT = (datetime.now(UTC) + timedelta(days=3)).replace(
+    hour=10, minute=0, second=0, microsecond=0
+)
+INTERVIEW_2_AT = (datetime.now(UTC) + timedelta(days=5)).replace(
+    hour=15, minute=0, second=0, microsecond=0
+)
+
 
 def _login(client: TestClient, username: str) -> str:
     response = client.post("/auth/login", json={"username": username, "password": FIXTURE_PASSWORD})
@@ -127,7 +137,7 @@ def test_create_interview_plans_scheduled_and_reminder(
     _allow(db_session, candidate, "email", "telegram")
     csrf = _login(channels_app, "hr1")
 
-    event = _create_interview(channels_app, csrf, candidate, starts_at="2026-10-08T10:00:00+00:00")
+    event = _create_interview(channels_app, csrf, candidate, starts_at=INTERVIEW_1_AT.isoformat())
     rows = _rows(db_session, candidate)
     types = {(row.channel.value, row.notification_type.value) for row in rows}
     # «Назначено» on both channels + a reminder 24h before on both channels.
@@ -144,7 +154,7 @@ def test_create_interview_plans_scheduled_and_reminder(
     ]
     assert all(r.scheduled_at is not None for r in reminders)
     # The reminder fires 24h before the interview.
-    assert reminders[0].scheduled_at == datetime(2026, 10, 7, 10, 0, 0, tzinfo=UTC)
+    assert reminders[0].scheduled_at == INTERVIEW_1_AT - timedelta(hours=24)
 
 
 def test_create_interview_without_consent_queues_nothing(
@@ -153,7 +163,7 @@ def test_create_interview_without_consent_queues_nothing(
     hr = make_user(db_session, username="hr1", role=UserRole.HR)
     candidate = make_candidate(db_session, owner=hr, email="quiet@example.com")
     csrf = _login(channels_app, "hr1")
-    _create_interview(channels_app, csrf, candidate, starts_at="2026-10-08T10:00:00+00:00")
+    _create_interview(channels_app, csrf, candidate, starts_at=INTERVIEW_1_AT.isoformat())
     assert _rows(db_session, candidate) == []
 
 
@@ -164,14 +174,14 @@ def test_reschedule_cancels_stale_plan_and_notifies(
     candidate = make_candidate(db_session, owner=hr, email="resch@example.com")
     _allow(db_session, candidate, "email")
     csrf = _login(channels_app, "hr1")
-    event = _create_interview(channels_app, csrf, candidate, starts_at="2026-10-08T10:00:00+00:00")
+    event = _create_interview(channels_app, csrf, candidate, starts_at=INTERVIEW_1_AT.isoformat())
     assert len(_rows(db_session, candidate)) == 2
 
     response = channels_app.patch(
         f"/events/{event['id']}",
         json={
             "expected_version": event["version"],
-            "starts_at": "2026-10-10T15:00:00+00:00",
+            "starts_at": INTERVIEW_2_AT.isoformat(),
         },
         headers={"X-CSRF-Token": csrf},
     )
@@ -190,13 +200,13 @@ def test_reschedule_cancels_stale_plan_and_notifies(
         if r.notification_type == NotificationType.CANDIDATE_INTERVIEW_REMINDER
         and r.status == DeliveryStatus.QUEUED
     ]
-    assert fresh[0].scheduled_at == datetime(2026, 10, 9, 15, 0, 0, tzinfo=UTC)
+    assert fresh[0].scheduled_at == INTERVIEW_2_AT - timedelta(hours=24)
     # The rescheduled letter mentions the previous time (from the history).
     rescheduled = next(
         r for r in rows if r.notification_type == NotificationType.CANDIDATE_INTERVIEW_RESCHEDULED
     )
-    assert "08.10.2026" in (rescheduled.body or "")
-    assert "10.10.2026" in (rescheduled.body or "")
+    assert INTERVIEW_1_AT.strftime("%d.%m.%Y") in (rescheduled.body or "")
+    assert INTERVIEW_2_AT.strftime("%d.%m.%Y") in (rescheduled.body or "")
 
 
 def test_cancel_event_queues_cancelled_message(
@@ -206,7 +216,7 @@ def test_cancel_event_queues_cancelled_message(
     candidate = make_candidate(db_session, owner=hr, email="cancel@example.com")
     _allow(db_session, candidate, "email")
     csrf = _login(channels_app, "hr1")
-    event = _create_interview(channels_app, csrf, candidate, starts_at="2026-10-08T10:00:00+00:00")
+    event = _create_interview(channels_app, csrf, candidate, starts_at=INTERVIEW_1_AT.isoformat())
     response = channels_app.patch(
         f"/events/{event['id']}",
         json={"expected_version": event["version"], "status": "cancelled"},
@@ -252,7 +262,7 @@ def test_reminder_offset_configurable(channels_app: TestClient, db_session: Sess
     candidate = make_candidate(db_session, owner=hr, email="off@example.com")
     _allow(db_session, candidate, "email")
     csrf = _login(channels_app, "hr1")
-    event = _create_interview(channels_app, csrf, candidate, starts_at="2026-10-08T10:00:00+00:00")
+    event = _create_interview(channels_app, csrf, candidate, starts_at=INTERVIEW_1_AT.isoformat())
     assert event["id"]
     rows = [
         r
@@ -260,4 +270,4 @@ def test_reminder_offset_configurable(channels_app: TestClient, db_session: Sess
         if r.notification_type == NotificationType.CANDIDATE_INTERVIEW_REMINDER
     ]
     # Default offset from the app fixture: 24 hours before.
-    assert rows[0].scheduled_at == datetime(2026, 10, 7, 10, 0, 0, tzinfo=UTC)
+    assert rows[0].scheduled_at == INTERVIEW_1_AT - timedelta(hours=24)

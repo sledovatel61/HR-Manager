@@ -370,9 +370,11 @@ jobs:
         run: |
           $env:HRM_AUTHENTICODE_PFX_PASSWORD = $env:PFX_PASSWORD
           $env:HRM_SIGN_CLEANUP_PFX = "1"
-          # Fail closed: без закреплённых корней подпись не проверяется вовсе.
-          if (-not $env:SIGNER_ROOTS) { Write-Error "UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS обязателен"; exit 1 }
-          if (-not $env:TIMESTAMP_ROOTS) { Write-Error "UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS обязателен"; exit 1 }
+          # ASCII only: this step runs on Windows PowerShell 5.1, which reads the
+          # temporary step script in the ANSI code page (enforced by lint-engine.py).
+          # Fail closed: without pinned roots the signature is never trusted.
+          if (-not $env:SIGNER_ROOTS) { Write-Error "UPDATE_CHANNEL_AUTHENTICODE_SIGNER_ROOTS is required"; exit 1 }
+          if (-not $env:TIMESTAMP_ROOTS) { Write-Error "UPDATE_CHANNEL_AUTHENTICODE_TIMESTAMP_ROOTS is required"; exit 1 }
           $signerRootsPath = Join-Path $env:RUNNER_TEMP "authenticode-signer-roots.pem"
           $timestampRootsPath = Join-Path $env:RUNNER_TEMP "authenticode-timestamp-roots.pem"
           [System.IO.File]::WriteAllText($signerRootsPath, $env:SIGNER_ROOTS, (New-Object System.Text.UTF8Encoding($false)))

@@ -170,9 +170,13 @@ Test-Case "редакция секретов: логи и вывод никог�
     $redacted = Redact-HrmText "текст topsecret-12345678 конец"
     Assert-HrmNotContains $redacted "topsecret-12345678" "секрет не отредактирован"
     Assert-HrmContains $redacted "<redacted>" "нет маркера редакции"
-    $log = (Write-HrmLog "info" "пароль topsecret-12345678 тут") | Out-String
+    $log = Format-HrmLogLine -Level "info" -Message "пароль topsecret-12345678 тут"
     Assert-HrmNotContains $log "topsecret-12345678" "секрет попал в журнал"
     Assert-HrmContains $log "<redacted>" "журнал без маркера редакции"
+    # Журнал не должен попадать в конвейер: иначе его строки примешиваются к
+    # структурированным результатам функций и ломают их свойства под StrictMode.
+    $piped = @(Write-HrmLog "info" "проверка конвейера")
+    Assert-HrmEqual 0 $piped.Count "Write-HrmLog попал в конвейер (success stream)"
     Reset-HrmRedaction
 }
 
@@ -645,7 +649,32 @@ Test-Case "диагностика: редакция секретов в выво
     Register-HrmSecret $secret
     $json = (Get-HrmDiagnostics -InstallDir $install -StateDir $state -AsJson) | Out-String
     Assert-HrmNotContains $json $secret "секрет попал в вывод диагностики"
-    Assert-HrmContains $json "<redacted>" "нет маркера редакции в диагностике"
+    # ConvertTo-Json экранирует < > как \u003c/\u003e: читатель JSON видит
+    # <redacted>, поэтому проверяем обе формы.
+    Assert-HrmContainsRedacted $json "нет маркера редакции в диагностике"
+}
+
+Write-Host "== Публичный ключ лицензии =="
+
+Test-Case "ключ проверки лицензии: восстанавливается из снимка и не перезаписывает существующий" {
+    Initialize-HrmTestEngine
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Initialize-HrmStateDir $state | Out-Null
+    $first = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-key1-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    $second = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-key2-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    New-Item -ItemType Directory -Path $first, $second -Force | Out-Null
+    New-HrmFakeSnapshot -Root $first -ReleaseSha ("e" * 40)
+    New-HrmFakeSnapshot -Root $second -ReleaseSha ("f" * 40)
+    # Обновление/установка без ключа в StateDir: ключ берётся из снимка
+    $restored = Install-HrmLicensePublicKey -SourceDir $first -InstallDir $install -StateDir $state
+    Assert-HrmTrue ([bool]$restored) "ключ проверки лицензии не восстановлен из снимка"
+    $fromSnapshot = (Get-Content -Path (Join-Path $first "infra\license\public_key.b64") -Raw -Encoding UTF8).Trim()
+    Assert-HrmEqual $fromSnapshot $restored "ключ не совпал со снимком"
+    # Существующий ключ пользователя не перезаписывается другим снимком
+    $again = Install-HrmLicensePublicKey -SourceDir $second -InstallDir $install -StateDir $state
+    Assert-HrmEqual $restored $again "существующий ключ был перезаписан при обновлении"
+    Remove-Item $first, $second -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host "== Возобновление =="

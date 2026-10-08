@@ -53,8 +53,8 @@ function Get-HrmDiagnostics {
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
-    $port = Get-HrmPort
-    if ($null -ne $record -and $record.port) { $port = [int]$record.port }
+    $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+    if ($port -le 0) { $port = Get-HrmPort }
     $baseUrl = Get-HrmBaseUrl $port
 
     $docker = Get-HrmDockerState
@@ -116,7 +116,7 @@ function Get-HrmDiagnostics {
 
     # Установленная и работающая версии.
     $version = "unknown"
-    $installedSha = if ($record) { [string]$record.release_sha } else { "" }
+    $installedSha = [string](Get-HrmInstallRecordField -Record $record -Field "release_sha")
     $runningSha = if ($ops) { [string]$ops.release_sha } else { "" }
     if ($installedSha -and $runningSha) {
         $version = if ($installedSha -eq $runningSha) { "match" } else { "mismatch" }
@@ -276,7 +276,11 @@ function Get-HrmDirFacts {
     return $facts
 }
 
-function Get-HrmFreeSpaceMb {
+function Get-HrmHostFreeSpaceMb {
+    # Свободное место на диске установки для отчёта о хосте. Имя отличается от
+    # Docker.psm1\Get-HrmFreeSpaceMb намеренно: одинаковые имена в двух модулях
+    # движка перекрываются в порядке импорта (Docker импортируется после
+    # Diagnostics) и делают проверку места непредсказуемой.
     param([string]$Path)
     try {
         $qualifier = Split-Path -Qualifier $Path
@@ -326,7 +330,7 @@ function Get-HrmHostReportPayload {
         compose = (Get-HrmComposeFacts)
         published_ports = @($published["ports"])
         ports_observed = [bool]$published["observed"]
-        free_space_mb = (Get-HrmFreeSpaceMb -Path $InstallDir)
+        free_space_mb = (Get-HrmHostFreeSpaceMb -Path $InstallDir)
         state_dir = (Get-HrmDirFacts -Path $StateDir)
         staging = (Get-HrmDirFacts -Path $staging)
         installed_version = $releaseVersion

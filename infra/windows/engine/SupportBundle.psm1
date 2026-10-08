@@ -5,9 +5,16 @@
 # Внутри: diagnostics (-Json), логи движка и установщика, последние N строк
 # логов контейнеров backend/worker/frontend/backup, версия и release.json,
 # состояние лицензии (срок, лимит, статус — без подписи), результат
-# health/readiness. Без персональных данных и секретов — всё через
-# Redact-HrmText, не включать дамп БД, pilot.env, пароли, токены, ключи,
-# ФИО/телефоны/e-mail кандидатов.
+# health/readiness.
+#
+# Честно про редакцию — не обещать больше, чем делает код:
+#   * регистрированные секреты (пароли, токены, ключи) удаляет Redact-HrmText;
+#   * адреса почты и телефоны удаляет Redact-HrmPii;
+#   * имена, фамилии, должности, адреса и другой свободный текст из журналов
+#     регулярки НЕ распознают — они могут остаться в файлах архива;
+#   * дамп БД, pilot.env и файл секретов в архив не копируются никогда.
+# Поэтому внутрь архива кладётся README-ПЕРЕД-ОТПРАВКОЙ.txt: архив нужно
+# просмотреть и отправить владельцу только по закрытому каналу.
 
 Set-StrictMode -Version 2.0
 
@@ -43,8 +50,8 @@ function New-HrmSupportBundle {
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
-    $port = Get-HrmPort
-    if ($null -ne $record -and $record.port) { $port = [int]$record.port }
+    $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+    if ($port -le 0) { $port = Get-HrmPort }
     $baseUrl = Get-HrmBaseUrl $port
     $desktop = Get-HrmDesktopPath
     if (-not (Test-Path $desktop)) {
@@ -210,6 +217,43 @@ function New-HrmSupportBundle {
         # Итоговая проверка: убедиться что в архиве нет секретов и PII
         # Секреты уже заредактированы через Register-HrmSecret, но проверим pilot.env не попал
         # pilot.env, secrets file никогда не копировались, так что ок.
+
+        # 10. Предупреждение внутри самого архива. Документация об этом тоже
+        #     говорит, но архив уходит отдельно от документации, и человек,
+        #     который не программист, откроет именно его. Текст намеренно
+        #     перечисляет, чего автоматика НЕ гарантирует: обещать полное
+        #     вырезание личных данных было бы неправдой (см. шапку модуля).
+        try {
+            $readmeLines = @(
+                "HR Manager - отчёт для поддержки"
+                ""
+                "Этот архив создан автоматически, чтобы разработчик понял, что случилось."
+                ""
+                "Что внутри:"
+                "  - diagnostics.json, install-record.json, release.json, version.json;"
+                "  - health-*.json и pilot-readiness.json - состояние служб;"
+                "  - license-status.json - срок и лимит лицензии (без подписи);"
+                "  - logs-*.txt - последние строки журналов служб;"
+                "  - update-journal.json, channel.json, lan.json - если они есть."
+                ""
+                "Что вырезается автоматически:"
+                "  - пароли, токены и ключи (то, что программа знает как секрет);"
+                "  - адреса электронной почты и телефоны."
+                ""
+                "Что автоматика НЕ гарантирует:"
+                "  - имена и фамилии, должности, названия организаций, адреса и другой"
+                "    свободный текст из журналов и сообщений об ошибках могут остаться."
+                ""
+                "Перед отправкой:"
+                "  1. распакуйте архив и просмотрите файлы (в первую очередь logs-*.txt);"
+                "  2. отправьте архив только владельцу HR Manager и по закрытому каналу;"
+                "  3. если в архиве оказались лишние личные данные - сообщите владельцу."
+                ""
+                "В архиве нет дампа базы данных, файла pilot.env и файла секретов."
+            )
+            $readmeText = (($readmeLines -join "`r`n") + "`r`n")
+            [System.IO.File]::WriteAllText((Join-Path $tmpDir "README-ПЕРЕД-ОТПРАВКОЙ.txt"), $readmeText, (New-Object System.Text.UTF8Encoding($false)))
+        } catch {}
 
         # Создать zip
         Add-Type -AssemblyName System.IO.Compression.FileSystem

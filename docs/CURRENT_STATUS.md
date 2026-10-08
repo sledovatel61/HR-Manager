@@ -158,7 +158,7 @@ PostgreSQL integration и Compose должны подтверждаться CI �
 | B1 | В сборке нет открытого ключа лицензии (`infra/license/public_key.b64` отсутствовал, `compose.pilot.yml` требует `HRM_LICENSE_PUBLIC_KEY` fail-closed) | `installer/build.ps1` теперь берёт ключ из `infra/license/public_key.b64` или из GitHub variable/secret `HRM_LICENSE_PUBLIC_KEY`; без ключа сборка падает с понятной ошибкой. Файл `public_key.b64` коммитить можно (открытый ключ не секрет). |
 | B2 | Генератор лицензий не выдаётся владельцу | CI job `license-issuer-windows` теперь публикует `license-issuer-dist.zip` как artifact `license-issuer-owner` (без приватных ключей). |
 | B3 | Нет ярлыков | В `installer.iss` добавлена секция `[Icons]`: рабочий стол + меню Пуск — «HR Manager» (`-Action open`, скрытое окно), только в Пуск — «отчёт для разработчика», «перезапуск», «доступ по сети». Автозапуск через папку автозагрузки пользователя. |
-| B4 | Диагностика только через PowerShell | Новое действие `-Action support-bundle`: создаёт на рабочем столе `HR-Manager-report-<дата>.zip` (diagnostics JSON, логи, версии, лицензия без подписи, health/readiness). Всё через `Redact-HrmText`, без PII/секретов. Подсказка в UI готовности. |
+| B4 | Диагностика только через PowerShell | Новое действие `-Action support-bundle`: создаёт на рабочем столе `HR-Manager-report-<дата>.zip` (diagnostics JSON, логи, версии, лицензия без подписи, health/readiness). Секреты удаляет `Redact-HrmText`, адреса почты и телефоны — `Redact-HrmPii`; имена и свободный текст из журналов автоматика гарантированно не удаляет, поэтому внутрь архива кладётся `README-ПЕРЕД-ОТПРАВКОЙ.txt` (просмотреть архив перед отправкой владельцу по закрытому каналу). Подсказка в UI готовности. |
 | B5 | Доступ только с 127.0.0.1 | Действие `-Action lan-access -Enable/-Disable` (по умолчанию выключено): бинд `0.0.0.0` vs `127.0.0.1`, правило Firewall только Private/Domain (один UAC), переживает обновление. Loopback-only эндпоинты остаются недоступными по сети (X-Real-IP исправлен на `$remote_addr`). |
 | B6 | Не доказано обновление поверх с бэкапом/откатом | `Install-HrmApp` теперь при новой версии ведёт через `Update-HrmApp` (бэкап → замены → миграции → health-check → откат к прежним образам). Windows CI: данные и лицензия сохраняются, сломанная миграция → откат. |
 
@@ -217,10 +217,78 @@ PostgreSQL integration и Compose должны подтверждаться CI �
 Отдельные технические follow-up вне Phase 16 перечислены в отчёте
 [`phase-16-report-arena.md`](phase-16-report-arena.md) §9.
 
+## Пилот 0.15.0 — финальная установочная сборка (P1–P12, 2026-10-07)
+
+Работы по финальной сборке для Windows 10/11 x64: аудит `docs/PILOT_FINAL_AUDIT.md`,
+итоговый отчёт `docs/PILOT_FINAL_REPORT.md`. Реализовано (код + автотесты + документы):
+
+- **Docker-сценарий** (`infra/windows/engine/Docker.psm1`): поиск Docker Desktop/движка, WSL2, виртуализация,
+  права, перезагрузка, место, порт; установка только официального установщика (`desktop.docker.com`, проверка
+  Authenticode + Subject, без `--accept-license`); отмена UAC/reboot → `docker-pending.json`; ожидание движка
+  с прогрессом; человеческие сообщения.
+- **Стек** (`Compose.psm1`): состояния `absent/stopped/partial/running/degraded/unknown`, ремонт и запуск
+  существующего проекта `hr-manager-pilot` **без удаления томов**.
+- **Трей** (`Tray.psm1`, `Supervisor.psm1`, `hrm-tray.ps1`): значок, меню (открыть/проверить/перезапустить/
+  отчёт/остановить/выйти), окно состояния с кнопками, единственный supervisor (mutex), безопасный автозапуск.
+- **Обновление поверх** (`Update.psm1`): предпросмотр (версии, changelog, проверки, предупреждение о данных),
+  бэкап-ворота, миграции, smoke, автоматический откат образов, `update-result.json`, сохранность лицензии/
+  настроек/порта/LAN/томов.
+- **Лицензирование**: `LicenseIssuer-Portable.exe` (один файл, без Python/Node/Docker/VS),
+  распознавание загрузки приватного ключа в backend, 15 новых UX-тестов активации.
+- **Тесты**: `docker.tests.ps1` (12), `stack.tests.ps1` (8), `supervisor.tests.ps1` (13),
+  `pilot-final.tests.ps1` (18, включая предпросмотр, сохранность данных и откат), статические 0.15.0-контракты;
+  `lint-engine.py` — 29 файлов, 0 провалов; контракт portable-issuer — 77 проверок (на момент первой итерации было 74); backend — 1200 passed / 146 skipped.
+- **Документы**: `docs/MARIA_GUIDE.md` (0.15.0), `docs/UPDATE_GUIDE.md`, `docs/RECOVERY_GUIDE.md`,
+  `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`, `docs/DOCKER_RUNTIME_DECISION.md` (Docker Desktop остаётся runtime,
+  с юридическим обоснованием), `docs/OWNER_QUICKSTART.md` (один `.exe` для владельца).
+
+### CI-цикл 2026-10-07: что поймано и починено
+
+- Прогон `37622968179` (SHA `239364c`): Backend — только реформат `backend/app/license.py`; Windows-джоб —
+  `Test-HrmContainerHealthy` падал на отсутствующем поле `Health` (8 pilot-drill тестов), плюс два статических
+  контракта (`docker.exe` в комментарии и литерал `--accept-license` в комментарии); license-issuer — шаг P8
+  (сборка portable exe) не уложился в 30 минут.
+- Починено в `929f87e`: ruff-формат и аннотация возврата в тесте; чтение `State`/`Health` через
+  `PSObject.Properties`; `Get-HrmDockerCliPath` без `Get-Command`; статические проверки смотрят только
+  исполняемые строки; полный список провалов тестов публикуется артефактом и в step summary; у launcher
+  появился диагностический режим `HRM_PORTABLE_LOG`, payload пакуется `System.IO.Compression.ZipArchive`
+  (вместо `Compress-Archive`), GUI-exe запускается через `Start-Process -Wait` с таймаутом.
+- Прогон `37628319482` (SHA `929f87e`): Frontend, Backend checks, Release-policy, Backend integration и Compose —
+  зелёные; Windows-джоб упал по другой причине: `Write-HrmLog` писал журнал в success stream, поэтому
+  `Start-HrmStack` возвращал массив [строка журнала, объект], а `$stack.ok` под StrictMode падал
+  («The property 'ok' cannot be found on this object»); license-issuer на этом SHA не прошёл бы статический
+  контракт portable-issuer (он требовал литерал `Compress-Archive` и запрещал любое упоминание `Add-Type`).
+- Починено в `e67f7a4`: журнал движка не пишет в конвейер (`Format-HrmLogLine` + `Write-Host`/файл
+  `HRM_LOG_FILE`, который наследует фоновый процесс supervisor'а); регрессионные тесты на «ровно один объект с
+  ok» у `Start-HrmStack` (stack/static/engine); полный список провалов тестов дополнительно публикуется
+  notice-аннотациями (лимит `::error::` — 10 на шаг); контракт portable-issuer синхронизирован с новой упаковкой
+  (74 проверки, локально все PASS).
+
+Закрыто (прогон `37640729694`, коммит `7a5ed7a`, ветка `arena/4be5f952-hr-manager`): **8 из 8 джобов зелёные** —
+Pester-наборы движка, сборка `Setup.exe` и `silent install/uninstall`, Phase 14 pilot drill, сборка portable exe
+(`selfcheck`, CLI-цепочка, отказ по подделанной лицензии), backend, backend-PG, frontend, compose, release-policy.
+Добавлен джоб `pilot-setup`: пилотный `Setup.exe` 0.15.0 без подписи + `SHA256SUMS.txt` + артефакт
+`pilot-setup-0.15.0-unsigned`; хэши артефактов публикуются notice-аннотациями (артефакты скачиваются только через
+веб-интерфейс Actions) и внесены в раздел 4 `docs/PILOT_FINAL_REPORT.md`.
+
+Итерация по ревью раунда 12 (P1–P3) закрыта: переписаны три формулировки, обещавшие больше, чем делает код
+(в архив отчёта добавлен `README-ПЕРЕД-ОТПРАВКОЙ.txt`, два страховочных теста следят за словами), издатель
+официального установщика Docker проверяется точно по subject/отпечатку, снятым с настоящего файла (прогоны
+`37653666837` и `37654388276`), `git diff --check` чист, а в отчёте есть таблица «какой файл отдаём Перепечай».
+Итоговый прогон головы ветки `df25a39` — `37660015542`: 9 джобов, все зелёные или пропущены по замыслу
+(`HRM engine tests: ВСЕ ТЕСТЫ ПРОЙДЕНЫ (162)`).
+
+Остаётся (без этого GO нет): ручной чек-лист `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows с реальным
+Docker Desktop (UAC, перезагрузка, движок, порт 8080, трей в пользовательской сессии, автозапуск, LAN, активация
+лицензии, N→N+1 с данными и откатом) и письменный owner decision. В среде разработки нет Windows/PowerShell/Docker,
+поэтому живая установка здесь не запускалась.
+
 ## Пилотный релиз: что осталось сделать
 
 Этот раздел отвечает на вопрос «можно ли запускать пилот». Ответ на текущий
-момент: **NO-GO**. Не смешивать завершённость функций с release readiness.
+момент: **NO-GO** — код финальной сборки 0.15.0 готов, но Windows-приёмка
+(`docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`) ещё не выполнена. Не смешивать
+завершённость функций с release readiness.
 
 > **Решение владельца 2026-09-29:** покупной сертификат (Authenticode/TSA)
 > пилот на ПК Марии **не блокирует** — SmartScreen обходится инструкцией.
@@ -228,18 +296,22 @@ PostgreSQL integration и Compose должны подтверждаться CI �
 
 ### Обязательные задачи пилота (агенты)
 
-- [ ] Установщик «из коробки» (B1–B6): `prompts/PILOT_FINAL_PROMPT.md`.
+- [x] Установщик «из коробки» (B1–B6): реализовано в 0.15.0 (см. раздел выше и `docs/PILOT_FINAL_AUDIT.md`);
+  приёмка на Windows — по `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` (пока не выполнена).
 - [ ] График выхода на работу (Этап 18): `prompts/PHASE_18_WORK_SCHEDULE_PROMPT.md`.
 - [ ] Понятные правила + диагностика в администрировании:
   `prompts/UX_RULES_DIAGNOSTICS_PROMPT.md`.
 
 ### Обязательные проверки пилота
 
-- [ ] Выполнить полный backend CI и backend test suite, PostgreSQL integration,
-  миграции с нуля, Compose smoke, frontend checks и Windows engine/installer
-  checks на exact release SHA. Ранее подтверждённый frontend-прогон: 25 файлов,
-  211 тестов; более поздние результаты Phase 16 описаны в её отчёте и также
-  требуют проверки против точного release baseline.
+- [x] Полный backend CI и backend test suite, PostgreSQL integration,
+  Compose smoke, frontend checks и Windows engine/installer checks на exact
+  release SHA `7a5ed7a` (прогон `37640729694`, 8/8 джобов зелёные):
+  backend, backend-PG, frontend, compose, release-policy, Windows-движок +
+  установщик (Pester + `Setup.exe` + silent install/uninstall + pilot drill),
+  `pilot-setup` (пилотный `Setup.exe` 0.15.0 + `SHA256SUMS.txt`) и
+  license-issuer (bundle + portable exe: `parser/build/portable/runtime/accept`,
+  контракт portable-issuer, backend-проверка выпущенных лицензий 7/7).
 - [ ] Провести чистую Windows 10/11 приёмку: установка, первый вход, loopback,
   readiness, backup/restore, update, rollback, resume, сохранность данных и
   uninstall.
@@ -267,10 +339,13 @@ PostgreSQL integration и Compose должны подтверждаться CI �
    диагностика), каждую — с зелёным CI.
 3. Запустить backend/интеграционные/Compose/Windows проверки на итоговом SHA и
    сохранить ссылки на CI evidence.
-4. Собрать пилотный Setup.exe (workflow `pilot-release`, без Authenticode),
-   проверить Ed25519-лицензию и SHA256SUMS.
-5. Выполнить одну живую проверку на Windows и только после всех PASS вынести
-   GO/NO-GO.
+4. Взять пилотный `Setup.exe` 0.15.0 из артефакта веточного CI
+   `pilot-setup-0.15.0-unsigned` (или собрать кнопкой workflow `pilot-release`,
+   без Authenticode), сверить SHA256 с `SHA256SUMS.txt` и разделом 4
+   `docs/PILOT_FINAL_REPORT.md`; проверить Ed25519-лицензию portable-issuer-ом.
+5. Выполнить `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows (реальный
+   Docker Desktop, трей, обновление с данными и откатом) и только после всех
+   PASS + письменного owner decision вынести GO/NO-GO.
 
 Главный стартовый документ следующего чата:
 [`handoff-release-0.14.0.md`](handoff-release-0.14.0.md).

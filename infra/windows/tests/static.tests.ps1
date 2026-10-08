@@ -34,6 +34,26 @@ Test-Case "все файлы движка проходят парсер PowerShe
     }
 }
 
+Test-Case "вспомогательные скрипты infra/windows/tools проходят парсер и имеют BOM" {
+    # Аудит издателя Docker (tools\Audit-HrmDockerPublisher.ps1) запускается только
+    # по кнопке в CI, поэтому синтаксис проверяем здесь, а не ждём ручного прогона.
+    $toolsDir = Join-Path $WindowsDir "tools"
+    Assert-HrmTrue (Test-Path $toolsDir) "нет каталога infra\windows\tools"
+    $toolFiles = @(Get-ChildItem -Path $toolsDir -File -Filter *.ps1)
+    Assert-HrmTrue ($toolFiles.Count -ge 1) "в infra\windows\tools нет скриптов"
+    foreach ($file in $toolFiles) {
+        $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+        Assert-HrmTrue ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) `
+            ($file.Name + ": нет UTF-8 BOM (Windows PowerShell 5.1 прочитает файл в кодовой странице)")
+        $tokens = $null
+        $errors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+        if ($errors -and $errors.Count -gt 0) {
+            throw ("Ошибки парсера в {0}: {1}" -f $file.Name, ($errors[0].Message))
+        }
+    }
+}
+
 Test-Case "нет битых символов U+FFFD в файлах движка" {
     foreach ($file in Get-HrmEngineFiles) {
         $text = Get-Content -Path $file -Raw -Encoding UTF8
@@ -72,7 +92,8 @@ Test-Case "внешние процессы запускаются только �
 }
 
 Test-Case "разрешённые имена внешних команд — только белый список" {
-    $allowed = @("docker", "docker.exe", "icacls.exe", "git.exe", "netsh", "netsh.exe")
+    # wsl.exe — только чтение состояния WSL2 (--list/--status), без изменений системы.
+    $allowed = @("docker", "docker.exe", "icacls.exe", "git.exe", "netsh", "netsh.exe", "wsl.exe")
     foreach ($file in Get-HrmEngineFiles) {
         $text = Get-Content -Path $file -Raw -Encoding UTF8
         $matches = [regex]::Matches($text, 'Invoke-HrmExternal\s+-Name\s+"([^"]+)"')
@@ -287,6 +308,202 @@ Test-Case "production pre-flight PEM выполняется до signtool sign" 
     $call = $sign.IndexOf("Assert-HrmPinnedRootsPem -Mode")
     $signed = $sign.IndexOf('Label "signtool sign"')
     Assert-HrmTrue ($call -ge 0 -and $signed -gt $call) "pre-flight не раньше signtool sign"
+}
+
+# --- 0.15.0: пилотная установка, supervisor, трей, Docker -------------------
+
+Test-Case "пилотные модули 0.15.0 подключены и в движке, и в трее" {
+    $entry = Get-Content -Path (Join-Path $WindowsDir "hr-manager.ps1") -Raw -Encoding UTF8
+    $tray = Get-Content -Path (Join-Path $WindowsDir "hrm-tray.ps1") -Raw -Encoding UTF8
+    foreach ($module in @("Docker", "Supervisor", "Tray")) {
+        Assert-HrmContains $entry ('"' + $module + '"') ("движок не импортирует модуль " + $module)
+        Assert-HrmContains $tray ('"' + $module + '"') ("трей не импортирует модуль " + $module)
+    }
+    foreach ($file in @("Docker.psm1", "Supervisor.psm1", "Tray.psm1")) {
+        Assert-HrmTrue (Test-Path (Join-Path $EngineDir $file)) ("нет модуля " + $file)
+    }
+}
+
+Test-Case "меню трея содержит обязательные пункты и состояние" {
+    $tray = Get-Content -Path (Join-Path $EngineDir "Tray.psm1") -Raw -Encoding UTF8
+    foreach ($action in @("open", "check", "restart", "support-bundle", "stop", "exit")) {
+        Assert-HrmContains $tray ('action = "' + $action + '"') ("нет действия меню " + $action)
+    }
+    foreach ($label in @("Открыть HR Manager", "Перезапустить приложение", "Проверить состояние",
+            "Создать отчёт для поддержки", "Остановить приложение", "Выйти")) {
+        Assert-HrmContains $tray $label ("нет пункта меню " + $label)
+    }
+    Assert-HrmContains $tray "Get-HrmSupervisorStatusText" "состояние трея берётся не из supervisor'а"
+}
+
+Test-Case "supervisor: единственность, состояния и автозапуск реализованы" {
+    $supervisor = Get-Content -Path (Join-Path $EngineDir "Supervisor.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $supervisor "WaitOne" "нет блокировки единственного экземпляра"
+    Assert-HrmContains $supervisor "supervisor.json" "нет файла состояния"
+    Assert-HrmContains $supervisor "autostart.json" "нет настройки автозапуска"
+    Assert-HrmContains $supervisor "Remove-HrmLegacyAutostartEntries" "старый автозапуск -Action start не удаляется"
+    foreach ($stateText in @("Запускается", "Готово", "Ошибка")) {
+        Assert-HrmContains $supervisor $stateText ("нет понятного состояния " + $stateText)
+    }
+    Assert-HrmNotContains $supervisor "Get-Credential" "супервизор не должен запрашивать учётные данные"
+}
+
+Test-Case "Docker: официальный установщик, проверка подписи и отказ от автоматического принятия лицензии" {
+    $docker = Get-Content -Path (Join-Path $EngineDir "Docker.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $docker "desktop.docker.com" "установщик берётся не с официального адреса"
+    Assert-HrmContains $docker "Get-AuthenticodeSignature" "подпись установщика не проверяется"
+    # Инвариант проверяется по исполняемым строкам: в комментариях движка
+    # прямо написано, что флаг не передаётся, и это не должно выглядеть как вызов.
+    $dockerCode = [regex]::Replace($docker, '(?s)<#.*?#>', '')
+    $dockerCode = (($dockerCode -split "`r?`n") | Where-Object { -not $_.TrimStart().StartsWith('#') }) -join "`n"
+    Assert-HrmNotContains $dockerCode "--accept-license" "лицензия Docker не принимается за пользователя"
+    Assert-HrmContains $docker "WSL" "нет проверки WSL2"
+    Assert-HrmContains $docker "VirtualizationFirmwareEnabled" "нет проверки аппаратной виртуализации"
+    Assert-HrmContains $docker "Wait-HrmDockerEngine" "нет ожидания готовности Docker Engine"
+    Assert-HrmNotContains $docker "rm -rf" "движок не должен удалять файлы командой rm"
+}
+
+Test-Case "движок никогда не удаляет тома данных (кроме явного purge с бэкапом)" {
+    foreach ($file in Get-HrmEngineFiles) {
+        $text = Get-Content -Path $file -Raw -Encoding UTF8
+        Assert-HrmNotContains $text '"down", "-v"' ("down -v запрещён: " + $file)
+        Assert-HrmNotContains $text '"volume", "prune"' ("volume prune запрещён: " + $file)
+    }
+    $install = Get-Content -Path (Join-Path $EngineDir "Install.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $install "Remove-HrmPilotDataVolume" "нет единственной явной точки удаления тома данных"
+    Assert-HrmContains $install "УДАЛИТЬ ДАННЫЕ HR MANAGER" "нет фразы подтверждения удаления данных"
+}
+
+Test-Case "обновление: показ версий, changelog и результат обновления" {
+    $update = Get-Content -Path (Join-Path $EngineDir "Update.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $update "Get-HrmUpdatePreview" "нет предпросмотра обновления"
+    Assert-HrmContains $update "Get-HrmReleaseChangelog" "нет списка изменений"
+    Assert-HrmContains $update "Write-HrmUpdateResult" "нет файла результата обновления"
+    Assert-HrmContains $update "Assert-HrmUpdatePreservedState" "нет проверки сохранности данных и лицензии"
+    Assert-HrmNotContains $update 'ExpectedHeadRevision' "голова миграций снова зашита константой"
+    Assert-HrmContains $update "Get-HrmMigrationsHead" "ожидаемая голова миграций не читается из образа"
+}
+
+Test-Case "установщик: значок в трее, галочка установки Docker и автозапуск supervisor'а" {
+    $installer = Get-Content -Path (Join-Path $RepoRoot "installer\installer.iss") -Raw -Encoding UTF8
+    Assert-HrmContains $installer "hrm-tray.ps1" "установщик не запускает значок в трее"
+    Assert-HrmContains $installer "[Tasks]" "нет галочки установки Docker Desktop"
+    Assert-HrmContains $installer "dockerinstall" "нет задачи установки Docker Desktop"
+    Assert-HrmContains $installer "GetEngineDockerArgs" "движку не передаётся выбор пользователя"
+    Assert-HrmContains $installer '"{userstartup}\HR Manager (трей)"' "автозапуск не запускает supervisor"
+    Assert-HrmNotContains $installer "-Action start" "автозапуск всё ещё консольный"
+}
+
+Test-Case "пользовательские тексты трея и Docker не содержат технических команд" {
+    $texts = @(
+        (Get-Content -Path (Join-Path $EngineDir "Tray.psm1") -Raw -Encoding UTF8),
+        (Get-Content -Path (Join-Path $EngineDir "Docker.psm1") -Raw -Encoding UTF8)
+    )
+    foreach ($text in $texts) {
+        foreach ($forbidden in @("docker compose up", "Исправьте DATABASE_URL", "проверьте переменную окружения")) {
+            Assert-HrmNotContains $text $forbidden ("техническая формулировка для пользователя: " + $forbidden)
+        }
+    }
+}
+
+Test-Case "лаунчер трея не содержит секретов и запускает только supervisor" {
+    $trayEntry = Get-Content -Path (Join-Path $WindowsDir "hrm-tray.ps1") -Raw -Encoding UTF8
+    Assert-HrmContains $trayEntry "Enter-HrmSupervisorLock" "нет защиты от второго supervisor'а"
+    Assert-HrmContains $trayEntry "Start-HrmTrayUi" "нет интерфейса значка"
+    Assert-HrmContains $trayEntry "#requires -Version 5.1" "нет требования PowerShell 5.1"
+    Assert-HrmNotContains $trayEntry "secrets.json" "трей не должен читать файл секретов"
+}
+
+Test-Case "журнал движка не пишет в success stream (не смешивается с результатами функций)" {
+    $common = Get-Content -Path (Join-Path $EngineDir "Common.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $common 'function Format-HrmLogLine' 'нет чистой функции форматирования журнала'
+    Assert-HrmContains $common 'Write-Host $line' 'журнал не выводится в консоль'
+    # Внутри Write-HrmLog не должно быть записи в success stream: строки журнала
+    # попадали бы в возвращаемые значения функций (Start-HrmStack, Repair-HrmStack,
+    # Invoke-HrmDockerPrepare и др.) и под StrictMode давали бы
+    # "The property 'ok' cannot be found on this object" у вызывающего.
+    $body = [regex]::Match($common, '(?s)function Write-HrmLog \{.*?\n\}').Value
+    Assert-HrmNotContains $body 'Write-Output' 'журнал снова пишет в конвейер (ломает свойства результата под StrictMode)'
+}
+
+Test-Case "формат-строки оператора -f корректны (JSON-шаблон .NET не принимает)" {
+    # Регрессия: '[{"Name":"{0}"}]' -f $x падает с «Input string was not in a
+    # correct format»: для оператора -f (.NET String.Format) фигурные скобки —
+    # это placeholder. JSON собираем ConvertTo-Json, литеральные скобки —
+    # экранируем как {{ / }}. Проверяем по AST: комментарии не дают шума.
+    $files = @(Get-HrmEngineFiles) + @(Get-ChildItem -Path (Join-Path $WindowsDir "tests") -File -Filter *.ps1 |
+            ForEach-Object { $_.FullName })
+    $validator = '^(?:[^{}]|\{\{|\}\}|\{\d+(?:,\s*-?\d+)?(?::[^{}]*)?\})*$'
+    foreach ($file in $files) {
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors)
+        $formats = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.BinaryExpressionAst] -and
+                    $node.Operator -eq [System.Management.Automation.Language.TokenKind]::Format -and
+                    $node.Left -is [System.Management.Automation.Language.StringConstantExpressionAst]
+                }, $true))
+        foreach ($format in $formats) {
+            $value = $format.Left.Value
+            if ($value -notmatch $validator) {
+                throw ("Некорректная строка -f в {0} (строка {1}): {2}" -f $file, $format.Extent.StartLineNumber, $value)
+            }
+        }
+    }
+}
+
+Test-Case "сценарий CI-смоука установки читается Windows PowerShell 5.1 (BOM + парсер)" {
+    # Регрессия: сценарий смоука лежал текстом прямо в шаге workflow. Раннер
+    # пишет временный скрипт шага в UTF-8 БЕЗ BOM, а Windows PowerShell 5.1
+    # читает такой файл в ANSI-кодировке: кириллица превращается в мусор, шаг
+    # падал на разборе и не оставлял ни одной аннотации — причину сбоя не было
+    # видно вообще. Теперь сценарий (вместе со всей кириллицей) лежит в файле
+    # репозитория с BOM, а шаг workflow — тонкая ASCII-обёртка.
+    $smokePath = Join-Path $WindowsDir "tests\ci-silent-smoke.ps1"
+    Assert-HrmTrue (Test-Path -LiteralPath $smokePath) "нет сценария смоука установки"
+    $bytes = [System.IO.File]::ReadAllBytes($smokePath)
+    Assert-HrmTrue ($bytes.Length -gt 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) `
+        "у сценария смоука нет UTF-8 BOM: PowerShell 5.1 прочитает кириллицу как ANSI"
+    $tokens = $null
+    $errors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($smokePath, [ref]$tokens, [ref]$errors) | Out-Null
+    if ($errors -and $errors.Count -gt 0) {
+        throw ("Ошибки парсера в сценарии смоука (строка {0}): {1}" -f $errors[0].Extent.StartLineNumber, $errors[0].Message)
+    }
+    $smoke = Get-Content -Path $smokePath -Raw -Encoding UTF8
+    # Причину сбоя обязано быть видно в check-runs: логи шагов из среды
+    # сопровождения не читаются.
+    Assert-HrmContains $smoke "::error" "сбой смоука не виден в check-runs (нет аннотации)"
+    # Причина остановки мастера есть только в его журнале: запуск с /LOG и хвост
+    # журнала в аннотации.
+    Assert-HrmContains $smoke "/LOG=" "мастер запускается без журнала — причина остановки останется неизвестной"
+    Assert-HrmContains $smoke "-Tail" "хвост журнала мастера не читается"
+    # Код возврата мастера обязан проверяться: остановка до перезаписи файлов
+    # (гейт снимка) видна только так.
+    Assert-HrmContains $smoke "ExitCode" "код возврата мастера не проверяется"
+    # Чистая установка: мастер не должен запускать помощник снимка, и это
+    # проверяется по журналу мастера.
+    Assert-HrmContains $smoke "HRM: snapshot decision needed=0" "смоук не проверяет решение мастера на чистой установке"
+}
+
+Test-Case "шаг CI-смоука — ASCII-обёртка над сценарием из репозитория" {
+    $lines = @(Get-Content -Path (Join-Path $RepoRoot ".github\workflows\ci.yml") -Encoding UTF8)
+    $start = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i].Trim() -eq "- name: Silent install and uninstall smoke") { $start = $i; break }
+    }
+    Assert-HrmTrue ($start -ge 0) "в ci.yml нет шага смоука установки"
+    $end = $lines.Count - 1
+    for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -like "      - name:*") { $end = $i - 1; break }
+    }
+    $step = ($lines[$start..$end] -join "`n")
+    $nonAscii = 0
+    foreach ($ch in $step.ToCharArray()) { if ([int]$ch -gt 127) { $nonAscii++ } }
+    Assert-HrmEqual 0 $nonAscii "в критичном шаге смоука есть нелатиница: временный скрипт шага читается PowerShell 5.1 в ANSI-кодировке"
+    Assert-HrmContains $step "ci-silent-smoke.ps1" "шаг смоука не вызывает сценарий из репозитория"
+    Assert-HrmContains $step "exit 1" "шаг смоука не возвращает код возврата сценария"
 }
 
 Write-Host ("Статические проверки: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

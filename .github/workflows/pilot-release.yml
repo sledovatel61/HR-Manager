@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version for Setup.exe (например 0.14.0)"
+        description: "Version for Setup.exe (например 0.15.0)"
         required: true
-        default: "0.14.0"
+        default: "0.15.0"
       release_sha:
         description: "Full git SHA to build (по умолчанию HEAD)"
         required: false
@@ -35,7 +35,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $version = "${{ inputs.version }}"
-          if (-not $version) { $version = "0.14.0" }
+          if (-not $version) { $version = "0.15.0" }
           if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "version must be SemVer x.y.z, got $version" }
           $shaInput = "${{ inputs.release_sha }}"
           $sha = ""
@@ -189,3 +189,26 @@ jobs:
             tools/license-issuer/dist/license-issuer-dist.zip
             installer/release-manifest.json
           if-no-files-found: error
+      - name: Publish the pilot artifact hashes as annotations (evidence without artifact download)
+        if: always()
+        shell: pwsh
+        run: |
+          # The SHA256SUMS.txt file lives inside the uploaded artifact, and
+          # artifacts can only be fetched from the Actions UI. A notice annotation
+          # makes the same values readable through the check-run API, so the hash
+          # of the Setup.exe handed to the pilot can be recorded in the report.
+          # Each hash is split into two 32-character halves: a 64+ hex run would be
+          # blanked by the redaction that keeps key material out of the logs.
+          $ErrorActionPreference = "Continue"
+          $sums = "installer/output/SHA256SUMS.txt"
+          if (-not (Test-Path $sums)) { Write-Host "no SHA256SUMS.txt - nothing to publish"; exit 0 }
+          $entries = @()
+          foreach ($line in (Get-Content -Path $sums)) {
+            $trimmed = [string]$line
+            $trimmed = $trimmed.Trim()
+            if ($trimmed -notmatch '^([0-9a-fA-F]{64})\s+(.+)$') { continue }
+            $hash = $Matches[1].ToUpperInvariant()
+            $entries += ($Matches[2] + " sha256=" + $hash.Substring(0, 32) + " " + $hash.Substring(32))
+          }
+          if ($entries.Count -eq 0) { Write-Host "SHA256SUMS.txt had no parsable lines"; exit 0 }
+          Write-Host ("::notice title=pilot release ${{ steps.resolve.outputs.version }}::" + ($entries -join "; "))

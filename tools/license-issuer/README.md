@@ -75,16 +75,63 @@ powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1
 
 Кодировка `build.ps1`: файл сохранён **UTF-8 с BOM** и содержит только ASCII. Windows PowerShell 5.1 читает `.ps1` без BOM как ANSI; под CP1251 UTF-8-тире (байты `E2 80 94`) декодируется в правую кавычку U+201D, которую токенизатор принимает за закрывающую кавычку строки → parse error на весь скрипт. CI (job `license-issuer-windows`) проверяет BOM, ASCII-only и парсит файл настоящим Windows PowerShell 5.1 Parser'ом.
 
+### Один файл для владельца: `LicenseIssuer-Portable.exe` (рекомендуется)
+
+Владельцу фактически нужно **одно** действие: дважды кликнуть по одному файлу. Такой файл собирает
+`build-portable.ps1` (P8, пилот 0.15.0) — поверх уже собранного `dist\python` + `dist\license-issuer`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/license-issuer/build.ps1          # нужен интернет один раз
+powershell -ExecutionPolicy Bypass -File tools/license-issuer/build-portable.ps1 # -> dist\LicenseIssuer-Portable.exe
+```
+
+Что получается:
+
+- **`dist\LicenseIssuer-Portable.exe`** — самодостаточный файл: launcher (C#) + упакованный payload
+  (`python\` = embeddable Python + cryptography + Tcl/Tk, `license-issuer\` = GUI/CLI/HTML).
+  Ни Python, ни Node, ни Docker, ни Visual Studio, ни интернет на ПК владельца не нужны;
+  установка не требуется — файл можно положить на флешку;
+- двойной клик → первый запуск распаковывает payload в `%LOCALAPPDATA%\HRManager\LicenseIssuer\payload-<размер>`
+  (окно «Подготавливаем программу (первый запуск, 10-30 секунд)...») → открывается GUI (`pythonw.exe gui.py`,
+  без окна консоли). Повторные запуски распаковку не повторяют (маркер `.payload-ready`);
+- запуск с аргументами = CLI того же bundled Python, код возврата пробрасывается:
+  `LicenseIssuer-Portable.exe verify --public-key-file public_key.b64 --license-file pilot.hrmlicense`
+  (удобно, чтобы проверить выпущенную лицензию и увидеть срок/лимит, и для CI);
+- `LicenseIssuer-Portable.exe --hrm-selfcheck selfcheck.json` — служебная проверка целостности payload
+  (её использует CI).
+
+Как это собирается (никаких сторонних бинарников):
+
+1. `build-portable.ps1` упаковывает `dist\python` и `dist\license-issuer` в `dist\license-issuer-payload.zip`;
+2. launcher (`launcher\Program.cs`, ASCII-only, без сети и без работы с ключами) компилируется
+   `csc.exe`, который уже есть на Windows: предпочтительно Roslyn (`/deterministic` — воспроизводимый PE),
+   иначе `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`;
+3. ZIP добавляется к exe, в конец пишется 32-байтовый трейлер `HRMISSUER-PAYLOAD1` + 14 цифр длины —
+   ровно его launcher читает при запуске;
+4. `dist\BUILD-INFO.txt` фиксирует версии (Python 3.12.3, cryptography==50.0.2, компилятор) и
+   SHA256 exe/payload — это то, что попадает в отчёт и чек-лист приёмки;
+5. smoke-тест: `--hrm-selfcheck`, затем цепочка `gen-keypair → issue → verify` **через сам exe** во временной
+   директории вне репозитория; если приватный ключ появляется в выводе или в `dist\` — билд падает.
+
+CI (`license-issuer-windows`, фаза `portable` хелпера `ci-windows-checks.ps1`): собирает exe под
+Windows PowerShell 5.1, независимо проверяет трейлер и SHA256 из `BUILD-INFO.txt`, прогоняет
+`--hrm-selfcheck` и цепочку CLI через exe, проверяет отказ по подделанной лицензии и отсутствие
+ключевого материала в выводе. Ограничение: окно GUI в headless-раннере не проверяется — нужен
+Windows-прогон по чек-листу.
+
 ### Использование владельцем (офлайн, без Python, без интернета)
 
-1. Распакуйте `license-issuer-dist.zip`
-2. Двойной клик:
-   - `run-gui.bat` — GUI Tkinter (рекомендуется, автономно)
+1. Рекомендуется: скопируйте на ПК **один файл** `LicenseIssuer-Portable.exe` (из `dist\` или из артефактов CI) и
+   дважды кликните по нему (см. раздел выше). Распаковки и установки не требуется.
+2. Или (fallback, если exe заблокирован политикой) распакуйте `license-issuer-dist.zip` и запускайте батники:
+   - `run-gui.bat` — GUI Tkinter (автономно)
    - `run-html.bat` — HTML через `http://127.0.0.1:8765/license-issuer.html` (Edge 120+, WebCrypto Ed25519, secure context localhost, fallback TweetNaCl)
    - `run-cli.bat gen-keypair` — CLI
 3. Generate keypair — сохраните приватный (64 hex) в зашифрованном хранилище!
 4. Публичный (base64 44 символа) → `infra/license/public_key.b64` перед сборкой пилотного образа
-5. Issue license → скачать `.hrmlicense` → отправить Марии
+5. Issue license → скачать `.hrmlicense` → проверить его самим:
+   `LicenseIssuer-Portable.exe verify --public-key-file public_key.b64 --license-file pilot.hrmlicense`
+   (покажет срок и лимит) → отправить Марии
 
 ### Доказательство автономности
 
