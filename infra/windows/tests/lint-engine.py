@@ -296,10 +296,62 @@ def check_smoke_step(path: Path, required: bool = False) -> None:
         fail(f"{path}: не найден шаг смоука установки ({SMOKE_STEP_NAME})")
 
 
+STEP_START = re.compile(r"^ {6}- ")
+SHELL_WINDOWS_PS = re.compile(r"^\s*shell:\s*powershell(\.exe)?\s*$")
+RUN_KEY = re.compile(r"^\s*run:\s*(\||>)?\s*$")
+
+
+def check_windows_powershell_steps(path: Path) -> None:
+    """Текст run-блоков шагов `shell: powershell` обязан быть ASCII.
+
+    Раннер пишет временный скрипт шага в UTF-8 БЕЗ BOM, а Windows PowerShell
+    5.1 читает такой файл в ANSI-кодировке. Часть кириллицы превращается при
+    этом в символы, которые парсер считает строковыми кавычками: «ф» (D1 94) ->
+    U+201D, «у» -> U+201C, «т» -> U+2019, «в» -> U+201A, «д» -> U+201E. Кавычка
+    внутри строки в двойных кавычках закрывает её раньше времени, скрипт не
+    разбирается целиком и шаг умирает за секунду, не оставив ни одной
+    аннотации: именно так исчез гейт снимка в шаге смоука (слово «файлов» в
+    throw "..." давало U+201D). Поэтому русский текст живёт в файле репозитория
+    с BOM (его читают корректно), а шаг остаётся ASCII-обёрткой.
+
+    Правило не касается pwsh/bash-шагов: они читают UTF-8 без BOM корректно.
+    Регрессия закреплена тестом backend/tests/test_workflow_step_encoding.py.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    starts = [index for index, line in enumerate(lines) if STEP_START.match(line)]
+    bounds = list(zip(starts, [*starts[1:], len(lines)]))
+    for start, end in bounds:
+        block = lines[start:end]
+        if not any(SHELL_WINDOWS_PS.match(line) for line in block):
+            continue
+        run_index = next(
+            (index for index, line in enumerate(block) if RUN_KEY.match(line)), None
+        )
+        if run_index is None:
+            continue
+        run_indent = len(block[run_index]) - len(block[run_index].lstrip())
+        for offset in range(run_index + 1, len(block)):
+            line = block[offset]
+            if not line.strip():
+                continue
+            if len(line) - len(line.lstrip()) <= run_indent:
+                break
+            bad = sorted({ch for ch in line if ord(ch) > 127})
+            if bad:
+                fail(
+                    f"{path}:{start + offset + 1}: в run-блоке шага с shell: powershell "
+                    f"есть не-ASCII ({''.join(bad)[:20]!r}) — Windows PowerShell 5.1 "
+                    "прочитает временный скрипт шага в ANSI-кодировке и упадёт на "
+                    "разборе без аннотаций; перенесите текст в файл репозитория с BOM"
+                )
+                break
+
+
 def check_workflows() -> None:
     for path in sorted(WORKFLOWS.glob("*.yml")):
         check_no_backtick_fence(path)
         check_smoke_step(path, required=path.name == "ci.yml")
+        check_windows_powershell_steps(path)
 
 def check_no_self_referential_trust(path: Path, code: str) -> None:
     """Доверенные якоря Authenticode не должны браться из проверяемого файла.
