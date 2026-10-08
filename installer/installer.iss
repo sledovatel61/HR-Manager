@@ -161,6 +161,10 @@ var
   SnapshotStatus: String;
   SnapshotReason: String;
   SnapshotRunText: String;
+  // Код возврата вспомогательного скрипта снимка: попадает в журнал мастера и в
+  // файл диагностики (setup-snapshot.json) — по нему видно, почему установка
+  // остановилась ДО перезаписи файлов.
+  SnapshotExitCode: Integer;
 
 procedure InitializeWizard();
 var
@@ -241,12 +245,63 @@ begin
   Result := ExpandConstant('{localappdata}\HRManager');
 end;
 
-function HrmInstallExists(): Boolean;
+function HrmProgramFilesExist(): Boolean;
 begin
-  // Есть ли что сохранять: запись установки или уже разложенные файлы программы.
-  Result := FileExists(HrmStateDir() + '\installed.json') or
-            FileExists(ExpandConstant('{app}\release.json')) or
-            FileExists(ExpandConstant('{app}\infra\compose.pilot.yml'));
+  // Есть ли что СОХРАНЯТЬ: файлы программы, которые мастер сейчас перезапишет.
+  // Запись установки (installed.json) для этого не годится: каталог состояния
+  // движок намеренно оставляет после удаления программы, и запись может
+  // существовать, когда файлов в {app} уже нет. Тогда снимок невозможен, а
+  // установка обязана продолжаться — иначе переустановка после удаления была бы
+  // невозможна, а «нулевой» снимок из пустого каталога ничего не защищает.
+  Result := FileExists(ExpandConstant('{app}\release.json')) or
+            FileExists(ExpandConstant('{app}\infra\compose.pilot.yml')) or
+            FileExists(ExpandConstant('{app}\infra\windows\hr-manager.ps1'));
+end;
+
+function HrmSnapshotDiagnosticsFile(): String;
+begin
+  Result := HrmStateDir() + '\setup-snapshot.json';
+end;
+
+procedure HrmLogSnapshotDecision(const Needed: Boolean; const Status, Reason: String;
+  const RunOk: Boolean; const RunExit: Integer; const Stop: Boolean);
+// Решение мастера о снимке прежней версии одной строкой в журнале мастера
+// (/LOG): журнал — единственный источник причины остановки, когда каталог
+// состояния ещё не создан. Строка намеренно ASCII и со стабильными ключами,
+// чтобы её можно было проверять автоматически.
+var
+  NeededText, RunOkText, StopText: String;
+begin
+  if Needed then NeededText := '1' else NeededText := '0';
+  if RunOk then RunOkText := '1' else RunOkText := '0';
+  if Stop then StopText := '1' else StopText := '0';
+  Log('HRM: snapshot decision needed=' + NeededText + ' status=' + Status +
+      ' reason=' + Reason + ' run_ok=' + RunOkText + ' exit=' + IntToStr(RunExit) +
+      ' stop=' + StopText);
+end;
+
+procedure HrmWriteSnapshotDiagnostics(const Needed: Boolean; const Status, Reason: String;
+  const RunOk: Boolean; const RunExit: Integer; const Stop: Boolean);
+// Человекочитаемая диагностика для владельца и support bundle. Каталог
+// состояния здесь НЕ создаётся: права на него выставляет движок, а мастер не
+// имеет права создать каталог раньше с ослабленными правами. Если каталога ещё
+// нет (чистая установка), решение всё равно видно в журнале мастера.
+var
+  FileName, Json, NeededText, RunOkText, StopText: String;
+begin
+  HrmLogSnapshotDecision(Needed, Status, Reason, RunOk, RunExit, Stop);
+  if not DirExists(HrmStateDir()) then Exit;
+  if Needed then NeededText := 'true' else NeededText := 'false';
+  if RunOk then RunOkText := 'true' else RunOkText := 'false';
+  if Stop then StopText := 'true' else StopText := 'false';
+  Json := '{"schema": "hrm-setup-snapshot-1", "at": "' +
+          GetDateTimeString('yyyy/mm/dd hh:nn:ss', '-', ':') + '", "needed": ' +
+          NeededText + ', "status": "' + Status + '", "reason": "' + Reason +
+          '", "run_ok": ' + RunOkText + ', "run_exit": ' + IntToStr(RunExit) +
+          ', "stop": ' + StopText + '}';
+  FileName := HrmSnapshotDiagnosticsFile();
+  if not SaveStringToFile(FileName, Json, False) then
+    Log('HRM: файл диагностики снимка не записан: ' + FileName);
 end;
 
 function HrmReadResultKey(const DataFile, Key: String): String;
@@ -340,9 +395,15 @@ begin
   try
     if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params,
         ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      SnapshotExitCode := ResultCode;
       Result := (ResultCode = 0)
+    end
     else
+    begin
+      SnapshotExitCode := ResultCode;
       Log('HRM: подготовка снимка не запустилась (код ' + IntToStr(ResultCode) + ').');
+    end;
   except
     Log('HRM: запуск подготовки снимка прерван: ' + GetExceptionMessage);
     Result := False;
@@ -352,20 +413,38 @@ end;
 function PreservePreviousSnapshot(): String;
 // Снимок прежней версии ДО копирования файлов. Возвращает '' — можно
 // продолжать; иначе текст ошибки, и установка останавливается (файлы {app}
-// ещё не изменены). Причина отказа попадает и в журнал мастера.
+// ещё не изменены). Причина отказа попадает в журнал мастера (/LOG) и, когда
+// каталог состояния уже есть, в файл диагностики setup-snapshot.json.
 var
   ResultFile, Status, Reason, Message: String;
   Needed, RunOk: Boolean;
 begin
   Result := '';
   if SnapshotGuardPassed then Exit;
-  Needed := HrmInstallExists();
+  Needed := HrmProgramFilesExist();
   ResultFile := ExpandConstant('{tmp}\hrm-snapshot-result.txt');
   SnapshotStatus := '';
   SnapshotReason := '';
+  SnapshotExitCode := -1;
+  if not Needed then
+  begin
+    // Файлов программы нет (первая установка или переустановка после удаления):
+    // сохранять нечего, поэтому вспомогательный скрипт НЕ запускается вообще —
+    // на чистой машине ничто не должно влиять на установку.
+    SnapshotStatus := 'skipped';
+    SnapshotReason := 'no_program_files';
+    SnapshotGuardPassed := True;
+    HrmWriteSnapshotDiagnostics(False, SnapshotStatus, SnapshotReason, False, -1, False);
+    Exit;
+  end;
   if not HrmExtractSnapshotHelper() then
   begin
-    if not Needed then Exit; // сохранять нечего — установка может продолжаться
+    // Распаковка вспомогательных файлов не удалась, а прежняя версия ЕСТЬ:
+    // продолжать нельзя — иначе файлы были бы перезаписаны без возможности
+    // отката.
+    SnapshotStatus := 'failed';
+    SnapshotReason := 'helper_extract_failed';
+    HrmWriteSnapshotDiagnostics(True, SnapshotStatus, SnapshotReason, False, -1, True);
     SuppressibleMsgBox(CustomMessage('SnapshotHelperFailed'), mbCriticalError, MB_OK, IDOK);
     Result := CustomMessage('SnapshotStop');
     Exit;
@@ -388,13 +467,7 @@ begin
   if RunOk and ((Status = 'verified') or (Status = 'skipped')) then
   begin
     SnapshotGuardPassed := True;
-    Exit;
-  end;
-  if not Needed then
-  begin
-    // Прежней версии нет (первая установка): останавливать нечего, но причину
-    // видно в журнале мастера.
-    Log('HRM: установки ещё не было — установка продолжается без снимка.');
+    HrmWriteSnapshotDiagnostics(True, Status, Reason, True, SnapshotExitCode, False);
     Exit;
   end;
   if Status = 'files_replaced' then
@@ -405,6 +478,7 @@ begin
     Message := CustomMessage('SnapshotFailed') + #13#10 +
       'Причина: ' + Status + ' / ' + Reason;
   Log('HRM: установка остановлена ДО перезаписи файлов (' + Status + '/' + Reason + ').');
+  HrmWriteSnapshotDiagnostics(True, Status, Reason, RunOk, SnapshotExitCode, True);
   SuppressibleMsgBox(Message, mbCriticalError, MB_OK, IDOK);
   Result := CustomMessage('SnapshotStop');
 end;
@@ -417,7 +491,7 @@ var
 begin
   Result := '';
   if SnapshotGuardPassed then Exit;
-  if not HrmInstallExists() then
+  if not HrmProgramFilesExist() then
   begin
     SnapshotGuardPassed := True;
     Exit;
@@ -428,7 +502,8 @@ begin
     SnapshotGuardPassed := True;
     Exit;
   end;
-  Log('HRM: снимок прежней версии не подтверждён (status=' + Status + ') — установка остановлена.');
+  Log('HRM: snapshot guard status=' + Status + ' stop=1');
+  HrmWriteSnapshotDiagnostics(True, Status, 'guard_not_confirmed', False, SnapshotExitCode, True);
   Result := CustomMessage('SnapshotStop');
 end;
 

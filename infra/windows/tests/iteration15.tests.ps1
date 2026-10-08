@@ -620,4 +620,42 @@ Test-Case "P2: правило прежней идентичности описа
     Assert-HrmContains $guide 'пустой `release_sha`' "не сказано, что пустой release_sha не подтверждает откат"
 }
 
+Test-Case "P2: на машине без файлов прежней версии мастер не запускает помощник снимка" {
+    # Регрессия: «есть что сохранять» определялось по записи установки
+    # (installed.json). Каталог состояния движок намеренно оставляет после
+    # удаления программы, поэтому на переустановке мастер запускал
+    # powershell-помощник снимка там, где сохранять нечего, и читал его
+    # результат — чистая установка (и CI-смоук) зависела от постороннего
+    # процесса, а сбой помощника останавливал установку до перезаписи файлов.
+    $issPath = Join-Path $script:RepoRoot "installer\installer.iss"
+    $iss = Get-Content -Path $issPath -Raw -Encoding UTF8
+    $lines = @(Get-Content -Path $issPath -Encoding UTF8)
+    $start = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -like "function PreservePreviousSnapshot*") { $start = $i; break }
+    }
+    Assert-HrmTrue ($start -ge 0) "в мастере нет функции PreservePreviousSnapshot"
+    $end = -1
+    for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -eq "end;") { $end = $i; break }
+    }
+    Assert-HrmTrue ($end -gt $start) "не найден конец функции PreservePreviousSnapshot"
+    $body = ($lines[$start..$end] -join "`n")
+    $needed = $body.IndexOf("HrmProgramFilesExist()")
+    $helper = $body.IndexOf("HrmExtractSnapshotHelper()")
+    Assert-HrmTrue ($needed -ge 0) "мастер не проверяет, есть ли что сохранять (файлы программы)"
+    Assert-HrmTrue ($helper -ge 0) "мастер не распаковывает вспомогательные файлы снимка"
+    Assert-HrmTrue ($needed -lt $helper) "решение «сохранять нечего» принимается после распаковки помощника (лишний процесс на чистой машине)"
+    Assert-HrmContains $body "no_program_files" "нет отдельного решения для машины без файлов прежней версии"
+    Assert-HrmContains $body "SnapshotGuardPassed := True" "чистая установка не помечается как «сохранять нечего» (гейт остановит установку)"
+    # Запись установки больше НЕ повод считать, что есть что сохранять.
+    Assert-HrmNotContains $body "installed.json" "мастер считает снимок нужным по записи установки, а не по файлам программы"
+    # Решение обязано быть видно автоматике и человеку: строка в журнале мастера
+    # (каталога состояния на чистой машине ещё нет) и файл диагностики.
+    Assert-HrmContains $iss "snapshot decision needed=" "решение мастера о снимке не попадает в журнал мастера"
+    Assert-HrmContains $iss "setup-snapshot.json" "нет файла диагностики решения о снимке"
+    Assert-HrmContains $iss "HrmWriteSnapshotDiagnostics" "решение о снимке не сохраняется для отчёта владельца"
+    Assert-HrmContains $iss "HrmProgramFilesExist" "нет проверки файлов программы перед снимком"
+}
+
 Write-Host "== Итерация 15: проверки завершены =="
