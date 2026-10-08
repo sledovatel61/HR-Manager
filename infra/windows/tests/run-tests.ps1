@@ -14,7 +14,7 @@ $exitCode = 0
 $totalPassed = 0
 $failures = @()
 try {
-    foreach ($file in @("static.tests.ps1", "engine.tests.ps1", "channel.tests.ps1", "installer-roots.tests.ps1", "docker.tests.ps1", "stack.tests.ps1", "supervisor.tests.ps1", "pilot-final.tests.ps1", "iteration14.tests.ps1")) {
+    foreach ($file in @("static.tests.ps1", "engine.tests.ps1", "channel.tests.ps1", "installer-roots.tests.ps1", "docker.tests.ps1", "stack.tests.ps1", "supervisor.tests.ps1", "pilot-final.tests.ps1", "iteration14.tests.ps1", "iteration15.tests.ps1")) {
         $path = Join-Path $testsDir $file
         & (Resolve-Path $path).Path -HarnessPath $testsDir
         if (-not $?) { $exitCode = 1 }
@@ -46,7 +46,7 @@ if ($exitCode -eq 0) {
     # Успех тоже публикуется аннотацией: журнал шага снаружи недоступен, а по
     # числу пройденных кейсов видно, что наборы действительно выполнялись, а не
     # были пропущены (например, при случайном удалении файла теста).
-    Write-Host ("::notice title=HRM engine tests::ВСЕ ТЕСТЫ ПРОЙДЕНЫ ({0}); наборы: static, engine, channel, installer-roots, docker, stack, supervisor, pilot-final, iteration14" -f $global:HRM_TestPassed)
+    Write-Host ("::notice title=HRM engine tests::ВСЕ ТЕСТЫ ПРОЙДЕНЫ ({0}); наборы: static, engine, channel, installer-roots, docker, stack, supervisor, pilot-final, iteration14, iteration15" -f $global:HRM_TestPassed)
 }
 else {
     Write-Host ("ЕСТЬ ПРОВАЛЫ: {0}" -f $global:HRM_TestFailed) -ForegroundColor Red

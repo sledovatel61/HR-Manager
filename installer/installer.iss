@@ -61,10 +61,33 @@ russian.TimezonePageDescription=Часовой пояс для уведомле�
 russian.DockerNote=HR Manager работает в контейнерах, поэтому нужен Docker Desktop.%n%nЕсли Docker Desktop ещё не установлен, оставьте галочку ниже: HR Manager скачает ОФИЦИАЛЬНЫЙ установщик с сайта docker.com. Windows запросит разрешение (UAC), а лицензионное соглашение Docker принимаете вы сами — за вас его никто не принимает.%n%nЕсли Docker Desktop уже установлен и запущен — просто снимите галочку.
 russian.DockerTaskGroup=Docker для HR Manager:
 russian.DockerTaskInstall=Установить Docker Desktop сейчас (официальный установщик Docker)
+russian.SnapshotStop=Установка остановлена, чтобы не потерять возможность вернуться к работающей версии. Файлы программы НЕ изменены. Закройте это окно и запустите Setup.exe заново; если ошибка повторится — создайте отчёт для поддержки из значка HR Manager в трее.
+russian.SnapshotFailed=Не удалось сохранить копию предыдущей версии, поэтому обновление остановлено: так у вас останется возможность вернуться к работающей версии.
+russian.SnapshotFilesReplaced=Файлы программы уже заменены новой версией, а копии прежней версии нет. Запустите установку заново: при повторном запуске копия прежней версии будет создана ДО замены файлов.
+russian.SnapshotHelperFailed=Не удалось запустить подготовку к обновлению. Проверьте, что Windows PowerShell доступен, и запустите Setup.exe заново.
 russian.FinishTitle=HR Manager установлен
 russian.FinishText=Готово! HR Manager уже запускается — это занимает 2–5 минут.%n%nВ правом нижнем углу появится значок HR Manager (в трее): он показывает состояние «Запускается», «Готово», «Ошибка».%nКогда всё будет готово, откроется браузер со страницей первого запуска — задайте пароль администратора.%nЗначок HR Manager на рабочем столе открывает приложение; меню значка позволяет перезапустить приложение и создать отчёт для поддержки.%n%nЕсли что-то пойдёт не так — откройте значок HR Manager в трее и нажмите «Создать отчёт для поддержки».
 
 [Files]
+; --- Снимок прежней версии: вспомогательные файлы идут ПЕРВЫМИ --------------
+; При solid compression мастер распаковывает файл тем быстрее, чем он раньше в
+; списке. Эти файлы НЕ устанавливаются в {app}: мастер распаковывает их во
+; временный каталог и запускает до первой перезаписи {app}.
+;
+; Почему из пакета, а не у установленного движка: прежняя версия может не знать
+; ни действия snapshot-previous, ни формата снимка — тогда обновление молча
+; перезаписало бы файлы без возможности отката (дефект ревью итерации 15).
+; MergeDuplicateFiles по умолчанию включён: тот же исходный файл хранится в
+; пакете один раз, хотя перечислен и здесь, и в обычном снимке приложения ниже.
+Source: "staging\app\infra\windows\hrm-snapshot.ps1"; Flags: dontcopy noencryption
+Source: "staging\app\infra\windows\engine\Common.psm1"; Flags: dontcopy noencryption
+Source: "staging\app\infra\windows\engine\Install.psm1"; Flags: dontcopy noencryption
+Source: "staging\app\infra\windows\engine\Secrets.psm1"; Flags: dontcopy noencryption
+Source: "staging\app\infra\windows\engine\Snapshot.psm1"; Flags: dontcopy noencryption
+; release.json ЭТОГО пакета: по нему вспомогательный скрипт отличает «в {app} прежняя
+; версия» от «мастер уже разложил файлы новой версии» (последнее — отказ, а не снимок).
+Source: "staging\app\release.json"; Flags: dontcopy noencryption
+
 ; Снимок приложения собирает installer/build.ps1 в staging/app:
 ; backend/, frontend/ (исходники, без node_modules), infra/ и release.json.
 Source: "staging\app\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -132,6 +155,12 @@ var
   RolePage: TInputOptionWizardPage;
   SurnamePage: TInputQueryWizardPage;
   TimezonePage: TInputQueryWizardPage;
+  // Итог снимка прежней версии (см. PreservePreviousSnapshot): подтверждён
+  // ли откат и что именно ответил вспомогательный скрипт — для журнала.
+  SnapshotGuardPassed: Boolean;
+  SnapshotStatus: String;
+  SnapshotReason: String;
+  SnapshotRunText: String;
 
 procedure InitializeWizard();
 var
@@ -207,25 +236,187 @@ begin
   SaveStringToFile(InputFile, Json, False);
 end;
 
-procedure PreservePreviousSnapshot();
-var
-  ResultCode: Integer;
-  EngineScript, Params: String;
+function HrmStateDir(): String;
 begin
-  // Обновление поверх установленной версии: файлы {app} будут перезаписаны
-  // файлами новой версии, поэтому прежняя версия сохраняется ДО этого шага —
-  // действием snapshot-previous УЖЕ УСТАНОВЛЕННОГО движка (он кладёт снимок
-  // в каталог состояния, откуда движок берёт его для отката). Это подготовка:
-  // неудача не останавливает установку, причина попадает в журнал движка.
-  if not FileExists(ExpandConstant('{app}\infra\windows\hr-manager.ps1')) then
-    Exit;
-  EngineScript := ExpandConstant('{app}\infra\windows\hr-manager.ps1');
+  Result := ExpandConstant('{localappdata}\HRManager');
+end;
+
+function HrmInstallExists(): Boolean;
+begin
+  // Есть ли что сохранять: запись установки или уже разложенные файлы программы.
+  Result := FileExists(HrmStateDir() + '\installed.json') or
+            FileExists(ExpandConstant('{app}\release.json')) or
+            FileExists(ExpandConstant('{app}\infra\compose.pilot.yml'));
+end;
+
+function HrmReadResultKey(const DataFile, Key: String): String;
+// Читает строку key=value из файла результата вспомогательного скрипта.
+// Содержимое — только коды, хеши и статусы (секретов там нет).
+var
+  Lines: TArrayOfString;
+  I, P: Integer;
+  Line, K, V: String;
+begin
+  Result := '';
+  if not FileExists(DataFile) then Exit;
+  if not LoadStringsFromFile(DataFile, Lines) then Exit;
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    Line := Lines[I];
+    if (Length(Line) > 0) and (Line[Length(Line)] = #13) then
+      Line := Copy(Line, 1, Length(Line) - 1);
+    P := Pos('=', Line);
+    if P > 1 then
+    begin
+      K := Copy(Line, 1, P - 1);
+      V := Copy(Line, P + 1, Length(Line) - P);
+      if K = Key then
+      begin
+        Result := V;
+        Exit;
+      end;
+    end;
+  end;
+end;
+
+function HrmExtractSnapshotHelper(): Boolean;
+// Вспомогательные файлы снимка распаковываются из СВОЕГО пакета (флаг
+// dontcopy), а не берутся у установленного движка: прежняя версия может не
+// знать ни действия snapshot-previous, ни формата снимка — и тогда обновление
+// молча перезаписало бы файлы без возможности отката (дефект ревью 15).
+// При solid compression эти записи стоят первыми в [Files], поэтому распаковка
+// не тянет за собой остальной пакет.
+begin
+  Result := False;
+  try
+    ExtractTemporaryFile('hrm-snapshot.ps1');
+    ExtractTemporaryFile('Common.psm1');
+    ExtractTemporaryFile('Install.psm1');
+    ExtractTemporaryFile('Secrets.psm1');
+    ExtractTemporaryFile('Snapshot.psm1');
+    // release.json пакета: по нему CLI отличает «в {app} прежняя версия» от
+    // «мастер уже разложил файлы новой версии».
+    ExtractTemporaryFile('release.json');
+    // Распаковка обязана быть проверена: CLI ждёт модули рядом с собой, и
+    // «извлеклось что-то не туда» обязано остановить установку, а не выясниться
+    // в момент, когда файлы {app} уже перезаписаны.
+    Result := FileExists(ExpandConstant('{tmp}\hrm-snapshot.ps1')) and
+              FileExists(ExpandConstant('{tmp}\Common.psm1')) and
+              FileExists(ExpandConstant('{tmp}\Install.psm1')) and
+              FileExists(ExpandConstant('{tmp}\Secrets.psm1')) and
+              FileExists(ExpandConstant('{tmp}\Snapshot.psm1'));
+    if not Result then
+      Log('HRM: вспомогательные файлы снимка распакованы не полностью.');
+  except
+    Log('HRM: вспомогательные файлы снимка не распакованы: ' + GetExceptionMessage);
+    Result := False;
+  end;
+end;
+
+function HrmRunSnapshotHelper(const ResultFile: String): Boolean;
+// Запускает hrm-snapshot.ps1 и читает КОД ВОЗВРАТА процесса: успех — только 0.
+var
+  Params: String;
+  ResultCode: Integer;
+begin
+  Result := False;
+  ResultCode := -1;
   Params := '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
-    EngineScript + '" -Action snapshot-previous -InstallDir "' +
-    ExpandConstant('{app}') + '" -StateDir "' +
-    ExpandConstant('{localappdata}\HRManager') + '"';
-  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params,
-    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    ExpandConstant('{tmp}\hrm-snapshot.ps1') + '" -InstallDir "' + ExpandConstant('{app}') +
+    '" -StateDir "' + HrmStateDir() + '" -ResultFile "' + ResultFile + '"';
+  try
+    if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params,
+        ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      Result := (ResultCode = 0)
+    else
+      Log('HRM: подготовка снимка не запустилась (код ' + IntToStr(ResultCode) + ').');
+  except
+    Log('HRM: запуск подготовки снимка прерван: ' + GetExceptionMessage);
+    Result := False;
+  end;
+end;
+
+function PreservePreviousSnapshot(): String;
+// Снимок прежней версии ДО копирования файлов. Возвращает '' — можно
+// продолжать; иначе текст ошибки, и установка останавливается (файлы {app}
+// ещё не изменены). Причина отказа попадает и в журнал мастера.
+var
+  ResultFile, Status, Reason, Message: String;
+  Needed, RunOk: Boolean;
+begin
+  Result := '';
+  if SnapshotGuardPassed then Exit;
+  Needed := HrmInstallExists();
+  ResultFile := ExpandConstant('{tmp}\hrm-snapshot-result.txt');
+  SnapshotStatus := '';
+  SnapshotReason := '';
+  if not HrmExtractSnapshotHelper() then
+  begin
+    if not Needed then Exit; // сохранять нечего — установка может продолжаться
+    SuppressibleMsgBox(CustomMessage('SnapshotHelperFailed'), mbCriticalError, MB_OK, IDOK);
+    Result := CustomMessage('SnapshotStop');
+    Exit;
+  end;
+  DeleteFile(ResultFile);
+  Log('HRM: сохраняем снимок предыдущей версии до копирования файлов.');
+  RunOk := HrmRunSnapshotHelper(ResultFile);
+  Status := HrmReadResultKey(ResultFile, 'status');
+  Reason := HrmReadResultKey(ResultFile, 'reason');
+  SnapshotStatus := Status;
+  SnapshotReason := Reason;
+  if RunOk then
+    SnapshotRunText := 'успех'
+  else
+    SnapshotRunText := 'сбой';
+  Log('HRM: снимок предыдущей версии: запуск=' + SnapshotRunText +
+      ' status=' + Status + ' reason=' + Reason);
+  // Продолжать можно ТОЛЬКО при нулевом коде возврата И подтверждённом
+  // результате: молчание вспомогательного скрипта — не разрешение.
+  if RunOk and ((Status = 'verified') or (Status = 'skipped')) then
+  begin
+    SnapshotGuardPassed := True;
+    Exit;
+  end;
+  if not Needed then
+  begin
+    // Прежней версии нет (первая установка): останавливать нечего, но причину
+    // видно в журнале мастера.
+    Log('HRM: установки ещё не было — установка продолжается без снимка.');
+    Exit;
+  end;
+  if Status = 'files_replaced' then
+    Message := CustomMessage('SnapshotFilesReplaced')
+  else if Status = '' then
+    Message := CustomMessage('SnapshotHelperFailed')
+  else
+    Message := CustomMessage('SnapshotFailed') + #13#10 +
+      'Причина: ' + Status + ' / ' + Reason;
+  Log('HRM: установка остановлена ДО перезаписи файлов (' + Status + '/' + Reason + ').');
+  SuppressibleMsgBox(Message, mbCriticalError, MB_OK, IDOK);
+  Result := CustomMessage('SnapshotStop');
+end;
+
+function HrmVerifySnapshotGuard(): String;
+// Последняя проверка перед самим копированием (PrepareToInstall и ssInstall):
+// подтверждённый снимок прежней версии либо отсутствие того, что можно потерять.
+var
+  Status: String;
+begin
+  Result := '';
+  if SnapshotGuardPassed then Exit;
+  if not HrmInstallExists() then
+  begin
+    SnapshotGuardPassed := True;
+    Exit;
+  end;
+  Status := HrmReadResultKey(ExpandConstant('{tmp}\hrm-snapshot-result.txt'), 'status');
+  if (Status = 'verified') or (Status = 'skipped') then
+  begin
+    SnapshotGuardPassed := True;
+    Exit;
+  end;
+  Log('HRM: снимок прежней версии не подтверждён (status=' + Status + ') — установка остановлена.');
+  Result := CustomMessage('SnapshotStop');
 end;
 
 procedure WriteSetupMarker();
@@ -244,14 +435,39 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  GuardError: String;
 begin
   if CurStep = ssInstall then
-    PreservePreviousSnapshot();
+  begin
+    // Последняя проверка перед копированием файлов: без подтверждённого снимка
+    // прежней версии обновление не начинается (исключение прерывает установку).
+    GuardError := HrmVerifySnapshotGuard();
+    if GuardError <> '' then
+      RaiseException(GuardError);
+  end;
   if CurStep = ssPostInstall then
   begin
     WriteFirstRunInput();
     WriteSetupMarker();
   end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  GuardError: String;
+begin
+  // Подготовка завершается ДО копирования файлов: если подтверждённого снимка
+  // прежней версии нет, установка останавливается на этой странице — и в
+  // обычном, и в неинтерактивном режиме (Inno завершает установку с отдельным
+  // кодом возврата, поэтому «остановка» видна и автоматике).
+  GuardError := HrmVerifySnapshotGuard();
+  if GuardError <> '' then
+  begin
+    Result := GuardError;
+    Exit;
+  end;
+  Result := PreservePreviousSnapshot();
 end;
 
 function GetEngineDockerArgs(Param: String): String;
