@@ -183,7 +183,7 @@ function Invoke-HrmChannelInstall {
     $config = Get-HrmChannelConfig $StateDir
     $manifest = Read-HrmVerifiedManifest $ManifestPath $config.public_keys
     $installedVersion = Get-HrmInstalledVersion $InstallDir
-    $installedSha = if ($record.release_sha) { [string]$record.release_sha } else { "" }
+    $installedSha = [string](Get-HrmInstallRecordField -Record $record -Field "release_sha")
     Assert-HrmChannelPolicy $manifest $installedVersion $installedSha
     # Размер + SHA256 пакета против manifest.
     $packageInfo = Get-Item $PackagePath
@@ -231,13 +231,14 @@ function Invoke-HrmChannelOnce {
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
     if ($null -eq $record) { return }
-    $port = if ($record.port) { [int]$record.port } else { Get-HrmPort }
+    $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+    if ($port -le 0) { $port = Get-HrmPort }
     $baseUrl = Get-HrmBaseUrl $port
     $token = Get-HrmSecret $StateDir "HRM_UPDATE_ENGINE_TOKEN"
     if ([string]::IsNullOrEmpty($token)) { return }
     $headers = @{ "X-Engine-Token" = $token }
     $installedVersion = Get-HrmInstalledVersion $InstallDir
-    $installedSha = if ($record.release_sha) { [string]$record.release_sha } else { "" }
+    $installedSha = [string](Get-HrmInstallRecordField -Record $record -Field "release_sha")
     $headers["X-Installed-Version"] = $installedVersion
     $headers["X-Installed-Sha"] = $installedSha
 

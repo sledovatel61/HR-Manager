@@ -671,7 +671,11 @@ function Update-HrmApp {
     }
     $record = Get-HrmInstallRecord $StateDir
     if ($null -eq $record) { throw "Установка не найдена. Выполните -Action install." }
-    $port = [int]$record.port
+    # Порт читается через PSObject: запись СТАРОЙ установки может не содержать
+    # свойства port, а обращение к отсутствующему свойству под StrictMode 2.0
+    # обрывает обновление до первой фазы (тот же риск, что и у release_sha).
+    $port = Get-HrmPort
+    if ($record.PSObject.Properties["port"] -and $record.port) { $port = [int]$record.port }
     $baseUrl = Get-HrmBaseUrl $port
     # Версия «до обновления» читается ДО подмены файлов снимка: в записи
     # установки её может не быть (старые релизы), тогда берём release.json
@@ -790,16 +794,25 @@ function Update-HrmApp {
             $previousSnapshotSaved = $false
             $installedSha = $recordShaForEvidence
             $currentSha = $currentFileSha
-            # Идентификатор прежней версии: запись установки, а если её нет
-            # (старые релизы) — release.json каталога. Пустая строка означает
-            # «идентификатора нет» — отдельный документированный случай (см.
-            # docs/UPDATE_GUIDE.md, «Правило прежней идентичности»).
-            $previousReleaseSha = $installedSha
-            if (-not $previousReleaseSha) { $previousReleaseSha = $currentSha }
             # Файлы {app} уже заменены новой версией (Setup.exe копирует файлы
             # ДО запуска движка): снимок прежней версии из них делать нельзя, а
             # ошибка после такой замены НЕ «ничего не менялось».
             $filesReplacedBySetup = $filesReplacedEvidence
+            # Идентификатор прежней версии: запись установки, проверенный снимок
+            # мастера (нужен для старых записей без release_sha) либо release.json
+            # каталога — но ТОЛЬКО пока файлы не заменены: после замены release.json
+            # в {app} принадлежит НОВОЙ версии, и взять из него «прежнюю»
+            # идентичность значило бы подтверждать откат к сбойной сборке. Пустая
+            # строка означает «идентификатора нет» — отдельный документированный
+            # случай (docs/UPDATE_GUIDE.md, «Правило прежней идентичности»).
+            $previousReleaseSha = $installedSha
+            if (-not $previousReleaseSha) {
+                $snapshotForPrevious = Resolve-HrmPreviousSnapshot -StateDir $StateDir -ReleaseSha ""
+                if ($snapshotForPrevious.usable) {
+                    $previousReleaseSha = [string](Get-HrmSnapshotField -Metadata $snapshotForPrevious.metadata -Field "release_sha")
+                }
+            }
+            if (-not $previousReleaseSha -and -not $filesReplacedBySetup) { $previousReleaseSha = $currentSha }
             if (Test-HrmPreviousSnapshotMatches -StateDir $StateDir -ReleaseSha $previousReleaseSha) {
                 # Снимок прежней версии уже сохранён и проверен (мастер
                 # установки сохранил его ДО перезаписи {app}). Повторный снимок
@@ -992,8 +1005,9 @@ function Update-HrmApp {
                 if ($data.PSObject.Properties["previous_release_sha"]) { $expectedPreviousSha = [string]$data.previous_release_sha }
                 if (-not $previousVersionSaved -and $data.PSObject.Properties["previous_version"]) { $previousVersionSaved = [string]$data.previous_version }
             }
-            if (-not $expectedPreviousSha -and $record.PSObject.Properties["release_sha"] -and $record.release_sha) {
-                $expectedPreviousSha = [string]$record.release_sha
+            if (-not $expectedPreviousSha) {
+                # Безопасное чтение: у записи старой установки поля может не быть.
+                $expectedPreviousSha = [string](Get-HrmInstallRecordField -Record $record -Field "release_sha")
             }
             # Политика отката должна отражать фактическое состояние: пригодный
             # (проверенный, совпадающий по идентификатору) снимок обязан быть

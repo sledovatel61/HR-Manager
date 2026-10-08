@@ -438,6 +438,36 @@ Test-Case "P1-2: старые файлы без идентификатора н�
     Clear-HrmHttpMock
 }
 
+Test-Case "P1-4: обновление поверх СТАРОЙ записи установки не обрывается, а выполняется" {
+    Initialize-HrmTestEngine
+    $world = New-HrmMockWorld
+    Set-HrmIteration15Preflight
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $shaB = ("b" * 40)
+    # Установлена старая версия 0.13.0: в записи установки release_sha нет (так
+    # писали прежние движки) и в release.json каталога его тоже нет.
+    New-HrmFakeSnapshot -Root $install -ReleaseSha ("a" * 40)
+    Install-HrmApp -SourceDir $install -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    ConvertTo-HrmLegacyInstall -StateDir $state -InstallDir $install
+    # Мастер установки сохранил снимок прежней версии и разложил файлы новой.
+    $saved = Save-HrmInstalledSnapshotForSetup -InstallDir $install -StateDir $state
+    Assert-HrmTrue ([bool]$saved.verified) ("снимок прежней версии не сохранён: " + [string]$saved.message)
+    New-HrmFakeSnapshot -Root $install -ReleaseSha $shaB
+    Set-HrmJsonFile $install "release.json" ([ordered]@{ version = "1.0.0"; release_sha = $shaB })
+    # Повторный запуск мастера: движок обязан выполнить обновление, а не упасть на
+    # чтении записи без release_sha (и не «просто запустить» старые образы).
+    Install-HrmApp -SourceDir $install -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    $result = Get-HrmUpdateResult $state
+    Assert-HrmTrue ($null -ne $result) "обновление не выполнено (нет update-result.json)"
+    Assert-HrmEqual "done" ([string]$result.status) "обновление со старой записи установки не завершилось"
+    Assert-HrmTrue ($world.BuildCount -ge 1) "новый релиз не собирался"
+    Assert-HrmTrue ($world.UpCount -ge 1) "новый релиз не запускался"
+    Assert-HrmTrue (Test-Path (Join-Path $install "backend\marker.txt")) "файлы обновления не на месте"
+    Clear-HrmExternalMock
+    Clear-HrmHttpMock
+}
+
 # --- 4. Статические контракты мастера установки и входных точек --------------
 
 Test-Case "P2: мастер установки готовит снимок из своего пакета и проверяет результат" {
@@ -478,6 +508,55 @@ Test-Case "P2: мастер установки готовит снимок из 
     Assert-HrmTrue ($helperIndex -lt $appIndex) "вспомогательные файлы идут после снимка приложения (дорогая распаковка при solid compression)"
 }
 
+Test-Case "P2: мастер сначала СОХРАНЯЕТ снимок, потом проверяет его (порядок шагов)" {
+    # Регрессия: обратный порядок (проверка раньше снимка) останавливал ЛЮБОЕ
+    # обновление существующей установки ещё до того, как снимок создавался —
+    # в интерактивном и в неинтерактивном режиме.
+    $issPath = Join-Path $script:RepoRoot "installer\installer.iss"
+    $iss = Get-Content -Path $issPath -Raw -Encoding UTF8
+    $lines = @(Get-Content -Path $issPath -Encoding UTF8)
+    $start = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -like "function PrepareToInstall*") { $start = $i; break }
+    }
+    Assert-HrmTrue ($start -ge 0) "в мастере нет функции PrepareToInstall"
+    $end = -1
+    for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -eq "end;") { $end = $i; break }
+    }
+    Assert-HrmTrue ($end -gt $start) "не найден конец функции PrepareToInstall"
+    $body = ($lines[$start..$end] -join "`n")
+    $snapshotCall = $body.IndexOf("PreservePreviousSnapshot()")
+    $guardCall = $body.IndexOf("HrmVerifySnapshotGuard()")
+    Assert-HrmTrue ($snapshotCall -ge 0) "в PrepareToInstall нет вызова снимка прежней версии"
+    Assert-HrmTrue ($guardCall -ge 0) "в PrepareToInstall нет последней проверки снимка"
+    Assert-HrmTrue ($snapshotCall -lt $guardCall) "проверка снимка идёт раньше самого снимка — обновление остановится, не сохранив прежнюю версию"
+    # Чтение файла результата не имеет права пробивать обработку снимка
+    # исключением: статус читается только через безопасную обёртку.
+    Assert-HrmContains $iss "HrmReadResultKeySafe" "файл результата читается без защиты от исключения"
+    $rawReads = @([regex]::Matches($iss, 'HrmReadResultKey\('))
+    Assert-HrmEqual 1 $rawReads.Count "прямое чтение файла результата мимо безопасной обёртки"
+    $safeStart = $iss.IndexOf("function HrmReadResultKeySafe")
+    Assert-HrmTrue ($safeStart -ge 0) "нет безопасной обёртки чтения файла результата"
+    $safeEnd = $iss.IndexOf("function HrmExtractSnapshotHelper", $safeStart)
+    Assert-HrmTrue ($safeEnd -gt $safeStart) "не найден конец безопасной обёртки чтения"
+    Assert-HrmTrue ($rawReads[0].Index -gt $safeStart -and $rawReads[0].Index -lt $safeEnd) "чтение файла результата есть вне безопасной обёртки"
+}
+
+Test-Case "P2: запись СТАРОЙ установки читается без падения под StrictMode (порт)" {
+    # Регрессия: прямой доступ к свойству, которого нет в installed.json старой
+    # версии, — это PropertyNotFound под StrictMode 2.0; обновление обрывалось бы
+    # до первой фазы, «как будто ничего не происходило».
+    $update = Get-Content -Path (Join-Path $script:RepoRoot "infra\windows\engine\Update.psm1") -Raw -Encoding UTF8
+    foreach ($line in ($update -split "`n")) {
+        if ($line -match '^\s*\$port\s*=\s*\[int\]\$record\.port\s*$') {
+            throw "порт читается напрямую из записи установки (падение на старой записи без port)"
+        }
+    }
+    Assert-HrmContains $update '$record.PSObject.Properties["port"]' "порт не читается через PSObject"
+    Assert-HrmContains $update '$record.PSObject.Properties["release_sha"]' "release_sha не читается через PSObject"
+}
+
 Test-Case "P2: движок честно сообщает отказ снимка и импортирует модуль снимка" {
     $entryPath = Join-Path $script:RepoRoot "infra\windows\hr-manager.ps1"
     $entry = Get-Content -Path $entryPath -Raw -Encoding UTF8
@@ -501,6 +580,30 @@ Test-Case "P2: движок честно сообщает отказ снимк�
     $cli = Get-Content -Path (Join-Path $script:RepoRoot "infra\windows\hrm-snapshot.ps1") -Raw -Encoding UTF8
     Assert-HrmContains $cli "Invoke-HrmSnapshotCli" "CLI снимка не вызывает движок снимка"
     Assert-HrmContains $cli "exit `$exitCode" "CLI снимка не возвращает код мастеру установки"
+}
+
+Test-Case "P2: запись СТАРОЙ установки читается только безопасно во всех модулях" {
+    # Регрессия: прямой доступ к полю записи установки, которого нет у старой
+    # версии, — исключение PropertyNotFound под StrictMode 2.0; обновление,
+    # установка, диагностика и трей обрывались бы на ровном месте (так уже было
+    # с release_sha и с портом).
+    $engineDir = Join-Path $script:RepoRoot "infra\windows\engine"
+    $files = @(Get-ChildItem -Path $engineDir -Filter *.psm1 -File)
+    Assert-HrmTrue ($files.Count -ge 10) "не найдены модули движка"
+    $fields = 'release_sha|port|version|pilot_created|install_dir|state_dir|installed_at'
+    foreach ($file in $files) {
+        $lineNo = 0
+        foreach ($line in @(Get-Content -Path $file.FullName -Encoding UTF8)) {
+            $lineNo++
+            if ($line -match ('\$(record|existing|installed)\.(' + $fields + ')\b') -and
+                $line -notmatch 'PSObject\.Properties' -and
+                $line -notmatch 'Get-HrmInstallRecordField') {
+                throw ("{0}:{1}: поле записи установки читается напрямую (StrictMode): {2}" -f $file.Name, $lineNo, $line.Trim())
+            }
+        }
+    }
+    $secrets = Get-Content -Path (Join-Path $engineDir "Secrets.psm1") -Raw -Encoding UTF8
+    Assert-HrmContains $secrets "function Get-HrmInstallRecordField" "нет безопасного чтения полей записи установки"
 }
 
 Test-Case "P2: правило прежней идентичности описано в руководстве по обновлению" {

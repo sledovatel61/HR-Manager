@@ -174,20 +174,49 @@ function Install-HrmApp {
     $port = Get-HrmPort $Port
 
     $existing = Get-HrmInstallRecord $StateDir
-    if ($null -ne $existing -and $existing.release_sha) {
+    # Идентичность установленной версии читается БЕЗОПАСНО (Get-HrmInstallRecordField):
+    # в записи СТАРОЙ установки может не быть release_sha. Если своего
+    # идентификатора у записи нет, он берётся из описания снимка, который мастер
+    # установки создал ДО замены файлов: без идентификатора обновление не смогло
+    # бы ни отличить новую версию от прежней, ни доказать откат.
+    $existingSha = [string](Get-HrmInstallRecordField -Record $existing -Field "release_sha")
+    $previousVersionFromSnapshot = ""
+    if ($null -ne $existing -and -not $existingSha) {
+        $snapshotForUpdate = Resolve-HrmPreviousSnapshot -StateDir $StateDir -ReleaseSha ""
+        if ($snapshotForUpdate.usable) {
+            $existingSha = [string](Get-HrmSnapshotField -Metadata $snapshotForUpdate.metadata -Field "release_sha")
+            $previousVersionFromSnapshot = [string](Get-HrmSnapshotField -Metadata $snapshotForUpdate.metadata -Field "version")
+            if ($existingSha) {
+                Write-HrmLog "info" ("Запись установки без идентификатора версии — прежняя версия взята из снимка мастера: {0}." -f $existingSha)
+            }
+        }
+    }
+    if ($null -ne $existing) {
         # B6: повторный запуск новой версии Setup.exe = обновление поверх
         # Существующая установка: проверяем, отличается ли версия в SourceDir
         $sourceReleaseSha = ""
+        $sourceVersion = ""
         try {
             $srcReleaseFile = Join-Path $SourceDir "release.json"
             if (Test-Path $srcReleaseFile) {
                 $srcData = Get-HrmJsonFile $srcReleaseFile
                 if ($null -ne $srcData -and $srcData.release_sha) { $sourceReleaseSha = [string]$srcData.release_sha }
+                if ($null -ne $srcData -and $srcData.PSObject.Properties["version"] -and $srcData.version) { $sourceVersion = [string]$srcData.version }
             }
         } catch {}
-        $installedSha = [string]$existing.release_sha
-        if ($sourceReleaseSha -and $installedSha -and $sourceReleaseSha -ne $installedSha) {
-            Write-HrmLog "info" ("Существующая установка найдена: {0}" -f $installedSha)
+        $installedSha = $existingSha
+        # Идентичность может отсутствовать у ОЧЕНЬ старой установки (в записи и в
+        # release.json нет release_sha — «Правило прежней идентичности»). Тогда
+        # обновление всё равно обязано состояться, но доказательством «это другая
+        # версия» служит ВЕРСИЯ прежней версии из проверенного снимка мастера.
+        $legacyUpdate = $false
+        if (-not $installedSha -and $sourceReleaseSha -and $previousVersionFromSnapshot -and $sourceVersion -and
+            ($previousVersionFromSnapshot -ne $sourceVersion)) {
+            $legacyUpdate = $true
+        }
+        $installedLabel = if ($installedSha) { $installedSha } else { ("версия " + $previousVersionFromSnapshot + " без идентификатора") }
+        if (($sourceReleaseSha -and $installedSha -and $sourceReleaseSha -ne $installedSha) -or $legacyUpdate) {
+            Write-HrmLog "info" ("Существующая установка найдена: {0}" -f $installedLabel)
             $preview = Get-HrmUpdatePreview -ReleaseDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir
             foreach ($line in (Format-HrmUpdatePreview $preview)) { Write-HrmLog "info" $line }
             Write-HrmLog "info" ("Обнаружена новая версия {0} — запускаю обновление с бэкапом и откатом..." -f $sourceReleaseSha)
@@ -215,10 +244,16 @@ function Install-HrmApp {
             Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "Обновление завершено."
             return
         }
-        Write-HrmLog "info" ("Существующая установка найдена: {0}" -f $existing.release_sha)
+        Write-HrmLog "info" ("Существующая установка найдена: {0}" -f $installedLabel)
         Write-HrmLog "info" "Повторный запуск установки не меняет данные и секреты."
-        $existingPort = $port
-        if ($existing.PSObject.Properties["port"] -and $existing.port) { $existingPort = [int]$existing.port }
+        if (-not $installedSha) {
+            # Идентификатора версии нет даже в снимке мастера: обновление с
+            # доказанным откатом невозможно. Говорим честно и запускаем то, что
+            # установлено, — вместо исключения PropertyNotFound.
+            Write-HrmLog "warn" "Запись установки без идентификатора версии и без проверенного снимка: обновление с откатом недоказуемо — запускаю установленную версию как есть."
+        }
+        $existingPort = [int](Get-HrmInstallRecordField -Record $existing -Field "port" -Default 0)
+        if ($existingPort -le 0) { $existingPort = $port }
         $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $existingPort -AllowInstall:$AllowDockerInstall -Interactive:($AllowDockerInstall -or (Test-HrmInteractive))
         if (-not $prepare.ok) {
             Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
@@ -239,8 +274,7 @@ function Install-HrmApp {
         Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "HR Manager запущен."
         return
     }
-
-    # --- Первичная установка ---
+    # --- Первичная установка (записи установки нет) ---
     Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port -SkipCompose
     Initialize-HrmStateDir $StateDir
     # Подготовка рабочей среды: Docker Desktop (при разрешении — официальный
@@ -308,7 +342,8 @@ function Start-HrmApp {
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
     if ($null -eq $record) { throw "Установка не найдена. Выполните -Action install." }
-    $port = [int]$record.port
+    $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+    if ($port -le 0) { $port = Get-HrmPort }
     $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port
     if (-not $prepare.ok) {
         Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
@@ -347,8 +382,8 @@ function Get-HrmAppStatus {
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
-    $port = Get-HrmPort
-    if ($null -ne $record -and $record.port) { $port = [int]$record.port }
+    $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+    if ($port -le 0) { $port = Get-HrmPort }
     $baseUrl = Get-HrmBaseUrl $port
     $running = Test-HrmComposeRunning $InstallDir $StateDir
     $frontend = if ($running) { Test-HrmFrontendReady $baseUrl } else { $false }
@@ -357,7 +392,7 @@ function Get-HrmAppStatus {
 
     $lines = @()
     $lines += "HR Manager — статус"
-    $lines += ("Установлено:      {0}" -f $(if ($record) { $record.release_sha } else { "нет" }))
+    $lines += ("Установлено:      {0}" -f $(if ($record) { [string](Get-HrmInstallRecordField -Record $record -Field "release_sha") } else { "нет" }))
     $lines += ("Контейнеры:       {0}" -f $(if ($running) { "запущены" } else { "остановлены" }))
     $lines += ("Фронтенд:         {0}" -f $(if ($frontend) { "готов ($baseUrl)" } else { "недоступен" }))
     $lines += ("Бэкенд:           {0}" -f $(if ($backend) { "готов" } else { "недоступен" }))
@@ -373,8 +408,8 @@ function Open-HrmApp {
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
-    $port = Get-HrmPort
-    if ($null -ne $record -and $record.port) { $port = [int]$record.port }
+    $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+    if ($port -le 0) { $port = Get-HrmPort }
     if (-not (Test-HrmComposeRunning $InstallDir $StateDir)) {
         Write-HrmLog "info" "Приложение не запущено — запускаю…"
         $guard = Enter-HrmActionLock -StateDir $StateDir -Action "open"

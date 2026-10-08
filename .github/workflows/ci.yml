@@ -722,16 +722,62 @@ jobs:
       - name: Silent install and uninstall smoke
         shell: powershell
         run: |
+          function Invoke-HrmSetup {
+            # Обычные и обновляющие прогоны мастера: код возврата обязателен к
+            # проверке — «остановка до перезаписи файлов» обязана быть видна.
+            param([string]$Exe, [string]$Label)
+            $process = Start-Process $Exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "$Label failed: $($process.ExitCode)" }
+          }
+          function Write-HrmJson {
+            # Как installer/build.ps1: UTF-8 без BOM.
+            param([string]$Path, [string]$Json)
+            [System.IO.File]::WriteAllText($Path, $Json, (New-Object System.Text.UTF8Encoding($false)))
+          }
           $setup = Get-ChildItem installer/output/HR-Manager-Setup-*.exe | Select-Object -First 1
           if (-not $setup) { throw "Setup.exe was not produced" }
-          $process = Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Silent install failed: $($process.ExitCode)" }
           $appDir = Join-Path $env:LOCALAPPDATA "Programs\HRManager"
+          $stateDir = Join-Path $env:LOCALAPPDATA "HRManager"
+          Invoke-HrmSetup $setup.FullName "Silent install"
           if (-not (Test-Path (Join-Path $appDir "infra\windows\hr-manager.ps1"))) {
             throw "Installed Windows engine is missing"
           }
           $uninstaller = Join-Path $appDir "unins000.exe"
           if (-not (Test-Path $uninstaller)) { throw "Uninstaller is missing" }
+
+          # --- Обновление ПОВЕРХ существующей установки (регрессия итерации 15) --
+          # 1) Показываем мастеру «прежнюю версию»: её release.json в {app} и
+          #    запись установки. Идентификаторы обязаны отличаться от нового
+          #    пакета, иначе снимок прежней версии делать запрещено (files_replaced).
+          $previousSha = "old-pilot-version-sha"
+          $releasePath = Join-Path $appDir "release.json"
+          $release = Get-Content $releasePath -Raw | ConvertFrom-Json
+          $newSha = [string]$release.release_sha
+          if (-not $newSha) { throw "release.json пакета без release_sha" }
+          $release.release_sha = $previousSha
+          $release.version = "0.0.1"
+          Write-HrmJson $releasePath ($release | ConvertTo-Json -Depth 5)
+          $record = [ordered]@{ version = "0.0.1"; release_sha = $previousSha; port = 8080; installed_at = (Get-Date).ToString("o") }
+          Write-HrmJson (Join-Path $stateDir "installed.json") ($record | ConvertTo-Json)
+          # 2) Повторный запуск мастера = обновление. Раньше мастер проверял
+          #    готовность снимка РАНЬШЕ, чем его создавал, и останавливался на
+          #    любой существующей установке (код возврата != 0).
+          Invoke-HrmSetup $setup.FullName "Silent upgrade"
+          # 3) Снимок прежней версии обязан быть создан ДО перезаписи: он
+          #    проверен, сделан мастером (origin=installer) и содержит прежние
+          #    файлы, а {app} уже перезаписан новым релизом.
+          $descriptor = Join-Path $stateDir "previous-snapshot.json"
+          if (-not (Test-Path $descriptor)) { throw "Снимок прежней версии не создан: previous-snapshot.json" }
+          $meta = Get-Content $descriptor -Raw | ConvertFrom-Json
+          if (-not $meta.verified) { throw "Снимок прежней версии не подтверждён (verified=false)" }
+          if ($meta.origin -ne "installer") { throw "Снимок сделан не мастером установки: origin=$($meta.origin)" }
+          if ($meta.release_sha -ne $previousSha) { throw "Снимок сделан не из прежней версии: $($meta.release_sha)" }
+          $snapshotRelease = Get-Content (Join-Path $stateDir "previous-snapshot\release.json") -Raw | ConvertFrom-Json
+          if ($snapshotRelease.release_sha -ne $previousSha) { throw "В снимке нет файлов прежней версии" }
+          $nowSha = [string]((Get-Content $releasePath -Raw | ConvertFrom-Json).release_sha)
+          if ($nowSha -ne $newSha) { throw "Мастер не заменил файлы программы: $nowSha вместо $newSha" }
+          Write-Host "Silent upgrade smoke: снимок прежней версии ($($meta.files) файл(ов)) создан до перезаписи"
+
           $process = Start-Process $uninstaller -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Silent uninstall failed: $($process.ExitCode)" }
           if (Test-Path (Join-Path $appDir "infra\windows\hr-manager.ps1")) {
