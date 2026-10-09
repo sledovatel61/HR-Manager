@@ -143,16 +143,17 @@ Test-Case "мьютекс переопределяется через env: ед�
     Assert-HrmEqual "Local\HRManagerPilotSupervisorTest-probe" (Get-HrmSupervisorMutexName) "env не переопределил имя мьютекса"
     Remove-Item Env:HRM_SUPERVISOR_MUTEX -ErrorAction SilentlyContinue
     Assert-HrmEqual "Local\HRManagerPilotSupervisor" (Get-HrmSupervisorMutexName) "имя по умолчанию потеряно"
-    # «Занятый машинный мьютекс» держим ОТДЕЛЬНЫМ ПОТОКОМ: .NET Mutex
-    # ре-ентерабелен для своего потока, поэтому занять его в том же потоке
-    # и пронаблюдать отказ невозможно.
-    $holder = Start-ThreadJob -ScriptBlock {
+    # «Занятый машинный мьютекс» держим ОТДЕЛЬНЫМ ПРОЦЕССОМ (фоновая job):
+    # .NET Mutex ре-ентерабелен для своего потока, поэтому занять его в том же
+    # потоке и пронаблюдать отказ невозможно (а Start-ThreadJob в PowerShell
+    # 5.1 не входит в поставку). Local\-мьютекс общий для процессов сессии.
+    $holder = Start-Job -ScriptBlock {
         $m = New-Object System.Threading.Mutex($false, "Local\HRManagerPilotSupervisor")
         $null = $m.WaitOne(0)
-        Start-Sleep -Seconds 30
+        Start-Sleep -Seconds 60
     }
     try {
-        # Ждём, пока поток действительно захватит мьютекс (зонд свободным захватом).
+        # Ждём, пока процесс job действительно захватит мьютекс (зонд свободным захватом).
         $heldByOther = $false
         for ($i = 0; $i -lt 50 -and -not $heldByOther; $i++) {
             $probe = New-Object System.Threading.Mutex($false, "Local\HRManagerPilotSupervisor")
@@ -160,7 +161,7 @@ Test-Case "мьютекс переопределяется через env: ед�
             try { $got = $probe.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $got = $true }
             if ($got) { try { $probe.ReleaseMutex() } catch { } } else { $heldByOther = $true }
             $probe.Dispose()
-            if (-not $heldByOther) { Start-Sleep -Milliseconds 100 }
+            if (-not $heldByOther) { Start-Sleep -Milliseconds 200 }
         }
         Assert-HrmTrue $heldByOther "не удалось дождаться занятого машинного мьютекса"
         # Без переопределения занятый машинный мьютекс даёт отказ (контракт единственности).
