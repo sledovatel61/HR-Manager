@@ -269,19 +269,29 @@ try {
         Write-HrmNotice "Silent smoke: установка" "exit=0"
     }
     else {
-        # Ограниченный режим: мастер ОБЯЗАН завершиться ненулевым кодом, а
-        # движок — остановиться на Docker-гейте с ожидаемым отказом.
-        if ($installCode -eq 0) {
-            throw "без Linux-движка мастер завершился успехом — это замаскированный отказ, а не честная остановка на гейте"
+        # Ограниченный режим: движок обязан остановиться на Docker-гейте с
+        # ожидаемым отказом (а не «успехом»). Inno Setup НЕ пробрасывает код
+        # возврата [Run]-записи в код мастера, поэтому вердикт движка читаем
+        # из его файлов состояния. Авторитет — setup-run.json: его пишет
+        # мастер (status=running) и затем движок (status=failed), порядок
+        # детерминирован, гонки с треем нет. supervisor.json — сверка
+        # по возможности (трей тоже пишет его при старте).
+        $marker = Read-HrmJsonFile (Join-Path $StateDir "setup-run.json")
+        if ($null -eq $marker) { throw "нет отметки установки (setup-run.json) — движок не запускался или не записал отказ" }
+        if ([string](Get-HrmJsonProperty -Object $marker -Name "status") -ne "failed") {
+            throw ("движок не записал отказ честно: setup-run.json status=" + [string]$marker.status + " (мастер exit=" + $installCode + ")")
+        }
+        $markerMessage = [string](Get-HrmJsonProperty -Object $marker -Name "message")
+        if (-not (Test-HrmSmokeDockerRefusal $markerMessage)) {
+            Write-HrmSetupLogTail -Path $installLog -Title "Silent smoke: неожиданный отказ движка"
+            throw ("движок остановился не на Docker-гейте: " + $markerMessage)
         }
         $engineState = Get-HrmSmokeEngineState -StateDir $StateDir
-        if ($null -eq $engineState) { throw "после остановки нет состояния движка (supervisor.json в каталоге состояния)" }
-        if ($engineState.state -ne "error") { throw ("движок не зафиксировал ошибку: state=" + $engineState.state) }
-        if (-not (Test-HrmSmokeDockerRefusal $engineState.message)) {
-            Write-HrmSetupLogTail -Path $installLog -Title "Silent smoke: неожиданный отказ движка"
-            throw ("движок остановился не на Docker-гейте: " + $engineState.message)
+        $supervisorNote = "нет supervisor.json"
+        if ($null -ne $engineState) {
+            $supervisorNote = ("supervisor.json state=" + $engineState.state + " message=" + $engineState.message)
         }
-        Write-HrmNotice "Silent smoke: установка (ограниченный режим)" ("exit=" + $installCode + "; движок остановился на Docker-гейте: " + $engineState.message)
+        Write-HrmNotice "Silent smoke: установка (ограниченный режим)" ("мастер exit=" + $installCode + " (Inno не пробрасывает код [Run]); движок остановился на Docker-гейте: " + $markerMessage + "; " + $supervisorNote)
     }
 
     $engine = Join-Path $InstallDir "infra\windows\hr-manager.ps1"
@@ -327,23 +337,25 @@ try {
         Write-HrmNotice "Silent smoke: обновление" "exit=0"
     }
     else {
-        # Ограниченный режим: мастер ОБЯЗАН завершиться ненулевым кодом, а
-        # движок — остановиться на Docker-гейте обновления (T1) и честно
-        # записать отказ в update-result.json.
-        if ($upgradeCode -eq 0) {
-            throw "без Linux-движка обновление завершилось успехом — это замаскированный отказ"
-        }
+        # Ограниченный режим: движок обязан остановиться на Docker-гейте
+        # обновления (T1) и честно записать отказ. Inno не пробрасывает код
+        # [Run] в код мастера — вердикт в файлах движка: update-result.json
+        # (только движок) и setup-run.json (мастер → движок, без гонки).
         $result = Get-HrmSmokeUpdateResult -StateDir $StateDir
-        if ($null -eq $result) { throw "движок не записал результат обновления (update-result.json)" }
+        if ($null -eq $result) { throw "движок не записал результат обновления (update-result.json) — обновление не дошло до гейта?" }
         if ([string](Get-HrmJsonProperty -Object $result -Name "status") -ne "failed") {
-            throw "обновление без Linux-движка не отмечено как failed"
+            throw ("обновление без Linux-движка не отмечено как failed (status=" + [string]$result.status + ") — возможен замаскированный успех")
         }
         $resultMessage = [string](Get-HrmJsonProperty -Object $result -Name "message")
         if (-not (Test-HrmSmokeDockerRefusal $resultMessage)) {
             Write-HrmSetupLogTail -Path $upgradeLog -Title "Silent smoke: неожиданный отказ движка"
             throw ("движок остановился не на Docker-гейте: " + $resultMessage)
         }
-        Write-HrmNotice "Silent smoke: обновление (ограниченный режим)" ("exit=" + $upgradeCode + "; движок остановился на Docker-гейте: " + $resultMessage)
+        $marker = Read-HrmJsonFile (Join-Path $StateDir "setup-run.json")
+        if ($null -eq $marker -or [string](Get-HrmJsonProperty -Object $marker -Name "status") -ne "failed") {
+            throw "движок не записал отказ в отметке установки (setup-run.json не failed)"
+        }
+        Write-HrmNotice "Silent smoke: обновление (ограниченный режим)" ("мастер exit=" + $upgradeCode + " (Inno не пробрасывает код [Run]); снимок подтверждён; движок остановился на Docker-гейте: " + $resultMessage)
     }
 
     # Снимок обязан быть сделан ДО перезаписи: подтверждён, сделан мастером и
