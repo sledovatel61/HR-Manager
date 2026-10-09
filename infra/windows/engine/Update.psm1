@@ -212,10 +212,14 @@ function Get-HrmUpdatePreview {
         status = "ok"
         detail = ("Порт {0} и доступ по сети ({1}) сохраняются без изменений." -f $port, $(if ($lan.enabled) { "включён" } else { "только этот компьютер" }))
     }
+    # Готовность именно Linux-движка: стек HR Manager — Linux-контейнеры.
+    # Без него обновление ОСТАНАВЛИВАЕТСЯ на Docker-гейте (см. Update-HrmApp),
+    # поэтому текст обязан это отражать, а не обещать «начнётся после запуска».
+    $dockerReady = Test-HrmDockerLinuxEngineReady
     $checks += [pscustomobject]@{
         key = "docker"; label = "Готовность рабочей среды"
-        status = if (Test-HrmDockerEngineReady) { "ok" } else { "fail" }
-        detail = if (Test-HrmDockerEngineReady) { "Docker Engine работает." } else { "Docker Engine не отвечает — обновление начнётся после его запуска." }
+        status = if ($dockerReady) { "ok" } else { "fail" }
+        detail = if ($dockerReady) { "Docker Engine работает." } else { "Docker Engine не готов — обновление остановится на проверке среды: запустите Docker Desktop (Linux-движок) и повторите попытку." }
     }
     $backupVolume = Invoke-HrmDocker -Arguments @("volume", "inspect", ((Get-HrmProjectName) + "_pilot_backups")) -IgnoreExitCode
     $checks += [pscustomobject]@{
@@ -343,7 +347,10 @@ function Save-HrmPreviousSnapshot {
     $identity = $ReleaseSha
     if (-not $identity) { $identity = Get-HrmSnapshotIdentity -InstallDir $InstallDir -StateDir $StateDir }
     if (-not $Version) { $Version = Get-HrmSnapshotVersionInDir -Directory $InstallDir }
-    $snapshot = New-HrmVerifiedSnapshotFromDir -SourceDir $InstallDir -StateDir $StateDir -ReleaseSha $identity -Version $Version -Origin "engine"
+    # Снимок ПРЕДЫДУЩЕЙ (установленной) версии: у старой установки ключа
+    # лицензии в {app} может не быть — снимок не требует его (ключ
+    # восстановится из нового релиза; см. Assert-HrmSnapshotComplete).
+    $snapshot = New-HrmVerifiedSnapshotFromDir -SourceDir $InstallDir -StateDir $StateDir -ReleaseSha $identity -Version $Version -Origin "engine" -SkipLicenseKey
     return [pscustomobject]@{
         saved = [bool]$snapshot.saved
         verified = [bool]$snapshot.verified
@@ -515,7 +522,9 @@ function Restore-HrmPreviousVersion {
         }
     }
     if ($problems.Count -eq 0) {
-        try { Copy-HrmSnapshot -SourceDir $snapshotDir -InstallDir $InstallDir }
+        # Снимок прежней версии может быть у старой установки без ключа
+        # лицензии — восстановление не должно падать на проверке полноты.
+        try { Copy-HrmSnapshot -SourceDir $snapshotDir -InstallDir $InstallDir -SkipLicenseKey }
         catch { $problems += ("файлы прежней версии не восстановлены: " + (Redact-HrmText $_.Exception.Message)) }
     }
     if ($problems.Count -eq 0) {
@@ -669,8 +678,19 @@ function Update-HrmApp {
         # Копию движка повторно не копируем: она и есть источник этой попытки.
         $sourceReleaseDir = $ReleaseDir
     }
-    $record = Get-HrmInstallRecord $StateDir
-    if ($null -eq $record) { throw "Установка не найдена. Выполните -Action install." }
+    # Запись установки: отсутствующая — «выполните установку», а НЕЧИТАЕМАЯ или
+    # НЕВАЛИДНАЯ (битый JSON) — отдельная диагностика. Одно общее «что-то пошло
+    # не так» не принимается: причина обязана быть видна владельцу и поддержке
+    # (код HRM-INSTALL-RECORD-INVALID).
+    $record = $null
+    $recordError = ""
+    try { $record = Get-HrmInstallRecord $StateDir } catch { $recordError = [string]$_.Exception.Message }
+    if ($null -eq $record) {
+        if ($recordError) {
+            throw ("HRM-INSTALL-RECORD-INVALID: запись установки нечитаема или невалидна ({0}): {1}. Обновление остановлено до изменений — восстановите каталог состояния из резервной копии." -f (Get-HrmInstalledFile $StateDir), (Redact-HrmText $recordError))
+        }
+        throw "Установка не найдена. Выполните -Action install."
+    }
     # Порт читается через PSObject: запись СТАРОЙ установки может не содержать
     # свойства port, а обращение к отсутствующему свойству под StrictMode 2.0
     # обрывает обновление до первой фазы (тот же риск, что и у release_sha).
@@ -694,6 +714,14 @@ function Update-HrmApp {
     # (docs/UPDATE_GUIDE.md, «Правило прежней идентичности»).
     $recordShaForEnv = ""
     if ($record.PSObject.Properties["release_sha"] -and $record.release_sha) { $recordShaForEnv = [string]$record.release_sha }
+    # В старой установке license_public_key.b64 мог ещё отсутствовать в
+    # StateDir. Восстанавливаем публичный ключ из доверенного snapshot до
+    # генерации pilot.env, иначе обязательная Compose-переменная будет пустой.
+    # Fail-closed: ключа нет ни в одном источнике — отказ ДО Compose.
+    # Порядок аргументов: -SourceDir = каталог релиза, -InstallDir = {app}
+    # (функция ищет ключ в обоих путях; переставленные аргументы работали
+    # «случайно» и маскировали настоящий источник ключа).
+    $null = Assert-HrmLicensePublicKey -SourceDir $ReleaseDir -InstallDir $InstallDir -StateDir $StateDir
     $null = Write-HrmPilotEnv $StateDir $recordShaForEnv $port
 
     if (-not (Test-HrmUpdateLockAvailable $StateDir)) {
@@ -784,6 +812,25 @@ function Update-HrmApp {
     if ($releaseData.PSObject.Properties["version"] -and $releaseData.version) { $newVersion = [string]$releaseData.version }
 
     try {
+        # --- Docker-гейт ДО любой фазы (дефект C, P1): обновление не должно
+        # доходить до Compose — включая backup-ворота — с неготовым Docker.
+        # Раньше compose падал с сырым текстом про именованный канал
+        # npipe:////./pipe/dockerDesktopLinuxEngine уже ПОСЛЕ операций, которым
+        # нужен Docker. Гейт стоит после захвата update.lock и до фазы
+        # prepare (то есть до любой compose-операции); обновление не ставит
+        # Docker самостоятельно (-AllowInstall:$false). При отказе гейта
+        # управление переходит в catch: блокировка снимается, результат
+        # записывается честно, файлы не изменены.
+        # Кроме возобновления с фазой done: обновление УЖЕ завершено, гейт не
+        # нужен, а отказ гейта не должен приводить к откату завершённого обновления.
+        if ($phase -ne "done") {
+            $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port -AllowInstall:$false -Interactive:$false
+            if (-not $prepare.ok) {
+                Write-HrmLog "error" ("Docker-гейт: обновление остановлено до фазы prepare (состояние: {0})." -f $prepare.state)
+                throw $prepare.message
+            }
+        }
+
         # --- prepare: сохранить прежнюю версию и скопировать новый релиз ----
         if (-not $resume -or $phase -eq "prepare") {
             # Требует установленного Docker и работающего движка: и то, и другое
@@ -911,7 +958,8 @@ function Update-HrmApp {
             # установка или ручная чистка), берём ключ из обновляемого снимка:
             # без него приложение не проверит лицензию, а pilot.env с
             # обязательной переменной (:?) не даст стеку подняться.
-            $null = Install-HrmLicensePublicKey -SourceDir $releaseDir -InstallDir $InstallDir -StateDir $StateDir
+            # Fail-closed: ключ не найден — отказ до Compose (а не пустая строка).
+            $null = Assert-HrmLicensePublicKey -SourceDir $releaseDir -InstallDir $InstallDir -StateDir $StateDir
             $null = Write-HrmPilotEnv $StateDir $releaseSha $port
             Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
             Set-HrmUpdateJournal $StateDir "migrate" @{ release_dir = $releaseDir; previous_ids = $previousIds; release_sha = $releaseSha }

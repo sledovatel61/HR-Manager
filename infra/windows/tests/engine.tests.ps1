@@ -125,21 +125,26 @@ Test-Case "pilot.env: токен обмена есть до создания в�
     Assert-HrmNotContains $env2 $realToken "старый токен остался в pilot.env после создания владельца"
 }
 
-Test-Case "pilot.env: HRM_LICENSE_PUBLIC_KEY берётся из license_public_key.b64 (совпадение SHA-256), без файла — пустое значение" {
+Test-Case "pilot.env: HRM_LICENSE_PUBLIC_KEY обязателен — без ключа честный отказ (fail-closed), с ключом — последняя строка" {
     Initialize-HrmTestEngine
     New-HrmMockWorld | Out-Null
     $state = Get-HrmTestStateDir
     Initialize-HrmStateDir $state | Out-Null
     Remove-Item Env:HRM_LICENSE_PUBLIC_KEY -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_SOURCE_DIR -ErrorAction SilentlyContinue
-    # Гарантируем отсутствие внешнего файла ключа — без него движок пишет пустое значение
+    # Гарантируем отсутствие внешнего файла ключа.
     $stateKey = Join-Path $state "license_public_key.b64"
     if (Test-Path $stateKey) { Remove-Item $stateKey -Force }
-    # 1. Без файла ключа движок пишет ПУСТОЕ значение: compose (${HRM_LICENSE_PUBLIC_KEY:?})
-    #    откажется стартовать — fail-closed, а не тихий запуск без лицензии.
-    $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080
-    $envText = Get-Content (Get-HrmEnvFile $state) -Raw
-    Assert-HrmTrue ([regex]::IsMatch($envText, '(?m)^HRM_LICENSE_PUBLIC_KEY=\s*$')) "без файла ключа строка HRM_LICENSE_PUBLIC_KEY должна быть пустой"
+    # 1. Без ключа движок ОТКАЗЫВАЕТ (fail-closed): compose (${HRM_LICENSE_PUBLIC_KEY:?})
+    #    не получит пустое значение — стек не поднимается. pilot.env не записывается.
+    #    Раньше тест закреплял дефект: пустая строка вместо отказа.
+    $threw = $false
+    $failMessage = ""
+    try { $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080 } catch { $threw = $true; $failMessage = [string]$_.Exception.Message }
+    Assert-HrmTrue $threw "без файла ключа Write-HrmPilotEnv не отказал (fail-closed)"
+    Assert-HrmContains $failMessage "HRM_LICENSE_PUBLIC_KEY" "сообщение отказа должно называть обязательную переменную"
+    Assert-HrmContains $failMessage "HRM-LICENSE-KEY-EMPTY" "у отказа должен быть диагностический код"
+    Assert-HrmFalse (Test-Path (Get-HrmEnvFile $state)) "pilot.env не должен быть записан без ключа"
     # 2. Эфемерный «открытый ключ» (32 случайных байта, base64 44 символа) — не настоящий ключ.
     $bytes = New-Object byte[] 32
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
@@ -705,6 +710,165 @@ Test-Case "resume: без журнала просто поднимает при�
     Assert-HrmFalse $t.World.Running "стек не остановлен"
     Resume-HrmOperation -InstallDir $install -StateDir $state | Out-Null
     Assert-HrmTrue $t.World.Running "резюме не подняло приложение"
+}
+
+Write-Host "== Регрессии R16: Docker-гейт в обновлении, честный отказ по ключу, полнота снимка =="
+
+Test-Case "R16: старая installed.json без pilot_created — Write-HrmPilotEnv и обновление не падают (StrictMode)" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    # Имитируем запись установки СТАРОЙ версии: поля pilot_created нет вовсе
+    # (дефект A: прямой доступ к отсутствующему полю — PropertyNotFound).
+    $legacy = [ordered]@{
+        release_sha = "snapshot-sha-0013"; version = "1.0.0"; install_dir = $install
+        state_dir = $state; port = 8080; installed_at = "2026-10-01T00:00:00Z"
+    }
+    Set-HrmJsonFile $state "installed.json" $legacy
+    # Прямой вызов: падение под StrictMode было бы регрессией дефекта A.
+    $null = Write-HrmPilotEnv $state "snapshot-sha-0013" 8080
+    # Полное обновление поверх «старой» записи.
+    $releaseDir = Join-Path $t.Root "релиз R16-legacy"
+    New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0023"
+    Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state | Out-Null
+    Assert-HrmEqual "snapshot-sha-0023" (Get-HrmInstallRecord $state).release_sha "обновление поверх старой записи не завершилось"
+}
+
+Test-Case "R16: ключ только в {app}\infra\license\public_key.b64 (ключ релиза невалиден) — восстановлен, pilot.env непуст до backup-ворот" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    $appKey = (Get-Content -Path (Join-Path $install "infra\license\public_key.b64") -Raw -Encoding UTF8).Trim()
+    # StateDir без ключа; ключ релиза повреждён (файл есть — проверка полноты
+    # снимка проходит, валидный ключ ищется в следующем источнике).
+    Remove-Item (Join-Path $state "license_public_key.b64") -Force
+    $releaseDir = Join-Path $t.Root "релиз R16-appkey"
+    New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0024"
+    Set-Content -Path (Join-Path $releaseDir "infra\license\public_key.b64") -Value "not-a-valid-key" -Encoding UTF8 -NoNewline
+    # Обновление падает на backup-воротах (первый вызов Compose) — к этому
+    # моменту ключ уже восстановлен, а pilot.env непуст.
+    $t.World.BackupCheckOk = $false
+    Assert-HrmThrows "обновление должно упасть именно на backup-воротах (а не на ключе или гейте)" {
+        Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state
+    }
+    Assert-HrmTrue (Test-Path (Join-Path $state "license_public_key.b64")) "ключ из {app} не скопирован в StateDir"
+    Assert-HrmEqual $appKey ((Get-Content -Path (Join-Path $state "license_public_key.b64") -Raw -Encoding UTF8).Trim()) "в StateDir не тот ключ"
+    $envText = Get-Content (Get-HrmEnvFile $state) -Raw
+    Assert-HrmContains $envText ("HRM_LICENSE_PUBLIC_KEY=" + $appKey) "pilot.env без ключа до backup-ворот"
+    Assert-HrmEqual 1 $t.World.BackupNowCount "backup-ворота должны были выполняться (первый Compose)"
+}
+
+Test-Case "R16: ключ только в каталоге релиза — скопирован в StateDir, pilot.env непуст" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    Remove-Item (Join-Path $state "license_public_key.b64") -Force
+    Remove-Item (Join-Path $install "infra\license\public_key.b64") -Force
+    $releaseDir = Join-Path $t.Root "релиз R16-relkey"
+    New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0025"
+    $relKey = (Get-Content -Path (Join-Path $releaseDir "infra\license\public_key.b64") -Raw -Encoding UTF8).Trim()
+    Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state | Out-Null
+    Assert-HrmTrue (Test-Path (Join-Path $state "license_public_key.b64")) "ключ релиза не скопирован в StateDir"
+    Assert-HrmEqual $relKey ((Get-Content -Path (Join-Path $state "license_public_key.b64") -Raw -Encoding UTF8).Trim()) "в StateDir не ключ релиза"
+    $envText = Get-Content (Get-HrmEnvFile $state) -Raw
+    Assert-HrmContains $envText ("HRM_LICENSE_PUBLIC_KEY=" + $relKey) "pilot.env без ключа релиза"
+    Assert-HrmEqual "snapshot-sha-0025" (Get-HrmInstallRecord $state).release_sha "обновление с ключом релиза не завершилось"
+}
+
+Test-Case "R16: ключа нет ни в одном источнике — честный отказ ДО Compose (счётчик вызовов)" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Remove-Item Env:HRM_LICENSE_PUBLIC_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_SOURCE_DIR -ErrorAction SilentlyContinue
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    # Ни StateDir, ни {app}, ни env; ключ релиза повреждён (файл есть —
+    # проверка полноты снимка проходит, валидного ключа нет нигде).
+    Remove-Item (Join-Path $state "license_public_key.b64") -Force
+    Remove-Item (Join-Path $install "infra\license\public_key.b64") -Force
+    $releaseDir = Join-Path $t.Root "релиз R16-nokey"
+    New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0026"
+    Set-Content -Path (Join-Path $releaseDir "infra\license\public_key.b64") -Value "broken-key-material" -Encoding UTF8 -NoNewline
+    # Считаем вызовы Compose только для попытки обновления (установка выше — отдельная операция).
+    $t.World.Calls = @()
+    $threw = $false
+    $failMessage = ""
+    try { Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state | Out-Null } catch { $threw = $true; $failMessage = [string]$_.Exception.Message }
+    Assert-HrmTrue $threw "обновление без ключа не отказало (fail-closed)"
+    Assert-HrmContains $failMessage "HRM-LICENSE-KEY-MISSING" "у отказа должен быть диагностический код"
+    Assert-HrmContains $failMessage "лиценз" "сообщение должно называть причину"
+    $composeCalls = @($t.World.Calls | Where-Object { $_.Args -contains "compose" })
+    Assert-HrmEqual 0 $composeCalls.Count "compose вызван без ключа лицензии"
+}
+
+Test-Case "R16: Docker daemon недоступен — обновление останавливается на Docker-гейте до Compose" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    $releaseDir = Join-Path $t.Root "релиз R16-docker"
+    New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0027"
+    Set-HrmDockerOverride @{ desktop = "installed_stopped" }
+    # Считаем вызовы Compose только для попытки обновления.
+    $t.World.Calls = @()
+    $threw = $false
+    $failMessage = ""
+    try { Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state | Out-Null } catch { $threw = $true; $failMessage = [string]$_.Exception.Message }
+    Assert-HrmTrue $threw "обновление не остановилось на Docker-гейте"
+    Assert-HrmContains $failMessage "Docker Desktop" "сообщение гейта должно быть понятным человеку"
+    $composeCalls = @($t.World.Calls | Where-Object { $_.Args -contains "compose" })
+    Assert-HrmEqual 0 $composeCalls.Count "compose вызван при неготовом Docker"
+    # Честный результат для трея/мастера: статус failed, причина — гейт Docker.
+    $result = Get-HrmUpdateResult $state
+    Assert-HrmTrue ($null -ne $result) "update-result.json не записан при отказе гейта"
+    Assert-HrmEqual "failed" ([string]$result.status) "статус результата при отказе гейта"
+    Assert-HrmContains ([string]$result.message) "Docker Desktop" "результат должен называть причину отказа"
+}
+
+Test-Case "R16: Windows-движок без Linux engine (как на CI-раннере) — отказ на гейте до Compose" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    $releaseDir = Join-Path $t.Root "релиз R16-winonly"
+    New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0028"
+    # Демон отвечает (Windows-контейнеры), но Linux-движка нет.
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; linux_engine = $false }
+    # Считаем вызовы Compose только для попытки обновления.
+    $t.World.Calls = @()
+    $threw = $false
+    $failMessage = ""
+    try { Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state | Out-Null } catch { $threw = $true; $failMessage = [string]$_.Exception.Message }
+    Assert-HrmTrue $threw "обновление не остановилось на гейте Linux-движка"
+    Assert-HrmContains $failMessage "Linux" "сообщение должно объяснять, что нужен Linux-движок"
+    $composeCalls = @($t.World.Calls | Where-Object { $_.Args -contains "compose" })
+    Assert-HrmEqual 0 $composeCalls.Count "compose вызван без Linux-движка"
+}
+
+Test-Case "R16: снимок без infra\license\public_key.b64 отклоняется проверкой полноты" {
+    Initialize-HrmTestEngine
+    New-HrmMockWorld | Out-Null
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-nosnapkey-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    New-HrmFakeSnapshot -Root $root -ReleaseSha ("e" * 40)
+    # Полный снимок проходит.
+    Assert-HrmTrue (Assert-HrmSnapshotComplete -Dir $root -Label "снимок") "полный снимок отклонён"
+    # Без ключа лицензии снимок неполный: сборка без ключа падала бы позже на Compose.
+    Remove-Item (Join-Path $root "infra\license\public_key.b64") -Force
+    $threw = $false
+    $failMessage = ""
+    try { Assert-HrmSnapshotComplete -Dir $root -Label "снимок" | Out-Null } catch { $threw = $true; $failMessage = [string]$_.Exception.Message }
+    Assert-HrmTrue $threw "снимок без ключа лицензии не отклонён"
+    Assert-HrmContains $failMessage "public_key.b64" "отказ должен называть отсутствующий файл"
+    Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ("Тесты движка: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

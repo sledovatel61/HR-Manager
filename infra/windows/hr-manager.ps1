@@ -255,7 +255,7 @@ try {
             $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $Port -AllowInstall:($InstallDocker -or $Interactive) -Interactive:$Interactive
             foreach ($line in (Format-HrmDockerReadiness -InstallDir $InstallDir -StateDir $StateDir -Port $Port)) { Write-Output $line }
             if (-not $prepare.ok) {
-                Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+                try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
                 throw $prepare.message
             }
             Write-HrmLog "info" "Рабочая среда готова."
@@ -322,6 +322,8 @@ catch {
         # установки переводится в failed. Если движок успел записать результат
         # обновления («прежняя версия восстановлена и отвечает»), показываем
         # именно его — это текст для человека, а не техническая ошибка.
+        # Каждая запись — в СВОЁМ try/catch: отказ обязан быть записан, даже
+        # если соседняя запись не удалась (например, ACL на одном из файлов).
         $stateDirForError = if ($StateDir) { $StateDir } else { Get-HrmStateDir }
         $markerMessage = $message
         try {
@@ -329,8 +331,8 @@ catch {
             if ($null -ne $updateResult -and $updateResult.message) { $markerMessage = [string]$updateResult.message }
         }
         catch { }
-        Set-HrmSupervisorState -StateDir $stateDirForError -State "error" -Message $markerMessage
-        $null = Set-HrmSetupMarker -StateDir $stateDirForError -Status "failed" -Message $markerMessage
+        try { Set-HrmSupervisorState -StateDir $stateDirForError -State "error" -Message $markerMessage } catch { }
+        try { $null = Set-HrmSetupMarker -StateDir $stateDirForError -Status "failed" -Message $markerMessage } catch { }
     }
     catch { }
     exit 1

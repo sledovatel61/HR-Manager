@@ -394,6 +394,25 @@ Test-Case "установщик: значок в трее, галочка уст
     Assert-HrmNotContains $installer "-Action start" "автозапуск всё ещё консольный"
 }
 
+Test-Case "обязательный запуск приложения нельзя отключить на финальном экране" {
+    $installer = Get-Content -Path (Join-Path $RepoRoot "installer\installer.iss") -Raw -Encoding UTF8
+    $runSection = [regex]::Match($installer, '(?ms)^\[Run\]\s*(?<body>.*?)(?=^\[UninstallRun\])').Groups['body'].Value
+    Assert-HrmTrue ($runSection.Length -gt 0) "не найдена секция [Run]"
+    $runFlags = ([regex]::Matches($runSection, '(?m)^\s*Flags:\s*[^\r\n]+$') | ForEach-Object Value) -join "`n"
+    Assert-HrmNotContains $runFlags "postinstall" "обязательный запуск снова стал отключаемым"
+    Assert-HrmNotContains $runFlags "skipifsilent" "обязательный запуск пропускается в silent-режиме"
+
+    # Движок обязан стартовать 64-битным PowerShell: установщик 32-битный, и
+    # "powershell.exe" через WOW64-редирект дал бы 32-битный (движок требует
+    # 64-разрядный — префлайт). Поэтому Filename — с префиксом SysNative
+    # (или без него для обратной совместимости), но с обязательным -Action install.
+    $engineRun = [regex]::Match($runSection, '(?ms)Filename: "(?:\{win\}\\SysNative\\WindowsPowerShell\\v1\.0\\)?powershell\.exe";.*?-Action install.*?Flags: (?<flags>[^\r\n]+)').Groups['flags'].Value
+    Assert-HrmTrue ($engineRun.Length -gt 0) "не найден обязательный запуск установочного движка (64-битный PowerShell, -Action install)"
+    Assert-HrmNotContains $engineRun "nowait" "установочный движок запускается параллельно и не контролируется мастером"
+    $engineEntry = [regex]::Match($runSection, '(?ms)Filename: "(?<exe>[^"]*powershell\.exe)";(?:(?!Filename:).)*?-Action install').Groups['exe'].Value
+    Assert-HrmContains $engineEntry "SysNative" "движок запущен не 64-битным PowerShell (32-битный установщик редиректит powershell.exe в SysWOW64)"
+}
+
 Test-Case "пользовательские тексты трея и Docker не содержат технических команд" {
     $texts = @(
         (Get-Content -Path (Join-Path $EngineDir "Tray.psm1") -Raw -Encoding UTF8),

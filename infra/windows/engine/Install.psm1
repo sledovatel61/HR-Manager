@@ -56,12 +56,18 @@ function Test-HrmPathInside {
 
 function Assert-HrmSnapshotComplete {
     # Снимок приложения полон: по infra\compose.pilot.yml движок собирает стек,
-    # backend/ и frontend/ нужны для сборки образов. Проверка выполняется ДО
-    # подмены файлов и ПОСЛЕ копирования: иначе установка могла бы «успешно»
-    # завершиться с пустым или половинчатым снимком.
-    param([string]$Dir, [string]$Label = "снимок")
+    # backend/ и frontend/ нужны для сборки образов, а infra\license\public_key.b64
+    # обязателен: без ключа движок остановится fail-closed
+    # (Assert-HrmLicensePublicKey), а Compose требует непустую переменную.
+    # -SkipLicenseKey: для снимка ПРЕДЫДУЩЕЙ (установленной) версии — у старой
+    # установки ключа в {app} может не быть вовсе, а обновление обязано пройти
+    # (ключ восстановится из релиза). Для снимка НОВОГО релиза ключ обязателен.
+    # Проверка выполняется ДО подмены файлов и ПОСЛЕ копирования: иначе
+    # установка могла бы «успешно» завершиться с пустым или половинчатым снимком.
+    param([string]$Dir, [string]$Label = "снимок", [switch]$SkipLicenseKey)
     $missing = @()
     if (-not (Test-Path -Path (Join-Path $Dir "infra\compose.pilot.yml") -PathType Leaf)) { $missing += "infra\compose.pilot.yml" }
+    if (-not $SkipLicenseKey -and -not (Test-Path -Path (Join-Path $Dir "infra\license\public_key.b64") -PathType Leaf)) { $missing += "infra\license\public_key.b64" }
     foreach ($name in @("backend", "frontend")) {
         if (-not (Test-Path -Path (Join-Path $Dir $name) -PathType Container)) { $missing += $name }
     }
@@ -91,14 +97,17 @@ function Copy-HrmSnapshot {
     #   * любая ошибка копирования или неполный результат — исключение:
     #     установка не может «успешно» завершиться с наполовину скопированным
     #     снимком (раньше ошибки Copy-Item не останавливали установку).
-    param([string]$SourceDir, [string]$InstallDir)
+    # -SkipLicenseKey: копирование снимка ПРЕДЫДУЩЕЙ (установленной) версии —
+    # у старой установки ключа в каталоге может не быть (см.
+    # Assert-HrmSnapshotComplete).
+    param([string]$SourceDir, [string]$InstallDir, [switch]$SkipLicenseKey)
     $sourceFull = Get-HrmNormalizedPath $SourceDir
     $installFull = Get-HrmNormalizedPath $InstallDir
     if (-not $sourceFull -or -not $installFull) {
         throw "Copy-HrmSnapshot: не заданы -SourceDir и -InstallDir."
     }
     if (Test-HrmSamePath $sourceFull $installFull) {
-        Assert-HrmSnapshotComplete -Dir $installFull -Label "Каталог установки" | Out-Null
+        Assert-HrmSnapshotComplete -Dir $installFull -Label "Каталог установки" -SkipLicenseKey:$SkipLicenseKey | Out-Null
         $null = Write-HrmLog "info" "Снимок приложения уже разложен в каталог установки — копирование не требуется."
         return
     }
@@ -108,7 +117,7 @@ function Copy-HrmSnapshot {
     if (Test-HrmPathInside -Parent $sourceFull -Child $installFull) {
         throw ("Каталог установки ({0}) находится внутри каталога релиза ({1}): копирование снимка в собственный подкаталог запрещено — файлы не изменены." -f $installFull, $sourceFull)
     }
-    Assert-HrmSnapshotComplete -Dir $sourceFull -Label "Каталог релиза" | Out-Null
+    Assert-HrmSnapshotComplete -Dir $sourceFull -Label "Каталог релиза" -SkipLicenseKey:$SkipLicenseKey | Out-Null
 
     $components = @("infra", "backend", "frontend")
     if (-not (Test-Path $installFull)) { New-Item -ItemType Directory -Path $installFull -Force | Out-Null }
@@ -126,7 +135,7 @@ function Copy-HrmSnapshot {
             # а не оставить «успешный» статус при неполном снимке.
             Copy-Item -Path $source -Destination (Join-Path $copyRoot $name) -Recurse -Force -ErrorAction Stop
         }
-        Assert-HrmSnapshotComplete -Dir $copyRoot -Label "Временная копия снимка" | Out-Null
+        Assert-HrmSnapshotComplete -Dir $copyRoot -Label "Временная копия снимка" -SkipLicenseKey:$SkipLicenseKey | Out-Null
         # Подмена только после успешной копии и проверки. Источник уже не
         # является местом очистки, поэтому удаление каталогов назначения не
         # может уничтожить снимок релиза.
@@ -139,7 +148,7 @@ function Copy-HrmSnapshot {
         if (Test-Path $releaseSource) {
             Move-Item -Path (Join-Path $copyRoot "release.json") -Destination (Join-Path $installFull "release.json") -Force -ErrorAction Stop
         }
-        Assert-HrmSnapshotComplete -Dir $installFull -Label "Каталог установки" | Out-Null
+        Assert-HrmSnapshotComplete -Dir $installFull -Label "Каталог установки" -SkipLicenseKey:$SkipLicenseKey | Out-Null
         $null = Write-HrmLog "info" ("Снимок приложения разложен из {0}." -f $sourceFull)
     }
     finally {
@@ -256,9 +265,14 @@ function Install-HrmApp {
         if ($existingPort -le 0) { $existingPort = $port }
         $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $existingPort -AllowInstall:$AllowDockerInstall -Interactive:($AllowDockerInstall -or (Test-HrmInteractive))
         if (-not $prepare.ok) {
-            Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+            try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
             throw $prepare.message
         }
+        # Восстановление runtime-ключа и окружения нужно ДО первого Compose.
+        # Fail-closed: без ключа операция останавливается с понятным отказом,
+        # а не пишет пустую обязательную переменную в pilot.env.
+        $null = Assert-HrmLicensePublicKey -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
+        $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $existingPort
         if (Test-HrmComposeRunning $InstallDir $StateDir) {
             Write-HrmLog "info" "Приложение уже запущено."
         }
@@ -268,7 +282,6 @@ function Install-HrmApp {
             if (-not $stack.ok) { throw $stack.message }
             Wait-HrmReady (Get-HrmBaseUrl $existingPort)
         }
-        $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $existingPort
         Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $existingPort
         Start-HrmSupervisorIfUserSession -InstallDir $InstallDir -StateDir $StateDir | Out-Null
         Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "HR Manager запущен."
@@ -281,7 +294,7 @@ function Install-HrmApp {
     # установщик), WSL2/виртуализация, ожидание Engine. Без Docker дальше нельзя.
     $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port -AllowInstall:$AllowDockerInstall -Interactive:($AllowDockerInstall -or (Test-HrmInteractive))
     if (-not $prepare.ok) {
-        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+        try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
         if ($prepare.needs_install) {
             Write-HrmLog "warn" $prepare.message
             foreach ($line in (Get-HrmDockerInstallGuide)) { Write-HrmLog "info" $line }
@@ -301,7 +314,8 @@ function Install-HrmApp {
 
     # Лицензия: публичный ключ проверки — внешний локальный файл
     # StateDir\license_public_key.b64 (см. Secrets.psm1\Install-HrmLicensePublicKey).
-    $null = Install-HrmLicensePublicKey -SourceDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir
+    # Fail-closed: без ключа установка останавливается ДО Compose с отказом.
+    $null = Assert-HrmLicensePublicKey -SourceDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir
 
     $releaseSha = Get-HrmReleaseSha $InstallDir $StateDir
     # Версия снимка — для предпросмотра обновления и отчёта «текущая → новая».
@@ -346,7 +360,7 @@ function Start-HrmApp {
     if ($port -le 0) { $port = Get-HrmPort }
     $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port
     if (-not $prepare.ok) {
-        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+        try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
         throw $prepare.message
     }
     Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
@@ -506,7 +520,7 @@ function Resume-HrmOperation {
         Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
         $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -AllowInstall -Interactive
         if (-not $prepare.ok) {
-            Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+            try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
             throw $prepare.message
         }
         if ($kind -eq "reboot") { Clear-HrmPendingDockerOperation $StateDir }
