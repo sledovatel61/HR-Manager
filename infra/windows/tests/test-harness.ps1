@@ -119,6 +119,13 @@ function Initialize-HrmTestEngine {
     Remove-Item Env:HRM_AUTOSTART_MOCK -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_DESKTOP_DIR -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_LOG_FILE -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_SOURCE_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_SUPERVISOR_MUTEX -ErrorAction SilentlyContinue
+    # Публичный ключ лицензии по умолчанию (валидный base64 от 32 байт):
+    # Write-HrmPilotEnv и Assert-HrmLicensePublicKey fail-closed без ключа, а
+    # большинству тестов ключ не важен. Тесты «ключа нет ни в одном источнике»
+    # удаляют переменную явно (см. engine.tests.ps1, T2/T7.4).
+    $env:HRM_LICENSE_PUBLIC_KEY = [Convert]::ToBase64String([byte[]]::new(32))
     New-Item -ItemType Directory -Path $env:HRM_STATE_DIR -Force | Out-Null
     New-Item -ItemType Directory -Path $env:HRM_INSTALL_DIR -Force | Out-Null
 }
@@ -219,6 +226,11 @@ function New-HrmMockWorld {
             if ($Arguments.Count -ge 1 -and $Arguments[0] -eq "info") {
                 if ($global:HRM_MockWorld.SuspendEngine) {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "engine is not running" }
+                }
+                if (($Arguments -join " ") -match "OSType") {
+                    # Linux-движок по умолчанию: стек HR Manager — Linux-контейнеры
+                    # (Test-HrmDockerLinuxEngineReady опрашивает OSType).
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "linux"; Stderr = "" }
                 }
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "27.3.1"; Stderr = "" }
             }

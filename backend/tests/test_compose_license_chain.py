@@ -140,14 +140,18 @@ def test_script_env_lines_match_secrets_psm1_writer_exactly() -> None:
     assert script_names[-1] == "HRM_LICENSE_PUBLIC_KEY"
 
 
-def test_engine_writer_emits_license_key_even_when_empty() -> None:
-    """Write-HrmPilotEnv writes ``HRM_LICENSE_PUBLIC_KEY=`` unconditionally, so
-    a missing owner file yields an EMPTY value — which ``${VAR:?}`` refuses.
-    The compose guard therefore covers both 'unset' and 'empty'."""
+def test_engine_writer_pins_license_key_line_and_empty_read_fallback() -> None:
+    """The writer's license line is pinned verbatim (format contract: same
+    names, same order, last line). ``Get-HrmLicensePublicKey`` may return ""
+    (read fallback), but ``Write-HrmPilotEnv`` is fail-closed: an empty key
+    throws (HRM-LICENSE-KEY-EMPTY) BEFORE the env file is written — pinned by
+    the engine tests. The line below is reached only with a non-empty key."""
     text = SECRETS_PSM1.read_text(encoding="utf-8")
     assert '("HRM_LICENSE_PUBLIC_KEY={0}" -f $licensePub)' in text
     assert "function Get-HrmLicensePublicKey" in text
     assert 'return ""' in text[text.index("function Get-HrmLicensePublicKey") :]
+    writer = text[text.index("function Write-HrmPilotEnv") :]
+    assert "HRM-LICENSE-KEY-EMPTY" in writer
 
 
 # --------------------------------------------------------------------------

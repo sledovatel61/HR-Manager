@@ -591,7 +591,11 @@ Test-Case "P2: запись СТАРОЙ установки читается т�
     # Регрессия: прямой доступ к полю записи установки, которого нет у старой
     # версии, — исключение PropertyNotFound под StrictMode 2.0; обновление,
     # установка, диагностика и трей обрывались бы на ровном месте (так уже было
-    # с release_sha и с портом).
+    # с release_sha и с портом). R16: в список переменных добавлен $state —
+    # дефект класса «Secrets.psm1: $state.pilot_created» раньше тестом не
+    # ловился. $data не добавляем: это чтение release.json/журналов, а не
+    # записи установки (прямой доступ к полям этих объектов защищён
+    # PSObject-проверкой в строке выше и не является дефектом класса A).
     $engineDir = Join-Path $script:RepoRoot "infra\windows\engine"
     $files = @(Get-ChildItem -Path $engineDir -Filter *.psm1 -File)
     Assert-HrmTrue ($files.Count -ge 10) "не найдены модули движка"
@@ -600,7 +604,7 @@ Test-Case "P2: запись СТАРОЙ установки читается т�
         $lineNo = 0
         foreach ($line in @(Get-Content -Path $file.FullName -Encoding UTF8)) {
             $lineNo++
-            if ($line -match ('\$(record|existing|installed)\.(' + $fields + ')\b') -and
+            if ($line -match ('\$(record|existing|installed|state)\.(' + $fields + ')\b') -and
                 $line -notmatch 'PSObject\.Properties' -and
                 $line -notmatch 'Get-HrmInstallRecordField') {
                 throw ("{0}:{1}: поле записи установки читается напрямую (StrictMode): {2}" -f $file.Name, $lineNo, $line.Trim())
