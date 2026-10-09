@@ -11,6 +11,8 @@ private_key.hex
 *.hrmlicense
 public_key.b64
 !infra/license/public_key.b64
+# тестовая фикстура канала: публичный ключ лицензии в пакете обновления (не секрет)
+!infra/release/testdata/snapshot/infra/license/public_key.b64
 license-issuer-dist.zip
 
 # ---- Python / backend ----

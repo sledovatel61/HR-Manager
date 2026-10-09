@@ -796,6 +796,8 @@ Test-Case "R16: ключа нет ни в одном источнике — че
     $releaseDir = Join-Path $t.Root "релиз R16-nokey"
     New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0026"
     Set-Content -Path (Join-Path $releaseDir "infra\license\public_key.b64") -Value "broken-key-material" -Encoding UTF8 -NoNewline
+    # Считаем вызовы Compose только для попытки обновления (установка выше — отдельная операция).
+    $t.World.Calls = @()
     $threw = $false
     $failMessage = ""
     try { Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state | Out-Null } catch { $threw = $true; $failMessage = [string]$_.Exception.Message }
@@ -815,6 +817,8 @@ Test-Case "R16: Docker daemon недоступен — обновление ос
     $releaseDir = Join-Path $t.Root "релиз R16-docker"
     New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0027"
     Set-HrmDockerOverride @{ desktop = "installed_stopped" }
+    # Считаем вызовы Compose только для попытки обновления.
+    $t.World.Calls = @()
     $threw = $false
     $failMessage = ""
     try { Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state | Out-Null } catch { $threw = $true; $failMessage = [string]$_.Exception.Message }
@@ -839,6 +843,8 @@ Test-Case "R16: Windows-движок без Linux engine (как на CI-ран�
     New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0028"
     # Демон отвечает (Windows-контейнеры), но Linux-движка нет.
     Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; linux_engine = $false }
+    # Считаем вызовы Compose только для попытки обновления.
+    $t.World.Calls = @()
     $threw = $false
     $failMessage = ""
     try { Update-HrmApp -ReleaseDir $releaseDir -InstallDir $install -StateDir $state | Out-Null } catch { $threw = $true; $failMessage = [string]$_.Exception.Message }

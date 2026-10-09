@@ -365,12 +365,16 @@ function New-HrmVerifiedSnapshotFromDir {
     # Копирование каталога как «прежней версии»: копия делается во временный
     # каталог, проверяется манифестом и только потом подменяет снимок. Так
     # неудачная попытка не уничтожает уже сохранённый рабочий снимок.
+    # -SkipLicenseKey: снимок ПРЕДЫДУЩЕЙ (установленной) версии — у старой
+    # установки публичного ключа лицензии в каталоге может не быть вовсе, а
+    # обновление обязано пройти (ключ восстановится из нового релиза).
     param(
         [string]$SourceDir,
         [string]$StateDir,
         [string]$ReleaseSha = "",
         [string]$Version = "",
-        [string]$Origin = "engine"
+        [string]$Origin = "engine",
+        [switch]$SkipLicenseKey
     )
     $target = Get-HrmPreviousSnapshotDir $StateDir
     if (-not $SourceDir -or -not (Test-Path $SourceDir)) {
@@ -388,8 +392,8 @@ function New-HrmVerifiedSnapshotFromDir {
         # Тот же безопасный копировщик, что и при обновлении: он проверяет
         # границы путей и полноту снимка (infra, backend, frontend,
         # release.json) и бросает исключение вместо «половинчатой» копии.
-        Copy-HrmSnapshot -SourceDir $SourceDir -InstallDir $temp
-        Assert-HrmSnapshotComplete -Dir $temp -Label "Снимок прежней версии" | Out-Null
+        Copy-HrmSnapshot -SourceDir $SourceDir -InstallDir $temp -SkipLicenseKey:$SkipLicenseKey
+        Assert-HrmSnapshotComplete -Dir $temp -Label "Снимок прежней версии" -SkipLicenseKey:$SkipLicenseKey | Out-Null
         $manifest = @(Get-HrmSnapshotManifest -Root $temp)
         if ($manifest.Count -eq 0) { throw "Манифест снимка прежней версии пуст — снимок недостоверен." }
         $check = Test-HrmSnapshotManifest -Root $temp -Manifest $manifest
@@ -521,7 +525,10 @@ function Save-HrmVerifiedPreviousSnapshot {
             message = $message
         }
     }
-    $created = New-HrmVerifiedSnapshotFromDir -SourceDir $InstallDir -StateDir $StateDir -ReleaseSha $identity -Version $installedVersion -Origin "installer"
+    # Снимок УСТАНОВЛЕННОЙ версии: у старой установки ключа лицензии в {app}
+    # может не быть — снимок прежней версии не требует его (ключ восстановится
+    # из нового релиза при обновлении).
+    $created = New-HrmVerifiedSnapshotFromDir -SourceDir $InstallDir -StateDir $StateDir -ReleaseSha $identity -Version $installedVersion -Origin "installer" -SkipLicenseKey
     if ($created.verified) {
         Write-HrmSnapshotResultFile -Path $ResultFile -Status "verified" -Reason "saved" -ReleaseSha $identity -Files $created.files -Digest $created.digest
     }

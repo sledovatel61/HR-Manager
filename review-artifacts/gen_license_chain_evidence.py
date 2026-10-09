@@ -152,9 +152,10 @@ def compute_checks() -> dict[str, Any]:
         "installer_Secrets_psm1_license_line_is_last": write_env.find("HRM_LICENSE_PUBLIC_KEY={0}")
         > write_env.find("HRM_UPDATE_CHECK_MIN_INTERVAL={0}")
         > 0,
-        "installer_Secrets_psm1_empty_key_written_empty_not_omitted": "HRM_LICENSE_PUBLIC_KEY={0}"
+        "installer_Secrets_psm1_writer_line_pinned_and_read_fallback_empty": "HRM_LICENSE_PUBLIC_KEY={0}"
         in write_env
         and 'return ""' in secrets_psm1[secrets_psm1.find("function Get-HrmLicensePublicKey") :],
+        "installer_Secrets_psm1_empty_key_fail_closed_throws": "HRM-LICENSE-KEY-EMPTY" in write_env,
         # compose pilot: pilot.env -> containers
         "compose_pilot_uses_env_file_interpolation": "--env-file" in pilot,
         "compose_pilot_has_no_service_env_file_directive": not re.search(r"(?m)^\s+env_file:", pilot),
@@ -199,7 +200,7 @@ def compute_checks() -> dict[str, Any]:
         in chain_tests,
         "tests_settings_accept_overlay_env_and_keep_fingerprint": "test_pilot_overlay_environment_satisfies_settings_and_keeps_key_fingerprint"
         in chain_tests,
-        "tests_windows_engine_pilot_env_fingerprint_case": "HRM_LICENSE_PUBLIC_KEY берётся из license_public_key.b64"
+        "tests_windows_engine_pilot_env_fingerprint_case": "HRM_LICENSE_PUBLIC_KEY обязателен — без ключа честный отказ"
         in engine_tests,
         "tests_windows_static_overlay_mapping_case": "LICENSE_PUBLIC_KEY обязателен для backend, worker и backup"
         in static_tests,
@@ -328,7 +329,7 @@ def main() -> int:
         "chain": [
             "owner PC: tools/license-issuer → private key (owner only) + public_key.b64",
             "release: infra/license/public_key.b64 (baked by owner, not in git)",
-            "engine: Secrets.psm1 Get-HrmLicensePublicKey → Write-HrmPilotEnv → pilot.env HRM_LICENSE_PUBLIC_KEY (last line; empty when missing)",
+            "engine: Secrets.psm1 Get-HrmLicensePublicKey → Write-HrmPilotEnv → pilot.env HRM_LICENSE_PUBLIC_KEY (last line; пустой ключ отклоняется fail-closed до записи)",
             "compose: --env-file pilot.env → ${HRM_LICENSE_PUBLIC_KEY:?} → LICENSE_PUBLIC_KEY in backend, worker, backup (no env_file directive)",
             "backend image: no infra/ inside → env is the only path; app.config.Settings fail-closed in APP_ENV=pilot",
             "guard: deny by default — everything outside the recovery allowlist needs a valid license",

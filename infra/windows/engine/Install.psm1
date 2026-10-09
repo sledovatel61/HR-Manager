@@ -59,12 +59,15 @@ function Assert-HrmSnapshotComplete {
     # backend/ и frontend/ нужны для сборки образов, а infra\license\public_key.b64
     # обязателен: без ключа движок остановится fail-closed
     # (Assert-HrmLicensePublicKey), а Compose требует непустую переменную.
+    # -SkipLicenseKey: для снимка ПРЕДЫДУЩЕЙ (установленной) версии — у старой
+    # установки ключа в {app} может не быть вовсе, а обновление обязано пройти
+    # (ключ восстановится из релиза). Для снимка НОВОГО релиза ключ обязателен.
     # Проверка выполняется ДО подмены файлов и ПОСЛЕ копирования: иначе
     # установка могла бы «успешно» завершиться с пустым или половинчатым снимком.
-    param([string]$Dir, [string]$Label = "снимок")
+    param([string]$Dir, [string]$Label = "снимок", [switch]$SkipLicenseKey)
     $missing = @()
     if (-not (Test-Path -Path (Join-Path $Dir "infra\compose.pilot.yml") -PathType Leaf)) { $missing += "infra\compose.pilot.yml" }
-    if (-not (Test-Path -Path (Join-Path $Dir "infra\license\public_key.b64") -PathType Leaf)) { $missing += "infra\license\public_key.b64" }
+    if (-not $SkipLicenseKey -and -not (Test-Path -Path (Join-Path $Dir "infra\license\public_key.b64") -PathType Leaf)) { $missing += "infra\license\public_key.b64" }
     foreach ($name in @("backend", "frontend")) {
         if (-not (Test-Path -Path (Join-Path $Dir $name) -PathType Container)) { $missing += $name }
     }
@@ -94,14 +97,17 @@ function Copy-HrmSnapshot {
     #   * любая ошибка копирования или неполный результат — исключение:
     #     установка не может «успешно» завершиться с наполовину скопированным
     #     снимком (раньше ошибки Copy-Item не останавливали установку).
-    param([string]$SourceDir, [string]$InstallDir)
+    # -SkipLicenseKey: копирование снимка ПРЕДЫДУЩЕЙ (установленной) версии —
+    # у старой установки ключа в каталоге может не быть (см.
+    # Assert-HrmSnapshotComplete).
+    param([string]$SourceDir, [string]$InstallDir, [switch]$SkipLicenseKey)
     $sourceFull = Get-HrmNormalizedPath $SourceDir
     $installFull = Get-HrmNormalizedPath $InstallDir
     if (-not $sourceFull -or -not $installFull) {
         throw "Copy-HrmSnapshot: не заданы -SourceDir и -InstallDir."
     }
     if (Test-HrmSamePath $sourceFull $installFull) {
-        Assert-HrmSnapshotComplete -Dir $installFull -Label "Каталог установки" | Out-Null
+        Assert-HrmSnapshotComplete -Dir $installFull -Label "Каталог установки" -SkipLicenseKey:$SkipLicenseKey | Out-Null
         $null = Write-HrmLog "info" "Снимок приложения уже разложен в каталог установки — копирование не требуется."
         return
     }
@@ -111,7 +117,7 @@ function Copy-HrmSnapshot {
     if (Test-HrmPathInside -Parent $sourceFull -Child $installFull) {
         throw ("Каталог установки ({0}) находится внутри каталога релиза ({1}): копирование снимка в собственный подкаталог запрещено — файлы не изменены." -f $installFull, $sourceFull)
     }
-    Assert-HrmSnapshotComplete -Dir $sourceFull -Label "Каталог релиза" | Out-Null
+    Assert-HrmSnapshotComplete -Dir $sourceFull -Label "Каталог релиза" -SkipLicenseKey:$SkipLicenseKey | Out-Null
 
     $components = @("infra", "backend", "frontend")
     if (-not (Test-Path $installFull)) { New-Item -ItemType Directory -Path $installFull -Force | Out-Null }
@@ -129,7 +135,7 @@ function Copy-HrmSnapshot {
             # а не оставить «успешный» статус при неполном снимке.
             Copy-Item -Path $source -Destination (Join-Path $copyRoot $name) -Recurse -Force -ErrorAction Stop
         }
-        Assert-HrmSnapshotComplete -Dir $copyRoot -Label "Временная копия снимка" | Out-Null
+        Assert-HrmSnapshotComplete -Dir $copyRoot -Label "Временная копия снимка" -SkipLicenseKey:$SkipLicenseKey | Out-Null
         # Подмена только после успешной копии и проверки. Источник уже не
         # является местом очистки, поэтому удаление каталогов назначения не
         # может уничтожить снимок релиза.
@@ -142,7 +148,7 @@ function Copy-HrmSnapshot {
         if (Test-Path $releaseSource) {
             Move-Item -Path (Join-Path $copyRoot "release.json") -Destination (Join-Path $installFull "release.json") -Force -ErrorAction Stop
         }
-        Assert-HrmSnapshotComplete -Dir $installFull -Label "Каталог установки" | Out-Null
+        Assert-HrmSnapshotComplete -Dir $installFull -Label "Каталог установки" -SkipLicenseKey:$SkipLicenseKey | Out-Null
         $null = Write-HrmLog "info" ("Снимок приложения разложен из {0}." -f $sourceFull)
     }
     finally {
