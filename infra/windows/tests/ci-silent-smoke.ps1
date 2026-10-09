@@ -73,14 +73,55 @@ function Write-HrmJsonFile {
     [System.IO.File]::WriteAllText($Path, $Json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Get-HrmSmokeStateDump {
+    # Сводка состояния движка для аннотации: supervisor.json / setup-run.json /
+    # update-result.json (движок пишет их уже отредактированными, без секретов).
+    param([string]$StateDir)
+    $parts = @()
+    foreach ($name in @("supervisor.json", "setup-run.json", "update-result.json")) {
+        $file = Join-Path $StateDir $name
+        if (-not (Test-Path -LiteralPath $file)) { continue }
+        try {
+            $data = Read-HrmJsonFile $file
+            if ($null -eq $data) { continue }
+            $fields = @()
+            foreach ($prop in $data.PSObject.Properties) {
+                $value = [string]$prop.Value
+                if ($value.Length -gt 160) { $value = $value.Substring(0, 160) + "…" }
+                $fields += ($prop.Name + "=" + $value)
+            }
+            $parts += ($name + ": " + ($fields -join "; "))
+        } catch { $parts += ($name + ": нечитаем") }
+    }
+    if ($parts.Count -eq 0) { return "нет файлов состояния" }
+    return ($parts -join " | ")
+}
+
 function Invoke-HrmSetupProcess {
     # /LOG=<файл>: журнал Inno нужен, чтобы сбой был виден причиной, а не
     # «exit code 1». Код возврата обязателен к проверке: остановка мастера до
     # перезаписи файлов (гейт снимка) обязана быть видна автоматике.
-    param([string]$Exe, [string]$LogPath)
+    # Сторожевой таймаут: зависший мастер (или зависший под ним движок/Docker
+    # на раннере) не должен подвешивать смоук часами — по таймауту процессы
+    # убиваются, а в ошибку попадает сводка состояния движка.
+    param([string]$Exe, [string]$LogPath, [string]$StateDir, [int]$TimeoutMinutes = 40)
     Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
     $arguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", ('/LOG="{0}"' -f $LogPath))
-    $process = Start-Process -FilePath $Exe -ArgumentList $arguments -Wait -PassThru
+    $process = Start-Process -FilePath $Exe -ArgumentList $arguments -PassThru
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 5
+    }
+    if (-not $process.HasExited) {
+        try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch { }
+        foreach ($engine in @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue)) {
+            $cmd = [string]$engine.CommandLine
+            if ($cmd -match "hr-manager\.ps1|hrm-tray\.ps1|hrm-snapshot\.ps1") {
+                try { Stop-Process -Id ([int]$engine.ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+            }
+        }
+        throw ("мастер не завершился за " + $TimeoutMinutes + " минут (возможно, зависание движка/Docker на раннере) — процесс остановлен; состояние движка: " + (Get-HrmSmokeStateDump -StateDir $StateDir))
+    }
     return [int]$process.ExitCode
 }
 
@@ -125,13 +166,28 @@ function Show-HrmSnapshotDecision {
 
 function Get-HrmSmokeDockerEngineOs {
     # OSType работающего Docker Engine: 'linux' — Linux-движок (Docker Desktop),
-    # 'windows' — Windows-движок (Windows-контейнеры), '' — движка нет вовсе.
-    # Диагностика раннера настоящим `docker info` — движок HR Manager не запускается.
-    try {
-        $output = (& docker.exe info --format "{{.OSType}}" 2>$null)
-        if ($LASTEXITCODE -ne 0) { return "" }
-        return ([string]$output).Trim()
-    } catch { return "" }
+    # 'windows' — Windows-движок (Windows-контейнеры), '' — движка нет вовсе
+    # (или зонд не уложился в таймаут). Диагностика раннера настоящим
+    # `docker info` — движок HR Manager не запускается. Зонд — в отдельной
+    # job с таймаутом 30 с: зависший daemon не должен подвешивать смоук.
+    $probe = Start-Job -ScriptBlock {
+        try {
+            $output = (& docker.exe info --format "{{.OSType}}" 2>$null)
+            if ($LASTEXITCODE -ne 0) { return "" }
+            return ([string]$output).Trim()
+        } catch { return "" }
+    }
+    if (-not (Wait-Job $probe -Timeout 30)) {
+        # Daemon не ответил за 30 с — это отдельный случай «движок не
+        # недоступен», а «не отвечает»: заметно в notice.
+        $script:SmokeDockerProbeTimeout = $true
+        Remove-Job $probe -Force -ErrorAction SilentlyContinue
+        return ""
+    }
+    $result = Receive-Job $probe
+    Remove-Job $probe -Force -ErrorAction SilentlyContinue
+    if ($null -eq $result) { return "" }
+    return ([string]$result).Trim()
 }
 
 function Test-HrmSmokeDockerRefusal {
@@ -182,13 +238,15 @@ try {
     # Стек HR Manager — Linux-контейнеры. Без Linux-движка движок обязан
     # остановиться на Docker-гейте с понятным отказом (а не «успехом»), и смоук
     # проверяет именно это — честный ограниченный режим вместо маскировки.
+    $script:SmokeDockerProbeTimeout = $false
     $engineOs = Get-HrmSmokeDockerEngineOs
     $linuxEngine = ($engineOs -eq "linux")
     if ($linuxEngine) {
         Write-HrmNotice "Silent smoke" "режим: полный — Docker Engine OSType=linux (установка, обновление, удаление со стеком)"
     }
     else {
-        Write-HrmNotice "Silent smoke" ("режим: ограниченный — Linux-движка нет (OSType='" + $engineOs + "'). Мастер запускается, и движок обязан остановиться на Docker-гейте с ожидаемым отказом (а не «успехом»). НЕ покрыто на этом раннере: сборка образов, запуск стека, готовность, первый запуск, миграции, backup-ворота.")
+        $probeNote = if ($script:SmokeDockerProbeTimeout) { "зонд docker info не уложился в 30 с (daemon не отвечает)" } else { "OSType='" + $engineOs + "'" }
+        Write-HrmNotice "Silent smoke" ("режим: ограниченный — Linux-движка нет (" + $probeNote + "). Мастер запускается, и движок обязан остановиться на Docker-гейте с ожидаемым отказом (а не «успехом»). НЕ покрыто на этом раннере: сборка образов, запуск стека, готовность, первый запуск, миграции, backup-ворота.")
     }
 
     $setup = Get-ChildItem -Path (Join-Path $RepoRoot "installer\output") -Filter "HR-Manager-Setup-*.exe" -ErrorAction SilentlyContinue |
@@ -200,13 +258,13 @@ try {
     # Снимка не будет (сохранять нечего), и мастер обязан продолжить установку:
     # решение видно в журнале Inno (/LOG) строкой «HRM: snapshot decision».
     $installLog = Join-Path $env:TEMP "hrm-smoke-install.log"
-    $installCode = Invoke-HrmSetupProcess -Exe $setup.FullName -LogPath $installLog
+    $installCode = Invoke-HrmSetupProcess -Exe $setup.FullName -LogPath $installLog -StateDir $StateDir -TimeoutMinutes 40
     Assert-HrmSetupLog -Path $installLog -Pattern "HRM: snapshot decision needed=0" `
         -Message "мастер не сообщил, что на чистой установке сохранять нечего"
     if ($linuxEngine) {
         if ($installCode -ne 0) {
             Write-HrmSetupLogTail -Path $installLog -Title "Silent smoke: чистая установка не прошла"
-            throw ("чистая установка завершилась с кодом " + $installCode)
+            throw ("чистая установка завершилась с кодом " + $installCode + "; состояние движка: " + (Get-HrmSmokeStateDump -StateDir $StateDir))
         }
         Write-HrmNotice "Silent smoke: установка" "exit=0"
     }
@@ -259,12 +317,12 @@ try {
     Remove-Item -LiteralPath (Join-Path $StateDir "previous-snapshot.json") -Force -ErrorAction SilentlyContinue
 
     $upgradeLog = Join-Path $env:TEMP "hrm-smoke-upgrade.log"
-    $upgradeCode = Invoke-HrmSetupProcess -Exe $setup.FullName -LogPath $upgradeLog
+    $upgradeCode = Invoke-HrmSetupProcess -Exe $setup.FullName -LogPath $upgradeLog -StateDir $StateDir -TimeoutMinutes 40
     $decision = Show-HrmSnapshotDecision -Directory $StateDir -Label "Silent smoke: снимок"
     if ($linuxEngine) {
         if ($upgradeCode -ne 0) {
             Write-HrmSetupLogTail -Path $upgradeLog -Title "Silent smoke: обновление не прошло"
-            throw ("обновление поверх установки завершилось с кодом " + $upgradeCode)
+            throw ("обновление поверх установки завершилось с кодом " + $upgradeCode + "; состояние движка: " + (Get-HrmSmokeStateDump -StateDir $StateDir))
         }
         Write-HrmNotice "Silent smoke: обновление" "exit=0"
     }
@@ -324,7 +382,7 @@ try {
     # а не подменяется успехом).
     if ($uninstallAvailable) {
         $uninstallLog = Join-Path $env:TEMP "hrm-smoke-uninstall.log"
-        $uninstallCode = Invoke-HrmSetupProcess -Exe $uninstaller -LogPath $uninstallLog
+        $uninstallCode = Invoke-HrmSetupProcess -Exe $uninstaller -LogPath $uninstallLog -StateDir $StateDir -TimeoutMinutes 15
         if ($uninstallCode -ne 0) {
             Write-HrmSetupLogTail -Path $uninstallLog -Title "Silent smoke: удаление не прошло"
             throw ("удаление завершилось с кодом " + $uninstallCode)
