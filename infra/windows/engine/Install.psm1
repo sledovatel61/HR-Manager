@@ -265,7 +265,7 @@ function Install-HrmApp {
         if ($existingPort -le 0) { $existingPort = $port }
         $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $existingPort -AllowInstall:$AllowDockerInstall -Interactive:($AllowDockerInstall -or (Test-HrmInteractive))
         if (-not $prepare.ok) {
-            Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+            try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
             throw $prepare.message
         }
         # Восстановление runtime-ключа и окружения нужно ДО первого Compose.
@@ -294,7 +294,7 @@ function Install-HrmApp {
     # установщик), WSL2/виртуализация, ожидание Engine. Без Docker дальше нельзя.
     $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port -AllowInstall:$AllowDockerInstall -Interactive:($AllowDockerInstall -or (Test-HrmInteractive))
     if (-not $prepare.ok) {
-        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+        try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
         if ($prepare.needs_install) {
             Write-HrmLog "warn" $prepare.message
             foreach ($line in (Get-HrmDockerInstallGuide)) { Write-HrmLog "info" $line }
@@ -360,7 +360,7 @@ function Start-HrmApp {
     if ($port -le 0) { $port = Get-HrmPort }
     $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port
     if (-not $prepare.ok) {
-        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+        try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
         throw $prepare.message
     }
     Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
@@ -520,7 +520,7 @@ function Resume-HrmOperation {
         Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
         $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -AllowInstall -Interactive
         if (-not $prepare.ok) {
-            Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
+            try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
             throw $prepare.message
         }
         if ($kind -eq "reboot") { Clear-HrmPendingDockerOperation $StateDir }

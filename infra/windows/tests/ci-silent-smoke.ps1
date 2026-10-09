@@ -75,7 +75,8 @@ function Write-HrmJsonFile {
 
 function Get-HrmSmokeStateDump {
     # Сводка состояния движка для аннотации: supervisor.json / setup-run.json /
-    # update-result.json (движок пишет их уже отредактированными, без секретов).
+    # update-result.json (движок пишет их уже отредактированными, без секретов)
+    # + наличие артефактов движка по порядку — по ним видно, как далеко он дошёл.
     param([string]$StateDir)
     $parts = @()
     foreach ($name in @("supervisor.json", "setup-run.json", "update-result.json")) {
@@ -93,6 +94,12 @@ function Get-HrmSmokeStateDump {
             $parts += ($name + ": " + ($fields -join "; "))
         } catch { $parts += ($name + ": нечитаем") }
     }
+    $artifacts = @()
+    foreach ($name in @("secrets.json", "license_public_key.b64", "pilot.env", "installed.json", "update.lock", "update-journal.json")) {
+        $present = if (Test-Path -LiteralPath (Join-Path $StateDir $name)) { "есть" } else { "нет" }
+        $artifacts += ($name + "=" + $present)
+    }
+    $parts += ("артефакты: " + ($artifacts -join ", "))
     if ($parts.Count -eq 0) { return "нет файлов состояния" }
     return ($parts -join " | ")
 }
@@ -277,14 +284,17 @@ try {
         # детерминирован, гонки с треем нет. supervisor.json — сверка
         # по возможности (трей тоже пишет его при старте).
         $marker = Read-HrmJsonFile (Join-Path $StateDir "setup-run.json")
-        if ($null -eq $marker) { throw "нет отметки установки (setup-run.json) — движок не запускался или не записал отказ" }
+        if ($null -eq $marker) {
+            throw ("нет отметки установки (setup-run.json) — движок не запускался или не записал отказ; состояние: " + (Get-HrmSmokeStateDump -StateDir $StateDir))
+        }
         if ([string](Get-HrmJsonProperty -Object $marker -Name "status") -ne "failed") {
-            throw ("движок не записал отказ честно: setup-run.json status=" + [string]$marker.status + " (мастер exit=" + $installCode + ")")
+            Write-HrmSetupLogTail -Path $installLog -Title "Silent smoke: движок не записал отказ"
+            throw ("движок не записал отказ честно: setup-run.json status=" + [string]$marker.status + " (мастер exit=" + $installCode + "); состояние: " + (Get-HrmSmokeStateDump -StateDir $StateDir))
         }
         $markerMessage = [string](Get-HrmJsonProperty -Object $marker -Name "message")
         if (-not (Test-HrmSmokeDockerRefusal $markerMessage)) {
             Write-HrmSetupLogTail -Path $installLog -Title "Silent smoke: неожиданный отказ движка"
-            throw ("движок остановился не на Docker-гейте: " + $markerMessage)
+            throw ("движок остановился не на Docker-гейте: " + $markerMessage + "; состояние: " + (Get-HrmSmokeStateDump -StateDir $StateDir))
         }
         $engineState = Get-HrmSmokeEngineState -StateDir $StateDir
         $supervisorNote = "нет supervisor.json"
@@ -342,18 +352,20 @@ try {
         # [Run] в код мастера — вердикт в файлах движка: update-result.json
         # (только движок) и setup-run.json (мастер → движок, без гонки).
         $result = Get-HrmSmokeUpdateResult -StateDir $StateDir
-        if ($null -eq $result) { throw "движок не записал результат обновления (update-result.json) — обновление не дошло до гейта?" }
+        if ($null -eq $result) {
+            throw ("движок не записал результат обновления (update-result.json) — обновление не дошло до гейта?; состояние: " + (Get-HrmSmokeStateDump -StateDir $StateDir))
+        }
         if ([string](Get-HrmJsonProperty -Object $result -Name "status") -ne "failed") {
-            throw ("обновление без Linux-движка не отмечено как failed (status=" + [string]$result.status + ") — возможен замаскированный успех")
+            throw ("обновление без Linux-движка не отмечено как failed (status=" + [string]$result.status + ") — возможен замаскированный успех; состояние: " + (Get-HrmSmokeStateDump -StateDir $StateDir))
         }
         $resultMessage = [string](Get-HrmJsonProperty -Object $result -Name "message")
         if (-not (Test-HrmSmokeDockerRefusal $resultMessage)) {
             Write-HrmSetupLogTail -Path $upgradeLog -Title "Silent smoke: неожиданный отказ движка"
-            throw ("движок остановился не на Docker-гейте: " + $resultMessage)
+            throw ("движок остановился не на Docker-гейте: " + $resultMessage + "; состояние: " + (Get-HrmSmokeStateDump -StateDir $StateDir))
         }
         $marker = Read-HrmJsonFile (Join-Path $StateDir "setup-run.json")
         if ($null -eq $marker -or [string](Get-HrmJsonProperty -Object $marker -Name "status") -ne "failed") {
-            throw "движок не записал отказ в отметке установки (setup-run.json не failed)"
+            throw ("движок не записал отказ в отметке установки (setup-run.json не failed); состояние: " + (Get-HrmSmokeStateDump -StateDir $StateDir))
         }
         Write-HrmNotice "Silent smoke: обновление (ограниченный режим)" ("мастер exit=" + $upgradeCode + " (Inno не пробрасывает код [Run]); снимок подтверждён; движок остановился на Docker-гейте: " + $resultMessage)
     }
@@ -408,6 +420,8 @@ try {
     exit 0
 }
 catch {
-    Write-HrmError "Silent smoke" ("сбой: " + $_.Exception.Message)
+    $dump = ""
+    try { $dump = Get-HrmSmokeStateDump -StateDir $StateDir } catch { }
+    Write-HrmError "Silent smoke" ("сбой: " + $_.Exception.Message + $(if ($dump) { "; состояние: " + $dump } else { "" }))
     exit 1
 }
