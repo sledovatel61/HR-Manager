@@ -145,18 +145,21 @@ function Install-HrmLicensePublicKey {
     # внешний локальный файл (в сборку/git он не вшивается). Вызывается и при
     # установке, и при обновлении: у уже установленного пилота файл уже есть
     # (тогда ничего не меняем — состояние пользователя не перезаписывается), а
-    # если его нет (старая установка, ручная чистка), ключ берётся из
-    # обновляемого снимка. Иначе после обновления приложение не смогло бы
-    # проверить лицензию, а pilot.env с обязательной переменной (:?) не дал бы
-    # стеку подняться. Ключ публичный: в секреты, бандлы и журнал он не попадает.
+    # если его нет (старая установка, ручная чистка), ключ ищется в каталоге
+    # установки и в каталоге релиза. Иначе после обновления приложение не
+    # смогло бы проверить лицензию, а pilot.env с обязательной переменной (:?)
+    # не дал бы стеку подняться. Ключ публичный: в секреты, бандлы и журнал он
+    # не попадает.
+    # Порядок источников: StateDir → {app} (каталог установки) → каталог
+    # релиза → env. Установленная копия приоритетнее: обновление не должно
+    # молча менять ключ лицензии, если новый релиз принёс другой ключ.
     param([string]$SourceDir = "", [string]$InstallDir = "", [string]$StateDir = "")
     if (-not $StateDir) { return "" }
     $stateKeyFile = Join-Path $StateDir "license_public_key.b64"
     if (Test-Path $stateKeyFile) { return (Get-HrmLicensePublicKey $StateDir) }
-    $sourceKeyCandidates = @(
-        (Join-Path $SourceDir "infra/license/public_key.b64"),
-        (Join-Path $InstallDir "infra/license/public_key.b64")
-    )
+    $sourceKeyCandidates = @()
+    if ($InstallDir) { $sourceKeyCandidates += (Join-Path $InstallDir "infra/license/public_key.b64") }
+    if ($SourceDir) { $sourceKeyCandidates += (Join-Path $SourceDir "infra/license/public_key.b64") }
     if ($env:HRM_SOURCE_DIR) {
         $sourceKeyCandidates += Join-Path $env:HRM_SOURCE_DIR "infra/license/public_key.b64"
     }

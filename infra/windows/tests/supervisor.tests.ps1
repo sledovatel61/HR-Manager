@@ -138,25 +138,44 @@ Test-Case "мьютекс переопределяется через env: ед�
     # мьютекс держал живой процесс от установки. Имя переопределяется через
     # HRM_SUPERVISOR_MUTEX — контекст задаёт уникальное имя.
     New-HrmSupervisorTestContext
-    # Симулируем «занятый машинный мьютекс»: занимаем имя ПО УМОЛЧАНИЮ напрямую.
-    $busy = New-Object System.Threading.Mutex($false, "Local\HRManagerPilotSupervisor")
-    $held = $false
-    try { $held = $busy.WaitOne(0) } catch { $held = $false }
-    Assert-HrmTrue $held "не удалось занять машинный мьютекс для симуляции"
+    # Чистая функция выбора имени: env переопределяет, иначе — умолчание.
+    $env:HRM_SUPERVISOR_MUTEX = "Local\HRManagerPilotSupervisorTest-probe"
+    Assert-HrmEqual "Local\HRManagerPilotSupervisorTest-probe" (Get-HrmSupervisorMutexName) "env не переопределил имя мьютекса"
+    Remove-Item Env:HRM_SUPERVISOR_MUTEX -ErrorAction SilentlyContinue
+    Assert-HrmEqual "Local\HRManagerPilotSupervisor" (Get-HrmSupervisorMutexName) "имя по умолчанию потеряно"
+    # «Занятый машинный мьютекс» держим ОТДЕЛЬНЫМ ПОТОКОМ: .NET Mutex
+    # ре-ентерабелен для своего потока, поэтому занять его в том же потоке
+    # и пронаблюдать отказ невозможно.
+    $holder = Start-ThreadJob -ScriptBlock {
+        $m = New-Object System.Threading.Mutex($false, "Local\HRManagerPilotSupervisor")
+        $null = $m.WaitOne(0)
+        Start-Sleep -Seconds 30
+    }
     try {
-        # Контекстный мьютекс (уникальное имя из env) свободен — первый захват успешен.
-        $lock = Enter-HrmSupervisorLock
-        Assert-HrmTrue $lock.acquired "уникальный мьютекс контекста должен быть свободен даже при занятом машинном"
-        Exit-HrmSupervisorLock $lock
+        # Ждём, пока поток действительно захватит мьютекс (зонд свободным захватом).
+        $heldByOther = $false
+        for ($i = 0; $i -lt 50 -and -not $heldByOther; $i++) {
+            $probe = New-Object System.Threading.Mutex($false, "Local\HRManagerPilotSupervisor")
+            $got = $false
+            try { $got = $probe.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+            if ($got) { try { $probe.ReleaseMutex() } catch { } } else { $heldByOther = $true }
+            $probe.Dispose()
+            if (-not $heldByOther) { Start-Sleep -Milliseconds 100 }
+        }
+        Assert-HrmTrue $heldByOther "не удалось дождаться занятого машинного мьютекса"
         # Без переопределения занятый машинный мьютекс даёт отказ (контракт единственности).
-        Remove-Item Env:HRM_SUPERVISOR_MUTEX -ErrorAction SilentlyContinue
         $lock2 = Enter-HrmSupervisorLock
         Assert-HrmFalse $lock2.acquired "занятый машинный мьютекс должен давать отказ без переопределения"
         Exit-HrmSupervisorLock $lock2
+        # С переопределением (уникальное имя контекста): первый захват успешен
+        # даже когда машинный мьютекс занят живым потоком.
+        $env:HRM_SUPERVISOR_MUTEX = "Local\HRManagerPilotSupervisorTest-" + [guid]::NewGuid().ToString("N")
+        $lock = Enter-HrmSupervisorLock
+        Assert-HrmTrue $lock.acquired "уникальный мьютекс контекста должен быть свободен даже при занятом машинном"
+        Exit-HrmSupervisorLock $lock
     }
     finally {
-        if ($held) { try { $busy.ReleaseMutex() } catch { } }
-        $busy.Dispose()
+        Remove-Job $holder -Force -ErrorAction SilentlyContinue
     }
 }
 

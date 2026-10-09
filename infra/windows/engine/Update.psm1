@@ -347,7 +347,10 @@ function Save-HrmPreviousSnapshot {
     $identity = $ReleaseSha
     if (-not $identity) { $identity = Get-HrmSnapshotIdentity -InstallDir $InstallDir -StateDir $StateDir }
     if (-not $Version) { $Version = Get-HrmSnapshotVersionInDir -Directory $InstallDir }
-    $snapshot = New-HrmVerifiedSnapshotFromDir -SourceDir $InstallDir -StateDir $StateDir -ReleaseSha $identity -Version $Version -Origin "engine"
+    # Снимок ПРЕДЫДУЩЕЙ (установленной) версии: у старой установки ключа
+    # лицензии в {app} может не быть — снимок не требует его (ключ
+    # восстановится из нового релиза; см. Assert-HrmSnapshotComplete).
+    $snapshot = New-HrmVerifiedSnapshotFromDir -SourceDir $InstallDir -StateDir $StateDir -ReleaseSha $identity -Version $Version -Origin "engine" -SkipLicenseKey
     return [pscustomobject]@{
         saved = [bool]$snapshot.saved
         verified = [bool]$snapshot.verified
@@ -519,7 +522,9 @@ function Restore-HrmPreviousVersion {
         }
     }
     if ($problems.Count -eq 0) {
-        try { Copy-HrmSnapshot -SourceDir $snapshotDir -InstallDir $InstallDir }
+        # Снимок прежней версии может быть у старой установки без ключа
+        # лицензии — восстановление не должно падать на проверке полноты.
+        try { Copy-HrmSnapshot -SourceDir $snapshotDir -InstallDir $InstallDir -SkipLicenseKey }
         catch { $problems += ("файлы прежней версии не восстановлены: " + (Redact-HrmText $_.Exception.Message)) }
     }
     if ($problems.Count -eq 0) {
