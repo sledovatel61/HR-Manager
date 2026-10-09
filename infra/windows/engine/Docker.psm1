@@ -376,6 +376,20 @@ function Test-HrmDockerEngineReady {
     return ($info.ExitCode -eq 0 -and [bool]$info.Stdout)
 }
 
+function Test-HrmDockerLinuxEngineReady {
+    # HR Manager работает в Linux-контейнерах: нужен именно Linux-движок
+    # (Docker Desktop по умолчанию). Windows-движок (Windows-контейнеры)
+    # для этого стека бесполезен: Linux-образы не собираются и не запускаются.
+    # Тестовый шов: linux_engine; при его отсутствии — engine (в мок-мире
+    # «готов» подразумевает Linux-движок).
+    $override = Get-HrmDockerOverrideValue "linux_engine"
+    if ($null -ne $override) { return [bool]$override }
+    $engineOverride = Get-HrmDockerOverrideValue "engine"
+    if ($null -ne $engineOverride) { return [bool]$engineOverride }
+    $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.OSType}}") -IgnoreExitCode
+    return ($info.ExitCode -eq 0 -and ($info.Stdout.Trim() -eq "linux"))
+}
+
 function Wait-HrmDockerEngine {
     # Ожидание готовности Docker Engine с таймаутом и понятным прогрессом.
     # Никаких бесконечных циклов: по истечении таймаута возвращаем $false.
@@ -753,11 +767,13 @@ function Get-HrmDockerReadiness {
     $desktop = Get-HrmDockerDesktopState
     $state = "unknown"
     if (-not $desktop.installed) { $state = "docker_missing" }
+    elseif ($desktop.engine_ready -and -not (Test-HrmDockerLinuxEngineReady)) { $state = "engine_not_linux" }
     elseif ($desktop.engine_ready) { $state = "ready" }
     elseif ($desktop.running) { $state = "engine_starting" }
     else { $state = "docker_stopped" }
     $message = "Рабочая среда готова."
     if ($state -eq "docker_missing") { $message = "Docker Desktop не установлен." }
+    elseif ($state -eq "engine_not_linux") { $message = "Docker Engine запущен, но это не Linux-движок: HR Manager работает в Linux-контейнерах." }
     elseif ($state -eq "engine_starting") { $message = "Docker Desktop запускается…" }
     elseif ($state -eq "docker_stopped") { $message = "Docker Desktop установлен, но не запущен." }
     elseif ($failed.Count -gt 0) { $message = $failed[0].detail }
@@ -808,6 +824,15 @@ function Invoke-HrmDockerPrepare {
 
     $desktop = Get-HrmDockerDesktopState
     if ($desktop.state -eq "engine_ready") {
+        # Демон отвечает, но стек — Linux-only: Windows-движок (Windows-контейнеры)
+        # не соберёт и не запустит эти образы. Честный отказ с понятным текстом
+        # (состояние engine_not_linux) вместо падения на сборке образов.
+        if (-not (Test-HrmDockerLinuxEngineReady)) {
+            return [pscustomobject]@{
+                ok = $false; state = "engine_not_linux"; needs_install = $false; needs_reboot = (Test-HrmRebootPending)
+                message = "Docker Engine запущен, но это не Linux-движок: HR Manager работает в Linux-контейнерах. Запустите Docker Desktop с Linux-движком (WSL2) и повторите попытку."
+            }
+        }
         Clear-HrmPendingDockerOperation $StateDir
         return [pscustomobject]@{ ok = $true; state = "ready"; message = "Рабочая среда готова."; needs_reboot = $false; needs_install = $false }
     }
@@ -848,6 +873,12 @@ function Invoke-HrmDockerPrepare {
         return [pscustomobject]@{
             ok = $false; state = "engine_not_ready"; needs_install = $false; needs_reboot = (Test-HrmRebootPending)
             message = "Служба контейнеров ещё не готова. Подождите минуту и нажмите «Повторить»."
+        }
+    }
+    if (-not (Test-HrmDockerLinuxEngineReady)) {
+        return [pscustomobject]@{
+            ok = $false; state = "engine_not_linux"; needs_install = $false; needs_reboot = (Test-HrmRebootPending)
+            message = "Docker Engine запущен, но это не Linux-движок: HR Manager работает в Linux-контейнерах. Запустите Docker Desktop с Linux-движком (WSL2) и повторите попытку."
         }
     }
     Clear-HrmPendingDockerOperation $StateDir

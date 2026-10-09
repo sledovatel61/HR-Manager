@@ -56,12 +56,15 @@ function Test-HrmPathInside {
 
 function Assert-HrmSnapshotComplete {
     # Снимок приложения полон: по infra\compose.pilot.yml движок собирает стек,
-    # backend/ и frontend/ нужны для сборки образов. Проверка выполняется ДО
-    # подмены файлов и ПОСЛЕ копирования: иначе установка могла бы «успешно»
-    # завершиться с пустым или половинчатым снимком.
+    # backend/ и frontend/ нужны для сборки образов, а infra\license\public_key.b64
+    # обязателен: без ключа движок остановится fail-closed
+    # (Assert-HrmLicensePublicKey), а Compose требует непустую переменную.
+    # Проверка выполняется ДО подмены файлов и ПОСЛЕ копирования: иначе
+    # установка могла бы «успешно» завершиться с пустым или половинчатым снимком.
     param([string]$Dir, [string]$Label = "снимок")
     $missing = @()
     if (-not (Test-Path -Path (Join-Path $Dir "infra\compose.pilot.yml") -PathType Leaf)) { $missing += "infra\compose.pilot.yml" }
+    if (-not (Test-Path -Path (Join-Path $Dir "infra\license\public_key.b64") -PathType Leaf)) { $missing += "infra\license\public_key.b64" }
     foreach ($name in @("backend", "frontend")) {
         if (-not (Test-Path -Path (Join-Path $Dir $name) -PathType Container)) { $missing += $name }
     }
@@ -260,7 +263,9 @@ function Install-HrmApp {
             throw $prepare.message
         }
         # Восстановление runtime-ключа и окружения нужно ДО первого Compose.
-        $null = Install-HrmLicensePublicKey -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
+        # Fail-closed: без ключа операция останавливается с понятным отказом,
+        # а не пишет пустую обязательную переменную в pilot.env.
+        $null = Assert-HrmLicensePublicKey -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
         $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $existingPort
         if (Test-HrmComposeRunning $InstallDir $StateDir) {
             Write-HrmLog "info" "Приложение уже запущено."
@@ -303,7 +308,8 @@ function Install-HrmApp {
 
     # Лицензия: публичный ключ проверки — внешний локальный файл
     # StateDir\license_public_key.b64 (см. Secrets.psm1\Install-HrmLicensePublicKey).
-    $null = Install-HrmLicensePublicKey -SourceDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir
+    # Fail-closed: без ключа установка останавливается ДО Compose с отказом.
+    $null = Assert-HrmLicensePublicKey -SourceDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir
 
     $releaseSha = Get-HrmReleaseSha $InstallDir $StateDir
     # Версия снимка — для предпросмотра обновления и отчёта «текущая → новая».

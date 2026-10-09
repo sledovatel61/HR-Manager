@@ -198,10 +198,36 @@ function Install-HrmLicensePublicKey {
         }
     }
     if (-not (Test-Path $stateKeyFile)) {
-        $null = Write-HrmLog "warn" "LICENSE PUBLIC KEY отсутствует: pilot.env будет с пустым HRM_LICENSE_PUBLIC_KEY и compose откажется стартовать (fail-closed, требуется infra/license/public_key.b64 в snapshot)."
+        # Fail-closed: пустой ключ НЕ записывается молча. Вызывающий обязан
+        # отказать (Assert-HrmLicensePublicKey / Write-HrmPilotEnv), иначе
+        # Compose упадёт на интерполяции ${HRM_LICENSE_PUBLIC_KEY:?}
+        # с загадочным текстом вместо понятной причины.
+        $null = Write-HrmLog "warn" "LICENSE PUBLIC KEY не найден ни в одном источнике (требуется infra/license/public_key.b64 в снимке): вызывающий обязан остановиться с отказом до Compose (fail-closed)."
         return ""
     }
     return (Get-HrmLicensePublicKey $StateDir)
+}
+
+function Assert-HrmLicensePublicKey {
+    # Честный отказ по публичному ключу лицензии (fail-closed): сначала ключ
+    # восстанавливается из всех источников (StateDir, каталог релиза/snapshot,
+    # {app}, HRM_LICENSE_PUBLIC_KEY), а если его так и нет — операция
+    # останавливается ДО первого вызова Compose с понятным сообщением.
+    # Compose требует НЕПУСТОЕ значение (${HRM_LICENSE_PUBLIC_KEY:?} в
+    # compose.pilot.yml для backend/backup/worker): пустой ключ, записанный в
+    # pilot.env, убивал бы стек на интерполяции. Код HRM-LICENSE-KEY-MISSING —
+    # для диагностики и журналов.
+    param([string]$SourceDir = "", [string]$InstallDir = "", [string]$StateDir = "")
+    $key = Install-HrmLicensePublicKey -SourceDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir
+    if (-not $key) {
+        $searched = @()
+        if ($StateDir) { $searched += (Join-Path $StateDir "license_public_key.b64") }
+        if ($SourceDir) { $searched += (Join-Path $SourceDir "infra/license/public_key.b64") }
+        if ($InstallDir) { $searched += (Join-Path $InstallDir "infra/license/public_key.b64") }
+        $searched += "HRM_LICENSE_PUBLIC_KEY (env)"
+        throw ("HRM-LICENSE-KEY-MISSING: публичный ключ лицензии не найден ни в одном источнике ({0}). Без него Compose не поднимет стек (переменная HRM_LICENSE_PUBLIC_KEY обязательна, compose.pilot.yml). Положите infra/license/public_key.b64 в снимок релиза или задайте ключ — операция остановлена ДО первого вызова Compose." -f ($searched -join "; "))
+    }
+    return $key
 }
 
 function Write-HrmPilotEnv {
@@ -217,7 +243,13 @@ function Write-HrmPilotEnv {
     # требует НЕПУСТОЕ значение (${HRM_EXCHANGE_TOKEN:?}) — пишем случайный
     # placeholder, который сервер никогда не применит: пользователи уже
     # существуют, обмен закрыт (store_pilot_exchange не срабатывает).
-    $state = Get-HrmInstallRecord $StateDir
+    # Запись установки читается безопасно: нечитаемый/невалидный installed.json
+    # — отдельная диагностика (код HRM-INSTALL-RECORD-INVALID), а не сырой
+    # текст ошибки разбора JSON.
+    $state = $null
+    try { $state = Get-HrmInstallRecord $StateDir } catch {
+        throw ("HRM-INSTALL-RECORD-INVALID: запись установки нечитаема или невалидна ({0}): {1}. Генерация pilot.env остановлена — восстановите каталог состояния из резервной копии." -f (Get-HrmInstalledFile $StateDir), (Redact-HrmText $_.Exception.Message))
+    }
     if (-not [bool](Get-HrmInstallRecordField -Record $state -Field "pilot_created" -Default $false)) {
         $exchange = Get-HrmSecret $StateDir "HRM_EXCHANGE_TOKEN"
     }
@@ -231,6 +263,13 @@ function Write-HrmPilotEnv {
     $channel = Get-HrmChannelConfig $StateDir
     $keysJson = ($channel.public_keys | ConvertTo-Json -Compress)
     $licensePub = Get-HrmLicensePublicKey $StateDir
+    if (-not $licensePub) {
+        # Fail-closed (последняя линия обороны): пустой ключ не должен попасть
+        # в pilot.env — Compose требует непустое значение
+        # (${HRM_LICENSE_PUBLIC_KEY:?} в compose.pilot.yml). Код
+        # HRM-LICENSE-KEY-EMPTY — для диагностики; сообщение называет переменную.
+        throw "HRM-LICENSE-KEY-EMPTY: публичный ключ лицензии пуст (нет файла license_public_key.b64 в каталоге состояния и не задан HRM_LICENSE_PUBLIC_KEY). Compose не поднимет стек без ключа (переменная HRM_LICENSE_PUBLIC_KEY обязательна) — генерация pilot.env остановлена."
+    }
     # LAN bind: 127.0.0.1 by default, 0.0.0.0 only via explicit lan-access flow
     # Arbitrary HRM_PILOT_BIND values are rejected — safe fallback to 127.0.0.1
     $pilotBind = "127.0.0.1"

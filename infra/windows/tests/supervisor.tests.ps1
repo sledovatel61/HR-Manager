@@ -13,6 +13,10 @@ function New-HrmSupervisorTestContext {
     $world = New-HrmMockWorld
     Set-HrmPreflightOverride @{ windows = $true; powershell = $true; docker = $true; daemon = $true; compose = "v2.29.7 (mock)"; port = $true; state_dir = $true; space = $true; config = $true }
     Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true; admin = $false; reboot = $false }
+    # Уникальное имя мьютекса на контекст: тест единственности не должен
+    # зависеть от живых процессов машины (машино-широкий Local\-мьютекс
+    # могут держать установки владельца сутками — провал supervisor.tests.ps1:123).
+    $env:HRM_SUPERVISOR_MUTEX = "Local\HRManagerPilotSupervisorTest-" + [guid]::NewGuid().ToString("N")
     return $world
 }
 
@@ -126,6 +130,34 @@ Test-Case "повторный запуск supervisor'а не создаёт в�
     $snapshot = Get-HrmSupervisorState -StateDir $state
     Assert-HrmEqual $PID $snapshot.pid "состояние должно содержать pid supervisor'а"
     Exit-HrmSupervisorLock $lock
+}
+
+Test-Case "мьютекс переопределяется через env: единственность не зависит от живых процессов машины" {
+    # Регрессия R16 (T5): Enter-HrmSupervisorLock брал машино-широкий
+    # Local\HRManagerPilotSupervisor, и первый захват в тесте падал, когда
+    # мьютекс держал живой процесс от установки. Имя переопределяется через
+    # HRM_SUPERVISOR_MUTEX — контекст задаёт уникальное имя.
+    New-HrmSupervisorTestContext
+    # Симулируем «занятый машинный мьютекс»: занимаем имя ПО УМОЛЧАНИЮ напрямую.
+    $busy = New-Object System.Threading.Mutex($false, "Local\HRManagerPilotSupervisor")
+    $held = $false
+    try { $held = $busy.WaitOne(0) } catch { $held = $false }
+    Assert-HrmTrue $held "не удалось занять машинный мьютекс для симуляции"
+    try {
+        # Контекстный мьютекс (уникальное имя из env) свободен — первый захват успешен.
+        $lock = Enter-HrmSupervisorLock
+        Assert-HrmTrue $lock.acquired "уникальный мьютекс контекста должен быть свободен даже при занятом машинном"
+        Exit-HrmSupervisorLock $lock
+        # Без переопределения занятый машинный мьютекс даёт отказ (контракт единственности).
+        Remove-Item Env:HRM_SUPERVISOR_MUTEX -ErrorAction SilentlyContinue
+        $lock2 = Enter-HrmSupervisorLock
+        Assert-HrmFalse $lock2.acquired "занятый машинный мьютекс должен давать отказ без переопределения"
+        Exit-HrmSupervisorLock $lock2
+    }
+    finally {
+        if ($held) { try { $busy.ReleaseMutex() } catch { } }
+        $busy.Dispose()
+    }
 }
 
 Test-Case "автозапуск включается и выключается, старый ярлык -Action start удаляется" {

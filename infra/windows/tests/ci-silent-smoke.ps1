@@ -123,6 +123,52 @@ function Show-HrmSnapshotDecision {
     return $data
 }
 
+function Get-HrmSmokeDockerEngineOs {
+    # OSType работающего Docker Engine: 'linux' — Linux-движок (Docker Desktop),
+    # 'windows' — Windows-движок (Windows-контейнеры), '' — движка нет вовсе.
+    # Диагностика раннера настоящим `docker info` — движок HR Manager не запускается.
+    try {
+        $output = (& docker.exe info --format "{{.OSType}}" 2>$null)
+        if ($LASTEXITCODE -ne 0) { return "" }
+        return ([string]$output).Trim()
+    } catch { return "" }
+}
+
+function Test-HrmSmokeDockerRefusal {
+    # Отказ движка на Docker-гейте обязан быть узнаваемым: известные
+    # формулировки (каждая — честный отказ, а не «успех» и не посторонний сбой).
+    param([string]$Message)
+    if (-not $Message) { return $false }
+    $patterns = @("Linux-движок", "Linux-контейнер", "Docker Desktop", "Docker Engine", "Предполётная проверка")
+    foreach ($pattern in $patterns) {
+        if ($Message.Contains($pattern)) { return $true }
+    }
+    return $false
+}
+
+function Get-HrmSmokeEngineState {
+    # Состояние движка (supervisor.json) после остановки: state + message.
+    param([string]$StateDir)
+    $file = Join-Path $StateDir "supervisor.json"
+    if (-not (Test-Path -LiteralPath $file)) { return $null }
+    try {
+        $data = Read-HrmJsonFile $file
+        if ($null -eq $data) { return $null }
+        return [pscustomobject]@{
+            state = [string](Get-HrmJsonProperty -Object $data -Name "state")
+            message = [string](Get-HrmJsonProperty -Object $data -Name "message")
+        }
+    } catch { return $null }
+}
+
+function Get-HrmSmokeUpdateResult {
+    # Результат обновления движка (update-result.json) после отказа гейта.
+    param([string]$StateDir)
+    $file = Join-Path $StateDir "update-result.json"
+    if (-not (Test-Path -LiteralPath $file)) { return $null }
+    try { return (Read-HrmJsonFile $file) } catch { return $null }
+}
+
 try {
     if (-not $RepoRoot) {
         $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
@@ -131,6 +177,19 @@ try {
     if (-not $StateDir) { $StateDir = Join-Path $env:LOCALAPPDATA "HRManager" }
 
     Write-HrmNotice "Silent smoke" ("старт: скрипт=" + $PSCommandPath + " каталог установки=" + $InstallDir)
+
+    # --- ДО запуска мастера: доступен ли Linux-движок Docker на раннере? ------
+    # Стек HR Manager — Linux-контейнеры. Без Linux-движка движок обязан
+    # остановиться на Docker-гейте с понятным отказом (а не «успехом»), и смоук
+    # проверяет именно это — честный ограниченный режим вместо маскировки.
+    $engineOs = Get-HrmSmokeDockerEngineOs
+    $linuxEngine = ($engineOs -eq "linux")
+    if ($linuxEngine) {
+        Write-HrmNotice "Silent smoke" "режим: полный — Docker Engine OSType=linux (установка, обновление, удаление со стеком)"
+    }
+    else {
+        Write-HrmNotice "Silent smoke" ("режим: ограниченный — Linux-движка нет (OSType='" + $engineOs + "'). Мастер запускается, и движок обязан остановиться на Docker-гейте с ожидаемым отказом (а не «успехом»). НЕ покрыто на этом раннере: сборка образов, запуск стека, готовность, первый запуск, миграции, backup-ворота.")
+    }
 
     $setup = Get-ChildItem -Path (Join-Path $RepoRoot "installer\output") -Filter "HR-Manager-Setup-*.exe" -ErrorAction SilentlyContinue |
         Select-Object -First 1
@@ -142,18 +201,39 @@ try {
     # решение видно в журнале Inno (/LOG) строкой «HRM: snapshot decision».
     $installLog = Join-Path $env:TEMP "hrm-smoke-install.log"
     $installCode = Invoke-HrmSetupProcess -Exe $setup.FullName -LogPath $installLog
-    if ($installCode -ne 0) {
-        Write-HrmSetupLogTail -Path $installLog -Title "Silent smoke: чистая установка не прошла"
-        throw ("чистая установка завершилась с кодом " + $installCode)
-    }
     Assert-HrmSetupLog -Path $installLog -Pattern "HRM: snapshot decision needed=0" `
         -Message "мастер не сообщил, что на чистой установке сохранять нечего"
-    Write-HrmNotice "Silent smoke: установка" "exit=0"
+    if ($linuxEngine) {
+        if ($installCode -ne 0) {
+            Write-HrmSetupLogTail -Path $installLog -Title "Silent smoke: чистая установка не прошла"
+            throw ("чистая установка завершилась с кодом " + $installCode)
+        }
+        Write-HrmNotice "Silent smoke: установка" "exit=0"
+    }
+    else {
+        # Ограниченный режим: мастер ОБЯЗАН завершиться ненулевым кодом, а
+        # движок — остановиться на Docker-гейте с ожидаемым отказом.
+        if ($installCode -eq 0) {
+            throw "без Linux-движка мастер завершился успехом — это замаскированный отказ, а не честная остановка на гейте"
+        }
+        $engineState = Get-HrmSmokeEngineState -StateDir $StateDir
+        if ($null -eq $engineState) { throw "после остановки нет состояния движка (supervisor.json в каталоге состояния)" }
+        if ($engineState.state -ne "error") { throw ("движок не зафиксировал ошибку: state=" + $engineState.state) }
+        if (-not (Test-HrmSmokeDockerRefusal $engineState.message)) {
+            Write-HrmSetupLogTail -Path $installLog -Title "Silent smoke: неожиданный отказ движка"
+            throw ("движок остановился не на Docker-гейте: " + $engineState.message)
+        }
+        Write-HrmNotice "Silent smoke: установка (ограниченный режим)" ("exit=" + $installCode + "; движок остановился на Docker-гейте: " + $engineState.message)
+    }
 
     $engine = Join-Path $InstallDir "infra\windows\hr-manager.ps1"
     if (-not (Test-Path -LiteralPath $engine)) { throw "в каталоге установки нет движка" }
     $uninstaller = Join-Path $InstallDir "unins000.exe"
-    if (-not (Test-Path -LiteralPath $uninstaller)) { throw "нет деинсталлятора" }
+    $uninstallAvailable = Test-Path -LiteralPath $uninstaller
+    if ($linuxEngine -and -not $uninstallAvailable) { throw "нет деинсталлятора" }
+    if (-not $linuxEngine -and -not $uninstallAvailable) {
+        Write-HrmNotice "Silent smoke" "деинсталлятор не создан — фаза удаления не покрыта на этом раннере"
+    }
 
     # --- 2. «Прежняя версия» и обновление поверх -----------------------------
     # Идентификаторы обязаны отличаться от пакета: иначе снимок прежней версии
@@ -181,11 +261,32 @@ try {
     $upgradeLog = Join-Path $env:TEMP "hrm-smoke-upgrade.log"
     $upgradeCode = Invoke-HrmSetupProcess -Exe $setup.FullName -LogPath $upgradeLog
     $decision = Show-HrmSnapshotDecision -Directory $StateDir -Label "Silent smoke: снимок"
-    if ($upgradeCode -ne 0) {
-        Write-HrmSetupLogTail -Path $upgradeLog -Title "Silent smoke: обновление не прошло"
-        throw ("обновление поверх установки завершилось с кодом " + $upgradeCode)
+    if ($linuxEngine) {
+        if ($upgradeCode -ne 0) {
+            Write-HrmSetupLogTail -Path $upgradeLog -Title "Silent smoke: обновление не прошло"
+            throw ("обновление поверх установки завершилось с кодом " + $upgradeCode)
+        }
+        Write-HrmNotice "Silent smoke: обновление" "exit=0"
     }
-    Write-HrmNotice "Silent smoke: обновление" "exit=0"
+    else {
+        # Ограниченный режим: мастер ОБЯЗАН завершиться ненулевым кодом, а
+        # движок — остановиться на Docker-гейте обновления (T1) и честно
+        # записать отказ в update-result.json.
+        if ($upgradeCode -eq 0) {
+            throw "без Linux-движка обновление завершилось успехом — это замаскированный отказ"
+        }
+        $result = Get-HrmSmokeUpdateResult -StateDir $StateDir
+        if ($null -eq $result) { throw "движок не записал результат обновления (update-result.json)" }
+        if ([string](Get-HrmJsonProperty -Object $result -Name "status") -ne "failed") {
+            throw "обновление без Linux-движка не отмечено как failed"
+        }
+        $resultMessage = [string](Get-HrmJsonProperty -Object $result -Name "message")
+        if (-not (Test-HrmSmokeDockerRefusal $resultMessage)) {
+            Write-HrmSetupLogTail -Path $upgradeLog -Title "Silent smoke: неожиданный отказ движка"
+            throw ("движок остановился не на Docker-гейте: " + $resultMessage)
+        }
+        Write-HrmNotice "Silent smoke: обновление (ограниченный режим)" ("exit=" + $upgradeCode + "; движок остановился на Docker-гейте: " + $resultMessage)
+    }
 
     # Снимок обязан быть сделан ДО перезаписи: подтверждён, сделан мастером и
     # содержит файлы ПРЕЖНЕЙ версии, а {app} уже перезаписан новым релизом.
@@ -218,17 +319,22 @@ try {
 
     # --- 3. Удаление ---------------------------------------------------------
     # Программу удаляем; каталог состояния и тома данных остаются (их хранит
-    # движок и человек, а не мастер).
-    $uninstallLog = Join-Path $env:TEMP "hrm-smoke-uninstall.log"
-    $uninstallCode = Invoke-HrmSetupProcess -Exe $uninstaller -LogPath $uninstallLog
-    if ($uninstallCode -ne 0) {
-        Write-HrmSetupLogTail -Path $uninstallLog -Title "Silent smoke: удаление не прошло"
-        throw ("удаление завершилось с кодом " + $uninstallCode)
+    # движок и человек, а не мастер). В ограниченном режиме — только если
+    # мастер успел создать деинсталлятор (фаза удаления объявляется непокрытой,
+    # а не подменяется успехом).
+    if ($uninstallAvailable) {
+        $uninstallLog = Join-Path $env:TEMP "hrm-smoke-uninstall.log"
+        $uninstallCode = Invoke-HrmSetupProcess -Exe $uninstaller -LogPath $uninstallLog
+        if ($uninstallCode -ne 0) {
+            Write-HrmSetupLogTail -Path $uninstallLog -Title "Silent smoke: удаление не прошло"
+            throw ("удаление завершилось с кодом " + $uninstallCode)
+        }
+        if (Test-Path -LiteralPath $engine) { throw "после удаления файлы программы остались на месте" }
+        Write-HrmNotice "Silent smoke: удаление" "exit=0"
     }
-    if (Test-Path -LiteralPath $engine) { throw "после удаления файлы программы остались на месте" }
-    Write-HrmNotice "Silent smoke: удаление" "exit=0"
 
-    Write-HrmNotice "Silent smoke" "все фазы пройдены (установка, обновление со снимком, удаление)"
+    $modeLabel = if ($linuxEngine) { "полный" } else { "ограниченный (без Linux-движка)" }
+    Write-HrmNotice "Silent smoke" ("все фазы пройдены (режим: " + $modeLabel + ")")
     exit 0
 }
 catch {
