@@ -394,6 +394,19 @@ Test-Case "установщик: значок в трее, галочка уст
     Assert-HrmNotContains $installer "-Action start" "автозапуск всё ещё консольный"
 }
 
+Test-Case "обязательный запуск приложения нельзя отключить на финальном экране" {
+    $installer = Get-Content -Path (Join-Path $RepoRoot "installer\installer.iss") -Raw -Encoding UTF8
+    $runSection = [regex]::Match($installer, '(?ms)^\[Run\]\s*(?<body>.*?)(?=^\[UninstallRun\])').Groups['body'].Value
+    Assert-HrmTrue ($runSection.Length -gt 0) "не найдена секция [Run]"
+    $runFlags = ([regex]::Matches($runSection, '(?m)^\s*Flags:\s*[^\r\n]+$') | ForEach-Object Value) -join "`n"
+    Assert-HrmNotContains $runFlags "postinstall" "обязательный запуск снова стал отключаемым"
+    Assert-HrmNotContains $runFlags "skipifsilent" "обязательный запуск пропускается в silent-режиме"
+
+    $engineRun = [regex]::Match($runSection, '(?ms)Filename: "powershell\.exe";.*?-Action install.*?Flags: (?<flags>[^\r\n]+)').Groups['flags'].Value
+    Assert-HrmTrue ($engineRun.Length -gt 0) "не найден обязательный запуск установочного движка"
+    Assert-HrmNotContains $engineRun "nowait" "установочный движок запускается параллельно и не контролируется мастером"
+}
+
 Test-Case "пользовательские тексты трея и Docker не содержат технических команд" {
     $texts = @(
         (Get-Content -Path (Join-Path $EngineDir "Tray.psm1") -Raw -Encoding UTF8),
