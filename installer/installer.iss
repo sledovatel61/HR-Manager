@@ -94,7 +94,8 @@ Source: "staging\app\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdir
 ; Каталог состояния создаёт движок; здесь — только пустой маркер структуры не нужен.
 
 [Run]
-; Порядок после копирования файлов:
+; Обязательный порядок после копирования файлов (эти записи намеренно НЕ имеют
+; флага postinstall: пользователь не может отменить запуск приложения):
 ;   1) значок HR Manager в трее (управляющий компонент) — пользователь видит
 ;      состояние «Запускается / Готово / Ошибка» и кнопки действий;
 ;   2) движок выполняется СКРЫТО и пишет журнал в каталог состояния: проверка
@@ -103,17 +104,18 @@ Source: "staging\app\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdir
 ;      пользователь), ожидание Docker Engine, сборка и запуск контейнеров,
 ;      первый запуск в браузере.
 ; После перезагрузки Windows (если её потребует установка Docker) движок
-; продолжит работу сам — см. действие resume.
+; продолжит работу сам — см. действие resume. Трей запускается отдельно и
+; остаётся отзывчивым, пока установочный движок выполняется ниже.
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hrm-tray.ps1"" -InstallDir ""{app}"""; \
   WorkingDir: "{app}"; \
-  Flags: postinstall nowait runhidden skipifsilent
+  Flags: nowait runhidden
 
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action install -SourceDir ""{app}"" -NonInteractive -OpenBrowser {code:GetEngineDockerArgs}"; \
   WorkingDir: "{app}"; \
   StatusMsg: "HR Manager устанавливается (это может занять несколько минут)…"; \
-  Flags: postinstall nowait runhidden skipifsilent
+  Flags: runhidden
 
 ; Наблюдатель канала обновлений больше НЕ запускается из установщика: его
 ; запускает supervisor один раз — повторные установки не плодят процессов.

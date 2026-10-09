@@ -485,19 +485,11 @@ function Save-HrmVerifiedPreviousSnapshot {
             message = "Файлов предыдущей версии в каталоге установки нет — сохранять нечего."
         }
     }
-    if ($NewReleaseSha -and $fileSha -and ($fileSha -eq $NewReleaseSha)) {
-        # В {app} уже лежат файлы НОВОГО релиза: это результат работы мастера
-        # установки, а не прежняя версия.
-        $message = "Файлы каталога установки уже заменены новой версией — снимок прежней версии невозможен."
-        Write-HrmSnapshotResultFile -Path $ResultFile -Status "failed" -Reason "files_replaced" -ReleaseSha $identity
-        return [pscustomobject]@{
-            saved = $false; verified = $false; skipped = $false; reason = "files_replaced"
-            message = $message
-        }
-    }
-
     # Снимок этой же версии уже есть (например, установка уже обновлялась и
-    # откатывалась): второй раз не копируем.
+    # откатывалась): второй раз не копируем. Этот случай проверяется ДО
+    # сравнения с новым пакетом: после прерванной установки {app} может уже
+    # содержать новый release.json, но валидный снимок старой версии позволяет
+    # безопасно продолжить восстановление.
     $existing = Resolve-HrmPreviousSnapshot -StateDir $StateDir -ReleaseSha $identity
     if ($existing.usable) {
         $metadata = $existing.metadata
@@ -507,6 +499,16 @@ function Save-HrmVerifiedPreviousSnapshot {
         return [pscustomobject]@{
             saved = $false; verified = $true; skipped = $true; reason = "reused"
             message = "Проверенный снимок этой версии уже сохранён."
+        }
+    }
+    if ($NewReleaseSha -and $fileSha -and ($fileSha -eq $NewReleaseSha)) {
+        # В {app} уже лежат файлы НОВОГО релиза, а валидного снимка прежней
+        # версии нет: это результат прерванной установки, и продолжать нельзя.
+        $message = "Файлы каталога установки уже заменены новой версией — снимок прежней версии невозможен."
+        Write-HrmSnapshotResultFile -Path $ResultFile -Status "failed" -Reason "files_replaced" -ReleaseSha $identity
+        return [pscustomobject]@{
+            saved = $false; verified = $false; skipped = $false; reason = "files_replaced"
+            message = $message
         }
     }
     if ($fileSha -and $identity -and $fileSha -ne $identity) {

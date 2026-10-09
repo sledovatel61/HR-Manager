@@ -694,6 +694,10 @@ function Update-HrmApp {
     # (docs/UPDATE_GUIDE.md, «Правило прежней идентичности»).
     $recordShaForEnv = ""
     if ($record.PSObject.Properties["release_sha"] -and $record.release_sha) { $recordShaForEnv = [string]$record.release_sha }
+    # В старой установке license_public_key.b64 мог ещё отсутствовать в
+    # StateDir. Восстанавливаем публичный ключ из доверенного snapshot до
+    # генерации pilot.env, иначе обязательная Compose-переменная будет пустой.
+    $null = Install-HrmLicensePublicKey -SourceDir $InstallDir -InstallDir $ReleaseDir -StateDir $StateDir
     $null = Write-HrmPilotEnv $StateDir $recordShaForEnv $port
 
     if (-not (Test-HrmUpdateLockAvailable $StateDir)) {

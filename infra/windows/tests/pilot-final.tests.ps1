@@ -543,6 +543,11 @@ Test-Case "предпросмотр обновления: та же версия
     Install-HrmApp -SourceDir $source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
     $preview = Get-HrmUpdatePreview -ReleaseDir $source -InstallDir $install -StateDir $state
     Assert-HrmTrue ([bool]$preview.same_version) "одинаковый release_sha должен давать same_version=true"
+    $keyBefore = Get-HrmLicensePublicKey $state
+    Remove-Item (Join-Path $state "license_public_key.b64") -Force
+    Install-HrmApp -SourceDir $source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    Assert-HrmEqual $keyBefore (Get-HrmLicensePublicKey $state) "повторная установка не восстановила ключ"
+    Assert-HrmContains (Get-Content (Get-HrmEnvFile $state) -Raw -Encoding UTF8) ("HRM_LICENSE_PUBLIC_KEY=" + $keyBefore) "повторная установка записала пустой ключ"
     Remove-Item $source -Recurse -Force -ErrorAction SilentlyContinue
 }
 
@@ -567,6 +572,7 @@ Test-Case "обновление поверх сохраняет лицензию
     Assert-HrmTrue ((Get-HrmLanConfig $state).enabled) "LAN не включился до обновления"
     $world.RemovedVolumes = @()
     $world.BackupNowCount = 0
+    Remove-Item (Join-Path $state "license_public_key.b64") -Force
     # Обновление поверх (как второй Setup.exe новой версии).
     Install-HrmApp -SourceDir $sourceN2 -InstallDir $install -StateDir $state -Port 8080 | Out-Null
     # 1) Лицензия/ключ проверки, секреты, порт и LAN не потеряны.

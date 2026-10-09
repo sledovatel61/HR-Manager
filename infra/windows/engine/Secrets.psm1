@@ -218,7 +218,7 @@ function Write-HrmPilotEnv {
     # placeholder, который сервер никогда не применит: пользователи уже
     # существуют, обмен закрыт (store_pilot_exchange не срабатывает).
     $state = Get-HrmInstallRecord $StateDir
-    if ($null -eq $state -or -not $state.pilot_created) {
+    if (-not [bool](Get-HrmInstallRecordField -Record $state -Field "pilot_created" -Default $false)) {
         $exchange = Get-HrmSecret $StateDir "HRM_EXCHANGE_TOKEN"
     }
     else {

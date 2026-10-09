@@ -259,6 +259,9 @@ function Install-HrmApp {
             Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message
             throw $prepare.message
         }
+        # Восстановление runtime-ключа и окружения нужно ДО первого Compose.
+        $null = Install-HrmLicensePublicKey -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
+        $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $existingPort
         if (Test-HrmComposeRunning $InstallDir $StateDir) {
             Write-HrmLog "info" "Приложение уже запущено."
         }
@@ -268,7 +271,6 @@ function Install-HrmApp {
             if (-not $stack.ok) { throw $stack.message }
             Wait-HrmReady (Get-HrmBaseUrl $existingPort)
         }
-        $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $existingPort
         Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $existingPort
         Start-HrmSupervisorIfUserSession -InstallDir $InstallDir -StateDir $StateDir | Out-Null
         Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "HR Manager запущен."
