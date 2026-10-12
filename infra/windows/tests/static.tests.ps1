@@ -91,19 +91,41 @@ Test-Case "внешние процессы запускаются только �
     }
 }
 
-Test-Case "разрешённые имена внешних команд — только белый список" {
+Test-Case "разрешённые имена внешних команд — только белый список; CLI контейнеров — из единственного резолвера" {
     # wsl.exe — только чтение состояния WSL2 (--list/--status), без изменений системы.
-    $allowed = @("docker", "docker.exe", "icacls.exe", "git.exe", "netsh", "netsh.exe", "wsl.exe")
+    # Имени CLI контейнеров в списке больше нет: литерал запрещён, вызов идёт
+    # разрешённым путём (Invoke-HrmDocker → Get-HrmDockerCliPath).
+    $allowed = @("icacls.exe", "git.exe", "netsh", "netsh.exe", "wsl.exe")
     foreach ($file in Get-HrmEngineFiles) {
         $text = Get-Content -Path $file -Raw -Encoding UTF8
-        $matches = [regex]::Matches($text, 'Invoke-HrmExternal\s+-Name\s+"([^"]+)"')
-        foreach ($m in $matches) {
-            $name = $m.Groups[1].Value
-            if ($allowed -notcontains $name) {
-                throw ("Запрещённая внешняя команда '{0}' в {1}" -f $name, $file)
+        # Не $matches: это автоматическая переменная, и `-notmatch` ниже затирал бы её.
+        $callSites = [regex]::Matches($text, 'Invoke-HrmExternal\s+-Name\s+("([^"]+)"|\$([A-Za-z_][A-Za-z0-9_]*))')
+        foreach ($m in $callSites) {
+            if ($m.Groups[2].Success) {
+                $name = $m.Groups[2].Value
+                if ($allowed -notcontains $name) {
+                    throw ("Запрещённая внешняя команда '{0}' в {1}" -f $name, $file)
+                }
+                continue
+            }
+            # Переменная допустима только как результат ЕДИНСТВЕННОГО резолвера
+            # CLI контейнеров (Get-HrmDockerCliPath в Docker.psm1): иначе имя
+            # команды могло бы прийти откуда угодно, и белый список перестал бы
+            # что-либо значить.
+            $variable = '$' + $m.Groups[3].Value
+            $fromResolver = "(?m)^\s*" + [regex]::Escape($variable) + "\s*=\s*(\[string\]\s*)?\(?Get-HrmDockerCliPath\b"
+            if ($text -notmatch $fromResolver) {
+                throw ("Имя внешней команды в переменной {0} получено не из Get-HrmDockerCliPath: {1}" -f $variable, $file)
             }
         }
     }
+    # Резолвер ровно один и живёт рядом с детекцией Docker — иначе детекция
+    # («Docker установлен») и фактические вызовы снова разойдутся.
+    $resolvers = @(Get-ChildItem -Path $EngineDir -File -Filter *.psm1 | Where-Object {
+            (Get-Content -Path $_.FullName -Raw -Encoding UTF8) -match "function Get-HrmDockerCliPath\b"
+        })
+    Assert-HrmEqual 1 $resolvers.Count "резолвер CLI контейнеров должен быть ровно один"
+    Assert-HrmContains $resolvers[0].Name "Docker.psm1" "резолвер CLI должен жить в Docker.psm1"
 }
 
 Test-Case "все действия ValidateSet реализованы в switch входной точки" {
