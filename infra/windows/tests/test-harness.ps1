@@ -85,6 +85,29 @@ function Assert-HrmThrows {
     throw $Message
 }
 
+# --- Переопределения состояния Docker (тестовый пин CLI) --------------------
+
+# Пин накладывается поверх набора конкретного теста: движковый
+# Set-HrmDockerOverride (Docker.psm1) ЗАМЕНЯЕТ набор переопределений целиком,
+# поэтому тесты, задающие свои ключи (`@{ port_free = $false; free_port = … }`),
+# стирали бы базовые значения (свободный порт, путь CLI). С путём CLI это
+# особенно важно: без него резолвер уходил бы в реальные каталоги машины — на
+# раннере с Docker это полный путь, на машине без Docker вообще ничего, — и
+# тесты перестали бы быть детерминированными. Тест по-прежнему может задать
+# ключ явно (включая `cli_path = ""` — «CLI не найден»): его значение важнее.
+$script:HrmDockerOverridePins = @{}
+
+function Set-HrmDockerOverride {
+    param([hashtable]$State)
+    $merged = @{}
+    foreach ($key in $script:HrmDockerOverridePins.Keys) { $merged[$key] = $script:HrmDockerOverridePins[$key] }
+    foreach ($key in $State.Keys) { $merged[$key] = $State[$key] }
+    # Движковую функцию зовём по имени модуля: эта обёртка перекрывает её в
+    # области видимости теста, а модуль должен остаться единственным местом,
+    # где живёт состояние переопределений.
+    Docker\Set-HrmDockerOverride -State $merged
+}
+
 # --- Загрузка движка с изоляцией --------------------------------------------
 
 function Initialize-HrmTestEngine {
@@ -134,7 +157,10 @@ function Initialize-HrmTestEngine {
     # Get-NetTCPConnection на машине CI делал бы результат установки
     # недетерминированным (занятый порт 8080 подменил бы его на свободный).
     # Тесты занятого порта включают port_free=false и задают free_port явно.
-    Set-HrmDockerOverride @{ port_free = $true }
+    # Путь CLI контейнеров пиннится голым именем: движок обязан резолвить CLI
+    # (Invoke-HrmDocker), а «настоящий» путь с раннера сделал бы тесты зависимыми
+    # от того, установлен ли там Docker.
+    Set-HrmDockerOverride @{ port_free = $true; cli_path = "docker.exe" }
     New-Item -ItemType Directory -Path $env:HRM_STATE_DIR -Force | Out-Null
     New-Item -ItemType Directory -Path $env:HRM_INSTALL_DIR -Force | Out-Null
 }
@@ -191,6 +217,16 @@ function Get-HrmMockUriPort {
     $match = [regex]::Match([string]$Uri, "://[^:/]+:(\d+)")
     if ($match.Success) { return $match.Groups[1].Value }
     return ""
+}
+
+function Get-HrmMockCliName {
+    # Базовое имя внешней команды для мок-мира: движок вызывает CLI контейнеров
+    # РАЗРЕШЁННЫМ путём (например C:\Users\…\DockerDesktop\resources\bin\docker.exe),
+    # поэтому моки сопоставляются по имени файла — иначе перестали бы совпадать
+    # и голое имя из пина харнесса, и полный путь реальной установки.
+    param([string]$Name)
+    if (-not $Name) { return "" }
+    try { return [System.IO.Path]::GetFileName($Name) } catch { return $Name }
 }
 
 function New-HrmMockWorld {
@@ -266,7 +302,8 @@ function New-HrmMockWorld {
     Set-HrmExternalMock {
         param($Name, $Arguments, $Stdin, $IgnoreExitCode)
         $global:HRM_MockWorld.Calls += [pscustomobject]@{ Name = $Name; Args = @($Arguments); Stdin = $Stdin }
-        if ($Name -eq "docker.exe" -or $Name -eq "docker") {
+        $cliName = Get-HrmMockCliName $Name
+        if ($cliName -eq "docker.exe" -or $cliName -eq "docker") {
             if ($global:HRM_MockWorld.DockerMissing) {
                 return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "'docker' is not recognized" }
             }
