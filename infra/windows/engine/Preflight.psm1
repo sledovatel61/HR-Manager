@@ -63,7 +63,7 @@ function Test-HrmDockerCli {
 
     $override = Get-HrmPreflightOverrideResult "docker"
     if ($null -ne $override) { return $override }
-    $found = Invoke-HrmExternal -Name "docker.exe" -Arguments @("--version") -IgnoreExitCode
+    $found = Invoke-HrmDocker -Arguments @("--version") -IgnoreExitCode
     if ($found.ExitCode -ne 0) {
         return [pscustomobject]@{ Name = "docker"; Passed = $false; Message = "Docker CLI не найден. Установите Docker Desktop только с официального сайта docker.com (лицензия принимается вручную)." }
     }
@@ -74,7 +74,7 @@ function Test-HrmDockerDaemon {
 
     $override = Get-HrmPreflightOverrideResult "daemon"
     if ($null -ne $override) { return $override }
-    $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
+    $info = Invoke-HrmDocker -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
     if ($info.ExitCode -ne 0) {
         return [pscustomobject]@{ Name = "daemon"; Passed = $false; Message = "Демон Docker не запущен (запустите Docker Desktop и подождите инициализацию WSL2)." }
     }
@@ -86,7 +86,7 @@ function Test-HrmComposeVersion {
     $override = Get-HrmPreflightOverrideResult "compose"
     if ($null -ne $override) { return $override }
     # Требуется Compose v2 (плагин docker compose), минимум 2.24 (тег !reset).
-    $out = Invoke-HrmExternal -Name "docker.exe" -Arguments @("compose", "version", "--short") -IgnoreExitCode
+    $out = Invoke-HrmDocker -Arguments @("compose", "version", "--short") -IgnoreExitCode
     if ($out.ExitCode -ne 0 -or -not $out.Stdout) {
         return [pscustomobject]@{ Name = "compose"; Passed = $false; Message = "Плагин Docker Compose v2 не найден (`docker compose version`)." }
     }
@@ -175,7 +175,7 @@ function Test-HrmConfigFiles {
     if (Test-Path $envFile) { $args += @("--env-file", $envFile) }
     foreach ($composeFile in $composeFiles) { $args += @("-f", $composeFile) }
     $args += @("config", "--quiet")
-    $check = Invoke-HrmExternal -Name "docker.exe" -Arguments $args -IgnoreExitCode
+    $check = Invoke-HrmDocker -Arguments $args -IgnoreExitCode
     if ($check.ExitCode -ne 0) {
         return [pscustomobject]@{ Name = "config"; Passed = $false; Message = "Конфигурация невалидна: " + (Redact-HrmText $check.Stderr.Trim()) }
     }
