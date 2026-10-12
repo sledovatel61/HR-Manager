@@ -21,6 +21,11 @@
 Set-StrictMode -Version 2.0
 
 $script:DockerOverride = $null
+# База переопределений (тестовый шов): Set-HrmDockerOverride заменяет набор
+# целиком, поэтому договорённости, на которые опирается весь прогон (свободный
+# порт, путь CLI контейнеров), хранятся отдельно и не стираются, когда тест
+# задаёт свои ключи. Значения теста важнее базы.
+$script:DockerOverrideDefaults = $null
 
 $script:DockerInstallerUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
 $script:DockerDownloadPage = "https://www.docker.com/products/docker-desktop/"
@@ -71,12 +76,27 @@ $script:DockerRequiredComposeMinor = 24
 
 # --- Тестовые переопределения -------------------------------------------------
 
+function Set-HrmDockerOverrideDefaults {
+    # База переопределений, которая действует и в тестах, задающих свои ключи.
+    # Нужна из-за того, что Set-HrmDockerOverride заменяет набор целиком: без неё
+    # прогон зависел бы от машины (например, путь CLI контейнеров резолвился бы
+    # в реальной установке Docker, а не в мок-мире).
+    param([hashtable]$State)
+    $script:DockerOverrideDefaults = $State
+}
+
 function Set-HrmDockerOverride {
     # Ключи: desktop, cli, cli_path (путь CLI контейнеров; "" — «не найден»),
     # engine, wsl, virtualization, admin, reboot, port_free, free_mb,
     # desktop_path, install_result, install_signature.
+    # Набор теста накладывается поверх базы (Set-HrmDockerOverrideDefaults).
     param([hashtable]$State)
-    $script:DockerOverride = $State
+    $merged = @{}
+    if ($null -ne $script:DockerOverrideDefaults) {
+        foreach ($key in $script:DockerOverrideDefaults.Keys) { $merged[$key] = $script:DockerOverrideDefaults[$key] }
+    }
+    foreach ($key in $State.Keys) { $merged[$key] = $State[$key] }
+    $script:DockerOverride = $merged
 }
 
 function Clear-HrmDockerOverride { $script:DockerOverride = $null }
