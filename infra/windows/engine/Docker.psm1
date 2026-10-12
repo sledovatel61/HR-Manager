@@ -72,8 +72,9 @@ $script:DockerRequiredComposeMinor = 24
 # --- Тестовые переопределения -------------------------------------------------
 
 function Set-HrmDockerOverride {
-    # Ключи: desktop, cli, engine, wsl, virtualization, admin, reboot, port_free,
-    # free_mb, desktop_path, install_result, install_signature.
+    # Ключи: desktop, cli, cli_path (путь CLI контейнеров; "" — «не найден»),
+    # engine, wsl, virtualization, admin, reboot, port_free, free_mb,
+    # desktop_path, install_result, install_signature.
     param([hashtable]$State)
     $script:DockerOverride = $State
 }
@@ -140,11 +141,9 @@ function Get-HrmDockerDesktopPath {
     return ""
 }
 
-function Get-HrmDockerCliPath {
-    # Путь к CLI контейнеров без запуска процесса и без Get-Command: известные
-    # каталоги Docker Desktop, затем каталоги из PATH (проверка Test-Path).
-    $override = Get-HrmDockerOverrideValue "cli_path"
-    if ($null -ne $override) { return [string]$override }
+function Get-HrmDockerCliDirs {
+    # Известные каталоги CLI контейнеров (без обращения к PATH). Один список для
+    # резолвера и для отчёта «где искали» в отказе — иначе они разойдутся.
     $dirs = @()
     if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin") }
     $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
@@ -155,7 +154,19 @@ function Get-HrmDockerCliPath {
     # каталог, поэтому он проверяется явно, до перебора PATH.
     if ($env:LOCALAPPDATA) { $dirs += (Join-Path $env:LOCALAPPDATA "Programs\DockerDesktop\resources\bin") }
     if ($env:LOCALAPPDATA) { $dirs += (Join-Path $env:LOCALAPPDATA "Docker\Docker\resources\bin") }
-    foreach ($dir in $dirs) {
+    return $dirs
+}
+
+function Get-HrmDockerCliPath {
+    # ЕДИНСТВЕННАЯ точка разрешения CLI контейнеров — её используют и детекция
+    # («Docker установлен»), и фактические вызовы (Invoke-HrmDocker в
+    # Common.psm1). Иначе детекция находит CLI в пользовательском каталоге
+    # Docker Desktop, а вызов идёт голым именем через PATH процесса и падает.
+    # Без запуска процесса и без Get-Command: известные каталоги Docker Desktop,
+    # затем каталоги из PATH (проверка Test-Path). "" — CLI не найден.
+    $override = Get-HrmDockerOverrideValue "cli_path"
+    if ($null -ne $override) { return [string]$override }
+    foreach ($dir in (Get-HrmDockerCliDirs)) {
         $candidate = Join-Path $dir "docker.exe"
         if (Test-Path $candidate) { return $candidate }
     }
@@ -165,6 +176,17 @@ function Get-HrmDockerCliPath {
         if (Test-Path $candidate) { return $candidate }
     }
     return ""
+}
+
+function Get-HrmDockerCliSearchPlaces {
+    # Человекочитаемый перечень проверенных мест для отказа «CLI не найден»:
+    # только ожидаемые каталоги CLI и факт перебора PATH — без дампа окружения
+    # и без списка каталогов PATH (в нём могут быть имена пользователя).
+    $places = @()
+    foreach ($dir in (Get-HrmDockerCliDirs)) { $places += (Join-Path $dir "docker.exe") }
+    $pathDirs = @($env:PATH -split ";" | Where-Object { $_ -and $_.Trim() })
+    if ($pathDirs.Count -gt 0) { $places += ("каталоги из PATH ({0} шт.)" -f $pathDirs.Count) }
+    return $places
 }
 
 function Get-HrmDockerInstallerUrl {
@@ -413,11 +435,12 @@ function Get-HrmFreeSpaceMb {
 function Test-HrmDockerEngineReady {
     $override = Get-HrmDockerOverrideValue "engine"
     if ($null -ne $override) { return [bool]$override }
-    # CLI контейнеров может отсутствовать в PATH скрытого процесса
-    # (пользовательская установка Docker Desktop): Win32Exception при запуске —
-    # это «не готов», а не падение всего ожидания с fatal.
+    # Вызов идёт через Invoke-HrmDocker: CLI резолвится разрешённым путём, а не
+    # голым именем через PATH скрытого процесса (пользовательская установка
+    # Docker Desktop). Если CLI не найден, проверка получает структурированный
+    # отказ (ExitCode 127) и честно сообщает «не готов» вместо падения с fatal.
     try {
-        $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
+        $info = Invoke-HrmDocker -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
     }
     catch { return $false }
     return ($info.ExitCode -eq 0 -and [bool]$info.Stdout)
@@ -434,7 +457,7 @@ function Test-HrmDockerLinuxEngineReady {
     $engineOverride = Get-HrmDockerOverrideValue "engine"
     if ($null -ne $engineOverride) { return [bool]$engineOverride }
     try {
-        $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.OSType}}") -IgnoreExitCode
+        $info = Invoke-HrmDocker -Arguments @("info", "--format", "{{.OSType}}") -IgnoreExitCode
     }
     catch { return $false }
     return ($info.ExitCode -eq 0 -and ($info.Stdout.Trim() -eq "linux"))
