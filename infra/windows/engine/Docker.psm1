@@ -120,6 +120,13 @@ function Get-HrmDockerDesktopPath {
         }
     }
     if ($env:ProgramFiles) { $candidates += (Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe") }
+    # Пользовательская установка Docker Desktop (без администратора, вариант по
+    # умолчанию в 2026): %LOCALAPPDATA%\Programs\DockerDesktop. На живой машине
+    # (диагностика 12.10.2026) EXE лежал именно здесь, а среди кандидатов этого
+    # каталога не было — движок зависал на ожидании Engine, хотя Docker Desktop
+    # был установлен. Реестр может не содержать путь (перенос/ручная установка),
+    # поэтому каталог проверяется явно.
+    if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA "Programs\DockerDesktop\Docker Desktop.exe") }
     if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA "Docker\Docker Desktop.exe") }
     foreach ($candidate in $candidates) {
         if (-not $candidate) { continue }
@@ -142,6 +149,11 @@ function Get-HrmDockerCliPath {
     if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin") }
     $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
     if ($programFilesX86) { $dirs += (Join-Path $programFilesX86 "Docker\Docker\resources\bin") }
+    # Пользовательская установка Docker Desktop (без администратора): CLI лежит в
+    # %LOCALAPPDATA%\Programs\DockerDesktop\resources\bin (подтверждено на живой
+    # машине 12.10.2026). PATH скрытого процесса движка может не содержать этот
+    # каталог, поэтому он проверяется явно, до перебора PATH.
+    if ($env:LOCALAPPDATA) { $dirs += (Join-Path $env:LOCALAPPDATA "Programs\DockerDesktop\resources\bin") }
     if ($env:LOCALAPPDATA) { $dirs += (Join-Path $env:LOCALAPPDATA "Docker\Docker\resources\bin") }
     foreach ($dir in $dirs) {
         $candidate = Join-Path $dir "docker.exe"
@@ -331,7 +343,12 @@ function Test-HrmRebootPending {
 
 function Find-HrmFreePort {
     # Подбор свободного порта (по умолчанию от 8080 вверх, максимум 20 попыток).
+    # Возвращает 0, если свободный порт не найден, — вызывающий обязан честно
+    # отказать, а не публиковать стек на занятом порту.
+    # Тестовый шов: free_port (детерминированный результат подбора).
     param([int]$StartPort = 8080, [int]$Attempts = 20)
+    $override = Get-HrmDockerOverrideValue "free_port"
+    if ($null -ne $override) { return [int]$override }
     for ($port = $StartPort; $port -lt ($StartPort + $Attempts); $port++) {
         try {
             $listeners = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
@@ -354,6 +371,30 @@ function Test-HrmPortAvailable {
     catch { return $true }
 }
 
+function Test-HrmPortServedByPilot {
+    # Порт занят НАШИМ собственным пилотным стеком: /api/ops/status на этом порту
+    # отвечает приложением с окружением pilot. Чужой dev-стек HR Manager
+    # (APP_ENV=development) и любое стороннее приложение пилотом НЕ считаются:
+    # их HTTP 200 не принадлежит целевой установке (диагностика 12.10.2026 —
+    # на 8080 отвечал старый development-стек). Только чтение, без секретов.
+    param([int]$Port = 0)
+    $port = Get-HrmPort $Port
+    try {
+        $result = Invoke-HrmHttp -Uri ("http://127.0.0.1:{0}/api/ops/status" -f $port)
+    }
+    catch { return $false }
+    if ($result.StatusCode -ne 200 -and $result.StatusCode -ne 503) { return $false }
+    $body = $result.Body
+    if ($null -eq $body) { return $false }
+    if ($body -is [string]) {
+        # 503 приходит сырой строкой (Invoke-HrmHttp): пробуем разобрать JSON.
+        try { $body = ($body | ConvertFrom-Json) } catch { return $false }
+    }
+    if ($null -eq $body -or $body -is [string]) { return $false }
+    if (-not $body.PSObject.Properties["environment"]) { return $false }
+    return ([string]$body.environment -eq "pilot")
+}
+
 function Get-HrmFreeSpaceMb {
     param([string]$Path)
     $override = Get-HrmDockerOverrideValue "free_mb"
@@ -372,7 +413,13 @@ function Get-HrmFreeSpaceMb {
 function Test-HrmDockerEngineReady {
     $override = Get-HrmDockerOverrideValue "engine"
     if ($null -ne $override) { return [bool]$override }
-    $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
+    # docker.exe может отсутствовать в PATH скрытого процесса (пользовательская
+    # установка Docker Desktop): Win32Exception при запуске — это «не готов»,
+    # а не падение всего ожидания с fatal.
+    try {
+        $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
+    }
+    catch { return $false }
     return ($info.ExitCode -eq 0 -and [bool]$info.Stdout)
 }
 
@@ -386,7 +433,10 @@ function Test-HrmDockerLinuxEngineReady {
     if ($null -ne $override) { return [bool]$override }
     $engineOverride = Get-HrmDockerOverrideValue "engine"
     if ($null -ne $engineOverride) { return [bool]$engineOverride }
-    $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.OSType}}") -IgnoreExitCode
+    try {
+        $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.OSType}}") -IgnoreExitCode
+    }
+    catch { return $false }
     return ($info.ExitCode -eq 0 -and ($info.Stdout.Trim() -eq "linux"))
 }
 
@@ -416,6 +466,9 @@ function Wait-HrmDockerEngine {
 
 function Start-HrmDockerDesktop {
     # Запуск установленного Docker Desktop. Возвращает @{ started; message }.
+    # В постоянный журнал пишутся выбранный путь, факт запуска, PID (если
+    # доступен) и результат: диагностика 12.10.2026 показала, что без этих
+    # данных ожидание Engine выглядит как «просто таймаут 300 секунд».
     param([int]$TimeoutSeconds = 300)
     $desktop = Get-HrmDockerDesktopState
     if ($desktop.state -eq "engine_ready") {
@@ -424,20 +477,62 @@ function Start-HrmDockerDesktop {
     if ($desktop.state -eq "not_installed") {
         throw "Docker Desktop не установлен. Установите его официальным установщиком (мастер установки HR Manager предложит это одной кнопкой)."
     }
+    $launchedProcess = $null
     if ($desktop.state -eq "installed_stopped") {
         if (-not $desktop.path) {
             # Не исключение: prepare/supervisor должны вернуть понятный код
             # состояния и текст («без crash-loop»), а не падать у пользователя.
+            Write-HrmLog "warn" "Docker Desktop установлен (есть CLI/процесс), но путь к EXE не найден: ни реестр, ни стандартные каталоги не дали результата."
             return [pscustomobject]@{
                 started = $false
                 message = "Не удалось найти Docker Desktop. Откройте Docker Desktop из меню «Пуск», дождитесь надписи «Engine running» и нажмите «Повторить»."
             }
         }
-        Write-HrmLog "info" "Запускаем Docker Desktop…"
-        Start-HrmDetached -FilePath $desktop.path -WorkingDirectory (Split-Path $desktop.path -Parent) | Out-Null
+        Write-HrmLog "info" ("Запускаем Docker Desktop… (путь: {0})" -f $desktop.path)
+        try {
+            $launchedProcess = Start-HrmDetached -FilePath $desktop.path -WorkingDirectory (Split-Path $desktop.path -Parent)
+        }
+        catch {
+            # Ошибка запуска EXE (файл заблокирован, повреждён, нет прав) — это
+            # конкретная причина, а не повод молча ждать Engine 300 секунд.
+            $reason = Redact-HrmText $_.Exception.Message
+            Write-HrmLog "error" ("Не удалось запустить Docker Desktop ({0}): {1}" -f $desktop.path, $reason)
+            return [pscustomobject]@{
+                started = $false
+                message = ("Не удалось запустить Docker Desktop ({0}): {1}. Откройте Docker Desktop вручную из меню «Пуск», дождитесь надписи «Engine running» и нажмите «Повторить»." -f $desktop.path, $reason)
+            }
+        }
+        $launchedPid = 0
+        try {
+            if ($null -ne $launchedProcess -and $launchedProcess.PSObject.Properties["Id"]) { $launchedPid = [int]$launchedProcess.Id }
+        }
+        catch { $launchedPid = 0 }
+        if ($launchedPid -gt 0) { Write-HrmLog "info" ("Docker Desktop запущен (PID {0})." -f $launchedPid) }
+        else { Write-HrmLog "info" "Docker Desktop запущен (PID недоступен)." }
     }
     else {
         Write-HrmLog "info" "Docker Desktop уже запускается — продолжаем ожидание."
+    }
+    # Быстрый контроль старта: если процесс завершился сразу (диалог лицензии,
+    # ошибка WSL2, другая учетная запись), ждать Engine весь таймаут бессмысленно.
+    # Одна короткая пауза вместо цикла: живой процесс ничего не ждёт лишнего.
+    $earlyExitMessage = ""
+    if ($null -ne $launchedProcess -and $launchedProcess.PSObject.Properties["HasExited"]) {
+        Start-Sleep -Seconds (Get-HrmWaitIntervalSeconds 5)
+        if (Test-HrmDockerEngineReady) {
+            return [pscustomobject]@{ started = $true; message = "Docker Engine готов." }
+        }
+        $exited = $false
+        try { $exited = [bool]$launchedProcess.HasExited } catch { $exited = $false }
+        if ($exited) {
+            $exitCode = -1
+            try { $exitCode = [int]$launchedProcess.ExitCode } catch { $exitCode = -1 }
+            $earlyExitMessage = ("Docker Desktop завершился сразу после запуска (код {0}). Возможные причины: не принято лицензионное соглашение Docker, требуется перезагрузка Windows или обновление WSL2. Откройте Docker Desktop вручную и дождитесь надписи «Engine running», затем нажмите «Повторить»." -f $exitCode)
+            Write-HrmLog "error" $earlyExitMessage
+        }
+    }
+    if ($earlyExitMessage) {
+        return [pscustomobject]@{ started = $false; message = $earlyExitMessage }
     }
     $ready = Wait-HrmDockerEngine -TimeoutSeconds $TimeoutSeconds
     if (-not $ready) {
@@ -738,10 +833,26 @@ function Get-HrmSetupProgressPlan {
     }
     $port = Get-HrmPort $Port
     $portFree = Test-HrmPortAvailable -Port $port
+    $portServedByPilot = $false
+    if (-not $portFree) { $portServedByPilot = Test-HrmPortServedByPilot -Port $port }
+    $portDetail = ("Порт {0} свободен." -f $port)
+    $portStatus = "ok"
+    if (-not $portFree -and $portServedByPilot) {
+        # Порт занят нашим же пилотом — это не чужая программа, а работающее
+        # приложение этой установки. Порт сохраняется.
+        $portDetail = ("Порт {0} занят собственным приложением HR Manager (пилот работает на нём)." -f $port)
+    }
+    elseif (-not $portFree) {
+        # Чужое приложение (например, старый development-стек): при запуске
+        # будет подобран свободный порт, и он применяется согласованно — запись
+        # установки, pilot.env, supervisor, readiness, ссылка первого запуска.
+        $portStatus = "warn"
+        $portDetail = ("Порт {0} занят другим приложением. При запуске будет подобран свободный порт и применён в окружении и ярлыке." -f $port)
+    }
     $steps += [pscustomobject]@{
         key = "port"; label = "Проверяем порт приложения"
-        status = if ($portFree) { "ok" } else { "warn" }
-        detail = if ($portFree) { ("Порт {0} свободен." -f $port) } else { ("Порт {0} занят другим приложением." -f $port) }
+        status = $portStatus
+        detail = $portDetail
     }
     $steps += [pscustomobject]@{
         key = "rights"; label = "Проверяем права"
@@ -809,16 +920,47 @@ function Invoke-HrmDockerPrepare {
         if ($pendingKind -eq "reboot") {
             return [pscustomobject]@{
                 ok = $false; state = "reboot_required"; needs_install = $false; needs_reboot = $true
+                port = (Get-HrmPort $Port); port_changed = $false
                 message = "Установка Docker Desktop завершится после перезагрузки Windows. Перезагрузите компьютер — HR Manager продолжит сам."
             }
         }
     }
 
-    if (-not (Test-HrmPortAvailable -Port $Port)) {
-        $freePort = Find-HrmFreePort -StartPort (Get-HrmPort $Port)
-        $port = Get-HrmPort $Port
-        if ($freePort -gt 0 -and $freePort -ne $port) {
-            Write-HrmLog "warn" ("Порт {0} занят. Свободен порт {1} — приложение будет опубликовано на нём." -f $port, $freePort)
+    # --- Порт публикации: занятой порт НЕЛЬЗЯ оставлять «как есть» -------------
+    # Дефект 12.10.2026: свободный порт подбирался и упоминался в журнале, но
+    # $port не менялся — стек публиковался на занятом порту, а в браузере
+    # открывался чужой dev-стек. Теперь подобранный порт возвращается
+    # вызывающему (поле port), и вызывающий ОБЯЗАН применить его согласованно:
+    # pilot.env (HRM_PILOT_PORT), запись установки, supervisor, readiness,
+    # first-run URL и ярлык (см. Sync-HrmPortAfterPrepare, Install.psm1).
+    # Порт, занятый НАШИМ собственным пилотом, сохраняется: это не чужое
+    # приложение, а уже опубликованный стек этой установки.
+    $port = Get-HrmPort $Port
+    $portChanged = $false
+    if (-not (Test-HrmPortAvailable -Port $port)) {
+        if (Test-HrmPortServedByPilot -Port $port) {
+            Write-HrmLog "info" ("Порт {0} занят собственным приложением HR Manager (пилот уже опубликован) — порт сохраняется." -f $port)
+        }
+        else {
+            $freePort = Find-HrmFreePort -StartPort $port
+            if ($freePort -gt 0 -and $freePort -ne $port) {
+                Write-HrmLog "warn" ("Порт {0} занят другим приложением. Приложение будет опубликовано на свободном порту {1}: запись установки и окружение пилота обновляются." -f $port, $freePort)
+                $port = $freePort
+                $portChanged = $true
+            }
+            elseif ($freePort -eq $port) {
+                # Проверка доступности и подбор разошлись (гонка/ошибка учета
+                # слушателей): остаёмся на запрошенном порту, честная заметка.
+                Write-HrmLog "warn" ("Порт {0} считается занятым, но подбор вернул его же — продолжаю на порту {0}." -f $port)
+            }
+            else {
+                $message = ("Порт {0} занят другим приложением, а свободный порт подобрать не удалось (проверено {1} портов подряд, начиная с {0}). Освободите порт (закройте занявшее его приложение) или запустите установку с параметром -Port <свободный порт>." -f $port, 20)
+                Write-HrmLog "error" $message
+                return [pscustomobject]@{
+                    ok = $false; state = "port_busy"; needs_install = $false; needs_reboot = $false
+                    port = $port; port_changed = $false; message = $message
+                }
+            }
         }
     }
 
@@ -830,16 +972,18 @@ function Invoke-HrmDockerPrepare {
         if (-not (Test-HrmDockerLinuxEngineReady)) {
             return [pscustomobject]@{
                 ok = $false; state = "engine_not_linux"; needs_install = $false; needs_reboot = (Test-HrmRebootPending)
+                port = $port; port_changed = $portChanged
                 message = "Docker Engine запущен, но это не Linux-движок: HR Manager работает в Linux-контейнерах. Запустите Docker Desktop с Linux-движком (WSL2) и повторите попытку."
             }
         }
         Clear-HrmPendingDockerOperation $StateDir
-        return [pscustomobject]@{ ok = $true; state = "ready"; message = "Рабочая среда готова."; needs_reboot = $false; needs_install = $false }
+        return [pscustomobject]@{ ok = $true; state = "ready"; message = "Рабочая среда готова."; needs_reboot = $false; needs_install = $false; port = $port; port_changed = $portChanged }
     }
     if ($desktop.state -eq "not_installed") {
         if (-not $AllowInstall) {
             return [pscustomobject]@{
                 ok = $false; state = "docker_missing"; needs_install = $true; needs_reboot = $false
+                port = $port; port_changed = $portChanged
                 message = "Для работы HR Manager нужен Docker Desktop. Нажмите «Установить Docker Desktop» — это официальная программа Docker, установка займёт несколько минут."
             }
         }
@@ -849,14 +993,14 @@ function Invoke-HrmDockerPrepare {
         }
         elseif ($install.status -eq "reboot_required" -or $install.status -eq "already_installed") {
             if ($install.needs_reboot) {
-                return [pscustomobject]@{ ok = $false; state = "reboot_required"; needs_install = $false; needs_reboot = $true; message = $install.message }
+                return [pscustomobject]@{ ok = $false; state = "reboot_required"; needs_install = $false; needs_reboot = $true; port = $port; port_changed = $portChanged; message = $install.message }
             }
             if ($install.status -eq "already_installed") {
                 Clear-HrmPendingDockerOperation $StateDir
             }
         }
         else {
-            return [pscustomobject]@{ ok = $false; state = $install.status; needs_install = ($install.status -eq "uac_declined"); needs_reboot = [bool]$install.needs_reboot; message = $install.message }
+            return [pscustomobject]@{ ok = $false; state = $install.status; needs_install = ($install.status -eq "uac_declined"); needs_reboot = [bool]$install.needs_reboot; port = $port; port_changed = $portChanged; message = $install.message }
         }
         $desktop = Get-HrmDockerDesktopState
     }
@@ -866,23 +1010,25 @@ function Invoke-HrmDockerPrepare {
         try { Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Ожидаем запуск службы контейнеров…" -Busy $true } catch { }
         $start = Start-HrmDockerDesktop -TimeoutSeconds $TimeoutSeconds
         if (-not $start.started) {
-            return [pscustomobject]@{ ok = $false; state = "engine_timeout"; needs_install = $false; needs_reboot = (Test-HrmRebootPending); message = $start.message }
+            return [pscustomobject]@{ ok = $false; state = "engine_timeout"; needs_install = $false; needs_reboot = (Test-HrmRebootPending); port = $port; port_changed = $portChanged; message = $start.message }
         }
     }
     if (-not (Test-HrmDockerEngineReady)) {
         return [pscustomobject]@{
             ok = $false; state = "engine_not_ready"; needs_install = $false; needs_reboot = (Test-HrmRebootPending)
+            port = $port; port_changed = $portChanged
             message = "Служба контейнеров ещё не готова. Подождите минуту и нажмите «Повторить»."
         }
     }
     if (-not (Test-HrmDockerLinuxEngineReady)) {
         return [pscustomobject]@{
             ok = $false; state = "engine_not_linux"; needs_install = $false; needs_reboot = (Test-HrmRebootPending)
+            port = $port; port_changed = $portChanged
             message = "Docker Engine запущен, но это не Linux-движок: HR Manager работает в Linux-контейнерах. Запустите Docker Desktop с Linux-движком (WSL2) и повторите попытку."
         }
     }
     Clear-HrmPendingDockerOperation $StateDir
-    return [pscustomobject]@{ ok = $true; state = "ready"; message = "Рабочая среда готова."; needs_reboot = $false; needs_install = $false }
+    return [pscustomobject]@{ ok = $true; state = "ready"; message = "Рабочая среда готова."; needs_reboot = $false; needs_install = $false; port = $port; port_changed = $portChanged }
 }
 
 function Format-HrmDockerReadiness {

@@ -119,4 +119,78 @@ Test-Case "миграции: ожидаемая голова берётся из
     Assert-HrmEqual "0013" (Get-HrmMigrationsState -InstallDir $install -StateDir $state) "текущая ревизия должна читаться из работающего бэкенда"
 }
 
+Write-Host "== Готовность: принадлежность ответа целевому пилоту и релизу =="
+
+Test-Case "readiness: чужой HTTP 200 на порту не считается готовностью пилота" {
+    $world = New-HrmStackTestContext
+    $world.HealthEnvironment = "development"
+    $baseUrl = "http://127.0.0.1:8080"
+    Assert-HrmFalse (Test-HrmBackendReady $baseUrl) "ответ development-стека не принадлежит пилоту"
+    $thrown = ""
+    try { Wait-HrmReady $baseUrl 1 -ExpectedReleaseSha "sha-expected" } catch { $thrown = $_.Exception.Message }
+    Assert-HrmContains $thrown "ДРУГОЕ приложение" "сообщение должно объяснять, что на порту чужой стек"
+}
+
+Test-Case "readiness: подтверждается только ожидаемый release_sha в работе" {
+    $world = New-HrmStackTestContext
+    $world.OpsBody.release_sha = "sha-current"
+    $baseUrl = "http://127.0.0.1:8080"
+    Assert-HrmTrue (Test-HrmBackendReady $baseUrl) "пилот должен отвечать как pilot"
+    Wait-HrmReady $baseUrl 1 -ExpectedReleaseSha "sha-current"
+    $thrown = ""
+    try { Wait-HrmReady $baseUrl 1 -ExpectedReleaseSha "sha-other" } catch { $thrown = $_.Exception.Message }
+    Assert-HrmContains $thrown "ожидалась" "сообщение должно называть ожидаемую версию"
+}
+
+Write-Host "== Образ ↔ снимок ↔ база: приведение и отказ ДО запуска =="
+
+Test-Case "образы не соответствуют снимку: пересборка и приведение к установленной версии" {
+    $world = New-HrmStackTestContext
+    $install = Get-HrmTestInstallDir
+    New-HrmFakeSnapshot -Root $install -ReleaseSha "snapshot-sha-new"
+    $world.Running = $true
+    $world.ImageReleaseSha = "snapshot-sha-old"
+    $buildsBefore = $world.BuildCount
+    $result = Start-HrmStack -InstallDir $install -StateDir (Get-HrmTestStateDir)
+    Assert-HrmTrue $result.ok "приведение к развёрнутому снимку должно завершиться успешно"
+    Assert-HrmTrue ($world.BuildCount -gt $buildsBefore) "устаревшие образы должны быть пересобраны"
+    Assert-HrmEqual "snapshot-sha-new" $world.ImageReleaseSha "метка образа должна стать меткой развёрнутого снимка"
+}
+
+Test-Case "образы соответствуют снимку: запуск без пересборки" {
+    $world = New-HrmStackTestContext
+    $install = Get-HrmTestInstallDir
+    New-HrmFakeSnapshot -Root $install -ReleaseSha "snapshot-sha-same"
+    $world.Running = $true
+    $world.ImageReleaseSha = "snapshot-sha-same"
+    $buildsBefore = $world.BuildCount
+    $result = Start-HrmStack -InstallDir $install -StateDir (Get-HrmTestStateDir)
+    Assert-HrmTrue $result.ok "запуск должен пройти"
+    Assert-HrmEqual $buildsBefore $world.BuildCount "соответствующие снимку образы пересобирать нельзя"
+}
+
+Test-Case "схема базы новее образа: отказ ДО запуска контейнеров (без crash-loop и без удаления данных)" {
+    $world = New-HrmStackTestContext
+    $world.ContainersJson = '[{"Name":"db","State":"running"},{"Name":"backend","State":"exited"}]'
+    $world.DbRevision = "0022"
+    $world.AlembicHeads = "0021"
+    $upsBefore = $world.UpCount
+    $result = Start-HrmStack -InstallDir (Get-HrmTestInstallDir) -StateDir (Get-HrmTestStateDir)
+    Assert-HrmFalse $result.ok "несовместимая схема не должна приводить к запуску"
+    Assert-HrmEqual "schema_incompatible" $result.state "состояние должно называть несовместимость схемы"
+    Assert-HrmContains $result.message "0022" "сообщение должно называть ревизию базы"
+    Assert-HrmContains $result.message "резервной копии" "сообщение должно подсказывать безопасный путь"
+    Assert-HrmEqual $upsBefore $world.UpCount "контейнеры приложения не должны запускаться"
+    Assert-HrmEqual 0 @($world.RemovedVolumes).Count "тома не должны удаляться"
+}
+
+Test-Case "схема совместима с образом: стек поднимается из частичного состояния" {
+    $world = New-HrmStackTestContext
+    $world.ContainersJson = '[{"Name":"db","State":"running"},{"Name":"backend","State":"exited"}]'
+    $world.DbRevision = "0013"
+    $world.AlembicHeads = "0013"
+    $result = Start-HrmStack -InstallDir (Get-HrmTestInstallDir) -StateDir (Get-HrmTestStateDir)
+    Assert-HrmTrue $result.ok "совместимая схема не должна блокировать запуск"
+}
+
 Write-Host ("Стек: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

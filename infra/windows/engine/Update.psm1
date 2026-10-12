@@ -553,6 +553,19 @@ function Restore-HrmPreviousVersion {
             $problems += ("окружение прежней версии не восстановлено: " + (Redact-HrmText $_.Exception.Message))
         }
     }
+    # СХЕМА ↔ ОБРАЗ ПРЕЖНЕЙ ВЕРСИИ ДО ЗАПУСКА: если база уже ушла на ревизию,
+    # которой прежний образ не знает (миграция применена, откат вернул прежний
+    # код — сценарий 12.10.2026 с «Can't locate revision identified by ...»),
+    # запускать стек бессмысленно: backend ушёл бы в crash-loop. Проверка
+    # положительная — сообщаем конкретную причину и НЕ запускаем контейнеры;
+    # неопределённость (база не читается/образ недоступен) запуск не блокирует.
+    if ($problems.Count -eq 0) {
+        $compat = Test-HrmSchemaCompatibleWithImage -InstallDir $InstallDir -StateDir $StateDir
+        if ($compat.checked -and -not $compat.compatible) {
+            $problems += ("схема базы (ревизия {0}) неизвестна прежней версии приложения (голова миграций образа: {1}) — запуск не выполняется, чтобы не создать бесконечный перезапуск; нужна версия приложения с этой ревизией или восстановление базы из проверенной резервной копии" -f $compat.db_revision, $compat.image_head)
+            Write-HrmLog "error" $compat.message
+        }
+    }
     $started = $false
     if ($problems.Count -eq 0) {
         try {
@@ -829,6 +842,16 @@ function Update-HrmApp {
                 Write-HrmLog "error" ("Docker-гейт: обновление остановлено до фазы prepare (состояние: {0})." -f $prepare.state)
                 throw $prepare.message
             }
+            # Порт публикации: если запись установки указывает на занятый порт
+            # (чужой стек), обновление переходит на свободный порт — так же
+            # согласованно, как при установке: запись установки, pilot.env,
+            # readiness, smoke, ссылка первого запуска и ярлык.
+            $effectivePort = Sync-HrmPortAfterPrepare -InstallDir $InstallDir -StateDir $StateDir -RequestedPort $port -Prepare $prepare
+            if ($effectivePort -ne $port) {
+                $port = $effectivePort
+                $baseUrl = Get-HrmBaseUrl $port
+                $null = Write-HrmPilotEnv $StateDir $recordShaForEnv $port
+            }
         }
 
         # --- prepare: сохранить прежнюю версию и скопировать новый релиз ----
@@ -932,6 +955,13 @@ function Update-HrmApp {
 
         if ($phase -eq "build") {
             Write-HrmLog "info" "Сборка новых образов (работающее приложение не останавливается)…"
+            # pilot.env пишется с release_sha НОВОГО релиза ДО сборки: образы
+            # получают метку hrmanager.release_sha (build.labels в
+            # compose.pilot.yml) именно новой версии. Иначе после успешного
+            # обновления метка образа осталась бы от прежнего релиза и
+            # Start-HrmStack считал бы образы устаревшими. Работающие
+            # контейнеры окружение не перечитывают — их заменяет фаза switch.
+            $null = Write-HrmPilotEnv $StateDir $releaseSha $port
             # Сборка идёт по базовому compose-файлу и пилотному overlay из
             # обновляемого снимка. Overlay намеренно не является автономным.
             $newBaseCompose = Join-Path $releaseDir "infra\docker-compose.yml"
@@ -1073,6 +1103,11 @@ function Update-HrmApp {
                 # Установленная версия не менялась: возвращаем только теги образов
                 # (сборка могла переписать :pilot), контейнеры не перезапускаем.
                 try { Invoke-HrmRollbackImages $previousIds } catch { Write-HrmLog "warn" ("Образы не возвращены по тегам: {0}" -f (Redact-HrmText $_.Exception.Message)) }
+                # pilot.env возвращается к прежней версии: фаза build могла
+                # записать туда release_sha новой сборки, а в работе остаётся
+                # прежняя. Иначе следующий запуск сверял бы окружение с
+                # версией, которой в {app} нет.
+                try { $null = Write-HrmPilotEnv $StateDir $recordShaForEnv $port } catch { Write-HrmLog "warn" ("Прежняя версия в pilot.env не восстановлена: {0}" -f (Redact-HrmText $_.Exception.Message)) }
                 $resultMessage = ("Обновление не удалось: {0} Установленная версия не изменялась и продолжает работать, данные в порядке." -f $failureMessage)
                 Write-HrmLog "info" "Установленная версия не изменялась — приложение продолжает работу."
             }

@@ -54,6 +54,38 @@ function Test-HrmPathInside {
     return $c.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Sync-HrmPortAfterPrepare {
+    # Применение эффективного порта публикации из Invoke-HrmDockerPrepare.
+    # Дефект 12.10.2026: свободный порт подбирался и печатался в журнале, но
+    # НЕ применялся — приложение публиковалось на занятом порту, и браузер
+    # открывал чужой стек. Здесь порт доходит до записи установки (источник
+    # истины для ярлыка, supervisor'а, диагностики и ссылки первого запуска), а
+    # вызывающий сразу перегенерирует pilot.env (HRM_PILOT_PORT) с этим портом.
+    # Возвращает эффективный порт.
+    param(
+        [string]$InstallDir,
+        [string]$StateDir,
+        [int]$RequestedPort = 0,
+        $Prepare = $null
+    )
+    $effective = $RequestedPort
+    if ($null -ne $Prepare -and $Prepare.PSObject.Properties["port"] -and [int]$Prepare.port -gt 0) {
+        $effective = [int]$Prepare.port
+    }
+    # Запрошенный порт: если не задан — порт по умолчанию/из окружения, чтобы
+    # сравнение «изменился или нет» было осмысленным.
+    $requested = $RequestedPort
+    if ($requested -le 0) { $requested = Get-HrmPort 0 }
+    if ($effective -le 0) { $effective = $requested }
+    if ($effective -eq $requested) { return $effective }
+    Write-HrmLog "info" ("Порт публикации изменён: {0} → {1} (прежний занят другим приложением). Он записывается в запись установки и pilot.env, чтобы ярлык, готовность и ссылка первого запуска использовали тот же порт." -f $requested, $effective)
+    $record = Get-HrmInstallRecord $StateDir
+    if ($null -ne $record) {
+        Set-HrmInstallRecord $StateDir @{ port = $effective }
+    }
+    return $effective
+}
+
 function Assert-HrmSnapshotComplete {
     # Снимок приложения полон: по infra\compose.pilot.yml движок собирает стек,
     # backend/ и frontend/ нужны для сборки образов, а infra\license\public_key.b64
@@ -268,30 +300,41 @@ function Install-HrmApp {
             try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
             throw $prepare.message
         }
+        # Эффективный порт применяется согласованно: запись установки, pilot.env,
+        # readiness, ссылка первого запуска и ярлык (ярлык читает запись).
+        $effectivePort = Sync-HrmPortAfterPrepare -InstallDir $InstallDir -StateDir $StateDir -RequestedPort $existingPort -Prepare $prepare
         # Восстановление runtime-ключа и окружения нужно ДО первого Compose.
         # Fail-closed: без ключа операция останавливается с понятным отказом,
         # а не пишет пустую обязательную переменную в pilot.env.
         $null = Assert-HrmLicensePublicKey -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
-        $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $existingPort
-        if (Test-HrmComposeRunning $InstallDir $StateDir) {
-            Write-HrmLog "info" "Приложение уже запущено."
+        $expectedSha = Get-HrmReleaseSha $InstallDir $StateDir
+        $null = Write-HrmPilotEnv $StateDir $expectedSha $effectivePort
+        # Повторный запуск НЕ довольствуется «контейнеры вроде запущены»:
+        # partial/degraded больше не считаются работающим приложением (дефект
+        # 12.10.2026), Start-HrmStack приводит стек и образы к развёрнутому
+        # снимку, а готовность и принадлежность подтверждаются ПОСЛЕ запуска.
+        $stackState = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+        if ($stackState.state -eq "running") {
+            Write-HrmLog "info" "Приложение уже запущено — проверяю готовность и принадлежность этой установке."
         }
         else {
-            Write-HrmLog "info" "Запускаю приложение…"
-            $stack = Start-HrmStack $InstallDir $StateDir
-            if (-not $stack.ok) { throw $stack.message }
-            Wait-HrmReady (Get-HrmBaseUrl $existingPort)
+            Write-HrmLog "info" ("Запускаю приложение… (состояние контейнеров: {0})" -f $stackState.state)
         }
-        Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $existingPort
+        $stack = Start-HrmStack $InstallDir $StateDir
+        if (-not $stack.ok) { throw $stack.message }
+        Wait-HrmReady (Get-HrmBaseUrl $effectivePort) -ExpectedReleaseSha $expectedSha
+        Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $effectivePort
         Start-HrmSupervisorIfUserSession -InstallDir $InstallDir -StateDir $StateDir | Out-Null
         Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "HR Manager запущен."
         return
     }
     # --- Первичная установка (записи установки нет) ---
-    Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port -SkipCompose
     Initialize-HrmStateDir $StateDir
     # Подготовка рабочей среды: Docker Desktop (при разрешении — официальный
     # установщик), WSL2/виртуализация, ожидание Engine. Без Docker дальше нельзя.
+    # Порядок важен: prepare ПЕРВЫМ определяет эффективный порт публикации
+    # (занятый порт заменяется свободным), и предполётная проверка выполняется
+    # уже с ним — иначе установка падала бы на «порт занят» ещё до подбора.
     $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port -AllowInstall:$AllowDockerInstall -Interactive:($AllowDockerInstall -or (Test-HrmInteractive))
     if (-not $prepare.ok) {
         try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
@@ -301,6 +344,9 @@ function Install-HrmApp {
         }
         throw $prepare.message
     }
+    $port = [int]$prepare.port
+    if ($port -le 0) { $port = Get-HrmPort $Port }
+    Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port -SkipCompose
     Protect-HrmFile $StateDir $StateDir
     # Файл ввода первого запуска (если его записал мастер установки)
     # тоже защищается ACL — фамилия владельца не должна читаться другими
@@ -343,7 +389,9 @@ function Install-HrmApp {
 
     $stack = Start-HrmStack $InstallDir $StateDir
     if (-not $stack.ok) { throw $stack.message }
-    Wait-HrmReady (Get-HrmBaseUrl $port)
+    # Готовность и принадлежность: приложение на порту обязано быть пилотом
+    # именно этого релиза, а не чужим стеком или прежней сборкой.
+    Wait-HrmReady (Get-HrmBaseUrl $port) -ExpectedReleaseSha $releaseSha
     Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $port
     Start-HrmSupervisorIfUserSession -InstallDir $InstallDir -StateDir $StateDir | Out-Null
     Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "HR Manager готов."
@@ -363,10 +411,14 @@ function Start-HrmApp {
         try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
         throw $prepare.message
     }
+    $port = Sync-HrmPortAfterPrepare -InstallDir $InstallDir -StateDir $StateDir -RequestedPort $port -Prepare $prepare
     Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
     $stack = Start-HrmStack $InstallDir $StateDir
     if (-not $stack.ok) { throw $stack.message }
-    Wait-HrmReady (Get-HrmBaseUrl $port)
+    # Готовность + принадлежность целевому пилоту и ожидаемому релизу: чужой
+    # HTTP 200 (старый dev-стек на том же порту) или другая версия готовностью
+    # не считаются.
+    Wait-HrmReady (Get-HrmBaseUrl $port) -ExpectedReleaseSha (Get-HrmReleaseSha $InstallDir $StateDir)
     # Управляющий компонент (значок в трее) — единственный supervisor: повторный
     # запуск ничего не дублирует. Наблюдатель канала обновлений живёт внутри
     # supervisor'а, а не в консольном процессе.
@@ -404,10 +456,21 @@ function Get-HrmAppStatus {
     $backend = if ($running) { Test-HrmBackendReady $baseUrl } else { $false }
     $ops = if ($backend) { Get-HrmOpsStatus $baseUrl } else { $null }
 
+    # Состояние контейнеров показывается ЧЕСТНО: partial/degraded (запущена
+    # часть сервисов / сервис нездоров) не выдаются за «запущены».
+    $stackState = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+    $stateText = switch ($stackState.state) {
+        "running" { "запущены" }
+        "partial" { "запущена часть сервисов" }
+        "degraded" { "сервис работает нестабильно" }
+        "stopped" { "остановлены" }
+        "absent" { "не созданы" }
+        default { "состояние неизвестно" }
+    }
     $lines = @()
     $lines += "HR Manager — статус"
     $lines += ("Установлено:      {0}" -f $(if ($record) { [string](Get-HrmInstallRecordField -Record $record -Field "release_sha") } else { "нет" }))
-    $lines += ("Контейнеры:       {0}" -f $(if ($running) { "запущены" } else { "остановлены" }))
+    $lines += ("Контейнеры:       {0}" -f $stateText)
     $lines += ("Фронтенд:         {0}" -f $(if ($frontend) { "готов ($baseUrl)" } else { "недоступен" }))
     $lines += ("Бэкенд:           {0}" -f $(if ($backend) { "готов" } else { "недоступен" }))
     if ($null -ne $ops) {
@@ -418,29 +481,65 @@ function Get-HrmAppStatus {
 }
 
 function Open-HrmApp {
-    param([string]$InstallDir = "", [string]$StateDir = "")
+    # Открытие приложения ярлыком. Дефект 12.10.2026: ярлык открывал браузер
+    # без проверки готовности и принадлежности — на занятом порту отвечал
+    # старый development-стек, и человек видел «чужое» приложение со старыми
+    # данными. Теперь браузер открывается ТОЛЬКО после подтверждения, что на
+    # целевом порту отвечает пилот этой установки и ожидаемого релиза. Если
+    # стек не полностью запущен, образы/файлы разошлись или приложение не
+    # готово — оно приводится к развёрнутому снимку (пересборка образов и
+    # пересоздание контейнеров без удаления данных), и лишь затем открывается
+    # браузер. При невозможности — понятный отказ вместо показа чужого.
+    param([string]$InstallDir = "", [string]$StateDir = "", [int]$ReadyTimeoutSeconds = 180)
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
+    if ($null -eq $record) { throw "Установка HR Manager не найдена. Запустите Setup.exe (установку) заново." }
     $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
     if ($port -le 0) { $port = Get-HrmPort }
-    if (-not (Test-HrmComposeRunning $InstallDir $StateDir)) {
-        Write-HrmLog "info" "Приложение не запущено — запускаю…"
-        $guard = Enter-HrmActionLock -StateDir $StateDir -Action "open"
-        if (-not $guard.acquired) {
-            Write-HrmLog "info" $guard.message
+    $snapshotSha = Get-HrmReleaseSha $InstallDir $StateDir
+    $baseUrl = Get-HrmBaseUrl $port
+
+    $stackState = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+    if ($stackState.state -eq "running") {
+        # Быстрый путь: контейнеры запущены. Готовность и принадлежность
+        # проверяются ДО открытия браузера, а не предполагаются.
+        $identity = Get-HrmAppIdentity $baseUrl
+        $owned = ($identity.available -and $identity.environment -eq "pilot")
+        if ($owned -and $snapshotSha -and $identity.release_sha -ne $snapshotSha) { $owned = $false }
+        if ($owned -and (Test-HrmFrontendReady $baseUrl) -and (Test-HrmBackendReady $baseUrl)) {
+            Invoke-HrmOpenBrowser $baseUrl
             return
         }
-        try {
-            $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port
-            if (-not $prepare.ok) { throw $prepare.message }
-            $stack = Start-HrmStack $InstallDir $StateDir
-            if (-not $stack.ok) { throw $stack.message }
-            Wait-HrmReady (Get-HrmBaseUrl $port)
+        if (-not $owned) {
+            Write-HrmLog "warn" ("Открытие отложено: {0}. Проверяю и привожу приложение к установленному снимку." -f (Format-HrmAppIdentityProblem -Identity $identity -ExpectedReleaseSha $snapshotSha))
         }
-        finally { Exit-HrmActionLock -StateDir $StateDir }
+        else {
+            Write-HrmLog "info" "Контейнеры запущены, но приложение ещё не отвечает — проверяю готовность и при необходимости привожу стек к снимку."
+        }
     }
-    Invoke-HrmOpenBrowser (Get-HrmBaseUrl $port)
+    else {
+        Write-HrmLog "info" ("Приложение не запущено полностью (состояние контейнеров: {0}) — запускаю…" -f $stackState.state)
+    }
+
+    $guard = Enter-HrmActionLock -StateDir $StateDir -Action "open"
+    if (-not $guard.acquired) {
+        Write-HrmLog "info" $guard.message
+        return
+    }
+    try {
+        $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port
+        if (-not $prepare.ok) { throw $prepare.message }
+        $port = Sync-HrmPortAfterPrepare -InstallDir $InstallDir -StateDir $StateDir -RequestedPort $port -Prepare $prepare
+        $baseUrl = Get-HrmBaseUrl $port
+        $null = Assert-HrmLicensePublicKey -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
+        $null = Write-HrmPilotEnv $StateDir $snapshotSha $port
+        $stack = Start-HrmStack $InstallDir $StateDir
+        if (-not $stack.ok) { throw $stack.message }
+        Wait-HrmReady $baseUrl -TimeoutSeconds $ReadyTimeoutSeconds -ExpectedReleaseSha $snapshotSha
+    }
+    finally { Exit-HrmActionLock -StateDir $StateDir }
+    Invoke-HrmOpenBrowser $baseUrl
 }
 
 function Remove-HrmApp {

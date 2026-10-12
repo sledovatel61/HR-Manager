@@ -259,7 +259,21 @@ function Write-HrmPilotEnv {
     else {
         $exchange = "retired-" + (New-HrmHex 16)
     }
-    $port = Get-HrmPort $Port
+    # ВАЖНО: в PowerShell $Port и $port — ОДНА переменная (имена без учета
+    # регистра). Запрошенный порт сохраняется под отдельным именем ДО
+    # вычисления эффективного, иначе проверка «порт не задан» читала бы уже
+    # вычисленное значение и подстановка из записи установки никогда не
+    # срабатывала бы.
+    $requestedPort = $Port
+    $port = Get-HrmPort $requestedPort
+    if ($requestedPort -le 0) {
+        # Без явного порта источник истины — запись установки: иначе повторная
+        # генерация pilot.env вернула бы публикацию на 8080 после того, как
+        # занятый порт был заменён свободным (согласованность Compose, readiness,
+        # ссылки первого запуска и ярлыка).
+        $recordPort = [int](Get-HrmInstallRecordField -Record $state -Field "port" -Default 0)
+        if ($recordPort -gt 0) { $port = $recordPort }
+    }
     $engineToken = Get-HrmSecret $StateDir "HRM_UPDATE_ENGINE_TOKEN"
     # Конфигурация канала обновлений (Phase 13) — серверная/host-конфигурация
     # из channel.json; staging-каталог host отделён от каталога секретов.
@@ -311,6 +325,24 @@ function Write-HrmPilotEnv {
     Set-Content -Path $envFile -Value $lines -Encoding UTF8
     Protect-HrmFile $StateDir $envFile
     return $envFile
+}
+
+function Get-HrmEnvFileValue {
+    # Значение переменной из pilot.env (для СРАВНЕНИЯ, не для печати): нужен,
+    # чтобы понять, совпадает ли окружение с развёрнутым снимком (release_sha,
+    # порт публикации). Сам файл защищён ACL и содержит секреты, поэтому
+    # значения этой функции никогда не пишутся в журнал.
+    param([string]$StateDir, [string]$Name)
+    if (-not $StateDir -or -not $Name) { return "" }
+    $file = Get-HrmEnvFile $StateDir
+    if (-not (Test-Path $file)) { return "" }
+    try {
+        foreach ($line in (Get-Content -Path $file -Encoding UTF8)) {
+            if ($line -match ("^" + [regex]::Escape($Name) + "=(.*)$")) { return $Matches[1].Trim().Trim('"') }
+        }
+    }
+    catch { return "" }
+    return ""
 }
 
 function Get-HrmInstallRecord {
