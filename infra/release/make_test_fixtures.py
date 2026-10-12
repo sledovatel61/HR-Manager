@@ -84,6 +84,14 @@ def build_snapshot(release_sha: str = RELEASE_SHA_VALID, version: str = "0.14.0"
     (SNAPSHOT / "infra" / "compose.pilot.yml").write_text(
         "# test fixture overlay\nname: hr-manager-pilot\n", encoding="utf-8"
     )
+    # Публичный ключ лицензии обязан быть в пакете обновления: движок проверяет
+    # полноту снимка релиза (Assert-HrmSnapshotComplete требует
+    # infra/license/public_key.b64), как и реальный пакет канала (cp -R infra).
+    # Тестовый ключ — открытая часть тестовой пары Ed25519 (детерминированно).
+    (SNAPSHOT / "infra" / "license").mkdir(parents=True, exist_ok=True)
+    (SNAPSHOT / "infra" / "license" / "public_key.b64").write_text(
+        _pub_from_priv(TEST_PRIV), encoding="utf-8"
+    )
     release = {"release_sha": release_sha, "version": version, "built_at": "2026-09-10T12:00:00Z"}
     (SNAPSHOT / "release.json").write_text(
         json.dumps(release, ensure_ascii=False) + "\n", encoding="utf-8"

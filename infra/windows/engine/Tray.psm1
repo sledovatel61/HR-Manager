@@ -349,8 +349,11 @@ function Start-HrmTrayUi {
             "stopped" { $icon.Icon = [System.Drawing.SystemIcons]::Warning }
             default { $icon.Icon = [System.Drawing.SystemIcons]::Error }
         }
-        $icon.Text = (Get-HrmTrayTooltip -State $State -Message $Message)
-        if ($icon.Text.Length -gt 120) { $icon.Text = $icon.Text.Substring(0, 120) }
+        # .NET Framework NotifyIcon accepts at most 63 UTF-16 characters.
+        # Limit the value BEFORE assigning it; the full message stays in the menu.
+        $tooltip = Get-HrmTrayTooltip -State $State -Message $Message
+        if ($tooltip.Length -gt 63) { $tooltip = $tooltip.Substring(0, 60) + '...' }
+        $icon.Text = $tooltip
         $autostart = Get-HrmAutostartState -StateDir $StateDir
         $model = Get-HrmTrayMenuModel -State $State -Busy $Busy -AutostartEnabled ([bool]$autostart.enabled) -Message $Message
         $menu.Items.Clear()
