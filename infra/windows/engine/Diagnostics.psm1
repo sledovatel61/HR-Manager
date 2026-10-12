@@ -12,9 +12,9 @@
 Set-StrictMode -Version 2.0
 
 function Get-HrmDockerState {
-    $cli = Invoke-HrmExternal -Name "docker.exe" -Arguments @("--version") -IgnoreExitCode
+    $cli = Invoke-HrmDocker -Arguments @("--version") -IgnoreExitCode
     if ($cli.ExitCode -ne 0) { return "missing" }
-    $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
+    $info = Invoke-HrmDocker -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
     if ($info.ExitCode -ne 0) { return "daemon_down" }
     return "ok"
 }
@@ -195,9 +195,9 @@ function Get-HrmWindowsFacts {
 
 function Get-HrmDockerFacts {
     $facts = @{ cli_ok = $false; daemon_ok = $false; server_version = "" }
-    $cli = Invoke-HrmExternal -Name "docker.exe" -Arguments @("--version") -IgnoreExitCode
+    $cli = Invoke-HrmDocker -Arguments @("--version") -IgnoreExitCode
     if ($cli.ExitCode -eq 0) { $facts["cli_ok"] = $true }
-    $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
+    $info = Invoke-HrmDocker -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
     if ($info.ExitCode -eq 0) {
         $facts["daemon_ok"] = $true
         $facts["server_version"] = $info.Stdout.Trim()
@@ -292,7 +292,7 @@ function Get-HrmHostFreeSpaceMb {
 
 function Get-HrmPreviousImagePresent {
     # Есть ли образ предыдущей версии (возможность безопасного rollback).
-    $images = Invoke-HrmExternal -Name "docker.exe" -Arguments @("images", "--format", "{{.Repository}}:{{.Tag}}") -IgnoreExitCode
+    $images = Invoke-HrmDocker -Arguments @("images", "--format", "{{.Repository}}:{{.Tag}}") -IgnoreExitCode
     if ($images.ExitCode -ne 0) { return $null }
     foreach ($line in ($images.Stdout -split "`r?`n")) {
         if ($line.Trim() -like "*:previous") { return $true }

@@ -290,9 +290,46 @@ function Get-HrmFileSha256 {
     return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+# Признак «путь CLI контейнеров уже записан в журнал» (один раз на процесс).
+$script:HrmDockerCliLogged = $false
+
+function Resolve-HrmDockerCli {
+    # Разрешение CLI контейнеров для фактических вызовов: резолвер живёт рядом с
+    # детекцией Docker (Get-HrmDockerCliPath в Docker.psm1), поэтому «Docker
+    # установлен» и «CLI можно вызвать» не расходятся. Путь пишется в постоянный
+    # журнал один раз на процесс (без дампа окружения).
+    $cli = Get-HrmDockerCliPath
+    if ($cli -and -not $script:HrmDockerCliLogged) {
+        $script:HrmDockerCliLogged = $true
+        Write-HrmLog "info" ("CLI контейнеров: " + $cli)
+    }
+    return [string]$cli
+}
+
 function Invoke-HrmDocker {
+    # ЕДИНСТВЕННАЯ точка запуска CLI контейнеров: имя разрешается в путь
+    # (Get-HrmDockerCliPath), а не берётся из PATH процесса. Голое имя работало
+    # только там, где каталог CLI попал в PATH: при пользовательской установке
+    # Docker Desktop (без администратора) детекция сообщала «установлен», а
+    # вызов падал с Win32Exception или таймаутом.
     param([string[]]$Arguments = @(), [string]$Stdin = "", [switch]$IgnoreExitCode)
-    return Invoke-HrmExternal -Name "docker" -Arguments $Arguments -Stdin $Stdin -IgnoreExitCode:$IgnoreExitCode
+    $cli = Resolve-HrmDockerCli
+    if (-not $cli) {
+        # Структурированный отказ вместо исключения Process.Start: вызывающие
+        # проверяют ExitCode как и раньше (диагностика → missing, готовность
+        # Engine → false, предполётная проверка → отказ с текстом), а сообщение
+        # перечисляет проверенные места.
+        $message = ("CLI контейнеров не найден. Проверенные места: {0}. Установите Docker Desktop только с официального сайта docker.com и повторите." -f ((Get-HrmDockerCliSearchPlaces) -join "; "))
+        Write-HrmLog "error" $message
+        $result = [pscustomobject]@{ Name = "docker"; ExitCode = 127; Stdout = ""; Stderr = $message }
+        # Контракт Invoke-HrmExternal сохранён: без -IgnoreExitCode ошибка —
+        # исключение. Иначе вызовы вида `Invoke-HrmCompose … | Out-Null` молча
+        # продолжали бы работу без движка контейнеров, то есть маскировали бы
+        # проблему (раньше на этом месте было исключение Process.Start).
+        if (-not $IgnoreExitCode) { throw $message }
+        return $result
+    }
+    return Invoke-HrmExternal -Name $cli -Arguments $Arguments -Stdin $Stdin -IgnoreExitCode:$IgnoreExitCode
 }
 
 function Invoke-HrmHttp {
