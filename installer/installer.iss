@@ -1,4 +1,4 @@
-; HR Manager — локальный пилот для Windows (phase 12).
+﻿; HR Manager — локальный пилот для Windows (phase 12).
 ; Мастер установки Inno Setup 6.7.3 (закреплено в installer/README.md):
 ;   роль (HR | Руководитель | Администратор) → фамилия владельца →
 ;   часовой пояс (по умолчанию Europe/Moscow) → Установить.
