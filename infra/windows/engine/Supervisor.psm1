@@ -436,13 +436,20 @@ function Invoke-HrmSupervisorCycle {
             Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message -Busy $false -Extra @{ code = $prepare.state; port = $port }
             return [pscustomobject]@{ ok = $false; state = $prepare.state; message = $prepare.message; needs_reboot = $prepare.needs_reboot }
         }
+        # Эффективный порт применяется согласованно (запись установки + pilot.env
+        # через Start-HrmStack): трей, ярлык, readiness и ссылка первого запуска
+        # должны указывать на тот же порт, что публикует Compose.
+        $port = Sync-HrmPortAfterPrepare -InstallDir $InstallDir -StateDir $StateDir -RequestedPort $port -Prepare $prepare
+        $baseUrl = Get-HrmBaseUrl $port
         Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Запускаем HR Manager…" -Busy $true -Extra @{ port = $port }
         $stack = Start-HrmStack -InstallDir $InstallDir -StateDir $StateDir
         if (-not $stack.ok) {
             Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $stack.message -Busy $false -Extra @{ code = "stack"; port = $port }
             return [pscustomobject]@{ ok = $false; state = "stack"; message = $stack.message }
         }
-        Wait-HrmReady $baseUrl $TimeoutSeconds
+        # Готовность + принадлежность ожидаемому релизу (чужой 200 не считается
+        # успешным запуском пилота).
+        Wait-HrmReady $baseUrl $TimeoutSeconds (Get-HrmReleaseSha $InstallDir $StateDir)
         Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "HR Manager готов." -Busy $false -Extra @{ port = $port; url = $baseUrl }
         return [pscustomobject]@{ ok = $true; state = "ready"; message = "HR Manager готов."; url = $baseUrl }
     }

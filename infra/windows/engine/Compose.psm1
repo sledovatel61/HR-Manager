@@ -41,7 +41,14 @@ function Invoke-HrmCompose {
 }
 
 function Test-HrmComposeRunning {
-    # Есть ли запущенные контейнеры проекта (совместимая обёртка над Get-HrmStackState).
+    # Есть ли ЗАПУЩЕННЫЕ контейнеры проекта (совместимая обёртка над
+    # Get-HrmStackState). partial/degraded здесь тоже истина — это осознанно:
+    # функция отвечает на вопрос «есть ли что останавливать/опрашивать»
+    # (Stop-HrmApp, диагностика), а НЕ на вопрос «приложение готово и
+    # принадлежит нам». Для открытия приложения и ярлыка готовность и
+    # принадлежность проверяются отдельно (Get-HrmStackState + Wait-HrmReady);
+    # считать partial/degraded «запущенным приложением» и открывать браузер
+    # запрещено (дефект ярлыка 12.10.2026).
     param([string]$InstallDir, [string]$StateDir)
     try {
         $state = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
@@ -131,6 +138,10 @@ function Repair-HrmStack {
     # Ремонт частично запущенного/нездорового стека БЕЗ удаления томов:
     # пересоздаём только то, что не работает. `down -v` и удаление volume здесь
     # невозможны по построению.
+    # СООТВЕТСТВИЕ ОБРАЗОВ — обязанность вызывающего: перед ремонтом
+    # Start-HrmStack сверяет метку hrmanager.release_sha со снимком в {app} и
+    # пересобирает образы при расхождении. Без этого --force-recreate поднимал
+    # бы контейнеры из устаревших образов (дефект 12.10.2026).
     param([string]$InstallDir, [string]$StateDir)
     $before = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
     if ($before.state -ne "partial" -and $before.state -ne "degraded") {
@@ -148,23 +159,77 @@ function Repair-HrmStack {
 
 function Start-HrmStack {
     # Сборка (если нужно) и запуск. Идемпотентно и безопасно для данных:
-    # уже запущенный стек не пересобирается повторно, томa не удаляются.
+    # уже запущенный стек с СООТВЕТСТВУЮЩИМИ образами не пересобирается
+    # повторно, тома не удаляются никогда.
     # Возвращает @{ ok; state; message }.
+    #
+    # СООТВЕТСТВИЕ СНИМКУ (дефект 12.10.2026): образы пересобираются не только
+    # при absent/stopped. Setup.exe копирует файлы НОВОЙ версии в {app} ДО
+    # запуска движка, а откат возвращает старые теги образов, поэтому
+    # Repair-HrmStack/`up` могли пересоздать контейнеры из УСТАРЕВШИХ образов:
+    # приложение отвечало старой версией либо падало в crash-loop миграций.
+    # Теперь перед запуском сверяется метка образа hrmanager.release_sha со
+    # снимком в {app} (release.json) и при расхождении образы пересобираются —
+    # это и есть приведение к развёрнутому снимку.
+    #
+    # СХЕМА ↔ ОБРАЗ: до запуска (и повторно после) проверяется, что ревизия базы
+    # известна alembic-скриптам образа; положительная несовместимость — понятный
+    # отказ state="schema_incompatible" вместо crash-loop backend'а.
+    #
+    # ОКРУЖЕНИЕ: перед сборкой pilot.env приводится к развёрнутому снимку
+    # (release_sha, порт публикации из записи установки) — иначе метка новой
+    # сборки осталась бы старой, а публикация вернулась бы на старый порт.
     param([string]$InstallDir, [string]$StateDir)
+
+    $record = Get-HrmInstallRecord $StateDir
+    $recordPort = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+    if ($recordPort -le 0) { $recordPort = Get-HrmPort }
+    $snapshotSha = Get-HrmReleaseSha $InstallDir $StateDir
+
+    # 1) pilot.env ↔ развёрнутый снимок (release_sha и порт публикации).
+    if ($snapshotSha) {
+        $envSha = Get-HrmEnvFileValue $StateDir "HRM_RELEASE_SHA"
+        $envPortText = Get-HrmEnvFileValue $StateDir "HRM_PILOT_PORT"
+        $envPort = 0
+        [void][int]::TryParse($envPortText, [ref]$envPort)
+        if ($envSha -ne $snapshotSha -or $envPort -ne $recordPort) {
+            $null = Write-HrmPilotEnv $StateDir $snapshotSha $recordPort
+            Write-HrmLog "info" ("Окружение пилота приведено к развёрнутому снимку (версия {0}, порт {1})." -f $snapshotSha, $recordPort)
+        }
+    }
+
+    # 2) Образ ↔ снимок.
+    $imageMatch = Test-HrmImagesMatchSnapshot -InstallDir $InstallDir -StateDir $StateDir
+    $imageStale = [bool]($imageMatch.known -and $imageMatch.stale)
     $current = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
-    if ($current.state -eq "running") {
+    if ($current.state -eq "running" -and -not $imageStale) {
         Write-HrmLog "info" "Контейнеры HR Manager уже запущены — пересборка не требуется."
         return [pscustomobject]@{ ok = $true; state = "running"; message = "Контейнеры уже запущены." }
     }
+    if ($imageStale) {
+        $imageLabel = if ($imageMatch.image_sha) { $imageMatch.image_sha } else { "метка версии отсутствует" }
+        Write-HrmLog "info" ("Образы не соответствуют развёрнутому снимку (в образе: {0}; в снимке: {1}) — пересобираю образы и привожу приложение к установленной версии. Данные (тома) не изменяются." -f $imageLabel, $imageMatch.snapshot_sha)
+    }
+    if ($current.state -eq "absent" -or $current.state -eq "stopped" -or $imageStale) {
+        Invoke-HrmCompose $InstallDir $StateDir @("build", "--pull=false") | Out-Null
+    }
+
+    # 3) Схема ↔ образ ДО запуска контейнеров приложения.
+    if ($current.state -eq "stopped" -or $current.state -eq "partial" -or $current.state -eq "degraded") {
+        if ($current.state -eq "stopped") { Start-HrmDbForSchemaCheck -InstallDir $InstallDir -StateDir $StateDir | Out-Null }
+        $compat = Test-HrmSchemaCompatibleWithImage -InstallDir $InstallDir -StateDir $StateDir
+        if ($compat.checked -and -not $compat.compatible) {
+            Write-HrmLog "error" $compat.message
+            return [pscustomobject]@{ ok = $false; state = "schema_incompatible"; message = $compat.message }
+        }
+    }
+
     if ($current.state -eq "partial" -or $current.state -eq "degraded") {
         $repaired = Repair-HrmStack -InstallDir $InstallDir -StateDir $StateDir
         if ($repaired.state -eq "running") {
             return [pscustomobject]@{ ok = $true; state = "running"; message = "Стек восстановлен без потери данных." }
         }
         # Полный up может собрать отсутствующие сервисы, не удаляя тома.
-    }
-    if ($current.state -eq "absent" -or $current.state -eq "stopped") {
-        Invoke-HrmCompose $InstallDir $StateDir @("build", "--pull=false") | Out-Null
     }
     $up = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") -IgnoreExitCode
     if ($up.ExitCode -ne 0) {
@@ -174,6 +239,17 @@ function Start-HrmStack {
     }
     $after = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
     if ($after.state -eq "partial" -or $after.state -eq "degraded") {
+        # Контейнеры уже подняты: база запущена, и рассогласование «схема ↔
+        # образ» можно установить точно. Это защита от crash-loop: backend
+        # перезапускается бесконечно, а человек видит только «не запускается».
+        $compat = Test-HrmSchemaCompatibleWithImage -InstallDir $InstallDir -StateDir $StateDir
+        if ($compat.checked -and -not $compat.compatible) {
+            # Останавливаем именно перезапускающиеся сервисы (данные и тома
+            # целы): понятный отказ вместо бесконечного crash-loop.
+            Invoke-HrmCompose $InstallDir $StateDir @("stop", "backend", "worker", "backup") -IgnoreExitCode | Out-Null
+            Write-HrmLog "error" $compat.message
+            return [pscustomobject]@{ ok = $false; state = "schema_incompatible"; message = $compat.message }
+        }
         $after = Repair-HrmStack -InstallDir $InstallDir -StateDir $StateDir
     }
     Write-HrmLog "info" "Контейнеры пилота запущены (проект $script:ProjectName)."
@@ -188,15 +264,32 @@ function Stop-HrmStack {
 
 function Test-HrmBackendReady {
     # Бэкенд отвечает на /api/health через фронтенд-прокси на 127.0.0.1.
-    param([string]$BaseUrl)
+    # ПРИНАДЛЕЖНОСТЬ, а не просто HTTP 200 (дефект 12.10.2026): любой чужой
+    # 200 — старый development-стек HR Manager (APP_ENV=development) или
+    # сторонняя программа, случайно оказавшаяся на порту, — готовностью пилота
+    # НЕ считается. /api/health пилота обязан вернуть JSON с environment=pilot.
+    # Запрос идёт ЧЕРЕЗ фронтенд-прокси, поэтому успех подтверждает и то, что
+    # отвечает именно стек этой установки, а не отдельное приложение на порту.
+    param([string]$BaseUrl, [string]$ExpectedEnvironment = "pilot")
     try {
         $health = Invoke-HrmHttp -Uri "$BaseUrl/api/health"
-        return ($health.StatusCode -eq 200)
     }
     catch { return $false }
+    if ($health.StatusCode -ne 200) { return $false }
+    $body = $health.Body
+    if ($null -eq $body) { return $false }
+    if ($body -is [string]) {
+        try { $body = ($body | ConvertFrom-Json) } catch { return $false }
+    }
+    if ($null -eq $body -or $body -is [string]) { return $false }
+    if (-not $body.PSObject.Properties["environment"]) { return $false }
+    return ([string]$body.environment -eq $ExpectedEnvironment)
 }
 
 function Test-HrmFrontendReady {
+    # Страница фронтенда отдаётся (HTTP 200). Принадлежность и версию
+    # подтверждает Test-HrmBackendReady/Get-HrmAppIdentity через тот же
+    # loopback-прокси: отдающий страницу веб-сервер и API — один стек.
     param([string]$BaseUrl)
     try {
         $page = Invoke-HrmHttp -Uri $BaseUrl
@@ -205,26 +298,271 @@ function Test-HrmFrontendReady {
     catch { return $false }
 }
 
-function Wait-HrmReady {
-    # Ограниченное ожидание готовности: фронтенд + /api/health.
-    param([string]$BaseUrl, [int]$TimeoutSeconds = 180)
-    $frontendReady = Wait-HrmCondition -Condition { Test-HrmFrontendReady $BaseUrl } -TimeoutSeconds $TimeoutSeconds
-    $backendReady = Wait-HrmCondition -Condition { Test-HrmBackendReady $BaseUrl } -TimeoutSeconds $TimeoutSeconds
-    if (-not ($frontendReady -and $backendReady)) {
-        throw "Приложение не стало готовым за $TimeoutSeconds с (фронтенд: $frontendReady, бэкенд: $backendReady). Запустите diagnostics."
+function Get-HrmAppIdentity {
+    # Идентичность приложения, отвечающего на BaseUrl (только чтение):
+    # окружение, release_sha в работе, версия, ревизии миграций. Используется
+    # для проверки принадлежности ответа целевому пилоту и ожидаемому релизу —
+    # сверять чужой/старый стек с ожидаемой версией иначе нечем.
+    param([string]$BaseUrl)
+    $result = [pscustomobject]@{
+        available = $false; environment = ""; release_sha = ""; version = ""; service = ""
+        migrations_current = ""; migrations_expected = ""; migrations_ok = $null
     }
-    Write-HrmLog "info" "Приложение готово: $BaseUrl"
+    $ops = Get-HrmOpsStatus $BaseUrl
+    if ($null -eq $ops) { return $result }
+    if ($ops -is [string]) {
+        # 503 приходит сырой строкой — пробуем разобрать JSON (тело валидно).
+        try { $ops = ($ops | ConvertFrom-Json) } catch { return $result }
+    }
+    if ($null -eq $ops -or $ops -is [string]) { return $result }
+    $result.available = $true
+    if ($ops.PSObject.Properties["environment"] -and $null -ne $ops.environment) { $result.environment = ([string]$ops.environment).Trim() }
+    if ($ops.PSObject.Properties["release_sha"] -and $null -ne $ops.release_sha) { $result.release_sha = ([string]$ops.release_sha).Trim() }
+    if ($ops.PSObject.Properties["version"] -and $null -ne $ops.version) { $result.version = ([string]$ops.version).Trim() }
+    if ($ops.PSObject.Properties["service"] -and $null -ne $ops.service) { $result.service = ([string]$ops.service).Trim() }
+    if ($ops.PSObject.Properties["migrations"] -and $null -ne $ops.migrations) {
+        if ($ops.migrations.PSObject.Properties["current_revision"] -and $null -ne $ops.migrations.current_revision) { $result.migrations_current = ([string]$ops.migrations.current_revision).Trim() }
+        if ($ops.migrations.PSObject.Properties["expected_revision"] -and $null -ne $ops.migrations.expected_revision) { $result.migrations_expected = ([string]$ops.migrations.expected_revision).Trim() }
+        if ($ops.migrations.PSObject.Properties["ok"] -and $null -ne $ops.migrations.ok) { $result.migrations_ok = [bool]$ops.migrations.ok }
+    }
+    return $result
+}
+
+function Format-HrmAppIdentityProblem {
+    # Понятное объяснение, ПОЧЕМУ ответ на порту не принят за наш пилот
+    # (чужое приложение / другая версия / чужой релиз). Без технических команд.
+    param($Identity, [string]$ExpectedReleaseSha = "")
+    if (-not $Identity.available) {
+        return "на порту не отвечает приложение HR Manager (нет ответа о состоянии приложения)"
+    }
+    if ($Identity.environment -ne "pilot") {
+        return ("на порту отвечает ДРУГОЕ приложение HR Manager (окружение «{0}», не «pilot») — вероятно, старый тестовый стек или другая установка; оно не является целевым пилотом" -f $Identity.environment)
+    }
+    if ($ExpectedReleaseSha -and $Identity.release_sha -ne $ExpectedReleaseSha) {
+        $actual = if ($Identity.release_sha) { $Identity.release_sha } else { "не сообщена" }
+        return ("в работе ДРУГАЯ версия приложения (release_sha: {0}), ожидалась {1}" -f $actual, $ExpectedReleaseSha)
+    }
+    return "приложение не подтвердило принадлежность целевой установке"
+}
+
+function Wait-HrmReady {
+    # Ограниченное ожидание готовности: фронтенд + /api/health пилота, и — при
+    # известном ожидаемом релизе — принадлежность ответа целевому пилоту И
+    # ожидаемому release_sha. Чужой HTTP 200 или старый релиз готовностью не
+    # считаются: браузер на такое открывать нельзя (дефект 12.10.2026).
+    param([string]$BaseUrl, [int]$TimeoutSeconds = 180, [string]$ExpectedReleaseSha = "")
+    $interval = Get-HrmWaitIntervalSeconds 3
+    $frontendReady = Wait-HrmCondition -Condition { Test-HrmFrontendReady $BaseUrl } -TimeoutSeconds $TimeoutSeconds -IntervalSeconds $interval
+    $backendReady = Wait-HrmCondition -Condition { Test-HrmBackendReady $BaseUrl } -TimeoutSeconds $TimeoutSeconds -IntervalSeconds $interval
+    if (-not ($frontendReady -and $backendReady)) {
+        $identity = Get-HrmAppIdentity $BaseUrl
+        $problem = Format-HrmAppIdentityProblem -Identity $identity -ExpectedReleaseSha $ExpectedReleaseSha
+        throw ("Приложение не стало готовым за {0} с (фронтенд: {1}, бэкенд: {2}): {3}. Запустите diagnostics или завершите установку заново — браузер не открывается, чтобы не показать чужое приложение." -f $TimeoutSeconds, $frontendReady, $backendReady, $problem)
+    }
+    if ($ExpectedReleaseSha) {
+        # Отдельное ограниченное окно: окружение пилота уже переписано под
+        # развёрнутый снимок, совпадение наступает почти сразу; если версия не
+        # совпала за окно — это старая/чужая сборка, а не «ещё не успело».
+        $ownershipTimeout = [Math]::Min($TimeoutSeconds, 60)
+        $owned = Wait-HrmCondition -Condition {
+            $identity = Get-HrmAppIdentity $BaseUrl
+            return ($identity.available -and $identity.environment -eq "pilot" -and $identity.release_sha -eq $ExpectedReleaseSha)
+        } -TimeoutSeconds $ownershipTimeout -IntervalSeconds $interval
+        if (-not $owned) {
+            $identity = Get-HrmAppIdentity $BaseUrl
+            $problem = Format-HrmAppIdentityProblem -Identity $identity -ExpectedReleaseSha $ExpectedReleaseSha
+            throw ("Не подтверждена принадлежность приложения на {0} ожидаемому релизу: {1}. Данные не изменялись; завершите установку/обновление (Setup.exe) и повторите — браузер не открывается, чтобы не показать чужое или устаревшее приложение." -f $BaseUrl, $problem)
+        }
+    }
+    Write-HrmLog "info" ("Приложение готово: {0}" -f $BaseUrl)
 }
 
 function Get-HrmMigrationsHead {
     # Ожидаемая голова миграций из РАЗВЁРНУТОГО образа backend (alembic heads).
     # Зашитая константа головы запрещена: она расходится с релизом.
+    # Работающий backend — источник точный (это код в работе); если backend ещё
+    # не запущен (проверка ДО запуска), голова читается НЕПОСРЕДСТВЕННО из
+    # образа одноразовым контейнером (alembic heads в образе — см.
+    # Get-HrmImageMigrationRevisions). Обе ветки возвращают одно и то же —
+    # голову РАЗВЁРНУТОГО образа, а не константу.
     param([string]$InstallDir, [string]$StateDir)
     $out = Invoke-HrmCompose $InstallDir $StateDir @("exec", "-T", "backend", "alembic", "heads") -IgnoreExitCode
-    if ($out.ExitCode -ne 0) { return $null }
-    $match = [regex]::Match($out.Stdout, "(?m)^\s*([0-9a-zA-Z_]+)\s*(\(head\))?")
-    if ($match.Success) { return $match.Groups[1].Value }
+    if ($out.ExitCode -eq 0) {
+        $match = [regex]::Match($out.Stdout, "(?m)^\s*([0-9a-zA-Z_]+)\s*(\(head\))?")
+        if ($match.Success) { return $match.Groups[1].Value }
+    }
+    $fromImage = Get-HrmImageMigrationRevisions
+    if ($null -ne $fromImage -and $fromImage.head) { return $fromImage.head }
     return $null
+}
+
+function Get-HrmImageMigrationRevisions {
+    # Ревизии миграций, которые знает ОБРАЗ backend, и его голова. Читаются
+    # одноразовым контейнером (docker run --rm <image> alembic history): команда
+    # не подключается к базе и не запускает приложение — только перечисляет
+    # скрипты alembic, вшитые в образ. Нужно, чтобы ДО запуска контейнеров
+    # понять, знает ли образ ту ревизию, что стоит в базе (см.
+    # Test-HrmSchemaCompatibleWithImage).
+    # Возвращает @{ revisions; head } либо $null, если образ недоступен.
+    param([string]$Image = "hr-manager-pilot-backend:pilot")
+    $out = Invoke-HrmDocker -Arguments @("run", "--rm", $Image, "alembic", "history") -IgnoreExitCode
+    if ($out.ExitCode -ne 0 -or -not $out.Stdout) { return $null }
+    $revisions = @()
+    $head = ""
+    foreach ($line in ($out.Stdout -split "`r?`n")) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed -notmatch "->") { continue }
+        $parts = $trimmed -split "->"
+        if ($parts.Count -lt 2) { continue }
+        $left = (($parts[0] -split ",")[0]).Trim()
+        $rightRaw = $parts[1]
+        $isHead = ($rightRaw -match "\(head\)")
+        $right = (($rightRaw -replace "\(head\)", "" -replace "\(branchpoint\)", "") -split ",")[0].Trim()
+        foreach ($token in @($left, $right)) {
+            if (-not $token -or $token -eq "<base>") { continue }
+            if ($revisions -notcontains $token) { $revisions += $token }
+        }
+        if ($isHead -and -not $head -and $right) { $head = $right }
+    }
+    if ($revisions.Count -eq 0) { return $null }
+    return [pscustomobject]@{ revisions = $revisions; head = $head }
+}
+
+function Get-HrmImageReleaseLabel {
+    # Метка hrmanager.release_sha образа backend: её ставит сборка из
+    # HRM_RELEASE_SHA pilot.env (build.labels в infra/compose.pilot.yml). По ней
+    # видно, ИЗ КАКОГО снимка собран образ — до запуска контейнеров.
+    # "" — образ отсутствует или собран предыдущей версией движка без метки.
+    param([string]$Image = "hr-manager-pilot-backend:pilot")
+    $format = "{{ index .Config.Labels ""hrmanager.release_sha"" }}"
+    $inspect = Invoke-HrmDocker -Arguments @("image", "inspect", "-f", $format, $Image) -IgnoreExitCode
+    if ($inspect.ExitCode -ne 0) { return "" }
+    $value = ([string]$inspect.Stdout).Trim()
+    if ($value -eq "<no value>") { return "" }
+    return $value
+}
+
+function Test-HrmImagesMatchSnapshot {
+    # Соответствие образов РАЗВЁРНУТОМУ снимку (release_sha в каталоге установки).
+    # known = $false — сравнить нечем (нет release.json/метки): пересборка по
+    # догадке не запускается. stale = $true — образ собран из другого снимка:
+    # это и есть рассогласование «снимок ↔ образ», из-за которого Setup.exe
+    # (копирует файлы ДО движка) показывал старое приложение, а откат возвращал
+    # старый образ поверх новых файлов.
+    param([string]$InstallDir, [string]$StateDir)
+    $snapshotSha = Get-HrmReleaseSha $InstallDir $StateDir
+    $imageSha = Get-HrmImageReleaseLabel
+    $result = [pscustomobject]@{ known = $false; stale = $false; snapshot_sha = $snapshotSha; image_sha = $imageSha }
+    if (-not $snapshotSha) { return $result }
+    $result.known = $true
+    $result.stale = ($imageSha -ne $snapshotSha)
+    return $result
+}
+
+function Test-HrmDbContainerRunning {
+    # Контейнер базы данных проекта запущен? (Чтение состояния схемы возможно
+    # только с работающей базой; тома при этом не изменяются.)
+    param([string]$InstallDir, [string]$StateDir)
+    $containers = Get-HrmComposeContainers -InstallDir $InstallDir -StateDir $StateDir
+    if ($null -eq $containers) { return $false }
+    foreach ($container in @($containers)) {
+        $name = ""
+        if ($null -ne $container -and $container.PSObject.Properties["Name"] -and $null -ne $container.Name) { $name = [string]$container.Name }
+        if ($name -notmatch "(^|[-_])db([-_]|\d|$)") { continue }
+        if (Test-HrmContainerRunning $container) { return $true }
+    }
+    return $false
+}
+
+function Get-HrmDbSchemaRevision {
+    # Ревизия схемы из базы пилота — ТОЛЬКО ЧТЕНИЕ (контейнер db, psql SELECT).
+    # Возвращает: "fresh" — база без alembic_version (чистая, миграции впереди);
+    # ""    — прочитать не удалось (база не запущена/не отвечает);
+    # иначе — идентификатор ревизии.
+    param([string]$InstallDir, [string]$StateDir, [int]$MaxAttempts = 20)
+    $interval = Get-HrmWaitIntervalSeconds 3
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $out = Invoke-HrmCompose $InstallDir $StateDir @("exec", "-T", "db", "psql", "-U", "hr_manager", "-d", "hr_manager", "-tAc", "SELECT version_num FROM alembic_version") -IgnoreExitCode
+        if ($out.ExitCode -eq 0) {
+            $revision = ([string]$out.Stdout).Trim()
+            if (-not $revision) { return "fresh" }
+            return (($revision -split "`r?`n")[0]).Trim()
+        }
+        $errorText = [string]$out.Stderr
+        if ($errorText -match "alembic_version" -and ($errorText -match "does not exist" -or $errorText -match "не существует")) {
+            # Таблицы ревизий нет: чистая база, миграции создаст backend.
+            return "fresh"
+        }
+        if ($errorText -match "is not running" -or $errorText -match "No such service" -or $errorText -match "no configuration file") {
+            # База не запущена — ждать нечего.
+            return ""
+        }
+        if ($attempt -lt $MaxAttempts) { Start-Sleep -Seconds $interval }
+    }
+    return ""
+}
+
+function Test-HrmSchemaCompatibleWithImage {
+    # СХЕМА ↔ ОБРАЗ до запуска контейнеров: ревизия базы обязана быть известна
+    # alembic-скриптам образа. Иначе backend падает на старте с «Can't locate
+    # revision identified by ...» и уходит в бесконечный перезапуск — ровно то,
+    # что видели 12.10.2026 (база обновлена более новым образом, а развёрнут
+    # старый снимок). Здесь это выясняется ДО запуска: понятный отказ вместо
+    # crash-loop. Блокирует запуск только ПОЛОЖИТЕЛЬНО установленная
+    # несовместимость (checked=true, compatible=false); любая неопределённость
+    # (нет тома, база не читается, образ недоступен) — checked=false и не
+    # блокирует: запуск продолжается, а рассогласование ловит smoke/диагностика.
+    param([string]$InstallDir, [string]$StateDir)
+    $result = [pscustomobject]@{ checked = $false; compatible = $true; db_revision = ""; image_head = ""; message = "" }
+    $volume = Invoke-HrmDocker -Arguments @("volume", "inspect", ((Get-HrmProjectName) + "_pilot_pgdata")) -IgnoreExitCode
+    if ($volume.ExitCode -ne 0) {
+        # Тома данных нет: база будет создана заново, рассогласования быть не может.
+        $result.checked = $true
+        return $result
+    }
+    if (-not (Test-HrmDbContainerRunning -InstallDir $InstallDir -StateDir $StateDir)) {
+        # Базу не читаем, не запуская контейнер: пусть решает вызывающий
+        # (Start-HrmStack поднимает только контейнер базы для проверки).
+        return $result
+    }
+    $dbRevision = Get-HrmDbSchemaRevision -InstallDir $InstallDir -StateDir $StateDir
+    if (-not $dbRevision) { return $result }
+    if ($dbRevision -eq "fresh") {
+        $result.checked = $true
+        return $result
+    }
+    $known = Get-HrmImageMigrationRevisions
+    if ($null -eq $known) { return $result }
+    $result.checked = $true
+    $result.db_revision = $dbRevision
+    $result.image_head = $known.head
+    if ($known.revisions -contains $dbRevision) { return $result }
+    $result.compatible = $false
+    $result.message = ("База данных HR Manager находится на ревизии схемы {0}, которая неизвестна установленному снимку приложения (голова миграций образа: {1}). Запуск ОСТАНОВЛЕН до старта контейнеров: backend не смог бы начать работу (ошибка «Can't locate revision identified by '{0}'») и попал бы в бесконечный перезапуск. Это означает, что базу обновила более новая версия приложения, а сейчас развёрнут более старый снимок. Данные не изменялись и не удалялись. Действия: установите версию приложения, поддерживающую ревизию {0} (Setup.exe новой версии), либо восстановите базу из проверенной резервной копии (docs/backup-and-restore.md)." -f $dbRevision, $result.image_head)
+    return $result
+}
+
+function Start-HrmDbForSchemaCheck {
+    # Поднять ТОЛЬКО контейнер базы данных, чтобы прочитать ревизию схемы (том
+    # данных не изменяется; приложение не запускается). Нужно для проверки
+    # «схема ↔ образ» при остановленном стеке: контейнеры были созданы раньше,
+    # значит база уже инициализирована, и наполненный том может быть обновлён
+    # более новой версией.
+    param([string]$InstallDir, [string]$StateDir)
+    if (Test-HrmDbContainerRunning -InstallDir $InstallDir -StateDir $StateDir) { return $true }
+    $volume = Invoke-HrmDocker -Arguments @("volume", "inspect", ((Get-HrmProjectName) + "_pilot_pgdata")) -IgnoreExitCode
+    if ($volume.ExitCode -ne 0) { return $false }
+    Write-HrmLog "info" "Проверяем совместимость схемы базы с образами — временно запускаем только контейнер базы данных (данные не изменяются)…"
+    $up = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "db") -IgnoreExitCode
+    if ($up.ExitCode -ne 0) { return $false }
+    $interval = Get-HrmWaitIntervalSeconds 3
+    $attempts = 0
+    while ($attempts -lt 20) {
+        $attempts++
+        if (Test-HrmDbContainerRunning -InstallDir $InstallDir -StateDir $StateDir) { return $true }
+        Start-Sleep -Seconds $interval
+    }
+    return $false
 }
 
 function Get-HrmMigrationsState {

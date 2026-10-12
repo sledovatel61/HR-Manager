@@ -104,6 +104,10 @@ function Initialize-HrmTestEngine {
     $env:HRM_STATE_DIR = Join-Path $TestRoot "state каталог"
     $env:HRM_INSTALL_DIR = Join-Path $TestRoot "install каталог"
     $env:HRM_CLAIM_RETRY_SECONDS = "0"
+    # Циклы ожидания не спят реальные секунды: интервал 0, а число попыток в
+    # самих проверках ограничено (см. Get-HrmDbSchemaRevision,
+    # Start-HrmDbForSchemaCheck). Иначе мок-мир заставлял бы CI ждать минутами.
+    $env:HRM_WAIT_INTERVAL_SECONDS = "0"
     $global:HrmNonInteractive = $true
     $global:HrmOpenBrowser = $false
     Remove-Item Env:HRM_PURGE_CONFIRMATION -ErrorAction SilentlyContinue
@@ -126,6 +130,11 @@ function Initialize-HrmTestEngine {
     # большинству тестов ключ не важен. Тесты «ключа нет ни в одном источнике»
     # удаляют переменную явно (см. engine.tests.ps1, T2/T7.4).
     $env:HRM_LICENSE_PUBLIC_KEY = [Convert]::ToBase64String([byte[]]::new(32))
+    # Порт публикации в тестах считается свободным по умолчанию: реальный
+    # Get-NetTCPConnection на машине CI делал бы результат установки
+    # недетерминированным (занятый порт 8080 подменил бы его на свободный).
+    # Тесты занятого порта включают port_free=false и задают free_port явно.
+    Set-HrmDockerOverride @{ port_free = $true }
     New-Item -ItemType Directory -Path $env:HRM_STATE_DIR -Force | Out-Null
     New-Item -ItemType Directory -Path $env:HRM_INSTALL_DIR -Force | Out-Null
 }
@@ -156,6 +165,33 @@ function New-HrmFakeSnapshot {
 }
 
 # --- Мок-мир -----------------------------------------------------------------
+
+function Get-HrmMockAlembicHistory {
+    # Текст `alembic history` ИЗ ОБРАЗА: от головы до базовой ревизии
+    # (формат совпадает с реальным выводом alembic: «<down> -> <rev>»).
+    param([string]$Head = "0013")
+    $lines = @()
+    $headNumber = 0
+    [void][int]::TryParse($Head, [ref]$headNumber)
+    if ($headNumber -le 0) { return ($Head + " (head)`n<base> -> " + $Head) }
+    for ($n = $headNumber; $n -ge 1; $n--) {
+        $rev = "{0:d4}" -f $n
+        $down = "<base>"
+        if ($n -gt 1) { $down = "{0:d4}" -f ($n - 1) }
+        $mark = ""
+        if ($n -eq $headNumber) { $mark = " (head)" }
+        $lines += ("{0} -> {1}{2}, migration {1}" -f $down, $rev, $mark)
+    }
+    return ($lines -join "`n")
+}
+
+function Get-HrmMockUriPort {
+    # Порт из URI loopback-запроса ("" — не удалось разобрать).
+    param([string]$Uri)
+    $match = [regex]::Match([string]$Uri, "://[^:/]+:(\d+)")
+    if ($match.Success) { return $match.Groups[1].Value }
+    return ""
+}
 
 function New-HrmMockWorld {
     # Возвращает состояние моков и регистрирует моки внешних команд и HTTP.
@@ -196,6 +232,20 @@ function New-HrmMockWorld {
         ContainersJson = ""
         UpFails = $false
         UpCount = 0
+        # Метка образа hrmanager.release_sha (ставится сборкой из HRM_RELEASE_SHA
+        # env-файла, как в реальном `compose build` с build.labels).
+        ImageReleaseSha = ""
+        # Окружение, которое сообщает /api/health и /api/ops/status.
+        HealthEnvironment = "pilot"
+        # Порты, на которых отвечает ЧУЖОЕ приложение (например, старый
+        # development-стек на 8080): ключ — порт (строка), значение — окружение.
+        # Нужно, чтобы «нужное приложение на нужном порту» проверялось по-настоящему.
+        ForeignPortEnvironments = @{}
+        # Ревизия схемы в базе: "" — psql недоступен; "fresh" — таблицы
+        # alembic_version нет; иначе — идентификатор ревизии.
+        DbRevision = ""
+        # Текст `alembic history` ИЗ ОБРАЗА (пусто — сгенерировать по AlembicHeads).
+        ImageAlembicHistory = ""
     }
     $world.OpsBody = [pscustomobject]@{
         status = "ok"
@@ -275,10 +325,32 @@ function New-HrmMockWorld {
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "build")) {
                 $global:HRM_MockWorld.BuildCount++
+                # Реальная сборка запекает метку hrmanager.release_sha из
+                # HRM_RELEASE_SHA pilot.env (build.labels): образ начинает
+                # соответствовать снимку. Мок обязан вести себя так же, иначе
+                # движок считал бы свежесобранные образы устаревшими.
+                $envIndex = [array]::IndexOf([object[]]$Arguments, "--env-file")
+                if ($envIndex -ge 0 -and $envIndex + 1 -lt $Arguments.Count -and (Test-Path $Arguments[$envIndex + 1])) {
+                    $releaseLine = Get-Content $Arguments[$envIndex + 1] | Where-Object { $_ -like "HRM_RELEASE_SHA=*" } | Select-Object -First 1
+                    if ($null -ne $releaseLine) {
+                        $global:HRM_MockWorld.ImageReleaseSha = ($releaseLine -replace '^HRM_RELEASE_SHA=', '').Trim()
+                    }
+                }
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "built"; Stderr = "" }
             }
             if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "exec")) {
                 $joined = ($Arguments -join " ")
+                if ($joined -match "psql" -and $joined -match "alembic_version") {
+                    # Ревизия схемы из базы (только чтение) — см. DbRevision.
+                    $revision = [string]$global:HRM_MockWorld.DbRevision
+                    if (-not $revision) {
+                        return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "psql: could not connect to server: Connection refused" }
+                    }
+                    if ($revision -eq "fresh") {
+                        return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = 'ERROR: relation "alembic_version" does not exist' }
+                    }
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ($revision + "`n"); Stderr = "" }
+                }
                 if ($joined -match "alembic current") {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.AlembicCurrent; Stderr = "" }
                 }
@@ -353,7 +425,26 @@ function New-HrmMockWorld {
                 $global:HRM_MockWorld.RemovedVolumes += $Arguments[2]
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "removed"; Stderr = "" }
             }
+            if ($Arguments.Count -ge 1 -and $Arguments[0] -eq "run") {
+                # Одноразовый контейнер ИЗ ОБРАЗА: alembic history/heads читают
+                # вшитые в образ миграции (без подключения к базе).
+                $joined = ($Arguments -join " ")
+                if ($joined -match "alembic history") {
+                    $text = [string]$global:HRM_MockWorld.ImageAlembicHistory
+                    if (-not $text) { $text = Get-HrmMockAlembicHistory $global:HRM_MockWorld.AlembicHeads }
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $text; Stderr = "" }
+                }
+                if ($joined -match "alembic heads") {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ($global:HRM_MockWorld.AlembicHeads + " (head)`n"); Stderr = "" }
+                }
+                return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "unexpected run: $joined" }
+            }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "image" -and $Arguments[1] -eq "inspect") {
+                $joined = ($Arguments -join " ")
+                if ($joined -match "hrmanager\.release_sha") {
+                    # Метка снимка на образе (что «запечено» при сборке).
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ([string]$global:HRM_MockWorld.ImageReleaseSha); Stderr = "" }
+                }
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "sha256:old-image-id"; Stderr = "" }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "tag") {
@@ -384,8 +475,20 @@ function New-HrmMockWorld {
     Set-HrmHttpMock {
         param($Uri, $Method, $Body, $Headers)
         $global:HRM_MockWorld.HttpCalls += [pscustomobject]@{ Uri = $Uri; Method = $Method; Body = $Body; Headers = $Headers }
+        # Чужое приложение на конкретном порту (например, старый dev-стек на
+        # 8080): окружение подменяется для ЭТОГО порта, остальные порты
+        # отвечают как пилот. Так проверяется и подбор свободного порта, и
+        # принадлежность readiness-ответа.
+        $requestPort = Get-HrmMockUriPort $Uri
+        $environment = [string]$global:HRM_MockWorld.HealthEnvironment
+        $foreign = $global:HRM_MockWorld.ForeignPortEnvironments
+        if ($requestPort -and $foreign.ContainsKey($requestPort)) { $environment = [string]$foreign[$requestPort] }
         if ($Uri -like "*/api/health") {
-            return @{ StatusCode = $global:HRM_MockWorld.BackendStatus; Body = [pscustomobject]@{ status = "ok" } }
+            $healthBody = [pscustomobject]@{
+                status = "ok"; service = "hr-manager"; version = [string]$global:HRM_MockWorld.OpsBody.version; environment = $environment
+                checks = [pscustomobject]@{ database = [pscustomobject]@{ status = "ok"; latency_ms = 2 } }
+            }
+            return @{ StatusCode = $global:HRM_MockWorld.BackendStatus; Body = $healthBody }
         }
         if ($Uri -like "*/api/setup/owner/claim") {
             $global:HRM_MockWorld.ClaimCount++
@@ -397,7 +500,19 @@ function New-HrmMockWorld {
             return @{ StatusCode = 201; Body = [pscustomobject]@{ ticket = "ticket-test-123" } }
         }
         if ($Uri -like "*/api/ops/status") {
-            return @{ StatusCode = $global:HRM_MockWorld.OpsStatusCode; Body = $global:HRM_MockWorld.OpsBody }
+            $opsBody = $global:HRM_MockWorld.OpsBody
+            if ($environment -ne "pilot" -and $null -ne $opsBody) {
+                # Чужой стек отвечает своим окружением и своей версией: его
+                # ответ не должен считаться готовностью пилота.
+                $opsBody = [pscustomobject]@{
+                    status = "ok"; service = "hr-manager"; version = "0.0.0-dev"; environment = $environment
+                    release_sha = ""; database = [pscustomobject]@{ status = "ok"; latency_ms = 2 }
+                    migrations = [pscustomobject]@{ current_revision = "0000"; expected_revision = "0000"; ok = $true }
+                    backup = [pscustomobject]@{ available = $false }
+                    notifications = $null
+                }
+            }
+            return @{ StatusCode = $global:HRM_MockWorld.OpsStatusCode; Body = $opsBody }
         }
         if ($Uri -like "*/api/ops/backup-health") {
             return @{ StatusCode = $global:HRM_MockWorld.BackupHealthStatusCode; Body = $global:HRM_MockWorld.BackupHealthBody }
