@@ -6,7 +6,9 @@
 #   - поднять Compose-стек и дождаться готовности приложения;
 #   - держать понятное состояние «Запускается / Готово / Ошибка» в
 #     StateDir\supervisor.json для трея, диагностики и установщика;
-#   - быть единственным в системе (именованный mutex + запись pid);
+#   - быть единственным в системе (именованный mutex + запись pid; имя
+#     мьютекса переопределяется через HRM_SUPERVISOR_MUTEX — см.
+#     Get-HrmSupervisorMutexName);
 #   - запускать/останавливать приложение по команде трея;
 #   - управлять автозапуском после входа в систему (ярлык в папке автозагрузки
 #     пользователя) — настраиваемо и без прав администратора.
@@ -97,10 +99,21 @@ function Get-HrmSupervisorStatusText {
     }
 }
 
+function Get-HrmSupervisorMutexName {
+    # Имя мьютекса единственности supervisor'а. По умолчанию машино-широкий
+    # Local\HRManagerPilotSupervisor: на машине владельца сутки живут процессы
+    # от установок, и первый захват в тесте падал бы от чужого процесса.
+    # Имя переопределяется через HRM_SUPERVISOR_MUTEX — тесты задают
+    # уникальное имя на контекст, и тест единственности не зависит от живых
+    # процессов машины.
+    if ($env:HRM_SUPERVISOR_MUTEX) { return [string]$env:HRM_SUPERVISOR_MUTEX }
+    return $script:SupervisorMutexName
+}
+
 function Enter-HrmSupervisorLock {
     # Единственный supervisor на пользователя. Возвращает @{ acquired; mutex }.
     try {
-        $mutex = New-Object System.Threading.Mutex($false, $script:SupervisorMutexName)
+        $mutex = New-Object System.Threading.Mutex($false, (Get-HrmSupervisorMutexName))
         $acquired = $false
         try { $acquired = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
         if (-not $acquired) {

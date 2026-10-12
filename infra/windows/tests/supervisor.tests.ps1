@@ -13,6 +13,10 @@ function New-HrmSupervisorTestContext {
     $world = New-HrmMockWorld
     Set-HrmPreflightOverride @{ windows = $true; powershell = $true; docker = $true; daemon = $true; compose = "v2.29.7 (mock)"; port = $true; state_dir = $true; space = $true; config = $true }
     Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true; admin = $false; reboot = $false }
+    # Уникальное имя мьютекса на контекст: тест единственности не должен
+    # зависеть от живых процессов машины (машино-широкий Local\-мьютекс
+    # могут держать установки владельца сутками — провал supervisor.tests.ps1:123).
+    $env:HRM_SUPERVISOR_MUTEX = "Local\HRManagerPilotSupervisorTest-" + [guid]::NewGuid().ToString("N")
     return $world
 }
 
@@ -126,6 +130,54 @@ Test-Case "повторный запуск supervisor'а не создаёт в�
     $snapshot = Get-HrmSupervisorState -StateDir $state
     Assert-HrmEqual $PID $snapshot.pid "состояние должно содержать pid supervisor'а"
     Exit-HrmSupervisorLock $lock
+}
+
+Test-Case "мьютекс переопределяется через env: единственность не зависит от живых процессов машины" {
+    # Регрессия R16 (T5): Enter-HrmSupervisorLock брал машино-широкий
+    # Local\HRManagerPilotSupervisor, и первый захват в тесте падал, когда
+    # мьютекс держал живой процесс от установки. Имя переопределяется через
+    # HRM_SUPERVISOR_MUTEX — контекст задаёт уникальное имя.
+    New-HrmSupervisorTestContext
+    # Чистая функция выбора имени: env переопределяет, иначе — умолчание.
+    $env:HRM_SUPERVISOR_MUTEX = "Local\HRManagerPilotSupervisorTest-probe"
+    Assert-HrmEqual "Local\HRManagerPilotSupervisorTest-probe" (Get-HrmSupervisorMutexName) "env не переопределил имя мьютекса"
+    Remove-Item Env:HRM_SUPERVISOR_MUTEX -ErrorAction SilentlyContinue
+    Assert-HrmEqual "Local\HRManagerPilotSupervisor" (Get-HrmSupervisorMutexName) "имя по умолчанию потеряно"
+    # «Занятый машинный мьютекс» держим ОТДЕЛЬНЫМ ПРОЦЕССОМ (фоновая job):
+    # .NET Mutex ре-ентерабелен для своего потока, поэтому занять его в том же
+    # потоке и пронаблюдать отказ невозможно (а Start-ThreadJob в PowerShell
+    # 5.1 не входит в поставку). Local\-мьютекс общий для процессов сессии.
+    $holder = Start-Job -ScriptBlock {
+        $m = New-Object System.Threading.Mutex($false, "Local\HRManagerPilotSupervisor")
+        $null = $m.WaitOne(0)
+        Start-Sleep -Seconds 60
+    }
+    try {
+        # Ждём, пока процесс job действительно захватит мьютекс (зонд свободным захватом).
+        $heldByOther = $false
+        for ($i = 0; $i -lt 50 -and -not $heldByOther; $i++) {
+            $probe = New-Object System.Threading.Mutex($false, "Local\HRManagerPilotSupervisor")
+            $got = $false
+            try { $got = $probe.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+            if ($got) { try { $probe.ReleaseMutex() } catch { } } else { $heldByOther = $true }
+            $probe.Dispose()
+            if (-not $heldByOther) { Start-Sleep -Milliseconds 200 }
+        }
+        Assert-HrmTrue $heldByOther "не удалось дождаться занятого машинного мьютекса"
+        # Без переопределения занятый машинный мьютекс даёт отказ (контракт единственности).
+        $lock2 = Enter-HrmSupervisorLock
+        Assert-HrmFalse $lock2.acquired "занятый машинный мьютекс должен давать отказ без переопределения"
+        Exit-HrmSupervisorLock $lock2
+        # С переопределением (уникальное имя контекста): первый захват успешен
+        # даже когда машинный мьютекс занят живым потоком.
+        $env:HRM_SUPERVISOR_MUTEX = "Local\HRManagerPilotSupervisorTest-" + [guid]::NewGuid().ToString("N")
+        $lock = Enter-HrmSupervisorLock
+        Assert-HrmTrue $lock.acquired "уникальный мьютекс контекста должен быть свободен даже при занятом машинном"
+        Exit-HrmSupervisorLock $lock
+    }
+    finally {
+        Remove-Job $holder -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Test-Case "автозапуск включается и выключается, старый ярлык -Action start удаляется" {
