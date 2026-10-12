@@ -497,7 +497,7 @@ function Get-HrmDbSchemaRevision {
             # База не запущена — ждать нечего.
             return ""
         }
-        if ($attempt -lt $MaxAttempts) { Start-Sleep -Seconds $interval }
+        if ($attempt -lt $MaxAttempts) { Start-HrmWaitSleep -Seconds $interval }
     }
     return ""
 }
@@ -560,7 +560,7 @@ function Start-HrmDbForSchemaCheck {
     while ($attempts -lt 20) {
         $attempts++
         if (Test-HrmDbContainerRunning -InstallDir $InstallDir -StateDir $StateDir) { return $true }
-        Start-Sleep -Seconds $interval
+        Start-HrmWaitSleep -Seconds $interval
     }
     return $false
 }
