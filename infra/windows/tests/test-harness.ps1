@@ -85,29 +85,6 @@ function Assert-HrmThrows {
     throw $Message
 }
 
-# --- Переопределения состояния Docker (тестовый пин CLI) --------------------
-
-# Пин накладывается поверх набора конкретного теста: движковый
-# Set-HrmDockerOverride (Docker.psm1) ЗАМЕНЯЕТ набор переопределений целиком,
-# поэтому тесты, задающие свои ключи (`@{ port_free = $false; free_port = … }`),
-# стирали бы базовые значения (свободный порт, путь CLI). С путём CLI это
-# особенно важно: без него резолвер уходил бы в реальные каталоги машины — на
-# раннере с Docker это полный путь, на машине без Docker вообще ничего, — и
-# тесты перестали бы быть детерминированными. Тест по-прежнему может задать
-# ключ явно (включая `cli_path = ""` — «CLI не найден»): его значение важнее.
-$script:HrmDockerOverridePins = @{}
-
-function Set-HrmDockerOverride {
-    param([hashtable]$State)
-    $merged = @{}
-    foreach ($key in $script:HrmDockerOverridePins.Keys) { $merged[$key] = $script:HrmDockerOverridePins[$key] }
-    foreach ($key in $State.Keys) { $merged[$key] = $State[$key] }
-    # Движковую функцию зовём по имени модуля: эта обёртка перекрывает её в
-    # области видимости теста, а модуль должен остаться единственным местом,
-    # где живёт состояние переопределений.
-    Docker\Set-HrmDockerOverride -State $merged
-}
-
 # --- Загрузка движка с изоляцией --------------------------------------------
 
 function Initialize-HrmTestEngine {
@@ -153,14 +130,19 @@ function Initialize-HrmTestEngine {
     # большинству тестов ключ не важен. Тесты «ключа нет ни в одном источнике»
     # удаляют переменную явно (см. engine.tests.ps1, T2/T7.4).
     $env:HRM_LICENSE_PUBLIC_KEY = [Convert]::ToBase64String([byte[]]::new(32))
-    # Порт публикации в тестах считается свободным по умолчанию: реальный
-    # Get-NetTCPConnection на машине CI делал бы результат установки
-    # недетерминированным (занятый порт 8080 подменил бы его на свободный).
-    # Тесты занятого порта включают port_free=false и задают free_port явно.
-    # Путь CLI контейнеров пиннится голым именем: движок обязан резолвить CLI
-    # (Invoke-HrmDocker), а «настоящий» путь с раннера сделал бы тесты зависимыми
-    # от того, установлен ли там Docker.
-    Set-HrmDockerOverride @{ port_free = $true; cli_path = "docker.exe" }
+    # База переопределений Docker:
+    #  - порт публикации считается свободным: реальный Get-NetTCPConnection на
+    #    машине CI делал бы результат установки недетерминированным (занятый порт
+    #    8080 подменил бы его на свободный). Тесты занятого порта включают
+    #    port_free=false и задают free_port явно;
+    #  - путь CLI контейнеров пиннится голым именем: движок обязан резолвить CLI
+    #    (Invoke-HrmDocker), а «настоящий» путь с раннера сделал бы тесты
+    #    зависимыми от того, установлен ли там Docker.
+    # База живёт отдельно от набора конкретного теста (Set-HrmDockerOverride
+    # заменяет набор целиком, но сливает его с базой — см. Docker.psm1), иначе
+    # тесты, задающие свои ключи, теряли бы эти договорённости.
+    Set-HrmDockerOverrideDefaults @{ port_free = $true; cli_path = "docker.exe" }
+    Set-HrmDockerOverride @{}
     New-Item -ItemType Directory -Path $env:HRM_STATE_DIR -Force | Out-Null
     New-Item -ItemType Directory -Path $env:HRM_INSTALL_DIR -Force | Out-Null
 }

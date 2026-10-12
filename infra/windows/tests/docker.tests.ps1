@@ -372,9 +372,11 @@ Test-Case "CLI не найден нигде: структурированный 
 }
 
 Test-Case "пин CLI из обвязки переживает набор переопределений конкретного теста" {
-    # Set-HrmDockerOverride заменяет набор целиком; пин пути CLI (как и
-    # свободный порт) накладывается обвязкой поверх набора теста, иначе тесты
-    # зависели бы от того, установлен ли Docker на машине прогона.
+    # Set-HrmDockerOverride заменяет набор целиком и сливает его с базой
+    # (Set-HrmDockerOverrideDefaults): без этого тест, задающий свои ключи,
+    # терял бы пин пути CLI, резолвер уходил бы в реальные каталоги машины
+    # (на раннере там оказался C:\Windows\system32\docker.exe) и прогон зависел
+    # бы от того, установлен ли Docker на машине теста.
     $world = New-HrmDockerTestContext
     Set-HrmDockerOverride @{ port_free = $false; free_port = 8081 }
     Assert-HrmEqual "docker.exe" (Get-HrmDockerCliPath) "пин CLI должен накладываться поверх набора теста"
