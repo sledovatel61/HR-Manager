@@ -121,7 +121,11 @@ Test-Case "support-bundle создаёт zip на рабочем столе бе
         if ($Uri -like "*/api/license/status") {
             return @{ StatusCode=200; Body=[pscustomobject]@{ has_license=$true; is_valid=$true; license=[pscustomobject]@{ expires_at="2026-12-31"; max_active_users=5; client_name="Пилот Марии"; days_left=90 } } }
         }
-        if ($Uri -like "*/api/health") { return @{ StatusCode=200; Body=[pscustomobject]@{ status="ok" } } }
+        if ($Uri -like "*/api/health") {
+            # Реальный контракт /api/health включает environment; готовностью
+            # считается только environment=pilot (проверка принадлежности).
+            return @{ StatusCode=200; Body=[pscustomobject]@{ status="ok"; service="hr-manager"; version="0.15.0"; environment="pilot" } }
+        }
         if ($Uri -like "*/api/ops/status") { return @{ StatusCode=200; Body=$global:HRM_MockWorld.OpsBody } }
         if ($Uri -like "*/api/ops/backup-health") { return @{ StatusCode=200; Body=[pscustomobject]@{ fresh=$true } } }
         if ($Uri -like "*/api/admin/ops/pilot-readiness") { return @{ StatusCode=200; Body=[pscustomobject]@{ verdict="готово" } } }
@@ -467,7 +471,11 @@ Test-Case "обновление с падающей миграцией отка�
     }
     Set-HrmHttpMock {
         param($Uri, $Method, $Body, $Headers)
-        if ($Uri -like "*/api/health") { return @{ StatusCode=200; Body=[pscustomobject]@{ status="ok" } } }
+        if ($Uri -like "*/api/health") {
+            # Реальный контракт /api/health включает environment; готовностью
+            # считается только environment=pilot (проверка принадлежности).
+            return @{ StatusCode=200; Body=[pscustomobject]@{ status="ok"; service="hr-manager"; version="0.15.0"; environment="pilot" } }
+        }
         if ($Uri -like "*/api/ops/status") { return @{ StatusCode=200; Body=$global:HRM_MockWorld.OpsBody } }
         if ($Uri -like "*/api/ops/backup-health") { return @{ StatusCode=200; Body=[pscustomobject]@{ fresh=$true } } }
         return @{ StatusCode=200; Body=[pscustomobject]@{} }
