@@ -444,6 +444,14 @@ function Get-HrmWaitIntervalSeconds {
     return $Default
 }
 
+function Start-HrmWaitSleep {
+    # Пауза между попытками в циклах ожидания. Нулевой интервал — без сна:
+    # это тестовый/быстрый режим (HRM_WAIT_INTERVAL_SECONDS=0), а не «спать 0 с»
+    # (у Start-Sleep -Seconds 0 смысла нет, и цикл остаётся ограничен дедлайном).
+    param([int]$Seconds = 3)
+    if ($Seconds -gt 0) { Start-Sleep -Seconds $Seconds }
+}
+
 function Wait-HrmCondition {
     # Ожидание условия с таймаутом. Возвращает $true/$false.
     param([scriptblock]$Condition, [int]$TimeoutSeconds = 180, [int]$IntervalSeconds = 3)
@@ -453,7 +461,7 @@ function Wait-HrmCondition {
             if (& $Condition) { return $true }
         }
         catch { }
-        Start-Sleep -Seconds $IntervalSeconds
+        Start-HrmWaitSleep -Seconds $IntervalSeconds
     }
     try { return [bool](& $Condition) } catch { return $false }
 }

@@ -77,7 +77,11 @@ function New-HrmChannelWorld {
             $w.HostReports += , @{ Uri = $Uri; Method = $Method; Body = $Body; Headers = $Headers }
             return @{ StatusCode = 200; Body = [pscustomobject]@{ status = "accepted"; received_at = "2026-09-11T00:00:00Z" } }
         }
-        if ($Uri -like "*/api/health") { return @{ StatusCode = 200; Body = [pscustomobject]@{ status = "ok" } } }
+        if ($Uri -like "*/api/health") {
+            # Реальный контракт: /api/health ВСЕГДА сообщает окружение, и
+            # движок считает готовностью только environment=pilot.
+            return @{ StatusCode = 200; Body = [pscustomobject]@{ status = "ok"; service = "hr-manager"; version = "0.13.0"; environment = "pilot" } }
+        }
         if ($Uri -like "*/api/ops/status") {
             return @{ StatusCode = 200; Body = $global:HRM_MockWorld.OpsBody }
         }

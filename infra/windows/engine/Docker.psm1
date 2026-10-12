@@ -518,7 +518,7 @@ function Start-HrmDockerDesktop {
     # Одна короткая пауза вместо цикла: живой процесс ничего не ждёт лишнего.
     $earlyExitMessage = ""
     if ($null -ne $launchedProcess -and $launchedProcess.PSObject.Properties["HasExited"]) {
-        Start-Sleep -Seconds (Get-HrmWaitIntervalSeconds 5)
+        Start-HrmWaitSleep -Seconds (Get-HrmWaitIntervalSeconds 5)
         if (Test-HrmDockerEngineReady) {
             return [pscustomobject]@{ started = $true; message = "Docker Engine готов." }
         }
