@@ -260,4 +260,68 @@ Test-Case "установка Docker: инструкция для пользов
     Assert-HrmContains $guide "лицензи" "принятие лицензии Docker — действие пользователя"
 }
 
+Test-Case "занятый порт: prepare возвращает свободный порт для ПРИМЕНЕНИЯ (регрессия 12.10.2026)" {
+    # Дефект: свободный порт подбирался и упоминался в журнале, но переменная
+    # порта не менялась — стек публиковался на занятом порту, и в браузере
+    # оказывался чужой стек. Теперь prepare возвращает эффективный порт.
+    $world = New-HrmDockerTestContext
+    $world.ForeignPortEnvironments = @{ "8080" = "development" }
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; port_free = $false; free_port = 8081; free_mb = 20480; wsl = "ok"; virtualization = "enabled" }
+    $result = Invoke-HrmDockerPrepare -InstallDir (Get-HrmTestInstallDir) -StateDir (Get-HrmTestStateDir) -Port 8080
+    Assert-HrmTrue $result.ok "prepare должен пройти с подобранным свободным портом"
+    Assert-HrmEqual 8081 ([int]$result.port) "эффективный порт должен возвращаться вызывающему"
+    Assert-HrmTrue ([bool]$result.port_changed) "смена порта должна быть зафиксирована"
+}
+
+Test-Case "порт занят собственным пилотом: порт сохраняется (чужой стек не путается с нашим)" {
+    $world = New-HrmDockerTestContext
+    # На порту отвечает НАШ пилот (environment=pilot) — это не повод менять порт.
+    $world.HealthEnvironment = "pilot"
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; port_free = $false; free_port = 8081; free_mb = 20480; wsl = "ok"; virtualization = "enabled" }
+    $result = Invoke-HrmDockerPrepare -InstallDir (Get-HrmTestInstallDir) -StateDir (Get-HrmTestStateDir) -Port 8080
+    Assert-HrmTrue $result.ok "prepare должен пройти"
+    Assert-HrmEqual 8080 ([int]$result.port) "порт собственного работающего пилота менять нельзя"
+    Assert-HrmFalse ([bool]$result.port_changed) "порт меняться не должен"
+}
+
+Test-Case "занятый порт без свободной альтернативы: честный отказ вместо публикации на чужом порту" {
+    $world = New-HrmDockerTestContext
+    $world.ForeignPortEnvironments = @{ "8080" = "development" }
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; port_free = $false; free_port = 0; free_mb = 20480; wsl = "ok"; virtualization = "enabled" }
+    $result = Invoke-HrmDockerPrepare -InstallDir (Get-HrmTestInstallDir) -StateDir (Get-HrmTestStateDir) -Port 8080
+    Assert-HrmFalse $result.ok "без свободного порта prepare обязан отказать"
+    Assert-HrmEqual "port_busy" $result.state "состояние должно объяснять занятость порта"
+    Assert-HrmContains $result.message "занят" "сообщение должно называть причину"
+}
+
+Test-Case "применение порта: запись установки получает тот же порт, что публикует Compose" {
+    New-HrmDockerTestContext
+    $state = Get-HrmTestStateDir
+    Set-HrmInstallRecord $state @{ port = 8080; release_sha = "sha-old"; install_dir = (Get-HrmTestInstallDir) }
+    $prepare = [pscustomobject]@{ ok = $true; state = "ready"; port = 8085; port_changed = $true }
+    $effective = Sync-HrmPortAfterPrepare -InstallDir (Get-HrmTestInstallDir) -StateDir $state -RequestedPort 8080 -Prepare $prepare
+    Assert-HrmEqual 8085 $effective "эффективный порт не применён"
+    Assert-HrmEqual 8085 ([int](Get-HrmInstallRecord $state).port) "запись установки не обновилась — ярлык и readiness смотрели бы на чужой порт"
+}
+
+Test-Case "Write-HrmPilotEnv без явного порта берёт порт из записи установки" {
+    New-HrmDockerTestContext
+    $state = Get-HrmTestStateDir
+    Set-HrmInstallRecord $state @{ port = 8087; release_sha = "sha"; pilot_created = $true }
+    $envFile = Write-HrmPilotEnv $state "sha"
+    $text = Get-Content $envFile -Raw -Encoding UTF8
+    Assert-HrmContains $text "HRM_PILOT_PORT=8087" "порт публикации должен браться из записи установки"
+}
+
+Test-Case "шаг «порт» в плане: занят своим пилотом — ok, чужим приложением — warn с подбором порта" {
+    $world = New-HrmDockerTestContext
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; port_free = $false; free_port = 8081; free_mb = 20480; wsl = "ok"; virtualization = "enabled" }
+    $ownStep = @((Get-HrmSetupProgressPlan -StateDir (Get-HrmTestStateDir) -Port 8080) | Where-Object { $_.key -eq "port" })[0]
+    Assert-HrmEqual "ok" $ownStep.status "порт, занятый собственным пилотом, — не ошибка"
+    $world.ForeignPortEnvironments = @{ "8080" = "development" }
+    $foreignStep = @((Get-HrmSetupProgressPlan -StateDir (Get-HrmTestStateDir) -Port 8080) | Where-Object { $_.key -eq "port" })[0]
+    Assert-HrmEqual "warn" $foreignStep.status "чужое приложение на порту — предупреждение"
+    Assert-HrmContains $foreignStep.detail "свободный порт" "план должен честно говорить о подборе свободного порта"
+}
+
 Write-Host ("Docker Desktop: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

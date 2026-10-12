@@ -816,7 +816,7 @@ Test-Case "R16: Docker daemon недоступен — обновление ос
     Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
     $releaseDir = Join-Path $t.Root "релиз R16-docker"
     New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0027"
-    Set-HrmDockerOverride @{ desktop = "installed_stopped" }
+    Set-HrmDockerOverride @{ desktop = "installed_stopped"; port_free = $true }
     # Считаем вызовы Compose только для попытки обновления.
     $t.World.Calls = @()
     $threw = $false
@@ -842,7 +842,7 @@ Test-Case "R16: Windows-движок без Linux engine (как на CI-ран�
     $releaseDir = Join-Path $t.Root "релиз R16-winonly"
     New-HrmFakeSnapshot -Root $releaseDir -ReleaseSha "snapshot-sha-0028"
     # Демон отвечает (Windows-контейнеры), но Linux-движка нет.
-    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; linux_engine = $false }
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; linux_engine = $false; port_free = $true }
     # Считаем вызовы Compose только для попытки обновления.
     $t.World.Calls = @()
     $threw = $false
@@ -869,6 +869,67 @@ Test-Case "R16: снимок без infra\license\public_key.b64 отклоня�
     Assert-HrmTrue $threw "снимок без ключа лицензии не отклонён"
     Assert-HrmContains $failMessage "public_key.b64" "отказ должен называть отсутствующий файл"
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "== Нужное приложение на нужном порту (регрессии 12.10.2026) =="
+
+Test-Case "установка на занятом порту: публикация на свободном порту в записи, env и ссылке первого запуска" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    # 8080 занят ЧУЖИМ (development) стеком; свободен 8081.
+    $t.World.ForeignPortEnvironments = @{ "8080" = "development" }
+    Set-HrmDockerOverride @{ port_free = $false; free_port = 8081 }
+    Set-HrmJsonFile $state "first-run-input.json" ([ordered]@{ surname = "Иванова"; working_mode = "hr"; timezone = "Europe/Moscow" })
+
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+
+    $record = Get-HrmInstallRecord $state
+    Assert-HrmEqual 8081 ([int]$record.port) "запись установки должна указывать на свободный порт"
+    $env = Get-Content (Get-HrmEnvFile $state) -Raw -Encoding UTF8
+    Assert-HrmContains $env "HRM_PILOT_PORT=8081" "Compose должен публиковать приложение на свободном порту"
+    $url = (Get-Content (Get-HrmSetupUrlFile $state) -Raw -Encoding UTF8).Trim()
+    Assert-HrmContains $url "http://127.0.0.1:8081" "ссылка первого запуска должна вести на рабочий порт"
+    Assert-HrmNoSecretInArgs $t.World $state
+}
+
+Test-Case "ярлык: чужой стек на порту — открывается собственный пилот на свободном порту" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Set-HrmJsonFile $state "first-run-input.json" ([ordered]@{ surname = "Иванова"; working_mode = "hr"; timezone = "Europe/Moscow" })
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    # Пилот остановлен, на 8080 отвечает старый development-стек.
+    $t.World.Running = $false
+    $t.World.ForeignPortEnvironments = @{ "8080" = "development" }
+    Set-HrmDockerOverride @{ port_free = $false; free_port = 8081 }
+
+    Open-HrmApp -InstallDir $install -StateDir $state -ReadyTimeoutSeconds 5
+
+    $record = Get-HrmInstallRecord $state
+    Assert-HrmEqual 8081 ([int]$record.port) "ярлык должен перевести установку на свободный порт"
+    $url = (Get-Content (Get-HrmSetupUrlFile $state) -Raw -Encoding UTF8).Trim()
+    Assert-HrmContains $url "http://127.0.0.1:8081" "браузер должен открываться на собственном приложении, а не на чужом стеке"
+}
+
+Test-Case "ярлык: чужое приложение на порту и нет свободного порта — браузер не открывается" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Set-HrmJsonFile $state "first-run-input.json" ([ordered]@{ surname = "Иванова"; working_mode = "hr"; timezone = "Europe/Moscow" })
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    Remove-Item (Get-HrmSetupUrlFile $state) -Force -ErrorAction SilentlyContinue
+    $t.World.ForeignPortEnvironments = @{ "8080" = "development" }
+    Set-HrmDockerOverride @{ port_free = $false; free_port = 0 }
+
+    $thrown = ""
+    try { Open-HrmApp -InstallDir $install -StateDir $state -ReadyTimeoutSeconds 3 } catch { $thrown = [string]$_.Exception.Message }
+
+    Assert-HrmContains $thrown "занят" "отказ должен называть причину (порт занят)"
+    Assert-HrmFalse (Test-Path (Get-HrmSetupUrlFile $state)) "браузер не должен открываться на чужом приложении"
 }
 
 Write-Host ("Тесты движка: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

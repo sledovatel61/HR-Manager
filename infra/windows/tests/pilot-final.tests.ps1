@@ -435,7 +435,7 @@ Test-Case "обновление с падающей миграцией отка�
     # Docker-гейт обновления (R16, T1) проходит при готовом Linux-движке;
     # ниже мок подменяется на «падающую миграцию», поэтому гейт фиксируем
     # переопределением, а не ответом кастомного мока на docker info.
-    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true }
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; port_free = $true }
     # Сломать миграцию: мок будет возвращать ошибку на alembic upgrade
     $world.SimulateStaleRelease = $true
     # Сделать чтобы alembic upgrade падал? Вместо Stale сделаем DownOk false для отката?

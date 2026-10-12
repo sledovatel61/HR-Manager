@@ -111,6 +111,13 @@ function Test-HrmPortFree {
     $port = Get-HrmPort $Port
     $listeners = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($listeners) {
+        # Порт занят СОБСТВЕННЫМ работающим пилотом — это норма: повторный
+        # запуск/открытие приложения не должны падать на занятом собственном
+        # порту. Чужое приложение (в т.ч. старый dev-стек) остаётся отказом:
+        # его HTTP 200 не принадлежит целевому пилоту.
+        if (Test-HrmPortServedByPilot -Port $port) {
+            return [pscustomobject]@{ Name = "port"; Passed = $true; Message = "Порт $port занят собственным приложением HR Manager (пилот работает)." }
+        }
         return [pscustomobject]@{ Name = "port"; Passed = $false; Message = "Порт $port уже занят (127.0.0.1:$port). Укажите другой порт параметром -Port." }
     }
     return [pscustomobject]@{ Name = "port"; Passed = $true; Message = "Порт $port свободен." }

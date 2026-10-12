@@ -434,6 +434,16 @@ function New-HrmHex {
     return (($buffer | ForEach-Object { $_.ToString("x2") }) -join "")
 }
 
+function Get-HrmWaitIntervalSeconds {
+    # Интервал опроса для циклов ожидания. Тестовый шов: HRM_WAIT_INTERVAL_SECONDS
+    # (движок на CI не должен спать реальные секунды в моках). Отрицательные и
+    # нечисловые значения игнорируются — используется переданный по умолчанию.
+    param([int]$Default = 3)
+    $value = -1
+    if ([int]::TryParse([string]$env:HRM_WAIT_INTERVAL_SECONDS, [ref]$value) -and $value -ge 0) { return $value }
+    return $Default
+}
+
 function Wait-HrmCondition {
     # Ожидание условия с таймаутом. Возвращает $true/$false.
     param([scriptblock]$Condition, [int]$TimeoutSeconds = 180, [int]$IntervalSeconds = 3)

@@ -60,6 +60,17 @@ services:
     # re-tag the previous ones as `:previous` for the documented rollback
     # (see infra/windows/hr-manager.ps1, action `update`).
     image: hr-manager-pilot-backend:pilot
+    # Snapshot identity baked into the IMAGE at build time (merged with the
+    # base file's build.context): the engine compares this label with
+    # release.json of the deployed snapshot BEFORE starting containers and
+    # rebuilds when they differ. Without it a failed/rolled-back update left
+    # containers created from images of an older snapshot while {app} already
+    # held the new files — the app then "answered" with the wrong version or
+    # crash-looped on `Can't locate revision identified by ...`.
+    build:
+      labels:
+        hrmanager.release_sha: ${HRM_RELEASE_SHA:-}
+        hrmanager.component: backend
     environment:
       APP_ENV: pilot
       APP_DEBUG: "false"
@@ -112,6 +123,13 @@ services:
 
   frontend:
     image: hr-manager-pilot-frontend:pilot
+    # Same snapshot label as backend (see the comment there): one check of the
+    # backend image tells the engine whether the whole built set matches the
+    # deployed snapshot, because `compose build` rebuilds every service.
+    build:
+      labels:
+        hrmanager.release_sha: ${HRM_RELEASE_SHA:-}
+        hrmanager.component: frontend
     # Published port of the pilot: loopback by default (127.0.0.1), or LAN
     # (0.0.0.0) when the owner enables «доступ по сети» via
     # hr-manager.ps1 -Action lan-access -Enable. Engine writes
