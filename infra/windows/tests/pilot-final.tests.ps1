@@ -89,7 +89,9 @@ Test-Case "support-bundle создаёт zip на рабочем столе бе
     Set-HrmExternalMock {
         param($Name, $Arguments, $Stdin, $IgnoreExitCode)
         $global:HRM_MockWorld.Calls += [pscustomobject]@{ Name=$Name; Args=@($Arguments) }
-        if ($Name -eq "docker.exe" -or $Name -eq "docker") {
+        # Сопоставление по базовому имени: движок вызывает CLI контейнеров
+        # разрешённым путём (пин харнесса или полный путь установки).
+        if ((Get-HrmMockCliName $Name) -eq "docker.exe") {
             if ($Arguments -contains "logs") {
                 $svc = $Arguments[-1]
                 $txt = "log for $svc contains secret $fakePii and also $($global:HRM_TestSecret1) and $($global:HRM_TestSecret2)"
@@ -448,7 +450,9 @@ Test-Case "обновление с падающей миграцией отка�
     Set-HrmExternalMock {
         param($Name, $Arguments, $Stdin, $IgnoreExitCode)
         $global:HRM_MockWorld.Calls += [pscustomobject]@{ Name=$Name; Args=@($Arguments) }
-        if ($Name -eq "docker.exe" -or $Name -eq "docker") {
+        # Сопоставление по базовому имени: движок вызывает CLI контейнеров
+        # разрешённым путём (пин харнесса или полный путь установки).
+        if ((Get-HrmMockCliName $Name) -eq "docker.exe") {
             if ($Arguments -contains "logs") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="logs"; Stderr="" } }
             if ($Arguments -contains "ps") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout='[{"Name":"backend","State":"running"}]'; Stderr="" } }
             if ($Arguments -contains "up") { $global:HRM_MockWorld.Running=$true; return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="up"; Stderr="" } }
@@ -461,8 +465,8 @@ Test-Case "обновление с падающей миграцией отка�
                 return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="0013 (head)"; Stderr="" }
             }
             if ($Arguments -contains "run" -and ($Arguments -join " ") -match "backup") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="ok"; Stderr="" } }
-            if (($Name -eq "docker.exe" -or $Name -eq "docker") -and $Arguments[0] -eq "image") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="sha256:old"; Stderr="" } }
-            if (($Name -eq "docker.exe" -or $Name -eq "docker") -and $Arguments[0] -eq "tag") { $global:HRM_MockWorld.TagCount++; return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout=""; Stderr="" } }
+            if ($Arguments[0] -eq "image") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="sha256:old"; Stderr="" } }
+            if ($Arguments[0] -eq "tag") { $global:HRM_MockWorld.TagCount++; return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout=""; Stderr="" } }
         }
         if ($Name -eq "icacls.exe") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout=""; Stderr="" } }
         if ($Name -eq "netsh.exe") { return [pscustomobject]@{ Name=$Name; ExitCode=0; Stdout="Ok"; Stderr="" } }
