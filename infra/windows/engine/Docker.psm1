@@ -413,9 +413,9 @@ function Get-HrmFreeSpaceMb {
 function Test-HrmDockerEngineReady {
     $override = Get-HrmDockerOverrideValue "engine"
     if ($null -ne $override) { return [bool]$override }
-    # docker.exe может отсутствовать в PATH скрытого процесса (пользовательская
-    # установка Docker Desktop): Win32Exception при запуске — это «не готов»,
-    # а не падение всего ожидания с fatal.
+    # CLI контейнеров может отсутствовать в PATH скрытого процесса
+    # (пользовательская установка Docker Desktop): Win32Exception при запуске —
+    # это «не готов», а не падение всего ожидания с fatal.
     try {
         $info = Invoke-HrmExternal -Name "docker.exe" -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
     }
