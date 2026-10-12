@@ -324,4 +324,63 @@ Test-Case "шаг «порт» в плане: занят своим пилото
     Assert-HrmContains $foreignStep.detail "свободный порт" "план должен честно говорить о подборе свободного порта"
 }
 
+Test-Case "CLI только в пользовательском каталоге Docker Desktop: вызовы идут разрешённым путём" {
+    # Регрессия на рассогласование «детекция ↔ вызов»: CLI найден только в
+    # пользовательском каталоге (в PATH его нет), детекция сообщает
+    # «установлен». Раньше фактические вызовы шли голым именем и резолвились
+    # через PATH процесса — теперь все они обязаны идти разрешённым путём.
+    # На машине пользователя этот сценарий не воспроизводился (там PATH
+    # резолвит CLI) — проверяется контракт движка, а не живой сбой.
+    $world = New-HrmDockerTestContext
+    $cliPath = Join-Path $env:LOCALAPPDATA "Programs\DockerDesktop\resources\bin\docker.exe"
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; cli_path = $cliPath; port_free = $true }
+    Assert-HrmEqual $cliPath (Get-HrmDockerCliPath) "резолвер должен вернуть путь из пользовательского каталога"
+    Assert-HrmTrue (Test-HrmDockerEngineReady) "готовность Engine по разрешённому CLI"
+    Assert-HrmEqual "ok" (Get-HrmDockerState) "диагностика Docker по разрешённому CLI"
+    $config = Invoke-HrmCompose -InstallDir (Get-HrmTestInstallDir) -StateDir (Get-HrmTestStateDir) -Command @("config", "--quiet") -IgnoreExitCode
+    Assert-HrmEqual 0 $config.ExitCode "compose должен работать через разрешённый путь (диспатч по базовому имени)"
+    Assert-HrmTrue (Test-HrmBackendReady -BaseUrl "http://127.0.0.1:8080") "readiness по разрешённому CLI"
+    $dockerCalls = @($world.Calls | Where-Object { (Get-HrmMockCliName $_.Name) -eq "docker.exe" })
+    Assert-HrmTrue ($dockerCalls.Count -ge 3) "ожидались вызовы CLI: готовность, диагностика, compose"
+    foreach ($call in $dockerCalls) {
+        Assert-HrmEqual $cliPath $call.Name "вызов ушёл не разрешённым путём — откат на голое имя"
+    }
+}
+
+Test-Case "CLI не найден нигде: структурированный отказ 127 без исключения, диагностика missing" {
+    $world = New-HrmDockerTestContext
+    Set-HrmDockerOverride @{ cli_path = "" }
+    Assert-HrmFalse ([bool](Get-HrmDockerCliPath)) "резолвер не должен ничего найти"
+    $result = Invoke-HrmDocker -Arguments @("--version") -IgnoreExitCode
+    Assert-HrmEqual 127 $result.ExitCode "ожидался код 127 («команда не найдена»)"
+    Assert-HrmEqual "" $result.Stdout "вывода быть не должно"
+    Assert-HrmContains $result.Stderr "CLI контейнеров не найден" "сообщение должно объяснять причину"
+    Assert-HrmContains $result.Stderr "Проверенные места" "сообщение должно перечислять проверенные места"
+    Assert-HrmContains $result.Stderr "resources" "в перечне мест должен быть каталог установки CLI"
+    Assert-HrmFalse (Test-HrmDockerEngineReady) "готовность Engine без CLI — false"
+    Assert-HrmEqual "missing" (Get-HrmDockerState) "диагностика без CLI — missing"
+    $preflight = Test-HrmDockerCli
+    Assert-HrmFalse $preflight.Passed "предполётная проверка должна отказать"
+    Assert-HrmContains $preflight.Message "Docker" "отказ предполётной проверки должен быть понятным"
+    # Без -IgnoreExitCode контракт Invoke-HrmExternal сохранён: ошибка — исключение
+    # с понятным текстом, а не молчаливое продолжение работы без движка.
+    $threw = $false
+    try { Invoke-HrmDocker -Arguments @("--version") | Out-Null }
+    catch { $threw = ($_.Exception.Message -match "CLI контейнеров не найден") }
+    Assert-HrmTrue $threw "без -IgnoreExitCode отказ обязан быть исключением с понятным текстом"
+    Assert-HrmEqual 0 $world.Calls.Count "реальный CLI не должен вызываться"
+}
+
+Test-Case "пин CLI из обвязки переживает набор переопределений конкретного теста" {
+    # Set-HrmDockerOverride заменяет набор целиком; пин пути CLI (как и
+    # свободный порт) накладывается обвязкой поверх набора теста, иначе тесты
+    # зависели бы от того, установлен ли Docker на машине прогона.
+    $world = New-HrmDockerTestContext
+    Set-HrmDockerOverride @{ port_free = $false; free_port = 8081 }
+    Assert-HrmEqual "docker.exe" (Get-HrmDockerCliPath) "пин CLI должен накладываться поверх набора теста"
+    $null = Invoke-HrmDocker -Arguments @("--version") -IgnoreExitCode
+    $calls = @($world.Calls | Where-Object { $_.Name -eq "docker.exe" })
+    Assert-HrmEqual 1 $calls.Count "вызов должен идти базовым именем из пина"
+}
+
 Write-Host ("Docker Desktop: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)
