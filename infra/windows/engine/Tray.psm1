@@ -15,8 +15,9 @@ $script:TrayRequiredMenuActions = @("open", "check", "restart", "support-bundle"
 
 function Get-HrmTrayStartupPlan {
     # Что должен делать значок ПРЯМО СЕЙЧАС. Одна точка правды и для запуска
-    # (hrm-tray.ps1), и для обновления значка каждые 5 секунд — расхождений
-    # между «что видит пользователь» и «что делает компонент» быть не должно.
+    # (hrm-tray.ps1), и для каждого тика значка (интервал тика зависит от
+    # состояния — см. Get-HrmTrayRefreshIntervalMs): расхождений между «что
+    # видит пользователь» и «что делает компонент» быть не должно.
     #
     #   installing      — идёт установка/обновление (отметка мастера установки
     #                     свежая): значок живой, показывает ход, но не даёт
@@ -26,6 +27,20 @@ function Get-HrmTrayStartupPlan {
     #                     остаётся и показывает, что делать;
     #   install_stale   — отметка установки осталась, но установка не идёт и
     #                     приложения нет: честно просим запустить Setup.exe заново;
+    #   busy            — операция движка УЖЕ идёт (живая блокировка действия,
+    #                     свежая отметка мастера или busy с живым pid в
+    #                     supervisor.json): значок показывает сохранённый ход
+    #                     работы и НЕ порождает второй движок (регрессия D2:
+    #                     каждый вход в Windows и каждый повторный запуск мастера
+    #                     добавляли процесс, а compose-операции шли параллельно —
+    #                     отсюда десятки powershell.exe и лишняя нагрузка на
+    #                     Docker/WSL2);
+    #   retry_exhausted — движок закончился ошибкой N раз ПОДРЯД: автоматические
+    #                     повторы остановлены, показаны причина и действие.
+    #                     Повтор возможен только по явному действию человека
+    #                     (пункт меню сбрасывает счётчик). Без этого значок при
+    #                     каждом входе в Windows снова запускал движок, который
+    #                     снова отказывал по той же причине;
     #   resuming        — есть незавершённое обновление/подготовка среды: значок
     #                     продолжает операцию (resume) — «после перезагрузки
     #                     HR Manager продолжит сам»;
@@ -38,7 +53,12 @@ function Get-HrmTrayStartupPlan {
         [bool]$MarkerFresh = $false,
         [string]$MarkerMessage = "",
         [bool]$ResumePending = $false,
-        [bool]$InstallDirReady = $false
+        [bool]$InstallDirReady = $false,
+        [bool]$EngineOperationRunning = $false,
+        [string]$EngineOperationReason = "",
+        [int]$FailureCount = 0,
+        [string]$FailureMessage = "",
+        [int]$MaxConsecutiveFailures = 3
     )
     if ($MarkerStatus -eq "failed") {
         $message = if ($MarkerMessage) { $MarkerMessage } else { "Установка HR Manager не завершилась." }
@@ -70,6 +90,16 @@ function Get-HrmTrayStartupPlan {
             message = "Установка не завершилась. Запустите Setup.exe заново — данные и настройки не пострадали."
         }
     }
+    if ($EngineOperationRunning) {
+        # Операция движка идёт (её pid жив): показываем ход работы и не
+        # запускаем второй движок. Значок остаётся живым и отзывчивым.
+        $message = "Операция HR Manager уже выполняется — ожидаем завершения."
+        if ($EngineOperationReason) { $message = ("Операция HR Manager уже выполняется ({0}) — ожидаем завершения." -f $EngineOperationReason) }
+        return [pscustomobject]@{
+            mode = "busy"; state = "starting"; busy = $true; start_engine = $false
+            engine_action = ""; notify_event = ""; message = $message
+        }
+    }
     if ($ResumePending) {
         return [pscustomobject]@{
             mode = "resuming"; state = "starting"; busy = $true; start_engine = $true
@@ -80,6 +110,14 @@ function Get-HrmTrayStartupPlan {
         return [pscustomobject]@{
             mode = "not_installed"; state = "error"; busy = $false; start_engine = $false
             engine_action = ""; notify_event = ""; message = "HR Manager не установлен."
+        }
+    }
+    if ($FailureCount -ge $MaxConsecutiveFailures -and $MaxConsecutiveFailures -gt 0) {
+        $reason = if ($FailureMessage) { $FailureMessage } else { "причина сохранена в состоянии приложения." }
+        $message = ("Автоматические повторы запуска остановлены (подряд идущих отказов: {0}). Причина: {1} Создайте отчёт для поддержки (пункт меню) и передайте его разработчику; повторить запуск вручную можно там же." -f $FailureCount, $reason)
+        return [pscustomobject]@{
+            mode = "retry_exhausted"; state = "error"; busy = $false; start_engine = $false
+            engine_action = ""; notify_event = ""; message = $message
         }
     }
     return [pscustomobject]@{
@@ -114,7 +152,15 @@ function Get-HrmTrayCurrentPlan {
         if ($phase -and $phase -ne "rollback") { $resumePending = $true }
     }
     if (-not $resumePending -and $null -ne (Get-HrmPendingDockerOperation $StateDir)) { $resumePending = $true }
-    return (Get-HrmTrayStartupPlan -HasRecord $hasRecord -MarkerStatus $marker.status -MarkerFresh $marker.fresh -MarkerMessage $marker.message -ResumePending $resumePending -InstallDirReady $installDirReady)
+    # Идёт ли уже операция движка (свой pid игнорируем): по живой блокировке
+    # действия, свежей отметке мастера или busy с живым pid в supervisor.json.
+    $inFlight = Test-HrmEngineOperationInFlight -StateDir $StateDir -IgnorePid $PID
+    # Сколько раз ПОДРЯД движок закончился ошибкой и что он написал (причина).
+    $failureCount = Get-HrmSupervisorFailureCount -StateDir $StateDir
+    $failureMessage = ""
+    $stored = Get-HrmSupervisorState -StateDir $StateDir
+    if ($stored.state -eq "error") { $failureMessage = [string]$stored.message }
+    return (Get-HrmTrayStartupPlan -HasRecord $hasRecord -MarkerStatus $marker.status -MarkerFresh $marker.fresh -MarkerMessage $marker.message -ResumePending $resumePending -InstallDirReady $installDirReady -EngineOperationRunning $inFlight.running -EngineOperationReason $inFlight.reason -FailureCount $failureCount -FailureMessage $failureMessage -MaxConsecutiveFailures (Get-HrmSupervisorMaxConsecutiveFailures))
 }
 
 function Get-HrmTrayIconKind {
@@ -197,8 +243,34 @@ function Get-HrmTrayStopPrompt {
     }
 }
 
+function Limit-HrmBalloonText {
+    # Пределы всплывающего уведомления Windows: заголовок — 63 символа, текст —
+    # 255. Причина отказа теперь содержит подробности (какие каталоги плагинов
+    # проверены, какая версия найдена), и длинный текст обрезается ЗДЕСЬ, а не
+    # роняет обработчик значка на каждом обновлении. Полный текст остаётся в
+    # пункте меню «Состояние» и в журнале.
+    param([string]$Value = "", [int]$Max = 255)
+    $text = [string]$Value
+    if ($Max -le 0) { return "" }
+    if ($text.Length -le $Max) { return $text }
+    if ($Max -le 3) { return $text.Substring(0, $Max) }
+    return ($text.Substring(0, $Max - 3) + "...")
+}
+
 function Get-HrmTrayBalloon {
-    # Уведомление в трее: понятный русский текст без технических деталей.
+    # Уведомление в трее: понятный русский текст без технических деталей,
+    # обрезанный до пределов Windows (см. Limit-HrmBalloonText).
+    param([string]$State, [string]$Message = "", [string]$Event = "")
+    $balloon = Get-HrmTrayBalloonCore -State $State -Message $Message -Event $Event
+    return [pscustomobject]@{
+        title = (Limit-HrmBalloonText $balloon.title 63)
+        text = (Limit-HrmBalloonText $balloon.text 255)
+        kind = [string]$balloon.kind
+    }
+}
+
+function Get-HrmTrayBalloonCore {
+    # Содержимое уведомления (без обрезки): заголовок, текст, значок.
     param([string]$State, [string]$Message = "", [string]$Event = "")
     if ($Event -eq "action-start") {
         return [pscustomobject]@{ title = "HR Manager"; text = $Message; kind = "info" }
@@ -214,7 +286,17 @@ function Get-HrmTrayBalloon {
         return [pscustomobject]@{ title = "HR Manager готов"; text = "Приложение открывается в браузере. Значок остаётся в трее."; kind = "info" }
     }
     if ($State -eq "error") {
-        return [pscustomobject]@{ title = "HR Manager — нужна помощь"; text = ("{0} Нажмите «Создать отчёт для поддержки»." -f $Message); kind = "error" }
+        # Причина отказа теперь подробная (перечень каталогов плагинов, найденная
+        # версия, stderr пробы) и длиннее предела уведомления. Обрезается
+        # ПРИЧИНА, а не весь текст: действие для человека обязано остаться в
+        # уведомлении, иначе пользователь видел бы обрывок диагностики без
+        # следующего шага (ровно тот симптом, из-за которого отказ выглядел
+        # необъяснимым).
+        $action = "Нажмите «Создать отчёт для поддержки»."
+        $room = 255 - $action.Length - 1
+        $reason = Limit-HrmBalloonText $Message $room
+        $text = ("{0} {1}" -f $reason, $action).Trim()
+        return [pscustomobject]@{ title = "HR Manager — нужна помощь"; text = $text; kind = "error" }
     }
     if ($State -eq "starting") {
         return [pscustomobject]@{ title = "HR Manager запускается"; text = "HR Manager запускается: подготавливаем рабочую среду. Это может занять несколько минут."; kind = "info" }
@@ -325,6 +407,128 @@ function Get-HrmTrayLastSupportBundle {
     try { return (Get-HrmJsonFile $file) } catch { return $null }
 }
 
+function Get-HrmTrayEffectiveState {
+    # Что значок ПОКАЗЫВАЕТ и ЗАПИСЫВАЕТ как своё состояние.
+    # Чистая функция (без обращения к Docker/HTTP) — проверяется тестами.
+    #
+    # Правило: план значка НЕ затирает конкретную причину, которую записал
+    # движок. Регрессия D7 (симптом пилотной машины): значок показывал
+    # «Запускается» с текстом провала предполётной проверки, а движок при этом
+    # уже ничего не делал — то есть состояние «starting» несло сообщение ошибки.
+    # Поэтому если состояние в файле записано как error и это сделал ДРУГОЙ
+    # (живой) процесс, значок показывает «Ошибка» с этой причиной.
+    param(
+        [string]$PlanState = "starting",
+        [string]$PlanMessage = "",
+        [bool]$PlanBusy = $false,
+        [string]$StoredState = "",
+        [string]$StoredMessage = "",
+        [int]$StoredPid = 0,
+        [int]$CurrentPid = 0
+    )
+    $state = $PlanState
+    $message = $PlanMessage
+    $storedIsError = ($StoredState -eq "error")
+    if ($state -eq "error" -and -not $message -and $StoredMessage) {
+        # Собственный план не знает причины — берём причину движка.
+        $message = $StoredMessage
+    }
+    if ($state -ne "error" -and $storedIsError -and $StoredMessage -and $StoredPid -gt 0 -and $StoredPid -ne $CurrentPid) {
+        # Причина записана движком, а план значка говорит «всё идёт по плану»:
+        # причина важнее, состояние — «Ошибка».
+        $state = "error"
+        $message = $StoredMessage
+    }
+    $busy = $PlanBusy
+    if ($state -eq "error") { $busy = $false }
+    return [pscustomobject]@{ state = $state; message = $message; busy = $busy }
+}
+
+function Get-HrmTrayRefreshIntervalMs {
+    # Интервал обновления значка (мс). Регрессия D4: раньше значок каждые 5
+    # секунд ходил в `compose ps` + два HTTP-запроса — 12 обращений в минуту
+    # ПОСТОЯННО. На подвешенном Docker CLI каждый такой тик оставлял висящий
+    # процесс, и они накапливались (симптом «десятки powershell.exe»).
+    #   * идёт операция (busy/действие движка/starting) — 5 с: нужен свежий ход
+    #     работы, но обращения только к файлам состояния, не к Docker;
+    #   * готово (ready) — 30 с: состояние меняется редко, достаточно заметить
+    #     остановку контейнеров;
+    #   * остановлено/ошибка — 60 с: само не изменится, меняется действием
+    #     человека, которое и перерисовывает значок немедленно.
+    # Критерий приёмки: в покое (ready) не более 4 проверок состояния
+    # контейнеров в минуту (30 с → 2 проверки).
+    param([string]$State = "starting", [bool]$Busy = $false, [bool]$ActionRunning = $false)
+    if ($Busy -or $ActionRunning -or $State -eq "starting") { return 5000 }
+    if ($State -eq "ready") { return 30000 }
+    return 60000
+}
+
+function Invoke-HrmTrayRefresh {
+    # ОДИН тик значка: что показать, уведомлять ли, идти ли в Docker, какой
+    # следующий интервал. Вся логика тика вынесена из WinForms-обработчика в
+    # чистую функцию, чтобы её можно было проверить тестами (сам интерфейс
+    # тестируется только на живой машине).
+    #
+    # Возвращает: @{ state; message; busy; notify; event; probed; interval_ms;
+    #                reason }.
+    # probed=false означает «в Docker/HTTP не ходили» — тик читал только файлы
+    # состояния. Именно это и есть защита от накопления висящих CLI-процессов.
+    param(
+        [string]$InstallDir = "",
+        [string]$StateDir = "",
+        [switch]$ForceProbe
+    )
+    if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $plan = Get-HrmTrayCurrentPlan -StateDir $StateDir -InstallDir $InstallDir
+    $stored = Get-HrmSupervisorState -StateDir $StateDir
+    if ($plan.mode -ne "normal") {
+        $message = $plan.message
+        if ($plan.mode -eq "installing" -or $plan.mode -eq "resuming" -or $plan.mode -eq "busy") {
+            # Пока операция идёт, показываем более подробный ход от движка
+            # («Подготавливаем рабочую среду…», «Ожидаем запуск службы
+            # контейнеров…»), если он уже записан. Ошибку движка план НЕ
+            # затирает — это делает Get-HrmTrayEffectiveState.
+            if ($stored.message -and ($stored.state -eq "starting" -or $stored.state -eq "error")) { $message = $stored.message }
+        }
+        $effective = Get-HrmTrayEffectiveState -PlanState $plan.state -PlanMessage $message -PlanBusy $plan.busy -StoredState $stored.state -StoredMessage $stored.message -StoredPid $stored.pid -CurrentPid $PID
+        $interval = Get-HrmTrayRefreshIntervalMs -State $effective.state -Busy $effective.busy -ActionRunning $plan.busy
+        return [pscustomobject]@{
+            state = $effective.state; message = $effective.message; busy = $effective.busy
+            notify = $true; event = $plan.notify_event; probed = $false
+            interval_ms = $interval; reason = $plan.mode
+        }
+    }
+    $actionRunning = (Test-HrmTrayActionRunning -StateDir $StateDir)
+    $engineRunning = $false
+    if (-not $actionRunning) { $engineRunning = [bool](Test-HrmEngineOperationInFlight -StateDir $StateDir).running }
+    if (($actionRunning -or $engineRunning) -and -not $ForceProbe) {
+        # Идёт операция движка: состояние берём из его файла и в Docker НЕ идём.
+        # Дублирование опроса движком ничего не ускоряет, а висящий CLI
+        # контейнеров остаётся висеть (регрессия D4).
+        $effective = Get-HrmTrayEffectiveState -PlanState "starting" -PlanMessage $stored.message -PlanBusy $true -StoredState $stored.state -StoredMessage $stored.message -StoredPid $stored.pid -CurrentPid $PID
+        $interval = Get-HrmTrayRefreshIntervalMs -State $effective.state -Busy $effective.busy -ActionRunning $true
+        return [pscustomobject]@{
+            state = $effective.state; message = $effective.message; busy = $effective.busy
+            notify = $false; event = ""; probed = $false
+            interval_ms = $interval; reason = $(if ($actionRunning) { "action-running" } else { "engine-running" })
+        }
+    }
+    $snapshot = Get-HrmTraySnapshot -InstallDir $InstallDir -StateDir $StateDir
+    $state = $snapshot.state
+    $message = $snapshot.message
+    if ($stored.state -eq "error" -and $state -ne "ready") {
+        $state = "error"
+        if ($stored.message) { $message = $stored.message }
+    }
+    $interval = Get-HrmTrayRefreshIntervalMs -State $state -Busy $false -ActionRunning $false
+    return [pscustomobject]@{
+        state = $state; message = $message; busy = $false
+        notify = $true; event = ""; probed = $true
+        interval_ms = $interval; reason = "probe"
+    }
+}
+
 function Start-HrmTrayUi {
     # Интерфейс значка. Запускается только из hrm-tray.ps1 (после проверки
     # единственности supervisor'а).
@@ -375,47 +579,38 @@ function Start-HrmTrayUi {
         $viewState.last = $State
     }
 
+    # Таймер создаётся ДО замыкания тика: тик сам меняет интервал (см.
+    # Get-HrmTrayRefreshIntervalMs), а в Windows PowerShell 5.1 ссылка на
+    # переменную в обработчике разрешается при исполнении, а не при создании.
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = (Get-HrmTrayRefreshIntervalMs -State "starting")
+    # Признак «тик ещё идёт» — защита от накладывающихся тиков (регрессия D4).
+    $refreshState = @{ running = $false }
+
     $refresh = {
+        # WinForms Timer ставит тики в очередь сообщений: если предыдущий тик не
+        # закончился (типичный случай — CLI контейнеров висит на подвешенном
+        # Docker), новый тик начинал ВТОРОЙ такой же поход, и процессы
+        # накапливались. Пока тик идёт, следующие пропускаются; состояние
+        # значка при этом не «залипает»: оно обновится на следующем тике.
+        if ($refreshState.running) { return }
+        $refreshState.running = $true
         try {
-            $plan = Get-HrmTrayCurrentPlan -StateDir $StateDir -InstallDir $InstallDir
-            if ($plan.mode -ne "normal") {
-                $message = $plan.message
-                if ($plan.mode -eq "installing" -or $plan.mode -eq "resuming") {
-                    # Пока идёт установка/обновление, показываем более подробный
-                    # ход от движка («Подготавливаем рабочую среду…», «Ожидаем
-                    # запуск службы контейнеров…»), если он уже записан.
-                    $stored = Get-HrmSupervisorState -StateDir $StateDir
-                    if ($stored.message -and ($stored.state -eq "starting" -or $stored.state -eq "error")) { $message = $stored.message }
-                }
-                & $applyState $plan.state $message $plan.busy $true $plan.notify_event
-                return
-            }
-            $running = Test-HrmTrayActionRunning -StateDir $StateDir
-            $stored = Get-HrmSupervisorState -StateDir $StateDir
-            if ($running) {
-                & $applyState "starting" $stored.message $true $false
-                return
-            }
-            $snapshot = Get-HrmTraySnapshot -InstallDir $InstallDir -StateDir $StateDir
-            $state = $snapshot.state
-            $message = $snapshot.message
-            if ($stored.state -eq "error" -and $state -ne "ready") {
-                $state = "error"
-                if ($stored.message) { $message = $stored.message }
-            }
-            & $applyState $state $message $false $true
+            $tick = Invoke-HrmTrayRefresh -InstallDir $InstallDir -StateDir $StateDir
+            & $applyState $tick.state $tick.message $tick.busy $tick.notify $tick.event
+            # Интервал зависит от состояния: в покое значок опрашивает редко.
+            if ($tick.interval_ms -ne $timer.Interval) { $timer.Interval = [int]$tick.interval_ms }
         }
         catch {
             & $applyState "error" (Redact-HrmText $_.Exception.Message) $false $true
         }
+        finally { $refreshState.running = $false }
     }
 
     $icon.ContextMenuStrip = $menu
     $icon.Visible = $true
     $icon.add_DoubleClick({ Invoke-HrmTrayMenuAction -ActionId "open" -InstallDir $InstallDir -StateDir $StateDir })
     & $refresh
-    $timer = New-Object System.Windows.Forms.Timer
-    $timer.Interval = 5000
     $timer.add_Tick($refresh)
     $timer.Start()
     [System.Windows.Forms.Application]::Run()
@@ -439,7 +634,10 @@ function Invoke-HrmTrayMenuAction {
     if ($ActionId -eq "check") {
         $snapshot = Get-HrmTraySnapshot -InstallDir $InstallDir -StateDir $StateDir
         $label = Get-HrmSupervisorStatusText $snapshot.state
-        Set-HrmSupervisorState -StateDir $StateDir -State $snapshot.state -Message $snapshot.message
+        # Счётчик подряд идущих ОТКАЗОВ ДВИЖКА здесь не меняется: ручная
+        # проверка состояния — не попытка запуска, и три проверки при
+        # выключенном Docker не должны превращать значок в «повторы остановлены».
+        Set-HrmSupervisorState -StateDir $StateDir -State $snapshot.state -Message $snapshot.message -FailureCount (Get-HrmSupervisorFailureCount -StateDir $StateDir)
         return ("Состояние HR Manager: {0}. {1}" -f $label, $snapshot.message)
     }
     if ($ActionId -eq "exit") {
@@ -481,6 +679,12 @@ function Invoke-HrmTrayMenuAction {
             $answer = [System.Windows.Forms.MessageBox]::Show($prompt.text, $prompt.title, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
             if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return "Отменено" }
         }
+    }
+    # Явное действие человека — новая попытка разрешена: счётчик подряд идущих
+    # отказов обнуляется. Без этого в состоянии «автоматические повторы
+    # остановлены» пользователь не смог бы повторить запуск из меню.
+    if (Test-Path (Get-HrmSupervisorStateFile $StateDir)) {
+        Reset-HrmSupervisorFailureCount -StateDir $StateDir | Out-Null
     }
     $result = Start-HrmTrayAction -Action $ActionId -InstallDir $InstallDir -StateDir $StateDir
     if (-not $result.started) { return $result.message }

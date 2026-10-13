@@ -385,4 +385,186 @@ Test-Case "пин CLI из обвязки переживает набор пер
     Assert-HrmEqual 1 $calls.Count "вызов должен идти базовым именем из пина"
 }
 
+
+Write-Host "== Ревизия стабильности (12.10.2026): выбор CLI, плагин compose, факты =="
+
+function New-HrmCliCandidateObject {
+    # Кандидат CLI для проверки ПРАВИЛА ВЫБОРА на фиксированных данных: селектор
+    # читает только path/file_version/file_last_write/desktop_root_match.
+    param([string]$Path, [string]$Version = "", [string]$Stamp = "", [bool]$DesktopMatch = $false, [string]$Source = "docker-desktop-dir")
+    return [pscustomobject]@{
+        path = $Path; source = $Source; file_version = $Version; file_last_write = $Stamp
+        desktop_root_match = $DesktopMatch; install_root = ""; probe_ok = $false
+        probe_version = ""; probe_exit_code = 0; probe_stderr = ""
+    }
+}
+
+Test-Case "D6: корень установки Docker Desktop определяется и для Desktop.exe, и для resources\bin" {
+    New-HrmDockerTestContext
+    $machineRoot = Get-HrmDockerInstallRoot "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+    Assert-HrmEqual "c:\program files\docker\docker" $machineRoot "корень машинной установки определён неверно"
+    $machineCli = Get-HrmDockerInstallRoot "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
+    Assert-HrmEqual $machineRoot $machineCli "CLI из той же установки не сопоставлен с Desktop.exe"
+    $userRoot = Get-HrmDockerInstallRoot "$env:LOCALAPPDATA\Programs\DockerDesktop\Docker Desktop.exe"
+    $userCli = Get-HrmDockerInstallRoot "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin\docker.exe"
+    Assert-HrmEqual $userRoot $userCli "корень пользовательской установки определён неверно"
+    Assert-HrmTrue ($machineRoot -ne $userRoot) "две разные установки дали один корень"
+    Assert-HrmEqual "" (Get-HrmDockerInstallRoot "") "пустой путь должен давать пустой корень"
+    # Посторонний файл: корень — его собственный каталог, совпадения с корнем
+    # установки Docker Desktop не будет (значит и выбран он не по правилу 1).
+    Assert-HrmEqual "c:\windows\system32" (Get-HrmDockerInstallRoot "C:\Windows\system32\notepad.exe") "посторонний файл получил неверный корень"
+}
+
+Test-Case "D6: правило выбора CLI — тот же корень Docker Desktop, затем версия, затем дата, затем прежний порядок" {
+    New-HrmDockerTestContext
+    $machineCli = New-HrmCliCandidateObject -Path "C:\Program Files\Docker\Docker\resources\bin\docker.exe" -Version "24.0.7" -Stamp "2024-01-01T00:00:00.0000000" -DesktopMatch $false
+    $userCli = New-HrmCliCandidateObject -Path "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin\docker.exe" -Version "27.3.1" -Stamp "2026-09-01T00:00:00.0000000" -DesktopMatch $true
+    # 1) Совпадение с корнем работающего Docker Desktop важнее всего: прежний
+    #    резолвер брал ПЕРВЫЙ найденный файл (устаревшая машинная установка),
+    #    а детекция считала Docker установленным по пользовательской.
+    $choice = Select-HrmDockerCliCandidate -Candidates @($machineCli, $userCli) -DesktopPath "$env:LOCALAPPDATA\Programs\DockerDesktop\Docker Desktop.exe"
+    Assert-HrmEqual $userCli.path $choice.path "выбран CLI не из той установки, что и Docker Desktop"
+    Assert-HrmEqual 1 ([int]$choice.index) "индекс выбранного кандидата неверен"
+    Assert-HrmContains ([string]$choice.reason) "тот же корень установки" "правило выбора не объяснено"
+    # 2) Корни не совпали (или Docker Desktop не найден) — выбирается наибольшая версия.
+    $otherCli = New-HrmCliCandidateObject -Path "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin\docker.exe" -Version "27.3.1" -Stamp "2026-09-01T00:00:00.0000000" -DesktopMatch $false
+    $choice2 = Select-HrmDockerCliCandidate -Candidates @($machineCli, $otherCli) -DesktopPath ""
+    Assert-HrmEqual $otherCli.path $choice2.path "не выбрана наибольшая версия файла"
+    Assert-HrmContains ([string]$choice2.reason) "наибольшая версия" "правило выбора не объяснено"
+    # 3) Версии равны — выбирается более свежий файл.
+    $sameOld = New-HrmCliCandidateObject -Path "C:\a\docker.exe" -Version "27.3.1" -Stamp "2025-01-01T00:00:00.0000000" -Source "path"
+    $sameNew = New-HrmCliCandidateObject -Path "C:\b\docker.exe" -Version "27.3.1" -Stamp "2026-01-01T00:00:00.0000000" -Source "path"
+    $choice3 = Select-HrmDockerCliCandidate -Candidates @($sameOld, $sameNew) -DesktopPath ""
+    Assert-HrmEqual $sameNew.path $choice3.path "не выбрана самая свежая дата файла"
+    Assert-HrmContains ([string]$choice3.reason) "дата файла" "правило выбора не объяснено"
+    # 4) Всё неразличимо — прежний порядок поиска (первый кандидат).
+    $twinA = New-HrmCliCandidateObject -Path "C:\a\docker.exe" -Version "" -Stamp "" -Source "path"
+    $twinB = New-HrmCliCandidateObject -Path "C:\b\docker.exe" -Version "" -Stamp "" -Source "path"
+    $choice4 = Select-HrmDockerCliCandidate -Candidates @($twinA, $twinB) -DesktopPath ""
+    Assert-HrmEqual $twinA.path $choice4.path "нарушен прежний порядок поиска"
+    Assert-HrmContains ([string]$choice4.reason) "порядок поиска" "правило выбора не объяснено"
+    # 5) Кандидатов нет — пустой путь и понятная причина (а не исключение).
+    $choice5 = Select-HrmDockerCliCandidate -Candidates @() -DesktopPath ""
+    Assert-HrmEqual "" ([string]$choice5.path) "пустой список кандидатов должен давать пустой путь"
+    Assert-HrmContains ([string]$choice5.reason) "не найден" "причина отсутствия CLI не объяснена"
+}
+
+Test-Case "D6: сравнение версий — числовые разряды, предпоиск, пустая версия" {
+    New-HrmDockerTestContext
+    Assert-HrmEqual 1 (Compare-HrmCliVersion "27.3.1" "24.0.7") "числовые разряды сравниваются как числа"
+    Assert-HrmEqual -1 (Compare-HrmCliVersion "2.23.9" "2.24") "2.23.9 должна быть меньше 2.24"
+    Assert-HrmEqual 0 (Compare-HrmCliVersion "2.24.0" "2.24") "2.24.0 и 2.24 эквивалентны"
+    Assert-HrmEqual 1 (Compare-HrmCliVersion "5.1.0" "2.24") "прежнее правило (major>=2 и minor>=24) отвергло бы Compose 5.1.0"
+    Assert-HrmEqual 1 (Compare-HrmCliVersion "v2.29.7" "2.24") "префикс v не мешает сравнению"
+    Assert-HrmEqual 1 (Compare-HrmCliVersion "24.0.7" "24.0.7-beta") "релиз должен быть больше предпоиска"
+    Assert-HrmEqual -1 (Compare-HrmCliVersion "" "2.24") "пустая версия меньше любой"
+    Assert-HrmEqual 0 (Compare-HrmCliVersion "" "") "две пустые версии равны"
+}
+
+Test-Case "D6: резолвер перечисляет всех кандидатов и не принимает путь со стороны" {
+    $world = New-HrmDockerTestContext
+    $fakeBin = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-cli-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    New-Item -ItemType Directory -Path $fakeBin -Force | Out-Null
+    Set-Content -Path (Join-Path $fakeBin "docker.exe") -Value "fake" -Encoding ASCII
+    $originalPath = [string]$env:PATH
+    $originalOverride = $null
+    try {
+        # Снимаем пин CLI из обвязки: проверяется НАСТОЯЩИЙ резолвер.
+        Clear-HrmDockerOverride
+        Reset-HrmDockerCliChoiceCache
+        $env:PATH = $fakeBin + ";" + $originalPath
+        $fakeCli = Join-Path $fakeBin "docker.exe"
+        $paths = @(Get-HrmDockerCliCandidatePaths)
+        Assert-HrmTrue ($paths -contains $fakeCli) "кандидат из PATH не найден резолвером"
+        # -Candidate возвращает путь только если он в списке того же резолвера:
+        # имя внешней команды по-прежнему не может прийти из произвольного места.
+        Assert-HrmEqual $fakeCli (Get-HrmDockerCliPath -Candidate $fakeCli) "свой кандидат отклонён"
+        Assert-HrmEqual "" (Get-HrmDockerCliPath -Candidate (Join-Path $fakeBin "evil.exe")) "принят путь, которого нет среди кандидатов"
+        Assert-HrmEqual "" (Get-HrmDockerCliPath -Candidate "C:\Windows\system32\cmd.exe") "принят произвольный системный путь"
+        $facts = Get-HrmDockerCliFacts
+        Assert-HrmTrue ([int]$facts.candidate_count -ge 1) "факты не перечислили кандидатов"
+        Assert-HrmTrue ([string]$facts.chosen_reason) "правило выбора не зафиксировано в фактах"
+        Assert-HrmTrue (@($facts.searched_dirs).Count -ge 1) "в фактах нет перечня проверенных каталогов"
+        $listed = @($facts.candidates | ForEach-Object { [string]$_.path })
+        Assert-HrmTrue ($listed -contains $fakeCli) "кандидат не попал в факты для журнала"
+    }
+    finally {
+        $env:PATH = $originalPath
+        Reset-HrmDockerCliChoiceCache
+        Set-HrmDockerOverride @{}
+        Remove-Item -Path $fakeBin -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Assert-HrmEqual "docker.exe" (Get-HrmDockerCliPath) "пин CLI из обвязки не восстановлен"
+}
+
+Test-Case "D6: проба версии CLI идёт через единственную точку внешних команд и даёт факт для журнала" {
+    $world = New-HrmDockerTestContext
+    $probe = Invoke-HrmDockerCliVersionProbe -CandidatePath "docker.exe" -TimeoutSeconds 5
+    Assert-HrmTrue ([bool]$probe.ok) "проба версии не прошла на мок-мире"
+    Assert-HrmEqual "27.3.1" ([string]$probe.version) "версия из ответа CLI не разобрана"
+    Assert-HrmEqual 0 ([int]$probe.exit_code) "код возврата пробы"
+    $calls = @($world.Calls | Where-Object { $_.Args -contains "--version" })
+    Assert-HrmEqual 1 $calls.Count "проба обязана быть одним вызовом через единственную точку"
+    $facts = Get-HrmDockerCliFacts -Probe
+    Assert-HrmTrue ([bool]$facts.cli_probe_ok) "факты не содержат результата пробы"
+    Assert-HrmEqual "27.3.1" ([string]$facts.cli_version_probed) "факты не содержат версию из пробы"
+}
+
+Test-Case "D5: классификация ответа compose — CLI не запустился / плагина нет / версия не разобрана / версия стара / другая ошибка" {
+    New-HrmDockerTestContext
+    $cliMissing = Get-HrmComposeVersionVerdict -ExitCode 127 -Stdout "" -Stderr ""
+    Assert-HrmEqual "cli_missing" ([string]$cliMissing.verdict) "код 127 не распознан как «CLI не запустился»"
+    $pluginMissing = Get-HrmComposeVersionVerdict -ExitCode 1 -Stdout "" -Stderr "docker: 'compose' is not a docker command. See 'docker --help'."
+    Assert-HrmEqual "plugin_missing" ([string]$pluginMissing.verdict) "ответ CLI без плагина не распознан"
+    $unparsable = Get-HrmComposeVersionVerdict -ExitCode 0 -Stdout "Docker Compose version unknown" -Stderr ""
+    Assert-HrmEqual "version_unparsable" ([string]$unparsable.verdict) "неразобранная версия не распознана"
+    Assert-HrmContains ([string]$unparsable.detail) "unknown" "в детали не попал ответ CLI"
+    $old = Get-HrmComposeVersionVerdict -ExitCode 0 -Stdout "2.20.1" -Stderr ""
+    Assert-HrmEqual "version_old" ([string]$old.verdict) "старая версия не распознана"
+    Assert-HrmEqual "2.20.1" ([string]$old.version) "старая версия не сохранена"
+    $other = Get-HrmComposeVersionVerdict -ExitCode 1 -Stdout "" -Stderr "error during connect: daemon is not running"
+    Assert-HrmEqual "probe_failed" ([string]$other.verdict) "ошибка демона смешана с отсутствием плагина"
+    Assert-HrmContains ([string]$other.detail) "daemon is not running" "в детали не попал stderr"
+    $timedOut = Get-HrmComposeVersionVerdict -ExitCode 124 -Stdout "" -Stderr "" -TimedOut $true
+    Assert-HrmEqual "probe_failed" ([string]$timedOut.verdict) "таймаут пробы не распознан"
+    Assert-HrmContains ([string]$timedOut.detail) "не завершилась" "таймаут не объяснён"
+    $ok = Get-HrmComposeVersionVerdict -ExitCode 0 -Stdout "2.29.7" -Stderr ""
+    Assert-HrmEqual "ok" ([string]$ok.verdict) "подходящая версия не принята"
+    Assert-HrmEqual "2.29.7" ([string]$ok.version) "версия не сохранена"
+    $future = Get-HrmComposeVersionVerdict -ExitCode 0 -Stdout "v5.1.0" -Stderr ""
+    Assert-HrmEqual "ok" ([string]$future.verdict) "Compose 5.x отвергнут правилом major>=2 и minor>=24"
+}
+
+Test-Case "D5: отказ по compose называет причину и проверенные каталоги плагинов; проверка не ослаблена" {
+    $world = New-HrmDockerTestContext
+    $world.ComposePluginMissing = $true
+    $result = Test-HrmComposeVersion
+    Assert-HrmFalse ([bool]$result.Passed) "проверка compose ослаблена до предупреждения"
+    Assert-HrmEqual "plugin_missing" ([string]$result.Reason) "причина отказа не классифицирована"
+    Assert-HrmContains ([string]$result.Message) "Плагин Docker Compose" "отказ не называет причину"
+    Assert-HrmContains ([string]$result.Message) "cli-plugins" "отказ не перечисляет каталоги плагинов"
+    Assert-HrmContains ([string]$result.Message) ".docker" "отказ не называет пользовательский каталог плагинов"
+    # Честность про машинный каталог: Docker CLI 29.2.0+ его не ищет
+    # (GHSA-p436-gjf2-799p) — совет «положите туда плагин» был бы нерабочим.
+    Assert-HrmContains ([string]$result.Message) "29.2.0" "не указано, что новый CLI не ищет машинный каталог"
+    Assert-HrmFalse ([bool]$result.PluginFound) "флаг найденного плагина недостоверен"
+    Assert-HrmEqual 1 ([int]$result.ExitCode) "код возврата пробы не сохранён"
+    Assert-HrmTrue (@($result.PluginDirs).Count -ge 1) "в результате нет перечня каталогов плагинов"
+    # Версия compose ниже требуемой — тоже отказ (не предупреждение).
+    $world.ComposePluginMissing = $false
+    $world.ComposeVersion = "2.20.1"
+    $oldResult = Test-HrmComposeVersion
+    Assert-HrmFalse ([bool]$oldResult.Passed) "старая версия compose принята"
+    Assert-HrmEqual "version_old" ([string]$oldResult.Reason) "старая версия не классифицирована"
+    Assert-HrmContains ([string]$oldResult.Message) "2.24" "в отказе нет требуемой версии"
+    Assert-HrmContains ([string]$oldResult.Message) "2.20.1" "в отказе нет найденной версии"
+    # Подходящая версия — проверка пройдена, версия видна в фактах.
+    $world.ComposeVersion = "v2.29.7"
+    $okResult = Test-HrmComposeVersion
+    Assert-HrmTrue ([bool]$okResult.Passed) "подходящая версия compose отвергнута"
+    Assert-HrmEqual "ok" ([string]$okResult.Reason) "verdict успешной проверки"
+    Assert-HrmEqual "2.29.7" ([string]$okResult.Version) "версия не сохранена в результате"
+    Assert-HrmContains ([string]$okResult.Message) "2.29.7" "версия не видна в сообщении (её читает отчёт о хосте)"
+}
+
 Write-Host ("Docker Desktop: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

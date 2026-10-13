@@ -309,6 +309,21 @@ function Install-HrmApp {
         $null = Assert-HrmLicensePublicKey -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
         $expectedSha = Get-HrmReleaseSha $InstallDir $StateDir
         $null = Write-HrmPilotEnv $StateDir $expectedSha $effectivePort
+        # Ветка повторной установки проходит предполётную проверку ДО запуска
+        # стека (регрессия D7). Раньше здесь не было ни одной проверки: при
+        # отсутствующем плагине compose повторный запуск Setup.exe падал на
+        # Start-HrmStack с текстом про compose, а значок показывал «Запускается».
+        # Теперь причина называется сразу и записывается в состояние как
+        # «Ошибка» с точным следующим действием (какие каталоги плагинов
+        # проверены, какая версия найдена — см. Test-HrmComposeVersion).
+        try {
+            Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $effectivePort | Out-Null
+        }
+        catch {
+            $preflightMessage = Redact-HrmText $_.Exception.Message
+            try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $preflightMessage } catch { }
+            throw $preflightMessage
+        }
         # Повторный запуск НЕ довольствуется «контейнеры вроде запущены»:
         # partial/degraded больше не считаются работающим приложением (дефект
         # 12.10.2026), Start-HrmStack приводит стек и образы к развёрнутому
@@ -390,6 +405,33 @@ function Install-HrmApp {
             $installedVersion = [string]$releaseData.version
         }
     }
+    $null = Write-HrmPilotEnv $StateDir $releaseSha $port
+    # ВОРОТА «УСТАНОВКА НЕ ДОЛЖНА ЗАВЕРШАТЬСЯ НАПОЛОВИНУ» (регрессия D7).
+    # Доступность Compose (плагин и версия) и валидность конфигурации
+    # проверяются ДО записи installed.json. Раньше запись создавалась первой, а
+    # полная предполётная проверка шла после неё: при отсутствии плагина compose
+    # установка «завершалась» с записью установки, но без работающего стека —
+    # значок показывал «Запускается» (запись есть, приложения нет), повторный
+    # запуск Setup.exe шёл по ветке повторной установки, а причина (нет плагина
+    # compose) не называлась нигде, кроме журнала.
+    #
+    # Порядок безопасен: pilot.env не требует записи установки (владелец ещё не
+    # создан — pilot_created=false, токен первого запуска генерируется), а порт
+    # передаётся явно. Если проверка отказывает, запись установки НЕ создаётся:
+    # состояние остаётся честным («приложение не установлено»), значок показывает
+    # «Ошибка» с причиной, а повторный запуск Setup.exe идёт по ветке первичной
+    # установки, а не по ветке «обновление поверх несуществующей установки».
+    try {
+        Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
+    }
+    catch {
+        # Отказ обязан стать состоянием «Ошибка» с точной причиной, а не
+        # остаться «Запускается»: значок читает supervisor.json, и без этой
+        # записи пользователь видел бы вечное «Запускается» (симптом пилота).
+        $preflightMessage = Redact-HrmText $_.Exception.Message
+        try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $preflightMessage } catch { }
+        throw $preflightMessage
+    }
     Set-HrmInstallRecord $StateDir @{
         release_sha = $releaseSha
         version = $installedVersion
@@ -399,10 +441,6 @@ function Install-HrmApp {
         installed_at = (Get-Date).ToString("o")
         pilot_created = $false
     }
-
-    $null = Write-HrmPilotEnv $StateDir $releaseSha $port
-    # Перепроверяем конфигурацию уже с env-файлом.
-    Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
 
     $stack = Start-HrmStack $InstallDir $StateDir
     if (-not $stack.ok) { throw $stack.message }

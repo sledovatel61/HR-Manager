@@ -72,7 +72,10 @@ param(
     # diagnostics: вывод в формате JSON.
     [switch]$Json,
 
-    # channel: один цикл наблюдателя; -Watch запускает блокирующий цикл.
+    # channel: один цикл наблюдателя; -Watch запускает наблюдателя, который
+    # ограничен числом циклов/минут (-MaxCycles/-MaxMinutes, переменные
+    # HRM_CHANNEL_WATCH_MAX_CYCLES/_MAX_MINUTES) и останавливается файлом
+    # channel-watch.stop — бесконечного цикла без выхода больше нет.
     [switch]$Watch,
 
     # channel-config: смена URL канала (-SetUrl) или набора доверенных ключей

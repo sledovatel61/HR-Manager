@@ -54,20 +54,52 @@ try {
     try { Sync-HrmAutostart -InstallDir $InstallDir -StateDir $StateDir | Out-Null }
     catch { Write-HrmLog "warn" ("Автозапуск не настроен автоматически: " + (Redact-HrmText $_.Exception.Message)) }
 
-    # Что делать значку: идёт установка, установка упала/прервалась, нужно
-    # продолжить операцию или начинается обычная работа.
+    # Что делать значку: идёт установка, установка упала/прервалась, уже идёт
+    # операция движка (порождать вторую нельзя), автоматические повторы
+    # исчерпаны или начинается обычная работа.
     $plan = Get-HrmTrayCurrentPlan -StateDir $StateDir -InstallDir $InstallDir
-    Set-HrmSupervisorState -StateDir $StateDir -State $plan.state -Message $plan.message -Busy $plan.busy
+    $stored = Get-HrmSupervisorState -StateDir $StateDir
+    # Значок НЕ затирает причину, которую записал движок: состояние «Запускается»
+    # с текстом провала предполётной проверки (симптом пилотной машины) получалось
+    # именно так — план значка перезаписывал сохранённую ошибку, а движок при этом
+    # уже ничего не делал. Теперь: если ошибку записал другой (живой) процесс,
+    # значок показывает «Ошибка» с этой причиной и действием для человека.
+    $effective = Get-HrmTrayEffectiveState -PlanState $plan.state -PlanMessage $plan.message -PlanBusy $plan.busy -StoredState $stored.state -StoredMessage $stored.message -StoredPid $stored.pid -CurrentPid $PID
+    $failureCount = -1
+    if ($effective.state -eq "error" -and $stored.state -eq "error") {
+        # Причина уже посчитана движком: значок её не удваивает (иначе каждый
+        # перезапуск значка приближал бы «автоматические повторы остановлены»).
+        $failureCount = (Get-HrmSupervisorFailureCount -StateDir $StateDir)
+    }
+    Set-HrmSupervisorState -StateDir $StateDir -State $effective.state -Message $effective.message -Busy $effective.busy -FailureCount $failureCount
     if ($plan.mode -eq "not_installed") {
-        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $plan.message
+        # «Не установлено» — это не отказ движка, а отсутствие приложения:
+        # счётчик подряд идущих отказов здесь не накручивается (значок всё равно
+        # завершается, а установка начнётся с нуля).
+        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $plan.message -FailureCount 0
         exit 1
     }
     if ($plan.start_engine) {
-        # Полный цикл подготовки и запуска (или продолжение прерванной операции) —
-        # отдельным скрытым процессом, чтобы значок в трее оставался отзывчивым.
-        $engineScript = Join-Path $PSScriptRoot "hr-manager.ps1"
-        $logFile = Get-HrmTimestampedLogFile -StateDir $StateDir -Action $plan.engine_action
-        Start-HrmEngineProcess -ScriptPath $engineScript -Action $plan.engine_action -InstallDir $InstallDir -StateDir $StateDir -LogFile $logFile | Out-Null
+        # Проверка ПЕРЕД порождением процесса. Критерий приёмки: два подряд входа
+        # в Windows (или повторный запуск Setup.exe, который поднимает значок и
+        # тут же запускает -Action install) дают ОДИН цикл движка. Признаки
+        # идущей операции: живая блокировка действия, свежая отметка мастера
+        # установки/обновления, busy с живым чужим pid в supervisor.json.
+        # Второй движок — это второй compose build/up поверх первого: гонка за
+        # порт и образы, перегрузка Docker/WSL и процессы, которые никто не
+        # завершает (симптом пилотной машины: десятки powershell.exe).
+        $inFlight = Test-HrmEngineOperationInFlight -StateDir $StateDir -IgnorePid $PID
+        if ($inFlight.running) {
+            Write-HrmLog "info" ("Движок не запускается: операция HR Manager уже выполняется ({0})." -f $inFlight.reason)
+        }
+        else {
+            # Полный цикл подготовки и запуска (или продолжение прерванной
+            # операции) — отдельным скрытым процессом, чтобы значок в трее
+            # оставался отзывчивым.
+            $engineScript = Join-Path $PSScriptRoot "hr-manager.ps1"
+            $logFile = Get-HrmTimestampedLogFile -StateDir $StateDir -Action $plan.engine_action
+            Start-HrmEngineProcess -ScriptPath $engineScript -Action $plan.engine_action -InstallDir $InstallDir -StateDir $StateDir -LogFile $logFile | Out-Null
+        }
     }
     else {
         $note = ("Значок работает в состоянии «{0}»: {1}" -f $plan.mode, $plan.message)
