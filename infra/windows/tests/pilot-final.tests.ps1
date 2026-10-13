@@ -621,4 +621,48 @@ Test-Case "обновление поверх сохраняет лицензию
     Remove-Item $sourceN2 -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Write-Host "== Ревизия стабильности установщика (12.10.2026): факты диагностики =="
+
+Test-Case "D9: диагностика сообщает память WSL2 и факты CLI/compose; автоотчёт о хосте не изменён" {
+    Initialize-HrmTestEngine
+    $world = New-HrmMockWorld
+    $world.Running = $true
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Set-HrmInstallRecord $state @{ release_sha = ("1" * 40); port = 8080 }
+    $json = (Get-HrmDiagnostics -InstallDir $install -StateDir $state -AsJson) | Out-String
+    $d = $json | ConvertFrom-Json
+    # Факты, по которым на чужой машине воспроизводится отказ «compose не найден»
+    # и оценивается потребление памяти WSL2.
+    foreach ($key in @("docker_cli", "docker_cli_version", "docker_cli_candidates",
+            "docker_cli_chosen_reason", "compose_reason", "compose_plugin_found",
+            "compose_plugin_dirs", "wsl_memory_mb", "wsl_memory_observed",
+            "wsl_memory_processes", "host_memory_total_mb", "host_memory_free_mb")) {
+        Assert-HrmTrue ($null -ne $d.PSObject.Properties[$key]) ("в диагностике нет факта: " + $key)
+    }
+    Assert-HrmEqual "docker.exe" ([string]$d.docker_cli) "выбранный CLI не совпал с пином обвязки"
+    Assert-HrmTrue ([int]$d.wsl_memory_mb -ge 0) "память WSL2 должна быть числом не меньше нуля"
+    # Каталоги плагинов перечислены честно: машинный каталог Docker CLI 29.2.0+
+    # не ищет (GHSA-p436-gjf2-799p) — иначе совет пользователю был бы нерабочим.
+    $dirs = @($d.compose_plugin_dirs)
+    Assert-HrmTrue ($dirs.Count -ge 1) "каталоги плагинов compose не перечислены"
+    $notes = ($dirs | ForEach-Object { [string]$_.note }) -join " "
+    Assert-HrmContains $notes "29.2.0" "нет пометки про Docker CLI 29.2.0+ (GHSA-p436-gjf2-799p)"
+    $paths = ($dirs | ForEach-Object { [string]$_.path }) -join " "
+    Assert-HrmContains $paths "cli-plugins" "в фактах нет путей каталогов плагинов"
+    # Автоотчёт о хосте отправляется на backend со строгой схемой
+    # (UpdateEngineHostReportRequest, extra="forbid"): локальные факты в него
+    # добавлять нельзя — отчёт остался прежним.
+    $payload = Get-HrmHostReportPayload -InstallDir $install -StateDir $state
+    $allowed = @("schema_version", "generated_at", "engine_version", "app_state", "windows", "docker",
+        "compose", "published_ports", "ports_observed", "free_space_mb", "state_dir", "staging",
+        "installed_version", "installed_release_sha", "previous_images_present")
+    foreach ($key in @($payload.Keys)) {
+        Assert-HrmTrue ($allowed -contains $key) ("в автоотчёте о хосте появилось неизвестное поле: " + [string]$key)
+    }
+    foreach ($forbidden in @("docker_cli", "docker_cli_candidates", "compose_plugin_dirs", "wsl_memory_mb")) {
+        Assert-HrmFalse (@($payload.Keys) -contains $forbidden) ("локальный факт утёк в автоотчёт о хосте: " + $forbidden)
+    }
+}
+
 Write-Host ("Пилот финал: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

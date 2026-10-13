@@ -118,6 +118,7 @@ function Initialize-HrmTestEngine {
     Clear-HrmDockerOverride
     Clear-HrmDownloadMock
     Clear-HrmProcessLaunchMock
+    Clear-HrmProcessStartMock
     Reset-HrmRedaction
     Remove-Item Env:HRM_AUTOSTART_DIR -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_AUTOSTART_MOCK -ErrorAction SilentlyContinue
@@ -125,6 +126,17 @@ function Initialize-HrmTestEngine {
     Remove-Item Env:HRM_LOG_FILE -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_SOURCE_DIR -ErrorAction SilentlyContinue
     Remove-Item Env:HRM_SUPERVISOR_MUTEX -ErrorAction SilentlyContinue
+    # Швы ревизии стабильности: таймаут внешних команд, мьютекс единственности
+    # цикла движка и ограничение числа циклов наблюдателя канала. Без сброса
+    # значение из предыдущего теста утёкло бы в следующее.
+    Remove-Item Env:HRM_EXTERNAL_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_ENGINE_CYCLE_MUTEX -ErrorAction SilentlyContinue
+    Remove-Item Env:HRM_CHANNEL_WATCH_MAX_CYCLES -ErrorAction SilentlyContinue
+    # Мьютекс единственности цикла движка — уникальное имя на каждый кейс: как и
+    # HRM_SUPERVISOR_MUTEX в supervisor.tests.ps1, тест не должен зависеть от
+    # живых процессов машины (мьютекс Local\… может держать установка владельца).
+    # Тесты, которым нужно «имя известно обоим процессам», задают его явно.
+    $env:HRM_ENGINE_CYCLE_MUTEX = "Local\HRManagerPilotEngineCycleTest-" + [guid]::NewGuid().ToString("N")
     # Публичный ключ лицензии по умолчанию (валидный base64 от 32 байт):
     # Write-HrmPilotEnv и Assert-HrmLicensePublicKey fail-closed без ключа, а
     # большинству тестов ключ не важен. Тесты «ключа нет ни в одном источнике»
@@ -143,6 +155,10 @@ function Initialize-HrmTestEngine {
     # тесты, задающие свои ключи, теряли бы эти договорённости.
     Set-HrmDockerOverrideDefaults @{ port_free = $true; cli_path = "docker.exe" }
     Set-HrmDockerOverride @{}
+    # Кэш выбора CLI контейнеров (регрессия D6) сбрасывается между кейсами:
+    # путь, выбранный на файлах раннера в предыдущем тесте, не должен утекать в
+    # следующий (там переопределение cli_path может быть другим).
+    Reset-HrmDockerCliChoiceCache | Out-Null
     New-Item -ItemType Directory -Path $env:HRM_STATE_DIR -Force | Out-Null
     New-Item -ItemType Directory -Path $env:HRM_INSTALL_DIR -Force | Out-Null
 }
@@ -211,6 +227,75 @@ function Get-HrmMockCliName {
     try { return [System.IO.Path]::GetFileName($Name) } catch { return $Name }
 }
 
+function New-HrmFakeExternalProcess {
+    # Двойник процесса внешней команды для проверки МЕХАНИЗМА запуска
+    # (Invoke-HrmExternal + Set-HrmProcessStartMock): таймаут, остановка дерева,
+    # чтение труб, код возврата. Настоящие программы не запускаются.
+    #
+    # Контракт двойника — ровно то, что использует Invoke-HrmExternal:
+    #   StandardInput  → StreamWriter (WriteAsync/Close),
+    #   StandardOutput → StreamReader (ReadToEndAsync → Task),
+    #   StandardError  → StreamReader,
+    #   WaitForExit([int]) → bool, Kill(), Dispose(), Id, ExitCode, HasExited.
+    # Состояние (число ожиданий, факт Kill/Dispose) доступно через .State —
+    # по нему тест доказывает, что зависший процесс действительно остановлен.
+    param(
+        [int]$ProcessId = 424242,
+        [string]$Stdout = "",
+        [string]$Stderr = "",
+        [bool]$Hangs = $true,
+        [int]$ExitCode = 0
+    )
+    $state = @{ exited = (-not $Hangs); killed = $false; waitCalls = 0; disposed = $false }
+    $outStream = New-Object System.IO.MemoryStream
+    $errStream = New-Object System.IO.MemoryStream
+    $inStream = New-Object System.IO.MemoryStream
+    if ($Stdout) {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Stdout)
+        $outStream.Write($bytes, 0, $bytes.Length)
+    }
+    if ($Stderr) {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Stderr)
+        $errStream.Write($bytes, 0, $bytes.Length)
+    }
+    $outStream.Position = 0
+    $errStream.Position = 0
+    $process = [pscustomobject]@{
+        Id = $ProcessId
+        StandardInput = (New-Object System.IO.StreamWriter($inStream))
+        StandardOutput = (New-Object System.IO.StreamReader($outStream))
+        StandardError = (New-Object System.IO.StreamReader($errStream))
+        State = $state
+    }
+    $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {
+        param([int]$Milliseconds = -1)
+        $this.State.waitCalls = [int]$this.State.waitCalls + 1
+        if ($this.State.killed) { $this.State.exited = $true }
+        if (-not $this.State.exited -and [int]$this.State.waitCalls -eq 1) {
+            # Пауза на первом ожидании: асинхронное чтение труб двойника успевает
+            # завершиться, и проверка «частичный вывод сохранён при таймауте» не
+            # зависит от гонки планировщика задач.
+            Start-Sleep -Milliseconds 50
+        }
+        return [bool]$this.State.exited
+    } -Force
+    $process | Add-Member -MemberType ScriptMethod -Name Kill -Value {
+        $this.State.killed = $true
+        $this.State.exited = $true
+    } -Force
+    $process | Add-Member -MemberType ScriptMethod -Name Dispose -Value {
+        $this.State.disposed = $true
+    } -Force
+    $process | Add-Member -MemberType ScriptProperty -Name HasExited -Value {
+        return [bool]$this.State.exited
+    } -Force
+    # ExitCode зависит от параметра функции-создателя → замыкание.
+    $process | Add-Member -MemberType ScriptProperty -Name ExitCode -Value ({
+            return [int]$ExitCode
+        }.GetNewClosure()) -Force
+    return $process
+}
+
 function New-HrmMockWorld {
     # Возвращает состояние моков и регистрирует моки внешних команд и HTTP.
     param([string]$ReleaseSha = "snapshot-sha-0013")
@@ -218,8 +303,15 @@ function New-HrmMockWorld {
         Calls = @()
         HttpCalls = @()
         IcaclsArgs = @()
+        # Аргументы вызовов остановки дерева процессов (taskkill /PID <pid> /T /F):
+        # по ним тест таймаута доказывает, что движок убил именно ДЕРЕВО.
+        TaskkillArgs = @()
         Running = $false
         DockerMissing = $false
+        # Плагин compose отсутствует: CLI отвечает как docker без плагина
+        # («'compose' is not a docker command») — сценарий пилотной машины,
+        # где docker --version и docker info работают, а compose нет.
+        ComposePluginMissing = $false
         ComposeVersion = "v2.29.7"
         AlembicCurrent = "0013 (head)"
         AlembicUpgradeCount = 0
@@ -304,6 +396,10 @@ function New-HrmMockWorld {
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "27.3.1"; Stderr = "" }
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "version")) {
+                if ($global:HRM_MockWorld.ComposePluginMissing) {
+                    # Так отвечает docker CLI без плагина compose (код 1 + stderr).
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "docker: 'compose' is not a docker command. See 'docker --help'." }
+                }
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.ComposeVersion; Stderr = "" }
             }
             if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "config")) {
@@ -474,6 +570,12 @@ function New-HrmMockWorld {
         if ($Name -eq "icacls.exe") {
             $global:HRM_MockWorld.IcaclsArgs += , @($Arguments)
             return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ""; Stderr = "" }
+        }
+        if ((Get-HrmMockCliName $Name) -eq "taskkill.exe") {
+            # Остановка дерева процессов по таймауту внешней команды: аргументы
+            # фиксируются, настоящая программа не запускается.
+            $global:HRM_MockWorld.TaskkillArgs += , @($Arguments)
+            return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "SUCCESS: The process tree has been terminated."; Stderr = "" }
         }
         if ($Name -eq "netsh.exe") {
             # Firewall rule: just record, succeed

@@ -188,6 +188,35 @@ function Copy-HrmSnapshot {
     }
 }
 
+function Invoke-HrmPreflightGuarded {
+    # Предполётная проверка внутри сценариев установки/запуска.
+    #
+    # Отказ ОБЯЗАН стать состоянием «Ошибка» с причиной (регрессия D7): значок
+    # читает supervisor.json, и без этой записи пользователь видел вечное
+    # «Запускается» — именно так выглядел отказ пилотной машины, где причина
+    # («Предполётная проверка не пройдена: compose…») оставалась только в журнале.
+    # Раньше проверка вызывалась напрямую и исключение уходило наружу, минуя
+    # запись состояния: его делал только диспетчер hr-manager.ps1, а вызовы
+    # движка из значка/мастера шли мимо диспетчерского перехвата.
+    #
+    # Текст исключения не меняется (его же проверяет ci-silent-smoke.ps1):
+    # сообщение редактится от секретов и пробрасывается дальше.
+    param(
+        [string]$InstallDir = "",
+        [string]$StateDir = "",
+        [int]$Port = 0,
+        [switch]$SkipCompose
+    )
+    try {
+        return @(Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $Port -SkipCompose:$SkipCompose)
+    }
+    catch {
+        $failureMessage = Redact-HrmText $_.Exception.Message
+        try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $failureMessage } catch { }
+        throw $failureMessage
+    }
+}
+
 function Install-HrmApp {
     # Основной сценарий: повторный запуск распознаёт существующую установку
     # и только открывает/восстанавливает её.
@@ -309,6 +338,14 @@ function Install-HrmApp {
         $null = Assert-HrmLicensePublicKey -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
         $expectedSha = Get-HrmReleaseSha $InstallDir $StateDir
         $null = Write-HrmPilotEnv $StateDir $expectedSha $effectivePort
+        # Ветка повторной установки проходит предполётную проверку ДО запуска
+        # стека (регрессия D7). Раньше здесь не было ни одной проверки: при
+        # отсутствующем плагине compose повторный запуск Setup.exe падал на
+        # Start-HrmStack с текстом про compose, а значок показывал «Запускается».
+        # Теперь причина называется сразу и записывается в состояние как
+        # «Ошибка» с точным следующим действием (какие каталоги плагинов
+        # проверены, какая версия найдена — см. Test-HrmComposeVersion).
+        $null = Invoke-HrmPreflightGuarded -InstallDir $InstallDir -StateDir $StateDir -Port $effectivePort
         # Повторный запуск НЕ довольствуется «контейнеры вроде запущены»:
         # partial/degraded больше не считаются работающим приложением (дефект
         # 12.10.2026), Start-HrmStack приводит стек и образы к развёрнутому
@@ -363,7 +400,12 @@ function Install-HrmApp {
     }
     $port = [int]$prepare.port
     if ($port -le 0) { $port = Get-HrmPort $Port }
-    Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port -SkipCompose
+    # Первая предполётная проверка после подготовки среды. -SkipCompose здесь
+    # означает «не проверять compose config» (файла конфигурации и pilot.env ещё
+    # нет), а НЕ «пропустить compose»: доступность плагина compose проверяется
+    # уже здесь — это и есть ранние ворота D7. Отказ записывается в состояние
+    # («Ошибка» с причиной), а не остаётся только в журнале.
+    $null = Invoke-HrmPreflightGuarded -InstallDir $InstallDir -StateDir $StateDir -Port $port -SkipCompose
     Protect-HrmFile $StateDir $StateDir
     # Файл ввода первого запуска (если его записал мастер установки)
     # тоже защищается ACL — фамилия владельца не должна читаться другими
@@ -390,6 +432,25 @@ function Install-HrmApp {
             $installedVersion = [string]$releaseData.version
         }
     }
+    $null = Write-HrmPilotEnv $StateDir $releaseSha $port
+    # ВОРОТА «УСТАНОВКА НЕ ДОЛЖНА ЗАВЕРШАТЬСЯ НАПОЛОВИНУ» (регрессия D7).
+    # Доступность Compose (плагин и версия) и валидность конфигурации
+    # проверяются ДО записи installed.json. Раньше запись создавалась первой, а
+    # полная предполётная проверка шла после неё: при отсутствии плагина compose
+    # установка «завершалась» с записью установки, но без работающего стека —
+    # значок показывал «Запускается» (запись есть, приложения нет), повторный
+    # запуск Setup.exe шёл по ветке повторной установки, а причина (нет плагина
+    # compose) не называлась нигде, кроме журнала.
+    #
+    # Порядок безопасен: pilot.env не требует записи установки (владелец ещё не
+    # создан — pilot_created=false, токен первого запуска генерируется), а порт
+    # передаётся явно. Если проверка отказывает, запись установки НЕ создаётся:
+    # состояние остаётся честным («приложение не установлено»), значок показывает
+    # «Ошибка» с причиной, а повторный запуск Setup.exe идёт по ветке первичной
+    # установки, а не по ветке «обновление поверх несуществующей установки».
+    # Отказ записывается в состояние как «Ошибка» с причиной (см.
+    # Invoke-HrmPreflightGuarded), поэтому вечного «Запускается» больше нет.
+    $null = Invoke-HrmPreflightGuarded -InstallDir $InstallDir -StateDir $StateDir -Port $port
     Set-HrmInstallRecord $StateDir @{
         release_sha = $releaseSha
         version = $installedVersion
@@ -399,10 +460,6 @@ function Install-HrmApp {
         installed_at = (Get-Date).ToString("o")
         pilot_created = $false
     }
-
-    $null = Write-HrmPilotEnv $StateDir $releaseSha $port
-    # Перепроверяем конфигурацию уже с env-файлом.
-    Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
 
     $stack = Start-HrmStack $InstallDir $StateDir
     if (-not $stack.ok) { throw $stack.message }
@@ -429,7 +486,9 @@ function Start-HrmApp {
         throw $prepare.message
     }
     $port = Sync-HrmPortAfterPrepare -InstallDir $InstallDir -StateDir $StateDir -RequestedPort $port -Prepare $prepare
-    Assert-HrmPreflight -InstallDir $InstallDir -StateDir $StateDir -Port $port | Out-Null
+    # Запуск установленного приложения тоже обязан оставлять причину в состоянии
+    # («Ошибка»), а не только в журнале: значок читает supervisor.json (D7).
+    $null = Invoke-HrmPreflightGuarded -InstallDir $InstallDir -StateDir $StateDir -Port $port
     $stack = Start-HrmStack $InstallDir $StateDir
     if (-not $stack.ok) { throw $stack.message }
     # Готовность + принадлежность целевому пилоту и ожидаемому релизу: чужой
