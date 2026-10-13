@@ -224,13 +224,21 @@ function Get-HrmDockerInstallRoot {
         $leaf = Split-Path $normalized -Leaf
         $dir = Split-Path $normalized -Parent
         if (-not $dir) { return "" }
-        if ($leaf -match "(?i)^docker(\s*desktop)?\.exe$") { return $dir.ToLowerInvariant() }
+        # СНАЧАЛА шаблон CLI из установки Docker Desktop
+        # («…\Docker Desktop\resources\bin\docker.exe»): если проверять имя файла
+        # первым, «docker.exe» совпал бы с правилом для Docker Desktop.exe и корнем
+        # оказался бы каталог «resources\bin», то есть CLI из той же установки не
+        # сопоставлялся бы с работающим Docker Desktop (правило выбора D6 не работало).
         $parent = Split-Path $dir -Parent
-        if (-not $parent) { return $dir.ToLowerInvariant() }
-        $grandParent = Split-Path $parent -Parent
-        if ($grandParent -and ((Split-Path $parent -Leaf) -ieq "resources") -and ((Split-Path $dir -Leaf) -ieq "bin")) {
-            return $grandParent.ToLowerInvariant()
+        if ($parent) {
+            $grandParent = Split-Path $parent -Parent
+            if ($grandParent -and ((Split-Path $parent -Leaf) -ieq "resources") -and ((Split-Path $dir -Leaf) -ieq "bin")) {
+                return $grandParent.ToLowerInvariant()
+            }
         }
+        if ($leaf -match "(?i)^docker(\s*desktop)?\.exe$") { return $dir.ToLowerInvariant() }
+        # Посторонний файл: корень — его собственный каталог (совпадения с корнем
+        # установки Docker Desktop не будет, значит и выбран он не по правилу 1).
         return $dir.ToLowerInvariant()
     }
     catch { return "" }
@@ -519,11 +527,15 @@ function Get-HrmDockerCliFacts {
     $probeStderr = ""
     $probeExitCode = 0
     if ($Probe -and $cli) {
-        $probe = Invoke-HrmDockerCliVersionProbe -CandidatePath $cli -TimeoutSeconds $ProbeTimeoutSeconds
-        $probeOk = [bool]$probe.ok
-        $probeVersion = [string]$probe.version
-        $probeStderr = [string]$probe.stderr
-        $probeExitCode = [int]$probe.exit_code
+        # Имя локальной переменной НЕ должно совпадать с именем параметра даже с
+        # точностью до регистра: $Probe — типизированный [switch]-параметр, и
+        # присваивание $probe = <объект> приводило бы к преобразованию результата
+        # пробы в SwitchParameter (ошибка приведения типа).
+        $probeResult = Invoke-HrmDockerCliVersionProbe -CandidatePath $cli -TimeoutSeconds $ProbeTimeoutSeconds
+        $probeOk = [bool]$probeResult.ok
+        $probeVersion = [string]$probeResult.version
+        $probeStderr = [string]$probeResult.stderr
+        $probeExitCode = [int]$probeResult.exit_code
         if (-not $cliVersion -and $probeVersion) { $cliVersion = $probeVersion }
     }
     return [pscustomobject]@{

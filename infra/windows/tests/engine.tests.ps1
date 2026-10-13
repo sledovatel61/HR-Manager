@@ -934,6 +934,19 @@ Test-Case "ярлык: чужое приложение на порту и нет
 
 Write-Host "== Ревизия стабильности установщика (12.10.2026): таймауты, отмена, ворота установки =="
 
+function Get-HrmTestParameterDefault {
+    # Значение по умолчанию параметра функции движка. Читается из текста
+    # определения функции: в Windows PowerShell 5.1 у ParameterMetadata НЕТ
+    # свойства DefaultValue (оно появилось в более поздних версиях), а доказать
+    # «прежние ожидания не увеличены» тест обязан. -1 — параметр не найден.
+    param([string]$FunctionName, [string]$ParameterName)
+    $definition = [string](Get-Command $FunctionName -ErrorAction Stop).Definition
+    $pattern = ('\$' + [regex]::Escape($ParameterName) + '\s*=\s*(\d+)')
+    $found = [regex]::Match($definition, $pattern)
+    if (-not $found.Success) { return -1 }
+    return [int]$found.Groups[1].Value
+}
+
 Test-Case "D1: зависшая внешняя команда останавливается по таймауту — код 124, дерево процессов, частичный вывод" {
     Initialize-HrmTestEngine
     # Здесь нужен НАСТОЯЩИЙ Invoke-HrmExternal (механизм запуска), а не подмена
@@ -1018,9 +1031,9 @@ Test-Case "D1: классы таймаутов внешних команд и т
     # Таймауты внешних команд НЕ «лечились» увеличением прежних ожиданий:
     # готовность Docker Engine — 300 с, Docker Desktop — 300 с, готовность
     # приложения — 180 с (значения по умолчанию не изменены).
-    Assert-HrmEqual 300 ((Get-Command Wait-HrmDockerEngine).Parameters["TimeoutSeconds"].DefaultValue) "изменено ожидание готовности Docker Engine"
-    Assert-HrmEqual 300 ((Get-Command Start-HrmDockerDesktop).Parameters["TimeoutSeconds"].DefaultValue) "изменено ожидание запуска Docker Desktop"
-    Assert-HrmEqual 180 ((Get-Command Wait-HrmReady).Parameters["TimeoutSeconds"].DefaultValue) "изменено ожидание готовности приложения"
+    Assert-HrmEqual 300 (Get-HrmTestParameterDefault "Wait-HrmDockerEngine" "TimeoutSeconds") "изменено ожидание готовности Docker Engine"
+    Assert-HrmEqual 300 (Get-HrmTestParameterDefault "Start-HrmDockerDesktop" "TimeoutSeconds") "изменено ожидание запуска Docker Desktop"
+    Assert-HrmEqual 180 (Get-HrmTestParameterDefault "Wait-HrmReady" "TimeoutSeconds") "изменено ожидание готовности приложения"
 }
 
 Test-Case "D7: без плагина compose установка не завершается наполовину — нет installed.json, состояние «Ошибка» с причиной" {

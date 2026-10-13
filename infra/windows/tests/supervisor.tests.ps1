@@ -361,12 +361,22 @@ Test-Case "D3: блокировка действия не «протухает»
     New-HrmSupervisorTestContext
     $state = Get-HrmTestStateDir
     $otherPid = Get-HrmOtherLivePid
+    # Свежая блокировка живого процесса: отказ с прежним понятным текстом и БЕЗ
+    # признака «зависла» (порог затянувшейся операции — 60 минут).
+    Set-HrmTestActionLock -StateDir $state -Action "update" -ProcessId $otherPid -AgeMinutes 5
+    $fresh = Enter-HrmActionLock -StateDir $state -Action "restart"
+    Assert-HrmFalse ([bool]$fresh.acquired) "две операции стартовали одновременно"
+    Assert-HrmContains ([string]$fresh.message) "уже выполняется" "сообщение не объясняет отказ"
+    Assert-HrmFalse ([bool]$fresh.stalled) "свежая операция помечена зависшей"
+    Exit-HrmActionLock -StateDir $state
     # Операция идёт уже 2 часа: прежний код считал блокировку протухшей (60 мин)
     # и запускал вторую операцию поверх живой — второй параллельный compose.
     Set-HrmTestActionLock -StateDir $state -Action "update" -ProcessId $otherPid -AgeMinutes 120
     $lock = Enter-HrmActionLock -StateDir $state -Action "restart"
     Assert-HrmFalse ([bool]$lock.acquired) "блокировка «протухла» по возрасту при живом процессе операции"
-    Assert-HrmContains ([string]$lock.message) "уже выполняется" "сообщение не объясняет отказ"
+    Assert-HrmContains ([string]$lock.message) "не завершилась" "в отказе нет объяснения затянувшейся операции"
+    Assert-HrmContains ([string]$lock.message) "НЕ запускается" "в отказе не сказано, что вторая операция не начинается"
+    Assert-HrmContains ([string]$lock.message) "диспетчере задач" "в отказе нет действия для человека"
     Assert-HrmTrue (Test-Path (Get-HrmActionLockFile $state)) "блокировка снята при живом процессе операции"
     Assert-HrmTrue ([bool]$lock.stalled) "затянувшаяся операция не помечена как зависшая"
     Assert-HrmEqual $otherPid ([int]$lock.pid) "в отказе нет pid зависшей операции"
