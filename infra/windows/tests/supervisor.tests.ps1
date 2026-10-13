@@ -62,6 +62,47 @@ Test-Case "меню трея содержит все обязательные п
     Assert-HrmContains $texts "Состояние: Готово" "состояние не видно в меню"
     $open = @($model | Where-Object { $_.action -eq "open" })[0]
     Assert-HrmTrue $open.enabled "«Открыть» должно быть доступно в состоянии ready"
+    $firstRunModel = Get-HrmTrayMenuModel -State "error" -Busy $false -AutostartEnabled $false -Message "Docker Desktop не установлен." -OpenAvailable $true
+    $firstRunOpen = @($firstRunModel | Where-Object { $_.action -eq "open" })[0]
+    Assert-HrmTrue $firstRunOpen.enabled "после отказа первой установки пункт «Открыть» должен позволять повторить настройку"
+    $blockedFirstRun = Get-HrmTrayMenuModel -State "error" -Busy $true -OpenAvailable $true
+    $blockedOpen = @($blockedFirstRun | Where-Object { $_.action -eq "open" })[0]
+    Assert-HrmFalse $blockedOpen.enabled "повторная первичная настройка не должна обходить блокировку движка"
+}
+
+Test-Case "E.5: после отказа Docker из трея доступен повтор первичной настройки с браузером" {
+    New-HrmSupervisorTestContext
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $infra = Join-Path $install "infra"
+    $windowsDir = Join-Path $infra "windows"
+    New-Item -ItemType Directory -Path $windowsDir -Force | Out-Null
+    Set-Content -Path (Join-Path $infra "compose.pilot.yml") -Value "services: {}" -Encoding UTF8
+    Set-Content -Path (Join-Path $windowsDir "hr-manager.ps1") -Value "# test stub" -Encoding ASCII
+    Set-HrmSetupMarker -StateDir $state -Status "failed" -Message "Docker Desktop отсутствует; установите его вручную." | Out-Null
+
+    $plan = Get-HrmTrayCurrentPlan -StateDir $state -InstallDir $install
+    Assert-HrmEqual "install_failed" ([string]$plan.mode) "первый отказ не распознан треем"
+    Assert-HrmTrue ([bool]$plan.open_available) "после отказа Setup не оставил в трее путь продолжения"
+    $tick = Invoke-HrmTrayRefresh -InstallDir $install -StateDir $state
+    Assert-HrmTrue ([bool]$tick.open_available) "обновление значка потеряло доступность повторной настройки"
+    $model = Get-HrmTrayMenuModel -State $tick.state -Busy $tick.busy -OpenAvailable $tick.open_available
+    $open = @($model | Where-Object { $_.action -eq "open" })[0]
+    Assert-HrmTrue ([bool]$open.enabled) "пункт «Открыть HR Manager» недоступен после отказа Docker"
+
+    $global:HRM_TrayProcessArguments = @()
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        $global:HRM_TrayProcessArguments = @($Arguments)
+        return [pscustomobject]@{ Id = 4321 }
+    }
+    Set-HrmSupervisorState -StateDir $state -State "error" -Message "Docker Desktop отсутствует."
+    $result = Invoke-HrmTrayMenuAction -ActionId "open" -InstallDir $install -StateDir $state
+    Assert-HrmContains $result "Действие запущено: open" "нажатие в трее не запустило повтор настройки"
+    Assert-HrmTrue ($global:HRM_TrayProcessArguments -contains "-NonInteractive") "движок трея должен остаться неинтерактивным"
+    Assert-HrmTrue ($global:HRM_TrayProcessArguments -contains "-OpenBrowser") "неинтерактивный движок трея не получил явное разрешение открыть браузер"
+    Assert-HrmEqual "-OpenBrowser" (Get-HrmTrayEngineExtraArguments -Action "resume" -StateDir $state) "первичное продолжение из трея должно открыть страницу настройки"
+    Exit-HrmActionLock -StateDir $state
 }
 
 Test-Case "во время операции пункты меню недоступны (нет дублей действий)" {

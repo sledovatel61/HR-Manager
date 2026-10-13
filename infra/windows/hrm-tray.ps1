@@ -72,10 +72,12 @@ try {
         $failureCount = (Get-HrmSupervisorFailureCount -StateDir $StateDir)
     }
     Set-HrmSupervisorState -StateDir $StateDir -State $effective.state -Message $effective.message -Busy $effective.busy -FailureCount $failureCount
-    if ($plan.mode -eq "not_installed") {
-        # «Не установлено» — это не отказ движка, а отсутствие приложения:
-        # счётчик подряд идущих отказов здесь не накручивается (значок всё равно
-        # завершается, а установка начнётся с нуля).
+    if ($plan.mode -eq "not_installed" -and -not $plan.open_available) {
+        # «Не установлено» и файлы приложения отсутствуют: это не отказ движка,
+        # а отсутствие приложения. Не накручиваем счётчик и завершаем значок.
+        # Если Setup уже скопировал файлы, open_available оставляет трею живым:
+        # пользователь сможет вручную установить Docker и продолжить настройку
+        # пунктом «Открыть HR Manager», не переустанавливая Setup.exe.
         Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $plan.message -FailureCount 0
         exit 1
     }
