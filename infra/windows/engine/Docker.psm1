@@ -894,7 +894,8 @@ function Start-HrmDockerDesktop {
 
 function Get-HrmDockerInstallGuide {
     # Инструкция содержит только существующие действия. Не обещает кнопку в
-    # HR Manager и не запускает/скачивает внешний установщик.
+    # HR Manager и не запускает/скачивает внешний установщик. Локальный sidecar
+    # показывается только если его хеш совпал с release.json, созданным build.ps1.
     param([string]$InstallDir = "")
     if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
     $optionalInstaller = Join-Path $InstallDir "docker\DockerDesktopInstaller.exe"
@@ -902,7 +903,38 @@ function Get-HrmDockerInstallGuide {
         ("Установите Docker Desktop вручную только с официального сайта: {0}." -f $script:DockerDownloadPage)
     )
     if (Test-Path -LiteralPath $optionalInstaller -PathType Leaf) {
-        $lines += ("В дистрибутиве есть дополнительный установщик: {0}. При желании запустите его самостоятельно; HR Manager этот файл не запускает." -f $optionalInstaller)
+        $release = $null
+        $metadata = $null
+        try {
+            $releaseFile = Join-Path $InstallDir "release.json"
+            if (Test-Path -LiteralPath $releaseFile -PathType Leaf) {
+                $release = Get-HrmJsonFile $releaseFile
+                if ($null -ne $release -and $release.PSObject.Properties["docker_desktop_installer"]) {
+                    $metadata = $release.docker_desktop_installer
+                }
+            }
+        }
+        catch { $metadata = $null }
+
+        $available = $false
+        $expectedHash = ""
+        if ($null -ne $metadata) {
+            if ($metadata.PSObject.Properties["available"] -and ($metadata.available -is [bool]) -and $metadata.available) { $available = $true }
+            if ($metadata.PSObject.Properties["sha256"] -and $metadata.sha256) { $expectedHash = [string]$metadata.sha256 }
+        }
+        if (-not $available -or $expectedHash -notmatch '^[0-9a-fA-F]{64}$') {
+            Write-HrmLog "warn" "Docker Desktop sidecar найден, но release.json не содержит доступный sidecar с корректным SHA256; локальный путь скрыт."
+        }
+        else {
+            $actualHash = ""
+            try { $actualHash = Get-HrmFileSha256 -Path $optionalInstaller } catch { $actualHash = "" }
+            if ($actualHash -and $actualHash -ieq $expectedHash) {
+                $lines += ("В дистрибутиве есть дополнительный установщик: {0} (SHA256 совпадает с release.json). При желании запустите его самостоятельно; HR Manager этот файл не запускает." -f $optionalInstaller)
+            }
+            else {
+                Write-HrmLog "warn" "SHA256 Docker Desktop sidecar не совпал с release.json; локальный путь скрыт, используйте только официальный сайт Docker."
+            }
+        }
     }
     $lines += "Во время установки прочитайте и примите лицензионное соглашение Docker самостоятельно."
     $lines += "Затем запустите Docker Desktop, дождитесь готовности Docker Engine и повторите запуск HR Manager."

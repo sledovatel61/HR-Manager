@@ -84,13 +84,24 @@ Test-Case "Docker sidecar отсутствует: инструкция пока�
     Assert-HrmNotContains $guide "Нажмите «Установить Docker Desktop»" "инструкция не должна ссылаться на несуществующую кнопку"
 }
 
-Test-Case "имеющийся Docker sidecar только указывается для ручного запуска и никогда не стартует сам" {
+Test-Case "Docker sidecar с совпавшим SHA256 показывается для ручного запуска и никогда не стартует сам" {
     New-HrmDockerTestContext
     $installDir = Get-HrmTestInstallDir
     $dockerDir = Join-Path $installDir "docker"
     New-Item -ItemType Directory -Path $dockerDir -Force | Out-Null
     $sidecar = Join-Path $dockerDir "DockerDesktopInstaller.exe"
     Set-Content -LiteralPath $sidecar -Value "test placeholder" -Encoding ASCII
+    $sidecarHash = Get-HrmFileSha256 -Path $sidecar
+    $release = [ordered]@{
+        release_sha = ("a" * 40)
+        docker_desktop_installer = [ordered]@{
+            available = $true
+            sha256 = $sidecarHash
+            source_url = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+            automatically_launched = $false
+        }
+    }
+    $release | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $installDir "release.json") -Encoding UTF8
     Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true }
     $global:HRM_DockerLaunches = @()
     Set-HrmProcessLaunchMock {
@@ -99,11 +110,66 @@ Test-Case "имеющийся Docker sidecar только указывается
         return [pscustomobject]@{ Id = 4321 }
     }
     $guide = @(Get-HrmDockerInstallGuide -InstallDir $installDir) -join "`n"
-    Assert-HrmContains $guide $sidecar "путь к имеющемуся sidecar должен быть показан для запуска пользователем"
+    Assert-HrmContains $guide $sidecar "локальный путь можно показать только для sidecar с совпавшим SHA256"
+    Assert-HrmContains $guide "https://www.docker.com/products/docker-desktop/" "официальный URL должен оставаться видимым"
     Assert-HrmContains $guide "не запускает" "HR Manager обязан явно сказать, что не запускает sidecar"
     $result = Invoke-HrmDockerPrepare -InstallDir $installDir -StateDir (Get-HrmTestStateDir) -Port 8080
     Assert-HrmFalse $result.ok "отсутствие Docker Engine должно оставаться отказом и при sidecar"
     Assert-HrmEqual 0 $global:HRM_DockerLaunches.Count "Docker installer sidecar был запущен автоматически"
+}
+
+Test-Case "Docker sidecar с несовпавшим или отсутствующим pin скрывается без ошибки hash-проверки" {
+    New-HrmDockerTestContext
+    $installDir = Get-HrmTestInstallDir
+    $state = Get-HrmTestStateDir
+    $dockerDir = Join-Path $installDir "docker"
+    New-Item -ItemType Directory -Path $dockerDir -Force | Out-Null
+    $sidecar = Join-Path $dockerDir "DockerDesktopInstaller.exe"
+    Set-Content -LiteralPath $sidecar -Value "tampered placeholder" -Encoding ASCII
+    $release = [ordered]@{
+        release_sha = ("b" * 40)
+        docker_desktop_installer = [ordered]@{
+            available = $true
+            sha256 = ("0" * 64)
+            source_url = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+            automatically_launched = $false
+        }
+    }
+    $release | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $installDir "release.json") -Encoding UTF8
+    $env:HRM_LOG_FILE = Join-Path $state "sidecar-integrity.log"
+    New-Item -ItemType Directory -Path $state -Force | Out-Null
+    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true }
+
+    $threw = $false
+    $message = ""
+    $result = $null
+    try {
+        $message = Get-HrmDockerMissingMessage -InstallDir $installDir
+        $result = Invoke-HrmDockerPrepare -InstallDir $installDir -StateDir $state -Port 8080
+    }
+    catch { $threw = $true }
+
+    Assert-HrmFalse $threw "несовпавший sidecar не должен превращать подсказку/prepare в исключение"
+    Assert-HrmContains $message "https://www.docker.com/products/docker-desktop/" "при несовпадении нужен официальный URL"
+    Assert-HrmNotContains $message "DockerDesktopInstaller.exe" "при несовпадении нельзя показывать локальный путь"
+    Assert-HrmEqual "docker_missing" ([string]$result.state) "должен сохраниться обычный отказ по отсутствующему Docker"
+    Assert-HrmContains $result.message "https://www.docker.com/products/docker-desktop/" "обычный Docker-отказ должен содержать официальный URL"
+    Assert-HrmNotContains $result.message "DockerDesktopInstaller.exe" "ошибка хеша не должна раскрывать локальный путь"
+    $log = Get-Content -LiteralPath $env:HRM_LOG_FILE -Raw -Encoding UTF8
+    Assert-HrmContains $log "[warn]" "hash mismatch должен журналироваться как предупреждение"
+    Assert-HrmContains $log "SHA256 Docker Desktop sidecar не совпал" "журнал не объясняет скрытие sidecar"
+
+    # Отсутствующий ожидаемый SHA — тот же безопасный fallback: оставить URL,
+    # скрыть путь и только предупредить, не превращая проверку в ошибку установки.
+    $release.docker_desktop_installer.sha256 = $null
+    $release | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $installDir "release.json") -Encoding UTF8
+    Set-Content -LiteralPath $env:HRM_LOG_FILE -Value "" -Encoding UTF8
+    $missingPinMessage = Get-HrmDockerMissingMessage -InstallDir $installDir
+    Assert-HrmContains $missingPinMessage "https://www.docker.com/products/docker-desktop/" "без pin должен оставаться официальный URL"
+    Assert-HrmNotContains $missingPinMessage "DockerDesktopInstaller.exe" "без pin нельзя показывать локальный путь"
+    $missingPinLog = Get-Content -LiteralPath $env:HRM_LOG_FILE -Raw -Encoding UTF8
+    Assert-HrmContains $missingPinLog "[warn]" "отсутствующий pin должен журналироваться как предупреждение"
+    Assert-HrmContains $missingPinLog "не содержит доступный sidecar с корректным SHA256" "предупреждение не объясняет отсутствие pin"
 }
 
 Test-Case "Docker readiness больше не публикует pending_docker" {

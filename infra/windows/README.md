@@ -163,10 +163,23 @@ Desktop самостоятельно с [официального сайта Doc
 
 Если дистрибутив содержит `DockerDesktopInstaller.exe` рядом с `Setup.exe`, мастер
 может скопировать этот внешний sidecar в `{app}\docker\DockerDesktopInstaller.exe`.
-HR Manager никогда не запускает его автоматически; запустить файл при желании
-можно только самостоятельно. Если sidecar отсутствует, показывается только
-официальная ссылка — локальный путь не выдумывается. URL и SHA256 sidecar отражаются
-в `release-manifest.json` и `SHA256SUMS.txt`.
+`build.ps1` помещает один и тот же объект `docker_desktop_installer` с URL/available/
+SHA256 в `{app}\release.json` и `release-manifest.json`; `SHA256SUMS.txt` тоже
+фиксирует sidecar, если он есть. Движок показывает локальный путь только при
+`available=true` и совпадении фактического `Get-HrmFileSha256` с SHA256 из
+`release.json`. При отсутствующем pin/метаданных или несовпадении путь скрывается,
+пишется предупреждение `warn` и остаётся официальный URL — hash-проверка сама по
+себе не создаёт отдельный отказ установки. HR Manager никогда не запускает sidecar;
+запустить файл при желании можно только самостоятельно.
+
+Подпись проверяется вне движка только для локального файла:
+`infra/windows/tools/Assert-HrmDockerInstallerSignature.ps1` требует явный SHA256,
+проверяет хеш, Authenticode `Status=Valid`, точный Subject и thumbprint Docker и
+возвращает `0` (совпало), `1` (сигнатура/hash/publisher alert) или `2` (не удалось
+проверить). Он не скачивает файл и не вызывается движком. `pilot-release` запускает
+его после pinned download только при заданном SHA256 в ручном `workflow_dispatch`;
+PR/push sidecar не скачивают. Полная команда и exact pins приведены в
+`installer/README.md`.
 
 Ручная установка Docker может потребовать UAC или перезагрузки Windows. HR Manager
 не создаёт для этого `docker-pending.json` и не возобновляет установку Docker после
@@ -521,9 +534,11 @@ deadlock родителя даже без зависания. Так в дисп
 движком.
 
 Проверяется `tests/docker.tests.ps1`: отказ при отсутствии Docker включает
-официальный URL, показывает sidecar-путь только при наличии файла и не запускает
-`DockerDesktopInstaller.exe`; диагностические проверки Engine, WSL2, портов,
-Compose и ожидания запуска остаются.
+официальный URL; sidecar-путь виден только при совпадении hash с `release.json`, а
+отсутствующий файл, отсутствующий pin и несовпадение SHA не запускают sidecar и не
+превращаются в отдельную ошибку проверки. `static.tests.ps1` разбирает локальный
+Authenticode tool и проверяет его BOM/pins, а также build/workflow contract;
+диагностические проверки Engine, WSL2, портов, Compose и ожидания запуска остаются.
 
 ### Единственность цикла движка
 

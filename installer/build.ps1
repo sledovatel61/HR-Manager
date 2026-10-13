@@ -209,6 +209,9 @@ $releaseJson = [ordered]@{
     built_at = (Get-Date).ToString("o")
     installer_commit = $releaseSha
     changelog = $changelog
+    # The installed engine reads this same build-time hash before showing the
+    # optional sidecar path. Reuse the manifest object; do not hash the file twice.
+    docker_desktop_installer = $dockerInstallerInfo
 }
 Write-HrmUtf8NoBom -Path (Join-Path $appStaging "release.json") -Text ($releaseJson | ConvertTo-Json)
 

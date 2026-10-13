@@ -54,6 +54,23 @@ Test-Case "вспомогательные скрипты infra/windows/tools п�
     }
 }
 
+Test-Case "Docker sidecar signature tool checks a local pinned file and is not part of the engine" {
+    $toolPath = Join-Path $WindowsDir "tools\Assert-HrmDockerInstallerSignature.ps1"
+    Assert-HrmTrue (Test-Path -LiteralPath $toolPath -PathType Leaf) "нет локального инструмента проверки подписи sidecar"
+    $tool = Get-Content -LiteralPath $toolPath -Raw -Encoding UTF8
+    Assert-HrmContains $tool "Get-AuthenticodeSignature" "инструмент не проверяет Authenticode"
+    Assert-HrmContains $tool "Status" "не проверяется статус подписи"
+    Assert-HrmContains $tool "SignerCertificate" "не читается сертификат-подписант"
+    Assert-HrmContains $tool "CN=Docker Inc, O=Docker Inc, L=Palo Alto, S=California, C=US, SERIALNUMBER=4817464, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US" "Subject издателя не закреплён точным pin"
+    Assert-HrmContains $tool "b6bd29272b07ad4d0f1322a739499d67ca3bac3f" "отпечаток сертификата Docker не закреплён"
+    foreach ($code in @("exit 0", "exit 1", "exit 2")) { Assert-HrmContains $tool $code ("нет стабильного кода возврата: " + $code) }
+    Assert-HrmNotContains $tool "Invoke-WebRequest" "локальная проверка не должна скачивать sidecar"
+    Assert-HrmNotContains $tool "Invoke-RestMethod" "локальная проверка не должна обращаться за sidecar"
+    $engineText = (Get-HrmEngineFiles | ForEach-Object { Get-Content -Path $_ -Raw -Encoding UTF8 }) -join "`n"
+    Assert-HrmNotContains $engineText "Assert-HrmDockerInstallerSignature.ps1" "движок не должен вызывать локальную signature-проверку"
+    Assert-HrmNotContains $engineText "Get-AuthenticodeSignature" "движок не должен проверять подпись sidecar"
+}
+
 Test-Case "нет битых символов U+FFFD в файлах движка" {
     foreach ($file in Get-HrmEngineFiles) {
         $text = Get-Content -Path $file -Raw -Encoding UTF8
@@ -460,23 +477,38 @@ Test-Case "движок не содержит Docker install CLI, но сохр�
     Assert-HrmNotContains $common "Start-HrmElevatedAndWait" "устаревший Docker UAC process helper остался"
 }
 
-Test-Case "build публикует необязательный Docker sidecar с URL/SHA256, не загружая его" {
+Test-Case "build публикует Docker sidecar hash в release.json и manifest из одного объекта" {
     $build = Get-Content -Path (Join-Path $RepoRoot "installer\build.ps1") -Raw -Encoding UTF8
     Assert-HrmContains $build "DockerDesktopInstallerPath" "нельзя передать optional sidecar в build"
     Assert-HrmContains $build "DockerDesktopInstallerSha256" "нет проверки ожидаемого SHA256"
-    Assert-HrmContains $build "docker_desktop_installer" "release-manifest не описывает sidecar"
-    Assert-HrmContains $build "DockerInstallerSourceUrl" "release-manifest не содержит source URL"
     Assert-HrmContains $build "SHA256SUMS.txt" "суммы релизной раздачи не создаются"
     Assert-HrmNotContains $build 'Invoke-WebRequest -Uri $DockerInstallerSourceUrl' "build не должен скачивать installer Docker"
+
+    $infoBody = [regex]::Match($build, '(?ms)\$dockerInstallerInfo\s*=\s*\[ordered\]@\{(?<body>.*?)^\}').Groups['body'].Value
+    $releaseJsonBody = [regex]::Match($build, '(?ms)\$releaseJson\s*=\s*\[ordered\]@\{(?<body>.*?)^\}').Groups['body'].Value
+    $manifestBody = [regex]::Match($build, '(?ms)\$manifest\s*=\s*\[ordered\]@\{(?<body>.*?)^\}').Groups['body'].Value
+    Assert-HrmTrue ($infoBody.Length -gt 0) "не найден общий dockerInstallerInfo"
+    Assert-HrmContains $infoBody "source_url = `$DockerInstallerSourceUrl" "метаданные не используют официальный source URL"
+    Assert-HrmContains $infoBody "sha256 = `$null" "при отсутствии sidecar ожидаемый SHA256 должен быть пуст"
+    Assert-HrmContains $infoBody "automatically_launched = `$false" "sidecar не зафиксирован как никогда не запускаемый"
+    Assert-HrmContains $releaseJsonBody "docker_desktop_installer = `$dockerInstallerInfo" "release.json не получает sidecar metadata из общего объекта"
+    Assert-HrmContains $manifestBody "docker_desktop_installer = `$dockerInstallerInfo" "release-manifest не получает те же sidecar metadata"
 }
 
-Test-Case "pilot-release скачивает Docker sidecar только по явному SHA256 pin и включает его в артефакт" {
+Test-Case "pilot-release проверяет локальную подпись sidecar только по явному SHA256 pin" {
     $workflow = Get-Content -Path (Join-Path $RepoRoot ".github\workflows\pilot-release.yml") -Raw -Encoding UTF8
     foreach ($required in @("docker_desktop_installer_sha256", "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
             'if (-not $expected)', 'Get-FileHash -LiteralPath $sidecar', '$actual -ne $expected',
+            "Assert-HrmDockerInstallerSignature.ps1", "if: steps.docker-sidecar.outputs.pinned == 'true'",
+            "-ExpectedSha256 `$env:HRM_DOCKER_DESKTOP_INSTALLER_SHA256",
             "-DockerDesktopInstallerSha256", "DockerDesktopInstaller.exe", "installer/output/*")) {
         Assert-HrmContains $workflow $required ("не выполнен optional pinned sidecar release contract: " + $required)
     }
+    $triggers = [regex]::Match($workflow, '(?ms)^on:\s*(?<body>.*?)(?=^permissions:)').Groups['body'].Value
+    Assert-HrmTrue ($triggers.Length -gt 0) "workflow должен описывать свои ручные triggers"
+    Assert-HrmContains $triggers "workflow_dispatch" "sidecar release допускается только через workflow_dispatch"
+    Assert-HrmNotContains $triggers "pull_request" "PR trigger не должен скачивать Docker sidecar"
+    Assert-HrmNotContains $triggers "push:" "push trigger не должен скачивать Docker sidecar"
 }
 
 Test-Case "обязательный запуск приложения нельзя отключить на финальном экране" {

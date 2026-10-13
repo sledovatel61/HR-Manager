@@ -562,24 +562,37 @@ function Open-HrmApp {
         if (-not (Test-Path $composeFile -PathType Leaf)) {
             throw "Установка HR Manager не найдена. Запустите Setup.exe (установку) заново."
         }
-        # Setup already copied the app files, but the first attempt may have
-        # stopped at the manual Docker prerequisite before installed.json existed.
-        # A deliberate click on the app shortcut retries the app install after the
-        # user has prepared Docker; it does not create Docker-specific pending state.
-        Write-HrmLog "info" "Файлы HR Manager уже установлены; повторяю первичную настройку приложения."
-        $null = Set-HrmSetupMarker -StateDir $StateDir -Status "running" -Message "Подготавливаем HR Manager после установки Docker Desktop…"
-        Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
-        Install-HrmApp -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
-        Clear-HrmSetupMarker -StateDir $StateDir
-        $record = Get-HrmInstallRecord $StateDir
-        $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
-        if ($port -le 0) { $port = Get-HrmPort }
-        # Start-HrmFirstRun has already opened/written the one-time setup URL. If
-        # an existing pilot owner was recovered instead, open the normal app URL.
-        if ([bool](Get-HrmInstallRecordField -Record $record -Field "pilot_created" -Default $false)) {
-            Invoke-HrmOpenBrowser (Get-HrmBaseUrl $port)
+        # Сначала синхронизируем именно повтор первичной настройки. После захвата
+        # читаем record заново: другая попытка могла завершиться до получения lock.
+        $guard = Enter-HrmActionLock -StateDir $StateDir -Action "open"
+        if (-not $guard.acquired) {
+            Write-HrmLog "info" $guard.message
+            return
         }
-        return
+        try {
+            $record = Get-HrmInstallRecord $StateDir
+            if ($null -eq $record) {
+                # Setup already copied the app files, but the first attempt may have
+                # stopped at the manual Docker prerequisite before installed.json existed.
+                # A deliberate click on the app shortcut retries the app install after the
+                # user has prepared Docker; it does not create Docker-specific pending state.
+                Write-HrmLog "info" "Файлы HR Manager уже установлены; повторяю первичную настройку приложения."
+                $null = Set-HrmSetupMarker -StateDir $StateDir -Status "running" -Message "Подготавливаем HR Manager после установки Docker Desktop…"
+                Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
+                Install-HrmApp -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
+                Clear-HrmSetupMarker -StateDir $StateDir
+                $record = Get-HrmInstallRecord $StateDir
+                $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+                if ($port -le 0) { $port = Get-HrmPort }
+                # Start-HrmFirstRun has already opened/written the one-time setup URL. If
+                # an existing pilot owner was recovered instead, open the normal app URL.
+                if ([bool](Get-HrmInstallRecordField -Record $record -Field "pilot_created" -Default $false)) {
+                    Invoke-HrmOpenBrowser (Get-HrmBaseUrl $port)
+                }
+                return
+            }
+        }
+        finally { Exit-HrmActionLock -StateDir $StateDir }
     }
     $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
     if ($port -le 0) { $port = Get-HrmPort }
