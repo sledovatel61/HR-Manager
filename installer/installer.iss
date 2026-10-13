@@ -621,11 +621,11 @@ begin
   // The Run section has finished by this hook. If the engine left its marker at
   // "running" (for example, its error handler could not replace Inno's initial
   // marker), do not leave the tray blocked for the 30-minute stale-marker window.
-  // ASCII-only JSON is deliberate: Inno's SaveStringToFile may use the active
-  // Windows code page, while the engine reads this file as UTF-8.
+  // JSON Unicode escapes keep this marker ASCII on disk while preserving the
+  // Russian user-facing message when the engine reads it as UTF-8.
   if not DirExists(HrmStateDir()) then Exit;
   MarkerFile := HrmStateDir() + '\setup-run.json';
-  Marker := '{"status":"failed","message":"HR Manager setup is incomplete. Check Docker Desktop and Docker Engine, then open HR Manager again."}';
+  Marker := '{"status":"failed","message":"\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0430 HR Manager \u043d\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 Docker Desktop \u0438 Docker Engine; \u0435\u0441\u043b\u0438 Docker Desktop \u043e\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u0435\u0442, \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u0435 \u0435\u0433\u043e \u0432\u0440\u0443\u0447\u043d\u0443\u044e \u0441 \u043e\u0444\u0438\u0446\u0438\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u0441\u0430\u0439\u0442\u0430 https://www.docker.com/products/docker-desktop/, \u0437\u0430\u0442\u0435\u043c \u043e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 HR Manager \u0441\u043d\u043e\u0432\u0430."}';
   if SaveStringToFile(MarkerFile, Marker, False) then
     Log('HRM: incomplete setup marker normalized to failed for tray recovery')
   else

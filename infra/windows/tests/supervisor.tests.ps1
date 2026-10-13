@@ -79,10 +79,13 @@ Test-Case "E.5: после отказа Docker из трея доступен п
     New-Item -ItemType Directory -Path $windowsDir -Force | Out-Null
     Set-Content -Path (Join-Path $infra "compose.pilot.yml") -Value "services: {}" -Encoding UTF8
     Set-Content -Path (Join-Path $windowsDir "hr-manager.ps1") -Value "# test stub" -Encoding ASCII
-    Set-HrmSetupMarker -StateDir $state -Status "failed" -Message "Docker Desktop отсутствует; установите его вручную." | Out-Null
+    Set-HrmSetupMarker -StateDir $state -Status "failed" -Message "Настройка не завершена; проверьте Docker Desktop." | Out-Null
+    $dockerReason = "Docker Desktop отсутствует; Docker Engine не готов. Подробности в журнале."
+    Set-HrmSupervisorState -StateDir $state -State "error" -Message $dockerReason
 
     $plan = Get-HrmTrayCurrentPlan -StateDir $state -InstallDir $install
     Assert-HrmEqual "install_failed" ([string]$plan.mode) "первый отказ не распознан треем"
+    Assert-HrmEqual $dockerReason ([string]$plan.message) "fallback Setup скрыл точную причину Docker из состояния движка"
     Assert-HrmTrue ([bool]$plan.open_available) "после отказа Setup не оставил в трее путь продолжения"
     $tick = Invoke-HrmTrayRefresh -InstallDir $install -StateDir $state
     Assert-HrmTrue ([bool]$tick.open_available) "обновление значка потеряло доступность повторной настройки"
@@ -96,7 +99,6 @@ Test-Case "E.5: после отказа Docker из трея доступен п
         $global:HRM_TrayProcessArguments = @($Arguments)
         return [pscustomobject]@{ Id = 4321 }
     }
-    Set-HrmSupervisorState -StateDir $state -State "error" -Message "Docker Desktop отсутствует."
     $result = Invoke-HrmTrayMenuAction -ActionId "open" -InstallDir $install -StateDir $state
     Assert-HrmContains $result "Действие запущено: open" "нажатие в трее не запустило повтор настройки"
     Assert-HrmTrue ($global:HRM_TrayProcessArguments -contains "-NonInteractive") "движок трея должен остаться неинтерактивным"

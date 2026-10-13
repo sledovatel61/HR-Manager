@@ -158,7 +158,14 @@ function Get-HrmTrayCurrentPlan {
     $failureMessage = ""
     $stored = Get-HrmSupervisorState -StateDir $StateDir
     if ($stored.state -eq "error") { $failureMessage = [string]$stored.message }
-    $plan = Get-HrmTrayStartupPlan -HasRecord $hasRecord -MarkerStatus $marker.status -MarkerFresh $marker.fresh -MarkerMessage $marker.message -ResumePending $resumePending -InstallDirReady $installDirReady -EngineOperationRunning $inFlight.running -EngineOperationReason $inFlight.reason -FailureCount $failureCount -FailureMessage $failureMessage -MaxConsecutiveFailures (Get-HrmSupervisorMaxConsecutiveFailures)
+    $markerMessage = [string]$marker.message
+    # Inno's post-Run fallback can only give a generic recovery hint. Prefer the
+    # engine's saved refusal when it has one, so the tray keeps the exact Docker
+    # reason and log guidance after Setup returns.
+    if ($marker.status -eq "failed" -and $stored.state -eq "error" -and $stored.message) {
+        $markerMessage = [string]$stored.message
+    }
+    $plan = Get-HrmTrayStartupPlan -HasRecord $hasRecord -MarkerStatus $marker.status -MarkerFresh $marker.fresh -MarkerMessage $markerMessage -ResumePending $resumePending -InstallDirReady $installDirReady -EngineOperationRunning $inFlight.running -EngineOperationReason $inFlight.reason -FailureCount $failureCount -FailureMessage $failureMessage -MaxConsecutiveFailures (Get-HrmSupervisorMaxConsecutiveFailures)
     # При первом отказе Docker запись installed.json ещё отсутствует, но файлы
     # приложения уже скопированы. Оставляем явный путь «Открыть HR Manager» в
     # меню трея: после ручной установки Docker он повторит первичную настройку.
