@@ -376,6 +376,62 @@ function Update-HrmActionLockProcess {
         })
 }
 
+function Start-HrmTrayEngineProcess {
+    # Порождение движка из значка — АТОМАРНО (дефект P5.1 дораздела PR #55).
+    #
+    # Раньше значок делал это двумя раздельными шагами:
+    # Test-HrmEngineOperationInFlight -> Start-HrmEngineProcess. Проверка и
+    # запуск не были атомарны, поэтому второй значок (два входа в Windows
+    # подряд; повторный запуск Setup.exe, который поднимает значок и тут же
+    # запускает -Action install) успевал пройти ту же проверку, и первые
+    # секунды работали ДВА движка: две параллельные compose-операции, гонка за
+    # порт и образы, процессы, которые никто не завершает.
+    #
+    # Теперь блокировка действия берётся ДО порождения (та же схема, что в
+    # Start-HrmTrayAction) и передаётся потомку: в файле блокировки оказывается
+    # pid процесса движка, и любой второй значок увидит «операция выполняется».
+    # Потомок входит в эту же блокировку повторно (служебная отметка
+    # action="engine") и снимает её сам по завершении.
+    #
+    # Возвращает @{ started; reason; message; pid; log }: reason — машинный
+    # признак отказа (in_flight/locked/no_script/no_pid) для журнала и тестов.
+    param(
+        [Parameter(Mandatory = $true)][string]$Action,
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [string]$InstallDir = "",
+        [string]$StateDir = ""
+    )
+    if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    # Признаки идущей операции шире блокировки действия: свежая отметка мастера
+    # установки/обновления и busy с живым чужим pid в supervisor.json.
+    $inFlight = Test-HrmEngineOperationInFlight -StateDir $StateDir -IgnorePid $PID
+    if ($inFlight.running) {
+        return [pscustomobject]@{ started = $false; reason = "in_flight"; message = ("Операция HR Manager уже выполняется ({0})." -f $inFlight.reason); pid = 0; log = "" }
+    }
+    $lock = Enter-HrmActionLock -StateDir $StateDir -Action "engine"
+    if (-not $lock.acquired) {
+        return [pscustomobject]@{ started = $false; reason = "locked"; message = $lock.message; pid = 0; log = "" }
+    }
+    if (-not (Test-Path $ScriptPath)) {
+        Exit-HrmActionLock -StateDir $StateDir
+        return [pscustomobject]@{ started = $false; reason = "no_script"; message = "Не найден управляющий файл HR Manager. Переустановите Setup.exe."; pid = 0; log = "" }
+    }
+    $logFile = Get-HrmTimestampedLogFile -StateDir $StateDir -Action $Action
+    $process = Start-HrmEngineProcess -ScriptPath $ScriptPath -Action $Action -InstallDir $InstallDir -StateDir $StateDir -LogFile $logFile
+    $enginePid = 0
+    if ($null -ne $process -and $process.PSObject.Properties["Id"]) { $enginePid = [int]$process.Id }
+    if ($enginePid -le 0) {
+        # pid потомка неизвестен: блокировку нельзя оставлять на значке, иначе
+        # файл описывает процесс, который операцию не выполняет. Правило
+        # Test-HrmTrayActionRunning трактует pid <= 0 так же — блокировка пуста.
+        Exit-HrmActionLock -StateDir $StateDir
+        return [pscustomobject]@{ started = $false; reason = "no_pid"; message = "Процесс HR Manager не запущен: не удалось получить идентификатор процесса. Повторите попытку из меню значка."; pid = 0; log = $logFile }
+    }
+    Update-HrmActionLockProcess -StateDir $StateDir -ProcessId $enginePid
+    return [pscustomobject]@{ started = $true; reason = ""; message = ""; pid = $enginePid; log = $logFile }
+}
+
 function Test-HrmTrayActionRunning {
     # Идёт ли сейчас действие движка (по pid из файла-блокировки).
     param([string]$StateDir)

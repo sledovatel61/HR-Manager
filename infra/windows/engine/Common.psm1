@@ -423,6 +423,30 @@ function Invoke-HrmExternal {
     return $result
 }
 
+function Test-HrmResultTimedOut {
+    # Истекло ли ожидание у результата внешней команды или повышенного запуска.
+    # Свойство читается через PSObject (тот же приём, что в
+    # Invoke-HrmDockerCliVersionProbe): тестовые двойники (Set-HrmExternalMock,
+    # Set-HrmProcessLaunchMock) возвращают объект без TimedOut, а под StrictMode
+    # обращение к несуществующему свойству — ошибка. Отсутствие свойства
+    # трактуется как «таймаута не было», то есть смысл прежних результатов
+    # (код возврата, отмена UAC) не меняется.
+    param($Result)
+    if ($null -eq $Result) { return $false }
+    if (-not $Result.PSObject.Properties["TimedOut"]) { return $false }
+    return [bool]$Result.TimedOut
+}
+
+function Get-HrmResultTimeoutSeconds {
+    # Какой потолок ожидания был применён к результату (0, если источник его не
+    # сообщил). Тексты отказов обязаны называть ожидание честно, а не выдумывать
+    # значение по умолчанию.
+    param($Result)
+    if ($null -eq $Result) { return 0 }
+    if (-not $Result.PSObject.Properties["TimeoutSeconds"]) { return 0 }
+    return [int]$Result.TimeoutSeconds
+}
+
 function Set-HrmDownloadMock {
     # Тестовый шов: подменяет скачивание файла (официальный установщик).
     param([scriptblock]$Mock)

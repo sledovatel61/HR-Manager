@@ -73,10 +73,15 @@ param(
     [switch]$Json,
 
     # channel: один цикл наблюдателя; -Watch запускает наблюдателя, который
-    # ограничен числом циклов/минут (-MaxCycles/-MaxMinutes, переменные
-    # HRM_CHANNEL_WATCH_MAX_CYCLES/_MAX_MINUTES) и останавливается файлом
-    # channel-watch.stop — бесконечного цикла без выхода больше нет.
+    # ограничен числом циклов/минут (-MaxCycles/-MaxMinutes, либо переменные
+    # окружения HRM_CHANNEL_WATCH_MAX_CYCLES/_MAX_MINUTES) и останавливается
+    # файлом channel-watch.stop — бесконечного цикла без выхода больше нет.
+    # Оба ключа передаются в Start-HrmChannelWatch насквозь; 0 = «не задано,
+    # взять из переменных окружения» (дефект P4 дораздела PR #55: раньше
+    # комментарий обещал эти ключи, а в param их не было).
     [switch]$Watch,
+    [int]$MaxCycles = 0,
+    [int]$MaxMinutes = 0,
 
     # channel-config: смена URL канала (-SetUrl) или набора доверенных ключей
     # (-KeysJson <файл JSON {kid:{key,revoked}}>) — ротация/отзыв ключей.
@@ -142,7 +147,7 @@ function Show-HrmUsage {
         "  snapshot-previous Сохранить снимок установленной версии перед обновлением (вызывает мастер установки)",
         "",
         "Параметры: -SourceDir, -InstallDir, -StateDir, -Port, -NonInteractive, -OpenBrowser",
-        "           -ReleaseDir, -Watch, -SetUrl, -KeysJson, -Enable, -Disable",
+        "           -ReleaseDir, -Watch, -MaxCycles, -MaxMinutes, -SetUrl, -KeysJson, -Enable, -Disable",
         "Полная документация: infra/windows/README.md"
     )
     $lines | ForEach-Object { Write-Output $_ }
@@ -209,7 +214,10 @@ try {
         }
         "channel" {
             if ($Watch) {
-                Start-HrmChannelWatch -InstallDir $InstallDir -StateDir $StateDir
+                # Ключи -MaxCycles/-MaxMinutes передаются наблюдателю насквозь:
+                # 0 означает «не задано», и тогда Start-HrmChannelWatch берёт
+                # предел из HRM_CHANNEL_WATCH_MAX_CYCLES/_MAX_MINUTES.
+                Start-HrmChannelWatch -InstallDir $InstallDir -StateDir $StateDir -MaxCycles $MaxCycles -MaxMinutes $MaxMinutes
             }
             else {
                 Invoke-HrmChannelOnce -InstallDir $InstallDir -StateDir $StateDir
@@ -270,7 +278,10 @@ try {
             $result = Install-HrmDockerDesktop -StateDir $StateDir -Interactive:($Interactive -or (Test-HrmInteractive)) -AllowSilent
             Write-Output $result.message
             if ($result.status -eq "reboot_required") { exit 2 }
-            if ($result.status -eq "uac_declined" -or $result.status -eq "failed" -or $result.status -eq "manual_required") { exit 1 }
+            # installer_timeout — потолок ожидания установщика истёк, установка
+            # НЕ завершена: код возврата обязан быть ненулевым, иначе значок в
+            # трее покажет «готово» при живом установщике (дефект P3 дораздела).
+            if (@("uac_declined", "failed", "manual_required", "installer_timeout") -contains $result.status) { exit 1 }
         }
         "docker-start" {
             $result = Start-HrmDockerDesktop

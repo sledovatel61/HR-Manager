@@ -7,6 +7,7 @@ param([string]$HarnessPath = $PSScriptRoot)
 . (Join-Path $HarnessPath "test-harness.ps1")
 
 $script:Testdata = Join-Path $PSScriptRoot "..\..\..\infra\release\testdata"
+$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 
 function Get-HrmFixturePath { param([string]$Name) return (Join-Path $script:Testdata $Name) }
 function Get-HrmFixtureText { param([string]$Name) return ((Get-Content (Get-HrmFixturePath $Name) -Raw -Encoding UTF8) -replace "`r", "") }
@@ -541,6 +542,47 @@ Test-Case "D8: наблюдатель канала завершается сам
     Assert-HrmFalse (Test-Path (Get-HrmChannelPidFile $state)) "pid-файл мёртвого наблюдателя остался"
     Assert-HrmFalse (Test-Path (Get-HrmChannelStopFile $state)) "сигнал остановки остался после остановки"
     Assert-HrmFalse (Stop-HrmChannelWatch -StateDir $state) "остановка ненапущенного наблюдателя вернула успех"
+}
+
+Test-Case "P4: -Action channel -Watch принимает -MaxCycles/-MaxMinutes и передаёт их наблюдателю" {
+    # Комментарий к param в hr-manager.ps1 обещал эти ключи, но в param их не
+    # было (дефект P4 дораздела PR #55): предел наблюдателя задавался только
+    # переменными окружения, то есть документация входной точки была ложной.
+    # Проверяем фактический контракт — объявление параметров (AST, а не текст
+    # комментария) и их передачу в Start-HrmChannelWatch.
+    $entryPath = Join-Path $script:RepoRoot "infra\windows\hr-manager.ps1"
+    $tokens = $null
+    $parseErrors = $null
+    # Разбор входной точки парсером PowerShell (сам факт отсутствия ошибок разбора
+    # уже проверяет tests/static.tests.ps1 — здесь нужен AST параметров).
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($entryPath, [ref]$tokens, [ref]$parseErrors)
+    Assert-HrmTrue ($null -eq $parseErrors -or @($parseErrors).Count -eq 0) "hr-manager.ps1 не разбирается парсером PowerShell"
+    $parameterNames = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ParameterAst] }, $true) |
+        ForEach-Object { $_.Name.VariablePath.UserPath })
+    Assert-HrmTrue ($parameterNames -contains "MaxCycles") "в param входной точки нет -MaxCycles"
+    Assert-HrmTrue ($parameterNames -contains "MaxMinutes") "в param входной точки нет -MaxMinutes"
+    $entry = Get-Content -Path $entryPath -Raw -Encoding UTF8
+    Assert-HrmContains $entry "Start-HrmChannelWatch -InstallDir `$InstallDir -StateDir `$StateDir -MaxCycles `$MaxCycles -MaxMinutes `$MaxMinutes" "ключи наблюдателя не передаются насквозь"
+    Assert-HrmContains $entry "-MaxCycles, -MaxMinutes" "справка -Action help не перечисляет ключи наблюдателя"
+    # Смысл ключей уже покрыт поведением наблюдателя: предел циклов соблюдается,
+    # а 0 (значение по умолчанию входной точки) означает «взять из переменных
+    # окружения» — здесь проверяем именно это, чтобы насквозь переданный 0 не
+    # отменял аварийный шов пилота.
+    Initialize-HrmTestEngine
+    $world = New-HrmMockWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Set-HrmInstallRecord $state @{ release_sha = ("3" * 40); port = 8080 }
+    Set-HrmHttpMock {
+        param($Uri, $Method, $Body, $Headers)
+        $global:HRM_MockWorld.HttpCalls += [pscustomobject]@{ Uri = $Uri; Method = $Method; Body = $Body; Headers = $Headers }
+        return @{ StatusCode = 200; Body = [pscustomobject]@{ actions = @(); state = "up_to_date" } }
+    }
+    $env:HRM_CHANNEL_WATCH_MAX_CYCLES = "2"
+    $zeroFromEntry = Start-HrmChannelWatch -InstallDir $install -StateDir $state -MaxCycles 0 -MaxMinutes 0 -IntervalSeconds 0
+    Assert-HrmEqual 2 ([int]$zeroFromEntry.cycles) "ноль из входной точки отменил предел из переменных окружения"
+    Remove-Item Env:HRM_CHANNEL_WATCH_MAX_CYCLES -ErrorAction SilentlyContinue
+    Assert-HrmTrue (@($world.HttpCalls).Count -ge 2) "циклы наблюдателя не обращались к серверу канала"
 }
 
 Write-Host ("Тесты канала: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

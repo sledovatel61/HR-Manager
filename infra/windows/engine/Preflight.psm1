@@ -64,6 +64,17 @@ function Test-HrmDockerCli {
     $override = Get-HrmPreflightOverrideResult "docker"
     if ($null -ne $override) { return $override }
     $found = Invoke-HrmDocker -Arguments @("--version") -IgnoreExitCode
+    if (Test-HrmResultTimedOut $found) {
+        # Таймаут пробы — НЕ «Docker CLI не найден» (дефект P5.3 дораздела
+        # PR #55): программа найдена и запущена, но не ответила за отведённое
+        # время (код 124, см. Invoke-HrmExternal). Прежний текст при таймауте
+        # отправлял человека переустанавливать Docker Desktop, хотя причина —
+        # зависший CLI/ожидание инициализации WSL2, то есть действие другое.
+        return [pscustomobject]@{
+            Name = "docker"; Passed = $false
+            Message = ("Docker CLI не ответил за {0} с: программа найдена и запущена, но ответ не получен (обычно это ожидание инициализации WSL2). Это не отсутствие Docker. Запустите Docker Desktop заново, дождитесь готовности и нажмите «Повторить»; если не помогает — создайте отчёт для поддержки." -f (Get-HrmResultTimeoutSeconds $found))
+        }
+    }
     if ($found.ExitCode -ne 0) {
         return [pscustomobject]@{ Name = "docker"; Passed = $false; Message = "Docker CLI не найден. Установите Docker Desktop только с официального сайта docker.com (лицензия принимается вручную)." }
     }
@@ -75,6 +86,16 @@ function Test-HrmDockerDaemon {
     $override = Get-HrmPreflightOverrideResult "daemon"
     if ($null -ne $override) { return $override }
     $info = Invoke-HrmDocker -Arguments @("info", "--format", "{{.ServerVersion}}") -IgnoreExitCode
+    if (Test-HrmResultTimedOut $info) {
+        # То же правило, что и для пробы CLI (дефект P5.3): таймаут — это «не
+        # ответил за N с», а не «демон не запущен». Различие важно для действия
+        # человека: в первом случае ждать/перезапустить Docker Desktop, во
+        # втором — запустить его впервые.
+        return [pscustomobject]@{
+            Name = "daemon"; Passed = $false
+            Message = ("Демон Docker не ответил за {0} с: CLI запущен, но ответ не получен (обычно Docker Desktop ещё инициализирует WSL2). Это не «демон не запущен». Дождитесь готовности Docker Desktop и нажмите «Повторить»; если ожидание затянулось — создайте отчёт для поддержки." -f (Get-HrmResultTimeoutSeconds $info))
+        }
+    }
     if ($info.ExitCode -ne 0) {
         return [pscustomobject]@{ Name = "daemon"; Passed = $false; Message = "Демон Docker не запущен (запустите Docker Desktop и подождите инициализацию WSL2)." }
     }
