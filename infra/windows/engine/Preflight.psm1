@@ -93,7 +93,7 @@ function Test-HrmDockerDaemon {
         # втором — запустить его впервые.
         return [pscustomobject]@{
             Name = "daemon"; Passed = $false
-            Message = ("Демон Docker не ответил за {0} с: CLI запущен, но ответ не получен (обычно Docker Desktop ещё инициализирует WSL2). Это не «демон не запущен». Дождитесь готовности Docker Desktop и нажмите «Повторить»; если ожидание затянулось — создайте отчёт для поддержки." -f (Get-HrmResultTimeoutSeconds $info))
+            Message = ("Демон Docker не ответил за {0} с: CLI запущен, но ответ не получен (обычно Docker Desktop ещё инициализирует WSL2). Это ожидание ответа, а не отсутствие работающего демона: заново запускать Docker Desktop не требуется. Дождитесь готовности Docker Desktop и нажмите «Повторить»; если ожидание затянулось — создайте отчёт для поддержки." -f (Get-HrmResultTimeoutSeconds $info))
         }
     }
     if ($info.ExitCode -ne 0) {
