@@ -475,12 +475,17 @@ Test-Case "P5.3: таймаут пробы CLI и демона не выдаёт
     Clear-HrmExternalMock
     Clear-HrmProcessLaunchMock
     $env:HRM_EXTERNAL_TIMEOUT_SECONDS = "1"
-    $global:HRM_TestHungProcess = New-HrmFakeExternalProcess -ProcessId 424300 -Hangs $true
     $global:HRM_TestKillProcess = New-HrmFakeExternalProcess -ProcessId 9 -Hangs $false -ExitCode 0
+    # КАЖДОЙ пробе — свой «висящий» двойник: после остановки дерева первый
+    # двойник помечен завершившимся (Kill выставляет exited), и вторая проба не
+    # дала бы таймаута, то есть тест проверял бы не то поведение.
+    $global:HRM_TestHungCli = New-HrmFakeExternalProcess -ProcessId 424300 -Hangs $true
+    $global:HRM_TestHungDaemon = New-HrmFakeExternalProcess -ProcessId 424301 -Hangs $true
     Set-HrmProcessStartMock {
         param($StartInfo)
         if ((Get-HrmMockCliName ([string]$StartInfo.FileName)) -eq "taskkill.exe") { return $global:HRM_TestKillProcess }
-        return $global:HRM_TestHungProcess
+        if ([string]$StartInfo.Arguments -like "*info*") { return $global:HRM_TestHungDaemon }
+        return $global:HRM_TestHungCli
     }
     $cli = Test-HrmDockerCli
     Assert-HrmFalse $cli.Passed "проба CLI с таймаутом прошла"
