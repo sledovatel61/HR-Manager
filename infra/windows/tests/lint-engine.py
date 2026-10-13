@@ -569,7 +569,8 @@ def main() -> int:
     if 'hr-manager.ps1"" -Action start' in iss:
         fail("installer.iss: автозапуск всё ещё запускает консольный -Action start")
 
-    # Build records the exact optional sidecar SHA/URL; it never downloads Docker Desktop.
+    # Build records the exact optional sidecar SHA/URL; the installed release.json
+    # and external manifest must reuse the same object (no second hash calculation).
     build_script = (ROOT / "installer" / "build.ps1").read_text(encoding="utf-8")
     for required in ("DockerDesktopInstallerPath", "DockerDesktopInstallerSha256",
                      "docker_desktop_installer", "DockerInstallerSourceUrl", "SHA256SUMS.txt"):
@@ -577,6 +578,10 @@ def main() -> int:
             fail(f"installer/build.ps1: отсутствует optional sidecar/hash contract {required}")
     if "Invoke-WebRequest -Uri $DockerInstallerSourceUrl" in _strip_ps_comments(build_script):
         fail("installer/build.ps1: не скачивать Docker Desktop Installer автоматически")
+    for variable, label in (("releaseJson", "release.json"), ("manifest", "release-manifest")):
+        match = re.search(rf"(?ms)\${variable}\s*=\s*\[ordered\]@\{{(.*?)^\}}", build_script)
+        if not match or "docker_desktop_installer = $dockerInstallerInfo" not in match.group(1):
+            fail(f"installer/build.ps1: {label} должен использовать общий $dockerInstallerInfo")
 
     ci_text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     if "docker-publisher-audit" in ci_text or "Audit-HrmDockerPublisher.ps1" in ci_text:
@@ -584,9 +589,37 @@ def main() -> int:
     pilot_release = (ROOT / ".github" / "workflows" / "pilot-release.yml").read_text(encoding="utf-8")
     for required in ("docker_desktop_installer_sha256", "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
                      "if (-not $expected)", "Get-FileHash -LiteralPath $sidecar", "$actual -ne $expected",
+                     "id: docker-sidecar", "pinned=false", "pinned=true",
+                     "Verify Docker Desktop sidecar Authenticode identity",
+                     "if: steps.docker-sidecar.outputs.pinned == 'true'",
+                     "Assert-HrmDockerInstallerSignature.ps1", "-ExpectedSha256 $env:HRM_DOCKER_DESKTOP_INSTALLER_SHA256",
                      "-DockerDesktopInstallerSha256", "installer/output/*"):
         if required not in pilot_release:
             fail(f"pilot-release.yml: отсутствует optional pinned sidecar publish contract {required}")
+    trigger_match = re.search(r"(?ms)^on:\s*(.*?)(?=^permissions:)", pilot_release)
+    if not trigger_match or "workflow_dispatch" not in trigger_match.group(1):
+        fail("pilot-release.yml: sidecar workflow должен запускаться вручную через workflow_dispatch")
+    elif "pull_request" in trigger_match.group(1) or re.search(r"(?m)^\s+push:", trigger_match.group(1)):
+        fail("pilot-release.yml: PR/push не должны запускать sidecar download")
+
+    signature_tool = WINDOWS / "tools" / "Assert-HrmDockerInstallerSignature.ps1"
+    if not signature_tool.is_file():
+        fail("infra/windows/tools/Assert-HrmDockerInstallerSignature.ps1: отсутствует локальный verifier")
+    else:
+        tool_bytes = signature_tool.read_bytes()
+        tool = tool_bytes.decode("utf-8-sig")
+        if not tool_bytes.startswith(b"\xef\xbb\xbf"):
+            fail(f"{signature_tool}: отсутствует UTF-8 BOM для Windows PowerShell 5.1")
+        for required in ("Get-AuthenticodeSignature", "CN=Docker Inc, O=Docker Inc, L=Palo Alto, S=California, C=US, SERIALNUMBER=4817464, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US",
+                         "b6bd29272b07ad4d0f1322a739499d67ca3bac3f", "exit 0", "exit 1", "exit 2"):
+            if required not in tool:
+                fail(f"{signature_tool}: отсутствует pin/Authenticode/exit contract {required}")
+        if "Invoke-WebRequest" in tool or "Invoke-RestMethod" in tool:
+            fail(f"{signature_tool}: локальный verifier не должен скачивать installer")
+    for path in engine_files:
+        engine_text = path.read_text(encoding="utf-8")
+        if "Assert-HrmDockerInstallerSignature.ps1" in engine_text or "Get-AuthenticodeSignature" in engine_text:
+            fail(f"{path}: Authenticode verifier не должен вызываться из движка")
 
     print(f"Проверено файлов: {len(files)}")
     if FAILURES:

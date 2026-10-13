@@ -316,6 +316,35 @@ function Set-HrmTestActionLock {
         })
 }
 
+Test-Case "повтор первичной настройки из ярлыка не обходит занятую action lock" {
+    $world = New-HrmSupervisorTestContext
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $infra = Join-Path $install "infra"
+    New-Item -ItemType Directory -Path $infra -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $infra "compose.pilot.yml") -Value "services: {}" -Encoding UTF8
+    $otherPid = Get-HrmOtherLivePid
+    Assert-HrmTrue ($otherPid -gt 0) "на машине нет другого живого процесса для проверки блокировки"
+    Set-HrmTestActionLock -StateDir $state -Action "install" -ProcessId $otherPid
+    $logDir = Join-Path $state "logs"
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    $env:HRM_LOG_FILE = Join-Path $logDir "open-lock.log"
+    $callsBefore = @($world.Calls).Count
+
+    $threw = $false
+    try { Open-HrmApp -InstallDir $install -StateDir $state }
+    catch { $threw = $true }
+
+    Assert-HrmFalse $threw "занятая блокировка должна дать понятный отказ, а не исключение-краш"
+    Assert-HrmEqual $callsBefore (@($world.Calls).Count) "повтор настройки запустил движок/Docker при занятой блокировке"
+    Assert-HrmFalse (Test-Path (Get-HrmSetupMarkerFile $state)) "движок поставил marker и попытался начать установку при занятой блокировке"
+    $lock = Get-HrmJsonFile (Get-HrmActionLockFile $state)
+    Assert-HrmEqual $otherPid ([int]$lock.pid) "чужая блокировка была перезаписана"
+    Assert-HrmEqual "install" ([string]$lock.action) "чужая операция была переписана"
+    $log = Get-Content -LiteralPath $env:HRM_LOG_FILE -Raw -Encoding UTF8
+    Assert-HrmContains $log "уже выполняется" "отказ не объясняет, что действие уже выполняется"
+}
+
 Test-Case "D2: второй параллельный цикл движка не начинается (мьютекс цикла) и не идёт в Docker" {
     $world = New-HrmSupervisorTestContext
     $state = Get-HrmTestStateDir

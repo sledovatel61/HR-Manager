@@ -124,6 +124,7 @@ jobs:
           Get-ChildItem tools/license-issuer/dist -Recurse | ForEach-Object { Write-Host $_.FullName }
 
       - name: Prepare optional pinned Docker Desktop sidecar
+        id: docker-sidecar
         shell: pwsh
         env:
           DOCKER_DESKTOP_INSTALLER_SHA256: ${{ inputs.docker_desktop_installer_sha256 }}
@@ -135,6 +136,7 @@ jobs:
             if (Test-Path -LiteralPath $sidecar) { Remove-Item -LiteralPath $sidecar -Force }
             Write-Host "Docker Desktop sidecar omitted; build manifest will contain the official download URL only."
             Add-Content -Path $env:GITHUB_ENV -Value "HRM_DOCKER_DESKTOP_INSTALLER_SHA256="
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "pinned=false"
             exit 0
           }
           if ($expected -notmatch '^[0-9a-f]{64}$') {
@@ -149,7 +151,21 @@ jobs:
             throw "Docker Desktop sidecar SHA256 mismatch: actual $actual does not match the supplied pin"
           }
           Add-Content -Path $env:GITHUB_ENV -Value "HRM_DOCKER_DESKTOP_INSTALLER_SHA256=$expected"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "pinned=true"
           Write-Host "Verified optional Docker Desktop sidecar: $actual"
+
+      - name: Verify Docker Desktop sidecar Authenticode identity
+        if: steps.docker-sidecar.outputs.pinned == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tool = Join-Path $PWD "infra/windows/tools/Assert-HrmDockerInstallerSignature.ps1"
+          $sidecar = Join-Path $PWD "installer/DockerDesktopInstaller.exe"
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $tool -Path $sidecar -ExpectedSha256 $env:HRM_DOCKER_DESKTOP_INSTALLER_SHA256
+          $signatureExitCode = $LASTEXITCODE
+          if ($signatureExitCode -eq 1) { throw "Docker Desktop sidecar signature/publisher alert (exit 1)." }
+          if ($signatureExitCode -eq 2) { throw "Docker Desktop sidecar signature could not be checked (exit 2)." }
+          if ($signatureExitCode -ne 0) { throw "Docker Desktop sidecar signature tool returned unexpected exit code $signatureExitCode." }
 
       - name: Build HR Manager Setup.exe (pilot, unsigned)
         shell: pwsh

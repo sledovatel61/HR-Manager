@@ -49,7 +49,8 @@ powershell -File installer\build.ps1 -Version 0.15.0 `
    `backend/` (без `tests/` и кешей), `frontend/` (исходники без
    `node_modules/` и `dist/` — контейнеры собираются из исходников через
    `docker build`), `infra/` (включая движок и compose), `release.json`
-   (`release_sha` = текущий коммит, `version`).
+   (`release_sha` = текущий коммит, `version` и `docker_desktop_installer` с
+   тем же URL/available/SHA256-объектом, что попадёт в release-manifest).
 3. `ISCC.exe` компилирует `installer.iss` →
    `installer/output/HR-Manager-Setup-<Version>.exe`. Необязательный
    `DockerDesktopInstaller.exe` копируется в `installer/output/` после
@@ -73,6 +74,25 @@ powershell -File installer\build.ps1 -Version 0.15.0 `
 SHA256, workflow скачивает только с фиксированного официального URL, сверяет точный
 хеш и передаёт отдельный sidecar в сборку; пустой input исключает загрузку и оставляет
 в манифесте только официальный сайт. Обычный CI этот 600-МБ файл не скачивает.
+Перед передачей артефакта `pilot-release` запускает отдельный локальный Authenticode-
+проверяльщик только для фактически скачанного и SHA256-pinned sidecar; workflow —
+только `workflow_dispatch`, поэтому PR/push не загружают Docker installer.
+
+Локально проверить уже имеющийся файл (без загрузки и запуска) можно так, заменив
+путь и пример pin на доверенные значения:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File infra\windows\tools\Assert-HrmDockerInstallerSignature.ps1 `
+  -Path 'C:\downloads\DockerDesktopInstaller.exe' `
+  -ExpectedSha256 'REPLACE_WITH_64_HEX_SHA256'
+$LASTEXITCODE
+```
+
+Результат `0` означает совпадение SHA256, статус Authenticode `Valid`, точного
+Subject Docker и отпечатка `b6bd29272b07ad4d0f1322a739499d67ca3bac3f`; `1` —
+обнаружено расхождение подписи/издателя/hash; `2` — проверить не удалось
+(например, отсутствует файл или недоступна проверка). Subject закреплён в скрипте
+целиком. Проверка подписи — отдельное действие владельца релиза, не часть движка.
 
 Проверка манифеста: `git diff --exit-code installer/release-manifest.json`
 после повторной сборки того же коммита.
@@ -106,8 +126,13 @@ Engine, и покажет официальный сайт:
 Если `DockerDesktopInstaller.exe` находится рядом с Setup.exe при установке,
 Inno Setup копирует его в `{app}\docker\DockerDesktopInstaller.exe` через
 `external skipifsourcedoesntexist`. Отсутствие файла не мешает Setup скопировать
-приложение, а в подсказке остаётся только официальный URL. Даже при наличии sidecar
-HR Manager никогда его не запускает; решение и запуск остаются за человеком.
+приложение, а в подсказке остаётся только официальный URL. Движок показывает локальный
+путь только если `Get-HrmFileSha256` совпал с `release.json`
+`docker_desktop_installer.sha256` при `available=true`. Если hash-pin отсутствует,
+метаданные невалидны или SHA256 не совпал, путь скрывается, записывается `warn`, а
+пользователь видит официальный URL; проверка sidecar сама по себе не создаёт ошибку
+установки. Authenticode движок не проверяет. Даже при совпавшем SHA HR Manager никогда
+sidecar не запускает; решение и запуск остаются за человеком.
 
 В интерактивном Setup страница Finish читает `%LOCALAPPDATA%\HRManager\setup-run.json`.
 Исчезнувшая отметка означает, что движок завершился и подтвердил готовность;
