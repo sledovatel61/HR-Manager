@@ -614,6 +614,24 @@ begin
   end;
 end;
 
+procedure MarkHrmSetupEngineFailed();
+var
+  MarkerFile, Marker: String;
+begin
+  // The Run section has finished by this hook. If the engine left its marker at
+  // "running" (for example, its error handler could not replace Inno's initial
+  // marker), do not leave the tray blocked for the 30-minute stale-marker window.
+  // ASCII-only JSON is deliberate: Inno's SaveStringToFile may use the active
+  // Windows code page, while the engine reads this file as UTF-8.
+  if not DirExists(HrmStateDir()) then Exit;
+  MarkerFile := HrmStateDir() + '\setup-run.json';
+  Marker := '{"status":"failed","message":"HR Manager setup is incomplete. Check Docker Desktop and Docker Engine, then open HR Manager again."}';
+  if SaveStringToFile(MarkerFile, Marker, False) then
+    Log('HRM: incomplete setup marker normalized to failed for tray recovery')
+  else
+    Log('HRM: failed to normalize incomplete setup marker; engine status=' + GetHrmSetupEngineStatus());
+end;
+
 function GetCustomSetupExitCode(): Integer;
 var
   EngineStatus: String;
@@ -623,7 +641,15 @@ begin
   EngineStatus := GetHrmSetupEngineStatus();
   Result := 0;
   if EngineStatus <> 'success' then
+  begin
     Result := 10;
+    // The engine normally writes status=failed itself. This post-Run fallback
+    // covers an orphaned status=running marker, so the tray exposes its retry
+    // action as soon as Setup returns instead of treating a finished failure as
+    // a still-running installation.
+    if (EngineStatus = 'running') or (EngineStatus = 'unknown') then
+      MarkHrmSetupEngineFailed();
+  end;
   Log('HRM: setup engine result=' + EngineStatus + ' custom exit=' + IntToStr(Result));
 end;
 
