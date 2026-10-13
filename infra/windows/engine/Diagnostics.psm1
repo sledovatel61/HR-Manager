@@ -155,7 +155,16 @@ function Get-HrmDiagnostics {
             }
         }
     }
-    catch { }
+    catch {
+        # Факты не сняты — это само по себе диагноз: причина пишется в журнал
+        # (редактируется от секретов), а не теряется молча.
+        $null = Write-HrmLog "warn" ("Факты CLI контейнеров не сняты: " + (Redact-HrmText $_.Exception.Message))
+    }
+    if (-not $cliPath) {
+        # Резервный путь: резолвер CLI не запускает процессов, поэтому работает и
+        # тогда, когда проба версии невозможна.
+        try { $cliPath = [string](Get-HrmDockerCliPath) } catch { $cliPath = "" }
+    }
     $composeProbe = Test-HrmComposeVersion
     $composeReason = ""
     $composePluginFound = $false

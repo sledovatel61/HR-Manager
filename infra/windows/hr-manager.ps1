@@ -334,7 +334,20 @@ catch {
             if ($null -ne $updateResult -and $updateResult.message) { $markerMessage = [string]$updateResult.message }
         }
         catch { }
-        try { Set-HrmSupervisorState -StateDir $stateDirForError -State "error" -Message $markerMessage } catch { }
+        # Тот же отказ, который движок уже записал в ЭТОМ процессе (например,
+        # Invoke-HrmPreflightGuarded в Install.psm1), вторым слоем не
+        # удваивается: счётчик подряд идущих отказов считает отказы, а не записи
+        # состояния (иначе порог «автоматические повторы остановлены» достигался
+        # бы вдвое быстрее, чем заявлено).
+        $failureCountForError = -1
+        try {
+            $storedError = Get-HrmSupervisorState -StateDir $stateDirForError
+            if (([string]$storedError.state -eq "error") -and ([string]$storedError.message -eq $markerMessage)) {
+                $failureCountForError = (Get-HrmSupervisorFailureCount -StateDir $stateDirForError)
+            }
+        }
+        catch { $failureCountForError = -1 }
+        try { Set-HrmSupervisorState -StateDir $stateDirForError -State "error" -Message $markerMessage -FailureCount $failureCountForError } catch { }
         try { $null = Set-HrmSetupMarker -StateDir $stateDirForError -Status "failed" -Message $markerMessage } catch { }
     }
     catch { }

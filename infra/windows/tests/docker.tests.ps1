@@ -483,7 +483,7 @@ Test-Case "D6: резолвер перечисляет всех кандидат
         Assert-HrmEqual "" (Get-HrmDockerCliPath -Candidate "C:\Windows\system32\cmd.exe") "принят произвольный системный путь"
         $facts = Get-HrmDockerCliFacts
         Assert-HrmTrue ([int]$facts.candidate_count -ge 1) "факты не перечислили кандидатов"
-        Assert-HrmTrue ([string]$facts.chosen_reason) "правило выбора не зафиксировано в фактах"
+        Assert-HrmTrue ([bool][string]$facts.chosen_reason) "правило выбора не зафиксировано в фактах"
         Assert-HrmTrue (@($facts.searched_dirs).Count -ge 1) "в фактах нет перечня проверенных каталогов"
         $listed = @($facts.candidates | ForEach-Object { [string]$_.path })
         Assert-HrmTrue ($listed -contains $fakeCli) "кандидат не попал в факты для журнала"
