@@ -95,10 +95,16 @@ try {
         else {
             # Полный цикл подготовки и запуска (или продолжение прерванной
             # операции) — отдельным скрытым процессом, чтобы значок в трее
-            # оставался отзывчивым.
+            # оставался отзывчивым. Порождение АТОМАРНО: блокировка действия
+            # берётся до запуска процесса и передаётся потомку
+            # (Start-HrmTrayEngineProcess, дефект P5.1 дораздела PR #55) —
+            # иначе второй значок проходил ту же проверку и первые секунды
+            # работали два движка.
             $engineScript = Join-Path $PSScriptRoot "hr-manager.ps1"
-            $logFile = Get-HrmTimestampedLogFile -StateDir $StateDir -Action $plan.engine_action
-            Start-HrmEngineProcess -ScriptPath $engineScript -Action $plan.engine_action -InstallDir $InstallDir -StateDir $StateDir -LogFile $logFile | Out-Null
+            $engine = Start-HrmTrayEngineProcess -Action $plan.engine_action -ScriptPath $engineScript -InstallDir $InstallDir -StateDir $StateDir
+            if (-not $engine.started) {
+                Write-HrmLog "warn" ("Движок не запускается: " + $engine.message)
+            }
         }
     }
     else {

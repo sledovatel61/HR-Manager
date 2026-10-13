@@ -45,9 +45,8 @@ function Get-HrmSupervisorStateFile {
 
 function Set-HrmSupervisorState {
     # Состояние supervisor'а для трея и поддержки. Секретов здесь нет.
-    # -FailureCount: явное значение счётчика подряд идущих отказов (используется
-    # сбросом после действия человека). Без него действует правило: состояние
-    # «error» увеличивает счётчик, любое другое — обнуляет.
+    # -FailureCount: явное значение счётчика подряд идущих отказов (сброс действием
+    # человека, сохранение счётчика значком). Без него действует правило ниже.
     param(
         [string]$StateDir,
         [string]$State,
@@ -74,9 +73,23 @@ function Set-HrmSupervisorState {
     if ($merged.Contains("failure_count")) {
         try { $previousFailures = [int]$merged["failure_count"] } catch { $previousFailures = 0 }
     }
+    # ПРАВИЛО СЧЁТЧИКА подряд идущих отказов (дефект P2 дораздела PR #55):
+    #   * -FailureCount задан явно — применяется как есть;
+    #   * «error» — попытка закончилась отказом: счётчик растёт;
+    #   * «ready» — успех: счётчик обнуляется;
+    #   * ЛЮБОЕ другое состояние («starting», «stopped», …) — счётчик
+    #     СОХРАНЯЕТСЯ.
+    # Раньше любое не-error состояние обнуляло счётчик, а каждая попытка движка
+    # начинается записью «starting» (цикл, установка, продолжение операции,
+    # значок, диспетчер). История отказов стиралась собственным началом новой
+    # попытки: счётчик ходил 0 → 1 → 0 → 1, порог «автоматические повторы
+    # остановлены» (3 подряд) был недостижим, и значок запускал движок на каждом
+    # входе в Windows при той же самой причине отказа. Обнуление — только успех
+    # и явное действие человека (Reset-HrmSupervisorFailureCount).
     if ($FailureCount -ge 0) { $merged["failure_count"] = $FailureCount }
     elseif ($State -eq "error") { $merged["failure_count"] = ($previousFailures + 1) }
-    else { $merged["failure_count"] = 0 }
+    elseif ($State -eq "ready") { $merged["failure_count"] = 0 }
+    else { $merged["failure_count"] = $previousFailures }
     foreach ($key in $Extra.Keys) { $merged[$key] = $Extra[$key] }
     Set-HrmJsonFile $StateDir $script:SupervisorStateFile $merged
     # Наружу НЕ отдаём $merged: вызывающие (цикл supervisor'а, трей, установщик)
@@ -276,7 +289,24 @@ function Enter-HrmActionLock {
             $alive = (Test-HrmProcessAlive $lockPid)
             $reentrant = ($alive -and $lockPid -eq $PID -and ($runningAction -eq $Action -or $runningAction -eq "engine"))
             if ($reentrant) {
-                return [pscustomobject]@{ acquired = $true; message = ""; stalled = $false; reentrant = $true; pid = $lockPid; age_minutes = $ageMinutes }
+                # Повторный вход ПЕРЕЗАПИСЫВАЕТ блокировку на себя (дефект P5.2
+                # дораздела PR #55). Значок ставит служебную отметку
+                # action="engine" со своим pid и передаёт её порождённому
+                # процессу движка; если передача pid не удалась (или значок
+                # входит повторно сам), процесс выполнял операцию по ЧУЖОЙ
+                # записи, а его `finally { Exit-HrmActionLock }` удалял файл,
+                # владельцем которого значился значок. Защита от второй операции
+                # исчезала ровно в тот момент, когда первая ещё шла.
+                # Перезапись делает владельца явным: pid — текущий процесс,
+                # действие — запрошенное, отсчёт «зависла» — с этого момента.
+                # Определение «зависшей» ЧУЖОЙ операции не затронуто: ветка ниже
+                # работает только при живом pid, отличном от $PID.
+                Set-HrmJsonFile $StateDir $script:ActionLockFile ([ordered]@{
+                        action = $Action
+                        pid = $PID
+                        started_at = (Get-Date).ToString("o")
+                    })
+                return [pscustomobject]@{ acquired = $true; message = ""; stalled = $false; reentrant = $true; pid = $PID; age_minutes = 0.0 }
             }
             if ($alive) {
                 $stalled = ($ageMinutes -ge $script:ActionLockStallMinutes)

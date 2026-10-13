@@ -36,6 +36,14 @@ $script:DockerOverrideDefaults = $null
 
 $script:DockerInstallerUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
 $script:DockerDownloadPage = "https://www.docker.com/products/docker-desktop/"
+# Сколько секунд ждём завершение установщика Docker Desktop (дефект P3
+# дораздела PR #55). Значение совпадает с потолком Start-HrmElevatedAndWait и
+# НЕ увеличено: 3600 с — это ограничение бесконечного ожидания, а не «лечение
+# медленной установки». Константа объявлена здесь, а не читается из значения по
+# умолчанию Common.psm1, потому что текст сообщения обязан честно называть
+# ожидание, которое запросил вызывающий.
+$script:DockerInstallerWaitSeconds = 3600
+
 # Издатель официального установщика Docker Desktop. Раньше здесь была подстрока
 # "Docker", и проверка пропускала любой корректно подписанный файл, у которого
 # слово Docker встречается в subject (например "CN=Fake Docker Signer, O=Evil").
@@ -1080,6 +1088,28 @@ function Clear-HrmPendingDockerOperation {
     if (Test-Path $file) { Remove-Item $file -Force }
 }
 
+function Get-HrmDockerInstallerWaitSeconds {
+    # Потолок ожидания установщика Docker Desktop в секундах (открыт для теста,
+    # чтобы значение нельзя было незаметно «вылечить» увеличением).
+    return $script:DockerInstallerWaitSeconds
+}
+
+function Get-HrmDockerInstallerTimeoutMessage {
+    # Сообщение для случая «ожидание установщика истекло».
+    # Это НЕ ошибка установщика и НЕ отмена UAC: процесс намеренно не завершается
+    # принудительно (прерванная установка Docker Desktop хуже явного отказа —
+    # после неё Windows может требовать ручного восстановления), поэтому текст
+    # обязан говорить три вещи: сколько ждали, что процесс мог остаться живым и
+    # что делать человеку. Автоматически второй установщик не запускается.
+    param(
+        [string]$FilePath = "",
+        [int]$TimeoutSeconds = 0,
+        [string]$Mode = "установка Docker Desktop"
+    )
+    $text = "Ожидание установщика Docker Desktop истекло: {0} не завершилась за {1} с. Процесс установщика НЕ завершался принудительно — установка могла ещё идти. Файл установщика: {2}. Что делать: дождитесь окна установщика и завершите установку вручную (лицензию принимаете вы); если окна нет — закройте установщик через Диспетчер задач и нажмите «Установить Docker Desktop» ещё раз. Второй установщик автоматически не запускается."
+    return ($text -f $Mode, $TimeoutSeconds, $FilePath)
+}
+
 function Install-HrmDockerDesktop {
     # Установка Docker Desktop ТОЛЬКО официальным установщиком Docker.
     #
@@ -1088,7 +1118,9 @@ function Install-HrmDockerDesktop {
     # - запуск: с повышением прав (UAC) — отмена UAC не считается ошибкой;
     # - лицензию Docker принимает пользователь в окне установщика; движок НЕ
     #   передаёт --accept-license;
-    # - после установки фиксируется «продолжить автоматически».
+    # - после УСПЕШНОЙ установки фиксируется «продолжить автоматически»; истёкшее
+    #   ожидание установщика — отдельный статус installer_timeout (дефект P3):
+    #   без автоматического продолжения и без второго установщика.
     param(
         [string]$StateDir = "",
         [switch]$Interactive,
@@ -1141,11 +1173,27 @@ function Install-HrmDockerDesktop {
 
     if ($AllowSilent) {
         Write-HrmLog "info" "Запускаем установку Docker Desktop (может потребоваться разрешение Windows)…"
-        $silent = Start-HrmElevatedAndWait -FilePath $installerPath -Arguments @("install", "--quiet", "--backend=wsl-2")
+        $waitSeconds = Get-HrmDockerInstallerWaitSeconds
+        $silent = Start-HrmElevatedAndWait -FilePath $installerPath -Arguments @("install", "--quiet", "--backend=wsl-2") -TimeoutSeconds $waitSeconds
         if ($silent.CanceledByUser) {
             return [pscustomobject]@{
                 status = "uac_declined"
                 message = "Установка Docker Desktop отменена: вы не дали разрешение Windows (UAC). Нажмите «Установить Docker Desktop» и подтвердите запрос."
+                needs_reboot = $false
+            }
+        }
+        if (Test-HrmResultTimedOut $silent) {
+            # Потолок ожидания истёк — это НЕ «код -1» и НЕ отказ: раньше такой
+            # случай попадал в ветку ниже, журнал писал «не удалась (код -1)», и
+            # движок автоматически открывал обычный мастер, добавляя к часу
+            # молчания ещё один час ожидания (дефект P3 дораздела PR #55).
+            # Теперь состояние отдельное, текст называет ожидание, файл и
+            # следующее действие, а второй установщик не запускается сам.
+            $timeoutMessage = Get-HrmDockerInstallerTimeoutMessage -FilePath $installerPath -TimeoutSeconds $waitSeconds -Mode "тихая установка Docker Desktop"
+            Write-HrmLog "warn" $timeoutMessage
+            return [pscustomobject]@{
+                status = "installer_timeout"
+                message = $timeoutMessage
                 needs_reboot = $false
             }
         }
@@ -1170,11 +1218,25 @@ function Install-HrmDockerDesktop {
     }
 
     Write-HrmLog "info" "Открываем мастер установки Docker Desktop (Windows запросит разрешение, лицензию принимаете вы)…"
-    $wizard = Start-HrmElevatedAndWait -FilePath $installerPath -Arguments @()
+    $wizardWaitSeconds = Get-HrmDockerInstallerWaitSeconds
+    $wizard = Start-HrmElevatedAndWait -FilePath $installerPath -Arguments @() -TimeoutSeconds $wizardWaitSeconds
     if ($wizard.CanceledByUser) {
         return [pscustomobject]@{
             status = "uac_declined"
             message = "Установка Docker Desktop отменена: вы не дали разрешение Windows (UAC). Повторите, когда будете готовы."
+            needs_reboot = $false
+        }
+    }
+    if (Test-HrmResultTimedOut $wizard) {
+        # То же правило, что и для тихой установки: истёкший потолок ожидания не
+        # выдаётся за «код -1» и не превращается в требование перезагрузки
+        # (дефект P3 дораздела PR #55). Мастер мог остаться открытым — человек
+        # должен это увидеть в тексте, а не в догадках.
+        $wizardTimeoutMessage = Get-HrmDockerInstallerTimeoutMessage -FilePath $installerPath -TimeoutSeconds $wizardWaitSeconds -Mode "установка Docker Desktop через мастер"
+        Write-HrmLog "warn" $wizardTimeoutMessage
+        return [pscustomobject]@{
+            status = "installer_timeout"
+            message = $wizardTimeoutMessage
             needs_reboot = $false
         }
     }

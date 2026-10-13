@@ -185,6 +185,99 @@ Test-Case "пользователь отменил UAC: это штатный р
     Assert-HrmContains $result.message "разрешение Windows" "сообщение должно объяснять UAC"
 }
 
+Test-Case "P3: потолок ожидания установщика Docker Desktop — отдельное состояние, а не «код -1» и не второй установщик" {
+    # До исправления (e298202) истёкшее ожидание установщика попадало в ветку
+    # «ExitCode -ne 0»: журнал писал «Тихая установка Docker Desktop не удалась
+    # (код -1) — открываем обычный мастер установки», и движок запускал ВТОРОЙ
+    # установщик с тем же потолком 3600 с. Итог для человека: до двух часов
+    # молчания и текст, который объяснял отказ кодом возврата, а не ожиданием.
+    New-HrmDockerTestContext
+    Set-HrmDownloadMock {
+        param($Uri, $Destination)
+        Set-Content -Path $Destination -Value "stub-installer" -Encoding ASCII
+        return $Destination
+    }
+    $global:HRM_InstallerLaunches = 0
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        $global:HRM_InstallerLaunches = $global:HRM_InstallerLaunches + 1
+        # Ожидание установщика истекло: процесс жив, код возврата неизвестен.
+        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = -1; TimedOut = $true }
+    }
+    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; install_signature = $true; reboot = $false }
+    $state = Get-HrmTestStateDir
+    # Ожидание установщика не «вылечено» увеличением: потолок остался 3600 с.
+    Assert-HrmEqual 3600 (Get-HrmDockerInstallerWaitSeconds) "изменён потолок ожидания установщика Docker Desktop"
+    $result = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
+    Assert-HrmEqual "installer_timeout" $result.status "таймаут ожидания установщика выдан за ошибку установки"
+    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "после таймаута автоматически запущен второй установщик"
+    Assert-HrmFalse ([bool]$result.needs_reboot) "таймаут помечен как требование перезагрузки"
+    Assert-HrmContains $result.message "не завершилась за 3600 с" "в тексте не названо ожидание"
+    Assert-HrmContains $result.message "НЕ завершался принудительно" "в тексте не сказано, что установщик мог остаться живым"
+    Assert-HrmContains $result.message "DockerDesktopInstaller.exe" "в тексте нет файла установщика"
+    Assert-HrmContains $result.message "«Установить Docker Desktop»" "в тексте нет следующего действия"
+    Assert-HrmTrue ($null -eq (Get-HrmPendingDockerOperation $state)) "после таймаута запланировано автоматическое продолжение"
+    # Неинтерактивный режим: таймаут остаётся таймаутом, а не «требуются действия
+    # пользователя» (иначе установка молча откладывалась на неопределённый срок).
+    $global:HRM_InstallerLaunches = 0
+    $silentOnly = Install-HrmDockerDesktop -StateDir $state -AllowSilent
+    Assert-HrmEqual "installer_timeout" $silentOnly.status "в неинтерактивном режиме таймаут выдан за manual_required"
+    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "в неинтерактивном режиме запущено больше одного установщика"
+    # Состояние доходит до подготовки среды как есть: значок и supervisor.json
+    # показывают причину, а не «установлено».
+    $global:HRM_InstallerLaunches = 0
+    $prepare = Invoke-HrmDockerPrepare -InstallDir (Get-HrmTestInstallDir) -StateDir $state -Port 8080 -AllowInstall -Interactive
+    Assert-HrmFalse ([bool]$prepare.ok) "подготовка среды прошла при незавершённом установщике"
+    Assert-HrmEqual "installer_timeout" ([string]$prepare.state) "подготовка среды потеряла состояние таймаута"
+    Assert-HrmFalse ([bool]$prepare.needs_install) "таймаут требует повторной установки вместо ожидания"
+    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "подготовка среды запустила второй установщик"
+    # Прежние штатные результаты не сломаны: отмена UAC всё ещё uac_declined.
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        return [pscustomobject]@{ Started = $false; CanceledByUser = $true; ExitCode = -1; TimedOut = $false }
+    }
+    $declined = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
+    Assert-HrmEqual "uac_declined" $declined.status "отмена UAC перестала отличаться от таймаута"
+    # Успех всё ещё успех (таймаут не «съел» штатный код 0).
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = 0; TimedOut = $false }
+    }
+    $installed = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
+    Assert-HrmEqual "installed" $installed.status "успешная установка перестала быть успешной"
+}
+
+Test-Case "P3: таймаут мастера установки Docker Desktop не выдаётся за «код -1» и не требует перезагрузки" {
+    # Второй путь запуска установщика (обычный мастер) до исправления при
+    # истёкшем ожидании сообщал «Установка Docker Desktop завершилась с кодом
+    # -1», а при признаке ожидающей перезагрузки — вообще «нужна перезагрузка
+    # Windows»: человек перезагружал машину при незавершённой установке.
+    New-HrmDockerTestContext
+    Set-HrmDownloadMock {
+        param($Uri, $Destination)
+        Set-Content -Path $Destination -Value "stub-installer" -Encoding ASCII
+        return $Destination
+    }
+    $global:HRM_InstallerLaunches = 0
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        $global:HRM_InstallerLaunches = $global:HRM_InstallerLaunches + 1
+        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = -1; TimedOut = $true }
+    }
+    # reboot = $true: признак ожидающей перезагрузки в системе есть, но установка
+    # НЕ завершена — требовать перезагрузку в этом случае нельзя.
+    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; install_signature = $true; reboot = $true }
+    $state = Get-HrmTestStateDir
+    $result = Install-HrmDockerDesktop -StateDir $state -Interactive
+    Assert-HrmEqual "installer_timeout" $result.status "таймаут мастера выдан за ошибку с кодом -1"
+    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "мастер установки запущен больше одного раза"
+    Assert-HrmFalse ([bool]$result.needs_reboot) "таймаут мастера требует перезагрузки Windows"
+    Assert-HrmNotContains $result.message "с кодом -1" "текст объясняет отказ кодом возврата, а не ожиданием"
+    Assert-HrmContains $result.message "не завершилась за 3600 с" "в тексте не названо ожидание"
+    Assert-HrmContains $result.message "через мастер" "в тексте не сказано, какой именно запуск не завершился"
+    Assert-HrmTrue ($null -eq (Get-HrmPendingDockerOperation $state)) "после таймаута мастера запланирована перезагрузка"
+}
+
 Test-Case "после установки Docker с требованием перезагрузки фиксируется автоматическое продолжение" {
     New-HrmDockerTestContext
     Set-HrmDownloadMock {
@@ -368,6 +461,47 @@ Test-Case "CLI не найден нигде: структурированный 
     try { Invoke-HrmDocker -Arguments @("--version") | Out-Null }
     catch { $threw = ($_.Exception.Message -match "CLI контейнеров не найден") }
     Assert-HrmTrue $threw "без -IgnoreExitCode отказ обязан быть исключением с понятным текстом"
+    Assert-HrmEqual 0 $world.Calls.Count "реальный CLI не должен вызываться"
+}
+
+Test-Case "P5.3: таймаут пробы CLI и демона не выдаётся за «не найден» и «не запущен»" {
+    # До исправления (e298202) предполётная проверка смотрела только на код
+    # возврата, а таймаут даёт код 124: зависший CLI сообщал «Docker CLI не
+    # найден», зависший демон — «Демон Docker не запущен». Человек шёл
+    # переустанавливать Docker Desktop вместо того, чтобы дождаться готовности.
+    $world = New-HrmDockerTestContext
+    # Нужен НАСТОЯЩИЙ Invoke-HrmExternal (механизм ожидания и код 124), поэтому
+    # подменяется только создание процесса: двойник «висит».
+    Clear-HrmExternalMock
+    Clear-HrmProcessLaunchMock
+    $env:HRM_EXTERNAL_TIMEOUT_SECONDS = "1"
+    $global:HRM_TestHungProcess = New-HrmFakeExternalProcess -ProcessId 424300 -Hangs $true
+    $global:HRM_TestKillProcess = New-HrmFakeExternalProcess -ProcessId 9 -Hangs $false -ExitCode 0
+    Set-HrmProcessStartMock {
+        param($StartInfo)
+        if ((Get-HrmMockCliName ([string]$StartInfo.FileName)) -eq "taskkill.exe") { return $global:HRM_TestKillProcess }
+        return $global:HRM_TestHungProcess
+    }
+    $cli = Test-HrmDockerCli
+    Assert-HrmFalse $cli.Passed "проба CLI с таймаутом прошла"
+    Assert-HrmEqual "docker" ([string]$cli.Name) "имя проверки изменено"
+    Assert-HrmNotContains $cli.Message "не найден" "таймаут выдан за отсутствие Docker CLI"
+    Assert-HrmContains $cli.Message "не ответил за 1 с" "в отказе не названо ожидание"
+    Assert-HrmContains $cli.Message "отчёт для поддержки" "у отказа нет следующего действия"
+    $daemon = Test-HrmDockerDaemon
+    Assert-HrmFalse $daemon.Passed "проба демона с таймаутом прошла"
+    Assert-HrmEqual "daemon" ([string]$daemon.Name) "имя проверки изменено"
+    Assert-HrmNotContains $daemon.Message "не запущен" "таймаут выдан за незапущенный демон"
+    Assert-HrmContains $daemon.Message "не ответил за 1 с" "в отказе не названо ожидание"
+    Assert-HrmContains $daemon.Message "отчёт для поддержки" "у отказа нет следующего действия"
+    # Отсутствие CLI по-прежнему отличимо от таймаута: код 127 — это «не найден».
+    Clear-HrmProcessStartMock
+    Set-HrmDockerOverride @{ cli_path = "" }
+    $missing = Test-HrmDockerCli
+    Assert-HrmFalse $missing.Passed "отсутствие CLI прошло проверку"
+    Assert-HrmContains $missing.Message "не найден" "текст об отсутствии CLI потерян"
+    Assert-HrmNotContains $missing.Message "не ответил" "отсутствие CLI выдано за таймаут"
+    Remove-Item Env:HRM_EXTERNAL_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
     Assert-HrmEqual 0 $world.Calls.Count "реальный CLI не должен вызываться"
 }
 

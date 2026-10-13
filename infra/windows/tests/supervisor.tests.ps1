@@ -6,6 +6,8 @@ param([string]$HarnessPath = $PSScriptRoot)
 
 . (Join-Path $HarnessPath "test-harness.ps1")
 
+$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+
 Write-Host "== Supervisor и значок в трее =="
 
 function New-HrmSupervisorTestContext {
@@ -418,6 +420,112 @@ Test-Case "D10: процесс операции входит в свою бло�
     Exit-HrmActionLock -StateDir $state
 }
 
+Test-Case "P5.1: значок порождает движок атомарно — блокировка берётся до запуска и передаётся потомку" {
+    # До исправления (e298202) значок делал два раздельных шага:
+    # Test-HrmEngineOperationInFlight -> Start-HrmEngineProcess. Второй значок
+    # (два входа в Windows подряд, повторный запуск Setup.exe) успевал пройти ту
+    # же проверку, и первые секунды работали два движка: две параллельные
+    # compose-операции, гонка за порт и образы.
+    $world = New-HrmSupervisorTestContext
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    # Управляющий файл значка лежит рядом с hr-manager.ps1; здесь достаточно
+    # заглушки — существование пути проверяется до порождения.
+    New-Item -ItemType Directory -Path $install -Force | Out-Null
+    $engineScript = Join-Path $install "hr-manager.ps1"
+    Set-Content -Path $engineScript -Value "# stub" -Encoding ASCII
+    # pid потомка — ЖИВОЙ pid другого процесса: блокировка с мёртвым pid
+    # считается пустой, и тест не доказывал бы защиту от второго движка.
+    $childPid = Get-HrmOtherLivePid
+    Assert-HrmTrue ($childPid -gt 0) "не найден живой pid другого процесса для проверки"
+    $global:HRM_Spawns = 0
+    $global:HRM_LockAtSpawn = @()
+    # Скриптблоки моков вызываются из модуля движка, поэтому данные теста — в
+    # глобальной области видимости (см. New-HrmMockWorld в test-harness.ps1).
+    $global:HRM_SpawnState = $state
+    $global:HRM_SpawnChildPid = $childPid
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        $global:HRM_Spawns = $global:HRM_Spawns + 1
+        # Снимок блокировки В МОМЕНТ порождения: именно он доказывает, что
+        # проверка и запуск стали одним действием.
+        $lockFile = Get-HrmActionLockFile $global:HRM_SpawnState
+        $lockNow = $null
+        if (Test-Path $lockFile) { $lockNow = Get-HrmJsonFile $lockFile }
+        $lockAction = ""
+        $lockOwner = 0
+        if ($null -ne $lockNow) {
+            if ($lockNow.PSObject.Properties["action"]) { $lockAction = [string]$lockNow.action }
+            if ($lockNow.PSObject.Properties["pid"]) { $lockOwner = [int]$lockNow.pid }
+        }
+        $global:HRM_LockAtSpawn += , ([pscustomobject]@{
+                exists = ($null -ne $lockNow)
+                action = $lockAction
+                pid = $lockOwner
+                mode = [string]$Mode
+            })
+        return (New-HrmFakeExternalProcess -ProcessId $global:HRM_SpawnChildPid -Hangs $false -ExitCode 0)
+    }
+    $engine = Start-HrmTrayEngineProcess -Action "supervise" -ScriptPath $engineScript -InstallDir $install -StateDir $state
+    Assert-HrmTrue ([bool]$engine.started) "значок не породил движок"
+    Assert-HrmEqual 1 $global:HRM_Spawns "порождено больше одного процесса движка"
+    Assert-HrmEqual "engine" ([string]$global:HRM_LockAtSpawn[0].mode) "движок порождён в обход единой точки запуска процессов"
+    Assert-HrmTrue ([bool]$global:HRM_LockAtSpawn[0].exists) "процесс порождён без блокировки действия: проверка и запуск не атомарны"
+    Assert-HrmEqual "engine" ([string]$global:HRM_LockAtSpawn[0].action) "блокировка до порождения не помечена служебным действием"
+    Assert-HrmEqual $PID ([int]$global:HRM_LockAtSpawn[0].pid) "до порождения блокировка принадлежит не значку"
+    # Передача потомку: блокировка описывает процесс движка, пока он жив.
+    $lockData = Get-HrmJsonFile (Get-HrmActionLockFile $state)
+    Assert-HrmEqual "engine" ([string]$lockData.action) "блокировка не передана потомку"
+    Assert-HrmEqual $childPid ([int]$lockData.pid) "в блокировке не pid процесса движка"
+    Assert-HrmEqual $childPid ([int]$engine.pid) "в результате порождения нет pid потомка"
+    Assert-HrmTrue ([bool](Test-HrmEngineOperationInFlight -StateDir $state).running) "второй значок не увидит идущую операцию движка"
+    # Критерий приёмки: второй значок НЕ порождает второй движок.
+    $second = Start-HrmTrayEngineProcess -Action "supervise" -ScriptPath $engineScript -InstallDir $install -StateDir $state
+    Assert-HrmFalse ([bool]$second.started) "второй значок породил второй движок"
+    Assert-HrmEqual 1 $global:HRM_Spawns "при живой блокировке порождён ещё один процесс движка"
+    Assert-HrmEqual "in_flight" ([string]$second.reason) "причина отказа значка не различима для журнала"
+    Assert-HrmTrue ($second.message.Length -gt 0) "у отказа значка нет текста"
+    Exit-HrmActionLock -StateDir $state
+    # Входная точка значка не порождает движок в обход блокировки действия.
+    $trayEntry = Get-Content -Path (Join-Path $script:RepoRoot "infra\windows\hrm-tray.ps1") -Raw -Encoding UTF8
+    Assert-HrmContains $trayEntry "Start-HrmTrayEngineProcess" "значок не использует атомарное порождение движка"
+    Assert-HrmNotContains $trayEntry "Start-HrmEngineProcess" "значок порождает движок напрямую, минуя блокировку действия"
+}
+
+Test-Case "P5.2: повторный вход перезаписывает блокировку на себя — снятие в конце операции не удаляет чужую запись" {
+    # До исправления (e298202) повторный вход принимал живую блокировку со своим
+    # pid и служебной отметкой action="engine" КАК ЕСТЬ: процесс выполнял
+    # операцию по записи, владельцем которой значился значок, а завершающий
+    # Exit-HrmActionLock удалял эту запись. Защита от второй операции исчезала
+    # ровно в тот момент, когда первая ещё шла.
+    $world = New-HrmSupervisorTestContext
+    $state = Get-HrmTestStateDir
+    # Значок поставил отметку пять минут назад, pid потомка передать не успел.
+    Set-HrmTestActionLock -StateDir $state -Action "engine" -ProcessId $PID -AgeMinutes 5
+    $entered = Enter-HrmActionLock -StateDir $state -Action "supervise"
+    Assert-HrmTrue ([bool]$entered.acquired) "повторный вход в переданную блокировку отказал"
+    Assert-HrmTrue ([bool]$entered.reentrant) "повторный вход не помечен"
+    Assert-HrmEqual $PID ([int]$entered.pid) "в результате повторного входа не свой pid"
+    Assert-HrmEqual 0 ([int]$entered.age_minutes) "возраст блокировки не сброшен на момент входа"
+    $lockData = Get-HrmJsonFile (Get-HrmActionLockFile $state)
+    Assert-HrmEqual "supervise" ([string]$lockData.action) "блокировка не переписана на выполняемое действие"
+    Assert-HrmEqual $PID ([int]$lockData.pid) "владелец блокировки не стал явным"
+    $ageSeconds = ((Get-Date) - [datetime]::Parse([string]$lockData.started_at)).TotalSeconds
+    Assert-HrmTrue ($ageSeconds -lt 60) "отсчёт «зависла» не начат заново для выполняющего процесса"
+    # Чужая ЖИВАЯ блокировка по-прежнему не пускает вторую операцию: перезапись
+    # возможна только для своего pid (правило «зависла» не ослаблено).
+    $otherPid = Get-HrmOtherLivePid
+    Assert-HrmTrue ($otherPid -gt 0) "не найден живой pid другого процесса для проверки"
+    Set-HrmTestActionLock -StateDir $state -Action "engine" -ProcessId $otherPid -AgeMinutes 0
+    $foreign = Enter-HrmActionLock -StateDir $state -Action "supervise"
+    Assert-HrmFalse ([bool]$foreign.acquired) "чужая живая блокировка пропущена"
+    Assert-HrmFalse ([bool]$foreign.reentrant) "чужая блокировка помечена как повторный вход"
+    $foreignLock = Get-HrmJsonFile (Get-HrmActionLockFile $state)
+    Assert-HrmEqual $otherPid ([int]$foreignLock.pid) "чужая блокировка перезаписана на себя"
+    Assert-HrmEqual "engine" ([string]$foreignLock.action) "чужая блокировка переписана на запрашиваемое действие"
+    Exit-HrmActionLock -StateDir $state
+}
+
 Test-Case "D4: значок не ходит в Docker при идущей операции и опрашивает редко в покое" {
     $world = New-HrmSupervisorTestContext
     $state = Get-HrmTestStateDir
@@ -481,6 +589,65 @@ Test-Case "D7: значок показывает «Ошибка» с причи�
     Assert-HrmEqual "error" ([string]$tick.state) "тик значка показал не ошибку"
     Assert-HrmContains ([string]$tick.message) "Compose" "тик значка потерял причину"
     Assert-HrmEqual 60000 ([int]$tick.interval_ms) "в ошибке значок опрашивает состояние слишком часто"
+}
+
+Test-Case "P2: начало новой попытки НЕ стирает историю отказов — три настоящих прохода движка дают retry_exhausted" {
+    # Регрессия P2 (дораздел PR #55). Кейс выше проверяет счётчик синтетикой
+    # («три записи error подряд без единого starting») и проходил даже тогда, когда
+    # в реальном потоке порог был недостижим: каждая попытка движка НАЧИНАЕТСЯ
+    # записью состояния «starting» (цикл, установка, продолжение операции, значок,
+    # диспетчер), а прежнее правило Set-HrmSupervisorState обнуляло счётчик любым
+    # не-error состоянием. Счётчик ходил 0 → 1 → 0 → 1, значок на каждом входе в
+    # Windows снова порождал движок, и отказ по одной и той же причине повторялся
+    # бесконечно. Здесь — настоящая последовательность «план значка → цикл движка →
+    # отказ» три раза подряд.
+    $world = New-HrmSupervisorTestContext
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Set-HrmInstallRecord $state @{ release_sha = ("1" * 40); port = 8080 }
+    # Причина отказа постоянная (сценарий пилотной машины — Docker Desktop
+    # недоступен): каждая попытка заканчивается одинаково, поэтому счётчик обязан
+    # расти, а не обнуляться началом следующей попытки.
+    $world.DockerMissing = $true
+    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; port_free = $true }
+    $threshold = Get-HrmSupervisorMaxConsecutiveFailures
+    for ($attempt = 1; $attempt -le $threshold; $attempt++) {
+        # 1) Значок решает, запускать ли движок. До порога план обычный.
+        $plan = Get-HrmTrayCurrentPlan -StateDir $state -InstallDir $install
+        Assert-HrmEqual "normal" ([string]$plan.mode) ("попытка {0}: значок не собирался запускать движок" -f $attempt)
+        Assert-HrmTrue ([bool]$plan.start_engine) ("попытка {0}: движок не запускается до достижения порога" -f $attempt)
+        # 2) Настоящий проход движка: цикл пишет «starting», отказывает и пишет
+        #    «error» (ровно то, что делает процесс, порождённый значком).
+        $cycle = Invoke-HrmSupervisorCycle -InstallDir $install -StateDir $state
+        Assert-HrmFalse ([bool]$cycle.ok) ("попытка {0}: цикл не отказал при недоступном Docker" -f $attempt)
+        Assert-HrmEqual "error" ([string](Get-HrmSupervisorState -StateDir $state).state) ("попытка {0}: отказ не записан в состояние" -f $attempt)
+        # 3) История отказов переживает начало попытки: счётчик равен числу
+        #    сделанных попыток. На прежнем коде здесь всегда было 1.
+        Assert-HrmEqual $attempt (Get-HrmSupervisorFailureCount -StateDir $state) ("попытка {0}: начало попытки обнулило счётчик подряд идущих отказов" -f $attempt)
+    }
+    # 4) Порог достигнут — значок перестаёт порождать движок и показывает причину.
+    $exhausted = Get-HrmTrayCurrentPlan -StateDir $state -InstallDir $install
+    Assert-HrmEqual "retry_exhausted" ([string]$exhausted.mode) "после трёх настоящих отказов значок снова запускает движок"
+    Assert-HrmFalse ([bool]$exhausted.start_engine) "при исчерпании повторов значок порождает новый процесс движка"
+    Assert-HrmEqual "error" ([string]$exhausted.state) "исчерпание повторов не видно как «Ошибка»"
+    Assert-HrmContains ([string]$exhausted.message) "повторы запуска остановлены" "нет объяснения остановки повторов"
+    Assert-HrmContains ([string]$exhausted.message) "отчёт для поддержки" "в сообщении нет действия для человека"
+    # 5) Явное действие человека разрешает новую попытку (счётчик сбрасывается).
+    Reset-HrmSupervisorFailureCount -StateDir $state | Out-Null
+    $afterReset = Get-HrmTrayCurrentPlan -StateDir $state -InstallDir $install
+    Assert-HrmEqual "normal" ([string]$afterReset.mode) "после действия человека попытка не разрешена"
+    Assert-HrmTrue ([bool]$afterReset.start_engine) "после сброса счётчика значок не запускает движок"
+    # 6) Промежуточные состояния («starting», «stopped») счётчик сохраняют, а успех
+    #    («ready») — обнуляет: это единственные два способа обнуления.
+    Set-HrmSupervisorState -StateDir $state -State "error" -Message "причина отказа"
+    Set-HrmSupervisorState -StateDir $state -State "error" -Message "причина отказа"
+    Assert-HrmEqual 2 (Get-HrmSupervisorFailureCount -StateDir $state) "счётчик не считает отказы"
+    Set-HrmSupervisorState -StateDir $state -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
+    Assert-HrmEqual 2 (Get-HrmSupervisorFailureCount -StateDir $state) "запись «starting» обнулила счётчик отказов"
+    Set-HrmSupervisorState -StateDir $state -State "stopped" -Message "Приложение остановлено."
+    Assert-HrmEqual 2 (Get-HrmSupervisorFailureCount -StateDir $state) "запись «stopped» обнулила счётчик отказов"
+    Set-HrmSupervisorState -StateDir $state -State "ready" -Message "HR Manager готов."
+    Assert-HrmEqual 0 (Get-HrmSupervisorFailureCount -StateDir $state) "успех не сбросил счётчик отказов"
 }
 
 Test-Case "D4/D7: значок останавливает бесконечные повторные запуски после подряд идущих отказов" {
