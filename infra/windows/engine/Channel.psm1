@@ -26,6 +26,15 @@ function Get-HrmStagingHostDir {
 }
 function Get-HrmChannelPidFile { param([string]$StateDir) return (Join-Path $StateDir "channel-watch.pid") }
 
+function Get-HrmChannelStopFile {
+    # Файл-сигнал остановки наблюдателя канала. Stop-HrmChannelWatch создаёт его
+    # ПЕРЕД попыткой Stop-Process, поэтому наблюдатель завершается сам даже
+    # тогда, когда прав на завершение чужого процесса нет или pid устарел.
+    param([string]$StateDir)
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    return (Join-Path $StateDir "channel-watch.stop")
+}
+
 # --- Конфигурация канала -------------------------------------------------------
 
 function Get-HrmChannelConfig {
@@ -326,49 +335,154 @@ function Invoke-HrmChannelOnce {
 }
 
 function Start-HrmChannelWatch {
-    # Блокирующий цикл наблюдателя (запускается отдельным процессом).
-    param([string]$InstallDir = "", [string]$StateDir = "")
+    # Цикл наблюдателя канала обновлений. Блокирующий, но ОГРАНИЧЕННЫЙ и
+    # останавливаемый (регрессия D8).
+    #
+    # Раньше здесь был `while ($true)` без единого условия выхода: остановить
+    # наблюдатель можно было только убив процесс из другого процесса, а
+    # запускающий его код (Start-HrmChannelWatcherProcess в Common.psm1) не
+    # вызывался ниоткуда — то есть цикл был одновременно недостижим и
+    # неостановим. Спавнер удалён, единственный путь запуска остался явным:
+    # `hr-manager.ps1 -Action channel -Watch` (человек/инструмент запускает его
+    # осознанно, см. README и installer.iss).
+    #
+    # Условия выхода (любое из них):
+    #   * файл-сигнал StateDir\channel-watch.stop — его пишет
+    #     Stop-HrmChannelWatch; проверяется и перед циклом, и во время сна;
+    #   * -MaxCycles (или HRM_CHANNEL_WATCH_MAX_CYCLES) — предел числа циклов;
+    #   * -MaxMinutes (или HRM_CHANNEL_WATCH_MAX_MINUTES) — предел времени;
+    #   * pid-файл перезаписан другим процессом: значит наблюдатель уже другой,
+    #     два параллельных цикла не нужны (каждый цикл — это HTTP-запрос и,
+    #     возможно, установка обновления).
+    # Возвращает @{ cycles; stop_requested } — факт для журнала и тестов.
+    param(
+        [string]$InstallDir = "",
+        [string]$StateDir = "",
+        [int]$MaxCycles = 0,
+        [int]$MaxMinutes = 0,
+        [int]$IntervalSeconds = -1
+    )
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $interval = [int]$script:ChannelWatcherInterval
+    if ($IntervalSeconds -ge 0) { $interval = $IntervalSeconds }
+    $envValue = 0
+    if ($MaxCycles -le 0 -and [int]::TryParse([string]$env:HRM_CHANNEL_WATCH_MAX_CYCLES, [ref]$envValue) -and $envValue -gt 0) { $MaxCycles = $envValue }
+    $envValue = 0
+    if ($MaxMinutes -le 0 -and [int]::TryParse([string]$env:HRM_CHANNEL_WATCH_MAX_MINUTES, [ref]$envValue) -and $envValue -gt 0) { $MaxMinutes = $envValue }
     $pidFile = Get-HrmChannelPidFile $StateDir
+    $stopFile = Get-HrmChannelStopFile $StateDir
     if (Test-Path $pidFile) {
         $existing = Get-Content $pidFile -Raw
         try {
             $process = Get-Process -Id ([int]$existing) -ErrorAction Stop
             if ($process.ProcessName -match "powershell|pwsh") {
                 Write-HrmLog "info" "Канал: наблюдатель уже запущен (pid $existing)."
-                return
+                return [pscustomobject]@{ cycles = 0; stop_requested = $false; already_running = $true }
             }
         }
         catch { }
     }
+    # Сигнал остановки от ПРЕДЫДУЩЕГО запуска не должен отменять новый запуск.
+    if (Test-Path $stopFile) { Remove-Item $stopFile -Force -ErrorAction SilentlyContinue }
     Set-Content -Path $pidFile -Value $PID -Encoding ASCII
     Protect-HrmFile $StateDir $pidFile
-    Write-HrmLog "info" "Канал: наблюдатель запущен (интервал $($script:ChannelWatcherInterval) c)."
-    while ($true) {
+    Write-HrmLog "info" ("Канал: наблюдатель запущен (интервал {0} c; предел циклов {1}; предел минут {2})." -f $interval, $MaxCycles, $MaxMinutes)
+    $deadline = $null
+    if ($MaxMinutes -gt 0) { $deadline = (Get-Date).AddMinutes($MaxMinutes) }
+    $cycles = 0
+    $stopRequested = $false
+    $running = $true
+    while ($running) {
+        if (Test-Path $stopFile) {
+            $stopRequested = $true
+            Write-HrmLog "info" "Канал: получен сигнал остановки — наблюдатель завершается."
+            break
+        }
+        $ownerPid = 0
+        try { $ownerPid = [int]((Get-Content $pidFile -Raw).Trim()) } catch { $ownerPid = 0 }
+        if ($ownerPid -ne $PID) {
+            Write-HrmLog "info" ("Канал: наблюдатель заменён другим процессом (pid {0}) — этот завершается." -f $ownerPid)
+            break
+        }
         try {
             Invoke-HrmChannelOnce -InstallDir $InstallDir -StateDir $StateDir
         }
         catch {
             Write-HrmLog "error" ("Канал: ошибка цикла: {0}" -f (Redact-HrmText $_.Exception.Message))
         }
-        Start-Sleep -Seconds $script:ChannelWatcherInterval
+        $cycles++
+        if ($MaxCycles -gt 0 -and $cycles -ge $MaxCycles) {
+            Write-HrmLog "info" ("Канал: достигнут предел циклов наблюдателя ({0})." -f $MaxCycles)
+            break
+        }
+        if ($null -ne $deadline -and ((Get-Date) -ge $deadline)) {
+            Write-HrmLog "info" ("Канал: достигнуто ограничение времени наблюдателя ({0} мин)." -f $MaxMinutes)
+            break
+        }
+        # Сон с проверкой сигнала остановки по 1 с: иначе остановка наблюдателя
+        # ждала бы полный интервал (30 с по умолчанию).
+        $waited = 0
+        while ($waited -lt $interval) {
+            if (Test-Path $stopFile) { $stopRequested = $true; $running = $false; break }
+            Start-Sleep -Seconds 1
+            $waited++
+        }
     }
+    # pid-файл убираем только если он всё ещё наш (иначе затрём чужой).
+    $ownerPid = 0
+    try { $ownerPid = [int]((Get-Content $pidFile -Raw).Trim()) } catch { $ownerPid = 0 }
+    if ($ownerPid -eq $PID) { Remove-Item $pidFile -Force -ErrorAction SilentlyContinue }
+    if ($stopRequested -and (Test-Path $stopFile)) { Remove-Item $stopFile -Force -ErrorAction SilentlyContinue }
+    Write-HrmLog "info" ("Канал: наблюдатель завершён (выполнено циклов: {0})." -f $cycles)
+    return [pscustomobject]@{ cycles = $cycles; stop_requested = $stopRequested; already_running = $false }
 }
 
 function Stop-HrmChannelWatch {
+    # Остановка наблюдателя: сначала сигнал файлом (наблюдатель увидит его в
+    # течение секунды и завершится сам, убрав за собой pid-файл), затем —
+    # принудительное завершение процесса, если он ещё жив и права позволяют.
     param([string]$StateDir = "")
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $pidFile = Get-HrmChannelPidFile $StateDir
+    $stopFile = Get-HrmChannelStopFile $StateDir
     if (-not (Test-Path $pidFile)) {
         Write-HrmLog "info" "Канал: наблюдатель не запущен."
-        return
+        # Файл-сигнал мог остаться от прежнего запуска: убираем его, чтобы
+        # каталог состояния не носил мусор (новый наблюдатель снимает сигнал и
+        # сам, но чистое состояние важнее).
+        if (Test-Path $stopFile) { Remove-Item $stopFile -Force -ErrorAction SilentlyContinue }
+        return $false
     }
-    try {
-        $watcherPid = [int](Get-Content $pidFile -Raw)
-        Stop-Process -Id $watcherPid -Force -ErrorAction Stop
-        Write-HrmLog "info" "Канал: наблюдатель остановлен."
-    }
+    try { Set-Content -Path $stopFile -Value (Get-Date).ToString("o") -Encoding ASCII }
     catch { }
-    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+    $watcherPid = 0
+    try { $watcherPid = [int]((Get-Content $pidFile -Raw).Trim()) } catch { $watcherPid = 0 }
+    if ($watcherPid -gt 0 -and $watcherPid -eq $PID) {
+        # Остановка вызвана из самого наблюдателя: завершать свой процесс нельзя,
+        # достаточно сигнала — цикл выйдет на следующей проверке.
+        Write-HrmLog "info" "Канал: сигнал остановки записан для текущего процесса наблюдателя."
+        return $false
+    }
+    if ($watcherPid -gt 0) {
+        try {
+            Stop-Process -Id $watcherPid -Force -ErrorAction Stop
+            Write-HrmLog "info" "Канал: наблюдатель остановлен."
+        }
+        catch {
+            Write-HrmLog "info" ("Канал: процесс наблюдателя не завершён принудительно ({0}) — он завершится по сигналу остановки." -f (Redact-HrmText $_.Exception.Message))
+        }
+    }
+    $alive = $false
+    if ($watcherPid -gt 0) {
+        try { $alive = ($null -ne (Get-Process -Id $watcherPid -ErrorAction SilentlyContinue)) }
+        catch { $alive = $false }
+    }
+    if (-not $alive) {
+        Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $stopFile -Force -ErrorAction SilentlyContinue
+    }
+    # Если процесс жив (нет прав на завершение), pid-файл и сигнал оставляем:
+    # наблюдатель уберёт их сам при выходе по сигналу.
+    return (-not $alive)
 }

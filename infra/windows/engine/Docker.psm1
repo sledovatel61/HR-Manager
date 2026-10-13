@@ -21,6 +21,13 @@
 Set-StrictMode -Version 2.0
 
 $script:DockerOverride = $null
+# Кэш ВЫБРАННОГО пути CLI контейнеров (регрессия D6): выбор делается перебором
+# кандидатов и чтением версий файлов, а CLI вызывается десятки раз за операцию.
+# Кэшируется только УСПЕШНЫЙ выбор: пустой результат не кэшируется, иначе
+# установка Docker Desktop внутри того же процесса не стала бы видна движку.
+# Сбрасывается через Reset-HrmDockerCliChoiceCache (после установки Docker и в
+# тестах).
+$script:DockerCliChoiceCache = ""
 # База переопределений (тестовый шов): Set-HrmDockerOverride заменяет набор
 # целиком, поэтому договорённости, на которые опирается весь прогон (свободный
 # порт, путь CLI контейнеров), хранятся отдельно и не стираются, когда тест
@@ -29,6 +36,14 @@ $script:DockerOverrideDefaults = $null
 
 $script:DockerInstallerUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
 $script:DockerDownloadPage = "https://www.docker.com/products/docker-desktop/"
+# Сколько секунд ждём завершение установщика Docker Desktop (дефект P3
+# дораздела PR #55). Значение совпадает с потолком Start-HrmElevatedAndWait и
+# НЕ увеличено: 3600 с — это ограничение бесконечного ожидания, а не «лечение
+# медленной установки». Константа объявлена здесь, а не читается из значения по
+# умолчанию Common.psm1, потому что текст сообщения обязан честно называть
+# ожидание, которое запросил вызывающий.
+$script:DockerInstallerWaitSeconds = 3600
+
 # Издатель официального установщика Docker Desktop. Раньше здесь была подстрока
 # "Docker", и проверка пропускала любой корректно подписанный файл, у которого
 # слово Docker встречается в subject (например "CN=Fake Docker Signer, O=Evil").
@@ -177,25 +192,378 @@ function Get-HrmDockerCliDirs {
     return $dirs
 }
 
+function Get-HrmDockerCliCandidatePaths {
+    # ВСЕ существующие пути CLI контейнеров в порядке поиска: известные каталоги
+    # Docker Desktop, затем каталоги из PATH. Дубликаты (один и тот же файл,
+    # найденный дважды) схлопываются. Без запуска процессов.
+    $paths = @()
+    $seen = @{}
+    foreach ($dir in (Get-HrmDockerCliDirs)) {
+        if (-not $dir) { continue }
+        $candidate = Join-Path $dir "docker.exe"
+        if (-not (Test-Path $candidate)) { continue }
+        $key = $candidate.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $paths += $candidate
+    }
+    foreach ($dir in @($env:PATH -split ";")) {
+        if (-not $dir) { continue }
+        $candidate = Join-Path $dir.Trim() "docker.exe"
+        if (-not (Test-Path $candidate)) { continue }
+        $key = $candidate.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $paths += $candidate
+    }
+    return $paths
+}
+
+function Get-HrmDockerInstallRoot {
+    # Корень установки Docker Desktop для файла (строка в нижнем регистре):
+    #   «…\Docker Desktop\Docker Desktop.exe»            → «…\Docker Desktop»
+    #   «…\Docker Desktop\resources\bin\docker.exe»      → «…\Docker Desktop»
+    # Совпадение корней означает «этот CLI из той же установки, что и Docker
+    # Desktop, который мы считаем установленным». Пустая строка — не определён.
+    param([string]$Path = "")
+    if (-not $Path) { return "" }
+    try {
+        $normalized = ([string]$Path).Replace("/", "\").TrimEnd("\")
+        $leaf = Split-Path $normalized -Leaf
+        $dir = Split-Path $normalized -Parent
+        if (-not $dir) { return "" }
+        # СНАЧАЛА шаблон CLI из установки Docker Desktop
+        # («…\Docker Desktop\resources\bin\docker.exe»): если проверять имя файла
+        # первым, «docker.exe» совпал бы с правилом для Docker Desktop.exe и корнем
+        # оказался бы каталог «resources\bin», то есть CLI из той же установки не
+        # сопоставлялся бы с работающим Docker Desktop (правило выбора D6 не работало).
+        $parent = Split-Path $dir -Parent
+        if ($parent) {
+            $grandParent = Split-Path $parent -Parent
+            if ($grandParent -and ((Split-Path $parent -Leaf) -ieq "resources") -and ((Split-Path $dir -Leaf) -ieq "bin")) {
+                return $grandParent.ToLowerInvariant()
+            }
+        }
+        if ($leaf -match "(?i)^docker(\s*desktop)?\.exe$") { return $dir.ToLowerInvariant() }
+        # Посторонний файл: корень — его собственный каталог (совпадения с корнем
+        # установки Docker Desktop не будет, значит и выбран он не по правилу 1).
+        return $dir.ToLowerInvariant()
+    }
+    catch { return "" }
+}
+
+function Get-HrmVersionParts {
+    # Разбор версии («27.3.1», «v2.29.7», «24.0.7-beta») на числовые разряды и
+    # текстовые хвосты: [{ number = 27; text = "" }, …]. Не бросает исключений на
+    # мусоре — неразобранный разряд даёт 0.
+    param([string]$Value = "")
+    $clean = ([string]$Value).Trim()
+    if ($clean.Length -gt 0 -and ($clean[0] -eq "v" -or $clean[0] -eq "V")) { $clean = $clean.Substring(1) }
+    $parts = @()
+    foreach ($chunk in ($clean -split "\.")) {
+        $digits = ""
+        foreach ($char in $chunk.ToCharArray()) {
+            if ($char -ge [char]"0" -and $char -le [char]"9") { $digits += [string]$char }
+            else { break }
+        }
+        $number = 0
+        if ($digits -and $digits.Length -le 9) { $number = [int]$digits }
+        $text = ""
+        if ($chunk.Length -gt $digits.Length) { $text = $chunk.Substring($digits.Length) }
+        $parts += [pscustomobject]@{ number = $number; text = $text }
+    }
+    return $parts
+}
+
+function Compare-HrmCliVersion {
+    # Сравнение версий CLI/плагинов: -1 (Left меньше), 0, 1 (Left больше).
+    # Правила:
+    #   * числовые разряды сравниваются как числа: 27.3.1 > 24.0.7;
+    #   * пустая строка меньше любой непустой (версию не удалось прочитать);
+    #   * при равных числах разряд БЕЗ текстового хвоста больше разряда с
+    #     хвостом: 24.0.7 > 24.0.7-beta (релиз старше предпоиска);
+    #   * два хвоста сравниваются ординально (побайтово), без учёта регистра
+    #     не делаем — порядок предпоисков не критичен для выбора CLI.
+    param([string]$Left = "", [string]$Right = "")
+    if (-not $Left -and -not $Right) { return 0 }
+    if (-not $Left) { return -1 }
+    if (-not $Right) { return 1 }
+    $leftParts = @(Get-HrmVersionParts $Left)
+    $rightParts = @(Get-HrmVersionParts $Right)
+    $count = [Math]::Max($leftParts.Count, $rightParts.Count)
+    for ($i = 0; $i -lt $count; $i++) {
+        $leftNumber = 0
+        $leftText = ""
+        if ($i -lt $leftParts.Count) { $leftNumber = [int]$leftParts[$i].number; $leftText = [string]$leftParts[$i].text }
+        $rightNumber = 0
+        $rightText = ""
+        if ($i -lt $rightParts.Count) { $rightNumber = [int]$rightParts[$i].number; $rightText = [string]$rightParts[$i].text }
+        if ($leftNumber -ne $rightNumber) {
+            if ($leftNumber -gt $rightNumber) { return 1 }
+            return -1
+        }
+        if ($leftText -ne $rightText) {
+            if (-not $leftText) { return 1 }
+            if (-not $rightText) { return -1 }
+            if ([string]::CompareOrdinal($leftText, $rightText) -gt 0) { return 1 }
+            return -1
+        }
+    }
+    return 0
+}
+
+function New-HrmDockerCliCandidate {
+    # Описание одного кандидата CLI (без запуска процесса): путь, источник,
+    # версия файла, дата файла и признак «тот же корень установки, что и Docker
+    # Desktop». Чтение версии файла может не сработать (нет прав/файл занят) —
+    # тогда поля остаются пустыми, кандидат не отбрасывается.
+    param([string]$Path, [string]$Source, [string]$DesktopPath = "")
+    $fileVersion = ""
+    $fileLastWrite = ""
+    try {
+        $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        $fileLastWrite = $item.LastWriteTime.ToString("o")
+        $info = $item.VersionInfo
+        if ($null -ne $info) {
+            if ($info.ProductVersion) { $fileVersion = [string]$info.ProductVersion }
+            elseif ($info.FileVersion) { $fileVersion = [string]$info.FileVersion }
+        }
+    }
+    catch { }
+    $desktopMatch = $false
+    $desktopRoot = Get-HrmDockerInstallRoot $DesktopPath
+    if ($desktopRoot) {
+        $cliRoot = Get-HrmDockerInstallRoot $Path
+        if ($cliRoot -and $cliRoot -eq $desktopRoot) { $desktopMatch = $true }
+    }
+    return [pscustomobject]@{
+        path = [string]$Path
+        source = [string]$Source
+        file_version = $fileVersion
+        file_last_write = $fileLastWrite
+        desktop_root_match = $desktopMatch
+        install_root = (Get-HrmDockerInstallRoot $Path)
+        probe_ok = $false
+        probe_version = ""
+        probe_exit_code = 0
+        probe_stderr = ""
+    }
+}
+
+function Get-HrmDockerCliCandidates {
+    # Все кандидаты CLI контейнеров с их фактами. Порядок — порядок поиска
+    # (каталоги Docker Desktop, затем PATH): он же последний критерий выбора.
+    param([string]$DesktopPath = "")
+    $candidates = @()
+    $knownDirs = @(Get-HrmDockerCliDirs)
+    foreach ($path in (Get-HrmDockerCliCandidatePaths)) {
+        $source = "path"
+        $parent = Split-Path $path -Parent
+        foreach ($dir in $knownDirs) {
+            if ($dir -and $parent -and ($parent.ToLowerInvariant() -eq $dir.ToLowerInvariant())) { $source = "docker-desktop-dir"; break }
+        }
+        $candidates += (New-HrmDockerCliCandidate -Path $path -Source $source -DesktopPath $DesktopPath)
+    }
+    return $candidates
+}
+
+function Select-HrmDockerCliCandidate {
+    # ПРАВИЛО ВЫБОРА CLI контейнеров (регрессия D6). Раньше возвращался ПЕРВЫЙ
+    # найденный файл: при двух установках Docker Desktop (устаревшая машинная в
+    # Program Files и актуальная пользовательская в %LOCALAPPDATA%\Programs)
+    # детекция считала Docker установленным по одной установке, а вызовы шли в
+    # CLI другой — версии расходились, compose-плагин мог отсутствовать, и
+    # предполётная проверка падала с текстом, который не объяснял причину.
+    #
+    # Приоритет (по убыванию):
+    #   1) кандидат из ТОГО ЖЕ корня установки, что и Docker Desktop.exe;
+    #   2) наибольшая версия файла (ProductVersion, иначе FileVersion);
+    #   3) самая свежая дата изменения файла;
+    #   4) исходный порядок поиска (прежнее поведение) — последний критерий.
+    # Функция ЧИСТАЯ (без Test-Path и без запуска процессов), поэтому правило
+    # проверяется тестом на фиксированных данных. Возвращает @{ path; index;
+    # reason } — reason пишется в журнал и в отчёт поддержки.
+    param([object[]]$Candidates = @(), [string]$DesktopPath = "")
+    $pool = @($Candidates)
+    if ($pool.Count -eq 0) {
+        return [pscustomobject]@{ path = ""; index = -1; reason = "CLI контейнеров не найден ни в одном из известных каталогов" }
+    }
+    if ($pool.Count -eq 1) {
+        return [pscustomobject]@{ path = [string]$pool[0].path; index = 0; reason = "единственный найденный CLI контейнеров" }
+    }
+    $reasons = @()
+    $matched = @($pool | Where-Object { [bool]$_.desktop_root_match })
+    if ($matched.Count -ge 1) {
+        $reasons += ("тот же корень установки, что и Docker Desktop ({0})" -f (Get-HrmDockerInstallRoot $DesktopPath))
+        $pool = $matched
+    }
+    if ($pool.Count -gt 1) {
+        $bestVersion = ""
+        foreach ($item in $pool) {
+            if ((Compare-HrmCliVersion ([string]$item.file_version) $bestVersion) -gt 0) { $bestVersion = [string]$item.file_version }
+        }
+        if ($bestVersion) {
+            $versioned = @($pool | Where-Object { [string]$_.file_version -eq $bestVersion })
+            if ($versioned.Count -ge 1) {
+                $reasons += ("наибольшая версия файла {0}" -f $bestVersion)
+                $pool = $versioned
+            }
+        }
+    }
+    if ($pool.Count -gt 1) {
+        $newest = ""
+        foreach ($item in $pool) {
+            $stamp = [string]$item.file_last_write
+            if ($stamp -and (-not $newest -or ($stamp -gt $newest))) { $newest = $stamp }
+        }
+        if ($newest) {
+            $fresh = @($pool | Where-Object { [string]$_.file_last_write -eq $newest })
+            if ($fresh.Count -ge 1) {
+                $reasons += "самая свежая дата файла"
+                $pool = $fresh
+            }
+        }
+    }
+    if ($reasons.Count -eq 0) { $reasons += "исходный порядок поиска (каталоги Docker Desktop, затем PATH)" }
+    $chosen = [string]$pool[0].path
+    $index = -1
+    for ($i = 0; $i -lt $Candidates.Count; $i++) {
+        if ([string]$Candidates[$i].path -eq $chosen) { $index = $i; break }
+    }
+    return [pscustomobject]@{ path = $chosen; index = $index; reason = ($reasons -join "; ") }
+}
+
 function Get-HrmDockerCliPath {
     # ЕДИНСТВЕННАЯ точка разрешения CLI контейнеров — её используют и детекция
     # («Docker установлен»), и фактические вызовы (Invoke-HrmDocker в
     # Common.psm1). Иначе детекция находит CLI в пользовательском каталоге
     # Docker Desktop, а вызов идёт голым именем через PATH процесса и падает.
-    # Без запуска процесса и без Get-Command: известные каталоги Docker Desktop,
-    # затем каталоги из PATH (проверка Test-Path). "" — CLI не найден.
+    # Без запуска процесса и без Get-Command: выбор из всех найденных кандидатов
+    # по правилу Select-HrmDockerCliCandidate. "" — CLI не найден.
+    #
+    # -Candidate: вернуть именно этот путь, ЕСЛИ он входит в список кандидатов
+    # того же резолвера (проба версий в диагностике). Имя внешней команды
+    # по-прежнему не может прийти из произвольного места — это же проверяет
+    # static.tests.ps1 («имя команды получено из Get-HrmDockerCliPath»).
+    param([string]$Candidate = "")
     $override = Get-HrmDockerOverrideValue "cli_path"
     if ($null -ne $override) { return [string]$override }
-    foreach ($dir in (Get-HrmDockerCliDirs)) {
-        $candidate = Join-Path $dir "docker.exe"
-        if (Test-Path $candidate) { return $candidate }
+    if ($Candidate) {
+        $key = ([string]$Candidate).ToLowerInvariant()
+        foreach ($path in (Get-HrmDockerCliCandidatePaths)) {
+            if (([string]$path).ToLowerInvariant() -eq $key) { return [string]$path }
+        }
+        return ""
     }
-    foreach ($dir in @($env:PATH -split ";")) {
-        if (-not $dir) { continue }
-        $candidate = Join-Path $dir "docker.exe"
-        if (Test-Path $candidate) { return $candidate }
+    if ($script:DockerCliChoiceCache) { return [string]$script:DockerCliChoiceCache }
+    $choice = Select-HrmDockerCliCandidate -Candidates @(Get-HrmDockerCliCandidates -DesktopPath (Get-HrmDockerDesktopPath)) -DesktopPath (Get-HrmDockerDesktopPath)
+    if ($choice.path) { $script:DockerCliChoiceCache = [string]$choice.path }
+    return [string]$choice.path
+}
+
+function Reset-HrmDockerCliChoiceCache {
+    # Сброс кэша выбора CLI: после установки/обновления Docker Desktop (в том же
+    # процессе появляется новый CLI) и в тестах между кейсами.
+    $script:DockerCliChoiceCache = ""
+    return $true
+}
+
+function Invoke-HrmDockerCliVersionProbe {
+    # Проба «--version» конкретного кандидата CLI. Отдельная функция: это
+    # ЕДИНСТВЕННОЕ место, где движок запускает CLI ради проверки, и оно вызывается
+    # только из диагностики/отчёта поддержки и из объяснения отказа предполётной
+    # проверки — НЕ на горячем пути (каждый вызов docker). Проба ограничена
+    # таймаутом (класс «probe»): зависший CLI не утаскивает за собой движок.
+    # Возвращает @{ ok; version; exit_code; stderr; timed_out }.
+    param([string]$CandidatePath = "", [int]$TimeoutSeconds = 0)
+    $cli = Get-HrmDockerCliPath -Candidate $CandidatePath
+    if (-not $cli) {
+        return [pscustomobject]@{ ok = $false; version = ""; exit_code = -1; stderr = "кандидат не входит в список резолвера CLI контейнеров"; timed_out = $false }
     }
-    return ""
+    try {
+        $result = Invoke-HrmExternal -Name $cli -Arguments @("--version") -IgnoreExitCode -TimeoutSeconds $TimeoutSeconds
+    }
+    catch {
+        return [pscustomobject]@{ ok = $false; version = ""; exit_code = -1; stderr = (Redact-HrmText $_.Exception.Message); timed_out = $false }
+    }
+    $stdout = [string]$result.Stdout
+    $version = ""
+    if ($stdout -match "(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z\.\-]+)?)") { $version = $matches[1] }
+    $timedOut = $false
+    if ($result.PSObject.Properties["TimedOut"]) { $timedOut = [bool]$result.TimedOut }
+    return [pscustomobject]@{
+        ok = ([int]$result.ExitCode -eq 0 -and [bool]$version)
+        version = $version
+        exit_code = [int]$result.ExitCode
+        stderr = (Redact-HrmText [string]$result.Stderr)
+        timed_out = $timedOut
+    }
+}
+
+function Get-HrmDockerCliFacts {
+    # Факты о CLI контейнеров для журнала, диагностики и отчёта поддержки:
+    # ВСЕ найденные кандидаты (путь, источник, версия файла, дата, корень
+    # установки), выбранный путь и правило выбора, путь Docker Desktop и
+    # перечень проверенных каталогов.
+    # -Probe добавляет запуск «--version» для выбранного CLI (и только для него):
+    # проба всех кандидатов — это N процессов CLI, то есть ровно тот симптом
+    # (накопление процессов), который чинится этой ревизией.
+    param([switch]$Probe, [int]$ProbeTimeoutSeconds = 0)
+    $desktopPath = Get-HrmDockerDesktopPath
+    $candidates = @(Get-HrmDockerCliCandidates -DesktopPath $desktopPath)
+    $choice = Select-HrmDockerCliCandidate -Candidates $candidates -DesktopPath $desktopPath
+    $override = Get-HrmDockerOverrideValue "cli_path"
+    $cli = [string]$choice.path
+    $reason = [string]$choice.reason
+    if ($null -ne $override) {
+        $cli = [string]$override
+        $reason = "переопределение пути CLI (тестовый шов Set-HrmDockerOverride)"
+    }
+    $cliVersion = ""
+    $cliSource = ""
+    $cliRoot = ""
+    foreach ($item in $candidates) {
+        if ([string]$item.path -eq $cli) {
+            $cliVersion = [string]$item.file_version
+            $cliSource = [string]$item.source
+            $cliRoot = [string]$item.install_root
+            break
+        }
+    }
+    $probeOk = $false
+    $probeVersion = ""
+    $probeStderr = ""
+    $probeExitCode = 0
+    if ($Probe -and $cli) {
+        # Имя локальной переменной НЕ должно совпадать с именем параметра даже с
+        # точностью до регистра: $Probe — типизированный [switch]-параметр, и
+        # присваивание $probe = <объект> приводило бы к преобразованию результата
+        # пробы в SwitchParameter (ошибка приведения типа).
+        $probeResult = Invoke-HrmDockerCliVersionProbe -CandidatePath $cli -TimeoutSeconds $ProbeTimeoutSeconds
+        $probeOk = [bool]$probeResult.ok
+        $probeVersion = [string]$probeResult.version
+        $probeStderr = [string]$probeResult.stderr
+        $probeExitCode = [int]$probeResult.exit_code
+        if (-not $cliVersion -and $probeVersion) { $cliVersion = $probeVersion }
+    }
+    return [pscustomobject]@{
+        cli = $cli
+        cli_source = $cliSource
+        cli_install_root = $cliRoot
+        cli_version = $cliVersion
+        cli_version_probed = $probeVersion
+        cli_probe_ok = $probeOk
+        cli_probe_exit_code = $probeExitCode
+        cli_probe_stderr = $probeStderr
+        probed = [bool]$Probe
+        candidates = $candidates
+        candidate_count = $candidates.Count
+        chosen_reason = $reason
+        desktop_path = [string]$desktopPath
+        desktop_install_root = (Get-HrmDockerInstallRoot $desktopPath)
+        searched_dirs = @(Get-HrmDockerCliDirs)
+        search_places = @(Get-HrmDockerCliSearchPlaces)
+    }
 }
 
 function Get-HrmDockerCliSearchPlaces {
@@ -487,6 +855,12 @@ function Wait-HrmDockerEngine {
     # Ожидание готовности Docker Engine с таймаутом и понятным прогрессом.
     # Никаких бесконечных циклов: по истечении таймаута возвращаем $false.
     param([int]$TimeoutSeconds = 300, [int]$IntervalSeconds = 5)
+    # К этому моменту Docker Desktop мог быть только что установлен или обновлён
+    # (в том же процессе движка): состав и версии CLI контейнеров меняются,
+    # поэтому кэш выбранного пути сбрасывается. Без сброса движок продолжал бы
+    # звать CLI из прежней установки (регрессия D6). Таймауты ожидания при этом
+    # не меняются: 300 с на готовность Engine, 5 с между проверками.
+    Reset-HrmDockerCliChoiceCache | Out-Null
     $started = Get-Date
     $deadline = $started.AddSeconds($TimeoutSeconds)
     $lastReport = -30
@@ -714,6 +1088,28 @@ function Clear-HrmPendingDockerOperation {
     if (Test-Path $file) { Remove-Item $file -Force }
 }
 
+function Get-HrmDockerInstallerWaitSeconds {
+    # Потолок ожидания установщика Docker Desktop в секундах (открыт для теста,
+    # чтобы значение нельзя было незаметно «вылечить» увеличением).
+    return $script:DockerInstallerWaitSeconds
+}
+
+function Get-HrmDockerInstallerTimeoutMessage {
+    # Сообщение для случая «ожидание установщика истекло».
+    # Это НЕ ошибка установщика и НЕ отмена UAC: процесс намеренно не завершается
+    # принудительно (прерванная установка Docker Desktop хуже явного отказа —
+    # после неё Windows может требовать ручного восстановления), поэтому текст
+    # обязан говорить три вещи: сколько ждали, что процесс мог остаться живым и
+    # что делать человеку. Автоматически второй установщик не запускается.
+    param(
+        [string]$FilePath = "",
+        [int]$TimeoutSeconds = 0,
+        [string]$Mode = "установка Docker Desktop"
+    )
+    $text = "Ожидание установщика Docker Desktop истекло: {0} не завершилась за {1} с. Процесс установщика НЕ завершался принудительно — установка могла ещё идти. Файл установщика: {2}. Что делать: дождитесь окна установщика и завершите установку вручную (лицензию принимаете вы); если окна нет — закройте установщик через Диспетчер задач и нажмите «Установить Docker Desktop» ещё раз. Второй установщик автоматически не запускается."
+    return ($text -f $Mode, $TimeoutSeconds, $FilePath)
+}
+
 function Install-HrmDockerDesktop {
     # Установка Docker Desktop ТОЛЬКО официальным установщиком Docker.
     #
@@ -722,7 +1118,9 @@ function Install-HrmDockerDesktop {
     # - запуск: с повышением прав (UAC) — отмена UAC не считается ошибкой;
     # - лицензию Docker принимает пользователь в окне установщика; движок НЕ
     #   передаёт --accept-license;
-    # - после установки фиксируется «продолжить автоматически».
+    # - после УСПЕШНОЙ установки фиксируется «продолжить автоматически»; истёкшее
+    #   ожидание установщика — отдельный статус installer_timeout (дефект P3):
+    #   без автоматического продолжения и без второго установщика.
     param(
         [string]$StateDir = "",
         [switch]$Interactive,
@@ -775,11 +1173,27 @@ function Install-HrmDockerDesktop {
 
     if ($AllowSilent) {
         Write-HrmLog "info" "Запускаем установку Docker Desktop (может потребоваться разрешение Windows)…"
-        $silent = Start-HrmElevatedAndWait -FilePath $installerPath -Arguments @("install", "--quiet", "--backend=wsl-2")
+        $waitSeconds = Get-HrmDockerInstallerWaitSeconds
+        $silent = Start-HrmElevatedAndWait -FilePath $installerPath -Arguments @("install", "--quiet", "--backend=wsl-2") -TimeoutSeconds $waitSeconds
         if ($silent.CanceledByUser) {
             return [pscustomobject]@{
                 status = "uac_declined"
                 message = "Установка Docker Desktop отменена: вы не дали разрешение Windows (UAC). Нажмите «Установить Docker Desktop» и подтвердите запрос."
+                needs_reboot = $false
+            }
+        }
+        if (Test-HrmResultTimedOut $silent) {
+            # Потолок ожидания истёк — это НЕ «код -1» и НЕ отказ: раньше такой
+            # случай попадал в ветку ниже, журнал писал «не удалась (код -1)», и
+            # движок автоматически открывал обычный мастер, добавляя к часу
+            # молчания ещё один час ожидания (дефект P3 дораздела PR #55).
+            # Теперь состояние отдельное, текст называет ожидание, файл и
+            # следующее действие, а второй установщик не запускается сам.
+            $timeoutMessage = Get-HrmDockerInstallerTimeoutMessage -FilePath $installerPath -TimeoutSeconds $waitSeconds -Mode "тихая установка Docker Desktop"
+            Write-HrmLog "warn" $timeoutMessage
+            return [pscustomobject]@{
+                status = "installer_timeout"
+                message = $timeoutMessage
                 needs_reboot = $false
             }
         }
@@ -804,11 +1218,25 @@ function Install-HrmDockerDesktop {
     }
 
     Write-HrmLog "info" "Открываем мастер установки Docker Desktop (Windows запросит разрешение, лицензию принимаете вы)…"
-    $wizard = Start-HrmElevatedAndWait -FilePath $installerPath -Arguments @()
+    $wizardWaitSeconds = Get-HrmDockerInstallerWaitSeconds
+    $wizard = Start-HrmElevatedAndWait -FilePath $installerPath -Arguments @() -TimeoutSeconds $wizardWaitSeconds
     if ($wizard.CanceledByUser) {
         return [pscustomobject]@{
             status = "uac_declined"
             message = "Установка Docker Desktop отменена: вы не дали разрешение Windows (UAC). Повторите, когда будете готовы."
+            needs_reboot = $false
+        }
+    }
+    if (Test-HrmResultTimedOut $wizard) {
+        # То же правило, что и для тихой установки: истёкший потолок ожидания не
+        # выдаётся за «код -1» и не превращается в требование перезагрузки
+        # (дефект P3 дораздела PR #55). Мастер мог остаться открытым — человек
+        # должен это увидеть в тексте, а не в догадках.
+        $wizardTimeoutMessage = Get-HrmDockerInstallerTimeoutMessage -FilePath $installerPath -TimeoutSeconds $wizardWaitSeconds -Mode "установка Docker Desktop через мастер"
+        Write-HrmLog "warn" $wizardTimeoutMessage
+        return [pscustomobject]@{
+            status = "installer_timeout"
+            message = $wizardTimeoutMessage
             needs_reboot = $false
         }
     }

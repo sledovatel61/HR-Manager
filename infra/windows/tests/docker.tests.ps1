@@ -185,6 +185,99 @@ Test-Case "пользователь отменил UAC: это штатный р
     Assert-HrmContains $result.message "разрешение Windows" "сообщение должно объяснять UAC"
 }
 
+Test-Case "P3: потолок ожидания установщика Docker Desktop — отдельное состояние, а не «код -1» и не второй установщик" {
+    # До исправления (e298202) истёкшее ожидание установщика попадало в ветку
+    # «ExitCode -ne 0»: журнал писал «Тихая установка Docker Desktop не удалась
+    # (код -1) — открываем обычный мастер установки», и движок запускал ВТОРОЙ
+    # установщик с тем же потолком 3600 с. Итог для человека: до двух часов
+    # молчания и текст, который объяснял отказ кодом возврата, а не ожиданием.
+    New-HrmDockerTestContext
+    Set-HrmDownloadMock {
+        param($Uri, $Destination)
+        Set-Content -Path $Destination -Value "stub-installer" -Encoding ASCII
+        return $Destination
+    }
+    $global:HRM_InstallerLaunches = 0
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        $global:HRM_InstallerLaunches = $global:HRM_InstallerLaunches + 1
+        # Ожидание установщика истекло: процесс жив, код возврата неизвестен.
+        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = -1; TimedOut = $true }
+    }
+    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; install_signature = $true; reboot = $false }
+    $state = Get-HrmTestStateDir
+    # Ожидание установщика не «вылечено» увеличением: потолок остался 3600 с.
+    Assert-HrmEqual 3600 (Get-HrmDockerInstallerWaitSeconds) "изменён потолок ожидания установщика Docker Desktop"
+    $result = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
+    Assert-HrmEqual "installer_timeout" $result.status "таймаут ожидания установщика выдан за ошибку установки"
+    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "после таймаута автоматически запущен второй установщик"
+    Assert-HrmFalse ([bool]$result.needs_reboot) "таймаут помечен как требование перезагрузки"
+    Assert-HrmContains $result.message "не завершилась за 3600 с" "в тексте не названо ожидание"
+    Assert-HrmContains $result.message "НЕ завершался принудительно" "в тексте не сказано, что установщик мог остаться живым"
+    Assert-HrmContains $result.message "DockerDesktopInstaller.exe" "в тексте нет файла установщика"
+    Assert-HrmContains $result.message "«Установить Docker Desktop»" "в тексте нет следующего действия"
+    Assert-HrmTrue ($null -eq (Get-HrmPendingDockerOperation $state)) "после таймаута запланировано автоматическое продолжение"
+    # Неинтерактивный режим: таймаут остаётся таймаутом, а не «требуются действия
+    # пользователя» (иначе установка молча откладывалась на неопределённый срок).
+    $global:HRM_InstallerLaunches = 0
+    $silentOnly = Install-HrmDockerDesktop -StateDir $state -AllowSilent
+    Assert-HrmEqual "installer_timeout" $silentOnly.status "в неинтерактивном режиме таймаут выдан за manual_required"
+    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "в неинтерактивном режиме запущено больше одного установщика"
+    # Состояние доходит до подготовки среды как есть: значок и supervisor.json
+    # показывают причину, а не «установлено».
+    $global:HRM_InstallerLaunches = 0
+    $prepare = Invoke-HrmDockerPrepare -InstallDir (Get-HrmTestInstallDir) -StateDir $state -Port 8080 -AllowInstall -Interactive
+    Assert-HrmFalse ([bool]$prepare.ok) "подготовка среды прошла при незавершённом установщике"
+    Assert-HrmEqual "installer_timeout" ([string]$prepare.state) "подготовка среды потеряла состояние таймаута"
+    Assert-HrmFalse ([bool]$prepare.needs_install) "таймаут требует повторной установки вместо ожидания"
+    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "подготовка среды запустила второй установщик"
+    # Прежние штатные результаты не сломаны: отмена UAC всё ещё uac_declined.
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        return [pscustomobject]@{ Started = $false; CanceledByUser = $true; ExitCode = -1; TimedOut = $false }
+    }
+    $declined = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
+    Assert-HrmEqual "uac_declined" $declined.status "отмена UAC перестала отличаться от таймаута"
+    # Успех всё ещё успех (таймаут не «съел» штатный код 0).
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = 0; TimedOut = $false }
+    }
+    $installed = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
+    Assert-HrmEqual "installed" $installed.status "успешная установка перестала быть успешной"
+}
+
+Test-Case "P3: таймаут мастера установки Docker Desktop не выдаётся за «код -1» и не требует перезагрузки" {
+    # Второй путь запуска установщика (обычный мастер) до исправления при
+    # истёкшем ожидании сообщал «Установка Docker Desktop завершилась с кодом
+    # -1», а при признаке ожидающей перезагрузки — вообще «нужна перезагрузка
+    # Windows»: человек перезагружал машину при незавершённой установке.
+    New-HrmDockerTestContext
+    Set-HrmDownloadMock {
+        param($Uri, $Destination)
+        Set-Content -Path $Destination -Value "stub-installer" -Encoding ASCII
+        return $Destination
+    }
+    $global:HRM_InstallerLaunches = 0
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        $global:HRM_InstallerLaunches = $global:HRM_InstallerLaunches + 1
+        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = -1; TimedOut = $true }
+    }
+    # reboot = $true: признак ожидающей перезагрузки в системе есть, но установка
+    # НЕ завершена — требовать перезагрузку в этом случае нельзя.
+    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; install_signature = $true; reboot = $true }
+    $state = Get-HrmTestStateDir
+    $result = Install-HrmDockerDesktop -StateDir $state -Interactive
+    Assert-HrmEqual "installer_timeout" $result.status "таймаут мастера выдан за ошибку с кодом -1"
+    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "мастер установки запущен больше одного раза"
+    Assert-HrmFalse ([bool]$result.needs_reboot) "таймаут мастера требует перезагрузки Windows"
+    Assert-HrmNotContains $result.message "с кодом -1" "текст объясняет отказ кодом возврата, а не ожиданием"
+    Assert-HrmContains $result.message "не завершилась за 3600 с" "в тексте не названо ожидание"
+    Assert-HrmContains $result.message "через мастер" "в тексте не сказано, какой именно запуск не завершился"
+    Assert-HrmTrue ($null -eq (Get-HrmPendingDockerOperation $state)) "после таймаута мастера запланирована перезагрузка"
+}
+
 Test-Case "после установки Docker с требованием перезагрузки фиксируется автоматическое продолжение" {
     New-HrmDockerTestContext
     Set-HrmDownloadMock {
@@ -371,6 +464,52 @@ Test-Case "CLI не найден нигде: структурированный 
     Assert-HrmEqual 0 $world.Calls.Count "реальный CLI не должен вызываться"
 }
 
+Test-Case "P5.3: таймаут пробы CLI и демона не выдаётся за «не найден» и «не запущен»" {
+    # До исправления (e298202) предполётная проверка смотрела только на код
+    # возврата, а таймаут даёт код 124: зависший CLI сообщал «Docker CLI не
+    # найден», зависший демон — «Демон Docker не запущен». Человек шёл
+    # переустанавливать Docker Desktop вместо того, чтобы дождаться готовности.
+    $world = New-HrmDockerTestContext
+    # Нужен НАСТОЯЩИЙ Invoke-HrmExternal (механизм ожидания и код 124), поэтому
+    # подменяется только создание процесса: двойник «висит».
+    Clear-HrmExternalMock
+    Clear-HrmProcessLaunchMock
+    $env:HRM_EXTERNAL_TIMEOUT_SECONDS = "1"
+    $global:HRM_TestKillProcess = New-HrmFakeExternalProcess -ProcessId 9 -Hangs $false -ExitCode 0
+    # КАЖДОЙ пробе — свой «висящий» двойник: после остановки дерева первый
+    # двойник помечен завершившимся (Kill выставляет exited), и вторая проба не
+    # дала бы таймаута, то есть тест проверял бы не то поведение.
+    $global:HRM_TestHungCli = New-HrmFakeExternalProcess -ProcessId 424300 -Hangs $true
+    $global:HRM_TestHungDaemon = New-HrmFakeExternalProcess -ProcessId 424301 -Hangs $true
+    Set-HrmProcessStartMock {
+        param($StartInfo)
+        if ((Get-HrmMockCliName ([string]$StartInfo.FileName)) -eq "taskkill.exe") { return $global:HRM_TestKillProcess }
+        if ([string]$StartInfo.Arguments -like "*info*") { return $global:HRM_TestHungDaemon }
+        return $global:HRM_TestHungCli
+    }
+    $cli = Test-HrmDockerCli
+    Assert-HrmFalse $cli.Passed "проба CLI с таймаутом прошла"
+    Assert-HrmEqual "docker" ([string]$cli.Name) "имя проверки изменено"
+    Assert-HrmNotContains $cli.Message "не найден" "таймаут выдан за отсутствие Docker CLI"
+    Assert-HrmContains $cli.Message "не ответил за 1 с" "в отказе не названо ожидание"
+    Assert-HrmContains $cli.Message "отчёт для поддержки" "у отказа нет следующего действия"
+    $daemon = Test-HrmDockerDaemon
+    Assert-HrmFalse $daemon.Passed "проба демона с таймаутом прошла"
+    Assert-HrmEqual "daemon" ([string]$daemon.Name) "имя проверки изменено"
+    Assert-HrmNotContains $daemon.Message "не запущен" "таймаут выдан за незапущенный демон"
+    Assert-HrmContains $daemon.Message "не ответил за 1 с" "в отказе не названо ожидание"
+    Assert-HrmContains $daemon.Message "отчёт для поддержки" "у отказа нет следующего действия"
+    # Отсутствие CLI по-прежнему отличимо от таймаута: код 127 — это «не найден».
+    Clear-HrmProcessStartMock
+    Set-HrmDockerOverride @{ cli_path = "" }
+    $missing = Test-HrmDockerCli
+    Assert-HrmFalse $missing.Passed "отсутствие CLI прошло проверку"
+    Assert-HrmContains $missing.Message "не найден" "текст об отсутствии CLI потерян"
+    Assert-HrmNotContains $missing.Message "не ответил" "отсутствие CLI выдано за таймаут"
+    Remove-Item Env:HRM_EXTERNAL_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
+    Assert-HrmEqual 0 $world.Calls.Count "реальный CLI не должен вызываться"
+}
+
 Test-Case "пин CLI из обвязки переживает набор переопределений конкретного теста" {
     # Set-HrmDockerOverride заменяет набор целиком и сливает его с базой
     # (Set-HrmDockerOverrideDefaults): без этого тест, задающий свои ключи,
@@ -383,6 +522,188 @@ Test-Case "пин CLI из обвязки переживает набор пер
     $null = Invoke-HrmDocker -Arguments @("--version") -IgnoreExitCode
     $calls = @($world.Calls | Where-Object { $_.Name -eq "docker.exe" })
     Assert-HrmEqual 1 $calls.Count "вызов должен идти базовым именем из пина"
+}
+
+
+Write-Host "== Ревизия стабильности (12.10.2026): выбор CLI, плагин compose, факты =="
+
+function New-HrmCliCandidateObject {
+    # Кандидат CLI для проверки ПРАВИЛА ВЫБОРА на фиксированных данных: селектор
+    # читает только path/file_version/file_last_write/desktop_root_match.
+    param([string]$Path, [string]$Version = "", [string]$Stamp = "", [bool]$DesktopMatch = $false, [string]$Source = "docker-desktop-dir")
+    return [pscustomobject]@{
+        path = $Path; source = $Source; file_version = $Version; file_last_write = $Stamp
+        desktop_root_match = $DesktopMatch; install_root = ""; probe_ok = $false
+        probe_version = ""; probe_exit_code = 0; probe_stderr = ""
+    }
+}
+
+Test-Case "D6: корень установки Docker Desktop определяется и для Desktop.exe, и для resources\bin" {
+    New-HrmDockerTestContext
+    $machineRoot = Get-HrmDockerInstallRoot "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+    Assert-HrmEqual "c:\program files\docker\docker" $machineRoot "корень машинной установки определён неверно"
+    $machineCli = Get-HrmDockerInstallRoot "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
+    Assert-HrmEqual $machineRoot $machineCli "CLI из той же установки не сопоставлен с Desktop.exe"
+    $userRoot = Get-HrmDockerInstallRoot "$env:LOCALAPPDATA\Programs\DockerDesktop\Docker Desktop.exe"
+    $userCli = Get-HrmDockerInstallRoot "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin\docker.exe"
+    Assert-HrmEqual $userRoot $userCli "корень пользовательской установки определён неверно"
+    Assert-HrmTrue ($machineRoot -ne $userRoot) "две разные установки дали один корень"
+    Assert-HrmEqual "" (Get-HrmDockerInstallRoot "") "пустой путь должен давать пустой корень"
+    # Посторонний файл: корень — его собственный каталог, совпадения с корнем
+    # установки Docker Desktop не будет (значит и выбран он не по правилу 1).
+    Assert-HrmEqual "c:\windows\system32" (Get-HrmDockerInstallRoot "C:\Windows\system32\notepad.exe") "посторонний файл получил неверный корень"
+}
+
+Test-Case "D6: правило выбора CLI — тот же корень Docker Desktop, затем версия, затем дата, затем прежний порядок" {
+    New-HrmDockerTestContext
+    $machineCli = New-HrmCliCandidateObject -Path "C:\Program Files\Docker\Docker\resources\bin\docker.exe" -Version "24.0.7" -Stamp "2024-01-01T00:00:00.0000000" -DesktopMatch $false
+    $userCli = New-HrmCliCandidateObject -Path "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin\docker.exe" -Version "27.3.1" -Stamp "2026-09-01T00:00:00.0000000" -DesktopMatch $true
+    # 1) Совпадение с корнем работающего Docker Desktop важнее всего: прежний
+    #    резолвер брал ПЕРВЫЙ найденный файл (устаревшая машинная установка),
+    #    а детекция считала Docker установленным по пользовательской.
+    $choice = Select-HrmDockerCliCandidate -Candidates @($machineCli, $userCli) -DesktopPath "$env:LOCALAPPDATA\Programs\DockerDesktop\Docker Desktop.exe"
+    Assert-HrmEqual $userCli.path $choice.path "выбран CLI не из той установки, что и Docker Desktop"
+    Assert-HrmEqual 1 ([int]$choice.index) "индекс выбранного кандидата неверен"
+    Assert-HrmContains ([string]$choice.reason) "тот же корень установки" "правило выбора не объяснено"
+    # 2) Корни не совпали (или Docker Desktop не найден) — выбирается наибольшая версия.
+    $otherCli = New-HrmCliCandidateObject -Path "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin\docker.exe" -Version "27.3.1" -Stamp "2026-09-01T00:00:00.0000000" -DesktopMatch $false
+    $choice2 = Select-HrmDockerCliCandidate -Candidates @($machineCli, $otherCli) -DesktopPath ""
+    Assert-HrmEqual $otherCli.path $choice2.path "не выбрана наибольшая версия файла"
+    Assert-HrmContains ([string]$choice2.reason) "наибольшая версия" "правило выбора не объяснено"
+    # 3) Версии равны — выбирается более свежий файл.
+    $sameOld = New-HrmCliCandidateObject -Path "C:\a\docker.exe" -Version "27.3.1" -Stamp "2025-01-01T00:00:00.0000000" -Source "path"
+    $sameNew = New-HrmCliCandidateObject -Path "C:\b\docker.exe" -Version "27.3.1" -Stamp "2026-01-01T00:00:00.0000000" -Source "path"
+    $choice3 = Select-HrmDockerCliCandidate -Candidates @($sameOld, $sameNew) -DesktopPath ""
+    Assert-HrmEqual $sameNew.path $choice3.path "не выбрана самая свежая дата файла"
+    Assert-HrmContains ([string]$choice3.reason) "дата файла" "правило выбора не объяснено"
+    # 4) Всё неразличимо — прежний порядок поиска (первый кандидат).
+    $twinA = New-HrmCliCandidateObject -Path "C:\a\docker.exe" -Version "" -Stamp "" -Source "path"
+    $twinB = New-HrmCliCandidateObject -Path "C:\b\docker.exe" -Version "" -Stamp "" -Source "path"
+    $choice4 = Select-HrmDockerCliCandidate -Candidates @($twinA, $twinB) -DesktopPath ""
+    Assert-HrmEqual $twinA.path $choice4.path "нарушен прежний порядок поиска"
+    Assert-HrmContains ([string]$choice4.reason) "порядок поиска" "правило выбора не объяснено"
+    # 5) Кандидатов нет — пустой путь и понятная причина (а не исключение).
+    $choice5 = Select-HrmDockerCliCandidate -Candidates @() -DesktopPath ""
+    Assert-HrmEqual "" ([string]$choice5.path) "пустой список кандидатов должен давать пустой путь"
+    Assert-HrmContains ([string]$choice5.reason) "не найден" "причина отсутствия CLI не объяснена"
+}
+
+Test-Case "D6: сравнение версий — числовые разряды, предпоиск, пустая версия" {
+    New-HrmDockerTestContext
+    Assert-HrmEqual 1 (Compare-HrmCliVersion "27.3.1" "24.0.7") "числовые разряды сравниваются как числа"
+    Assert-HrmEqual -1 (Compare-HrmCliVersion "2.23.9" "2.24") "2.23.9 должна быть меньше 2.24"
+    Assert-HrmEqual 0 (Compare-HrmCliVersion "2.24.0" "2.24") "2.24.0 и 2.24 эквивалентны"
+    Assert-HrmEqual 1 (Compare-HrmCliVersion "5.1.0" "2.24") "прежнее правило (major>=2 и minor>=24) отвергло бы Compose 5.1.0"
+    Assert-HrmEqual 1 (Compare-HrmCliVersion "v2.29.7" "2.24") "префикс v не мешает сравнению"
+    Assert-HrmEqual 1 (Compare-HrmCliVersion "24.0.7" "24.0.7-beta") "релиз должен быть больше предпоиска"
+    Assert-HrmEqual -1 (Compare-HrmCliVersion "" "2.24") "пустая версия меньше любой"
+    Assert-HrmEqual 0 (Compare-HrmCliVersion "" "") "две пустые версии равны"
+}
+
+Test-Case "D6: резолвер перечисляет всех кандидатов и не принимает путь со стороны" {
+    $world = New-HrmDockerTestContext
+    $fakeBin = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-cli-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    New-Item -ItemType Directory -Path $fakeBin -Force | Out-Null
+    Set-Content -Path (Join-Path $fakeBin "docker.exe") -Value "fake" -Encoding ASCII
+    $originalPath = [string]$env:PATH
+    $originalOverride = $null
+    try {
+        # Снимаем пин CLI из обвязки: проверяется НАСТОЯЩИЙ резолвер.
+        Clear-HrmDockerOverride
+        Reset-HrmDockerCliChoiceCache
+        $env:PATH = $fakeBin + ";" + $originalPath
+        $fakeCli = Join-Path $fakeBin "docker.exe"
+        $paths = @(Get-HrmDockerCliCandidatePaths)
+        Assert-HrmTrue ($paths -contains $fakeCli) "кандидат из PATH не найден резолвером"
+        # -Candidate возвращает путь только если он в списке того же резолвера:
+        # имя внешней команды по-прежнему не может прийти из произвольного места.
+        Assert-HrmEqual $fakeCli (Get-HrmDockerCliPath -Candidate $fakeCli) "свой кандидат отклонён"
+        Assert-HrmEqual "" (Get-HrmDockerCliPath -Candidate (Join-Path $fakeBin "evil.exe")) "принят путь, которого нет среди кандидатов"
+        Assert-HrmEqual "" (Get-HrmDockerCliPath -Candidate "C:\Windows\system32\cmd.exe") "принят произвольный системный путь"
+        $facts = Get-HrmDockerCliFacts
+        Assert-HrmTrue ([int]$facts.candidate_count -ge 1) "факты не перечислили кандидатов"
+        Assert-HrmTrue ([bool][string]$facts.chosen_reason) "правило выбора не зафиксировано в фактах"
+        Assert-HrmTrue (@($facts.searched_dirs).Count -ge 1) "в фактах нет перечня проверенных каталогов"
+        $listed = @($facts.candidates | ForEach-Object { [string]$_.path })
+        Assert-HrmTrue ($listed -contains $fakeCli) "кандидат не попал в факты для журнала"
+    }
+    finally {
+        $env:PATH = $originalPath
+        Reset-HrmDockerCliChoiceCache
+        Set-HrmDockerOverride @{}
+        Remove-Item -Path $fakeBin -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Assert-HrmEqual "docker.exe" (Get-HrmDockerCliPath) "пин CLI из обвязки не восстановлен"
+}
+
+Test-Case "D6: проба версии CLI идёт через единственную точку внешних команд и даёт факт для журнала" {
+    $world = New-HrmDockerTestContext
+    $probe = Invoke-HrmDockerCliVersionProbe -CandidatePath "docker.exe" -TimeoutSeconds 5
+    Assert-HrmTrue ([bool]$probe.ok) "проба версии не прошла на мок-мире"
+    Assert-HrmEqual "27.3.1" ([string]$probe.version) "версия из ответа CLI не разобрана"
+    Assert-HrmEqual 0 ([int]$probe.exit_code) "код возврата пробы"
+    $calls = @($world.Calls | Where-Object { $_.Args -contains "--version" })
+    Assert-HrmEqual 1 $calls.Count "проба обязана быть одним вызовом через единственную точку"
+    $facts = Get-HrmDockerCliFacts -Probe
+    Assert-HrmTrue ([bool]$facts.cli_probe_ok) "факты не содержат результата пробы"
+    Assert-HrmEqual "27.3.1" ([string]$facts.cli_version_probed) "факты не содержат версию из пробы"
+}
+
+Test-Case "D5: классификация ответа compose — CLI не запустился / плагина нет / версия не разобрана / версия стара / другая ошибка" {
+    New-HrmDockerTestContext
+    $cliMissing = Get-HrmComposeVersionVerdict -ExitCode 127 -Stdout "" -Stderr ""
+    Assert-HrmEqual "cli_missing" ([string]$cliMissing.verdict) "код 127 не распознан как «CLI не запустился»"
+    $pluginMissing = Get-HrmComposeVersionVerdict -ExitCode 1 -Stdout "" -Stderr "docker: 'compose' is not a docker command. See 'docker --help'."
+    Assert-HrmEqual "plugin_missing" ([string]$pluginMissing.verdict) "ответ CLI без плагина не распознан"
+    $unparsable = Get-HrmComposeVersionVerdict -ExitCode 0 -Stdout "Docker Compose version unknown" -Stderr ""
+    Assert-HrmEqual "version_unparsable" ([string]$unparsable.verdict) "неразобранная версия не распознана"
+    Assert-HrmContains ([string]$unparsable.detail) "unknown" "в детали не попал ответ CLI"
+    $old = Get-HrmComposeVersionVerdict -ExitCode 0 -Stdout "2.20.1" -Stderr ""
+    Assert-HrmEqual "version_old" ([string]$old.verdict) "старая версия не распознана"
+    Assert-HrmEqual "2.20.1" ([string]$old.version) "старая версия не сохранена"
+    $other = Get-HrmComposeVersionVerdict -ExitCode 1 -Stdout "" -Stderr "error during connect: daemon is not running"
+    Assert-HrmEqual "probe_failed" ([string]$other.verdict) "ошибка демона смешана с отсутствием плагина"
+    Assert-HrmContains ([string]$other.detail) "daemon is not running" "в детали не попал stderr"
+    $timedOut = Get-HrmComposeVersionVerdict -ExitCode 124 -Stdout "" -Stderr "" -TimedOut $true
+    Assert-HrmEqual "probe_failed" ([string]$timedOut.verdict) "таймаут пробы не распознан"
+    Assert-HrmContains ([string]$timedOut.detail) "не завершилась" "таймаут не объяснён"
+    $ok = Get-HrmComposeVersionVerdict -ExitCode 0 -Stdout "2.29.7" -Stderr ""
+    Assert-HrmEqual "ok" ([string]$ok.verdict) "подходящая версия не принята"
+    Assert-HrmEqual "2.29.7" ([string]$ok.version) "версия не сохранена"
+    $future = Get-HrmComposeVersionVerdict -ExitCode 0 -Stdout "v5.1.0" -Stderr ""
+    Assert-HrmEqual "ok" ([string]$future.verdict) "Compose 5.x отвергнут правилом major>=2 и minor>=24"
+}
+
+Test-Case "D5: отказ по compose называет причину и проверенные каталоги плагинов; проверка не ослаблена" {
+    $world = New-HrmDockerTestContext
+    $world.ComposePluginMissing = $true
+    $result = Test-HrmComposeVersion
+    Assert-HrmFalse ([bool]$result.Passed) "проверка compose ослаблена до предупреждения"
+    Assert-HrmEqual "plugin_missing" ([string]$result.Reason) "причина отказа не классифицирована"
+    Assert-HrmContains ([string]$result.Message) "Плагин Docker Compose" "отказ не называет причину"
+    Assert-HrmContains ([string]$result.Message) "cli-plugins" "отказ не перечисляет каталоги плагинов"
+    Assert-HrmContains ([string]$result.Message) ".docker" "отказ не называет пользовательский каталог плагинов"
+    # Честность про машинный каталог: Docker CLI 29.2.0+ его не ищет
+    # (GHSA-p436-gjf2-799p) — совет «положите туда плагин» был бы нерабочим.
+    Assert-HrmContains ([string]$result.Message) "29.2.0" "не указано, что новый CLI не ищет машинный каталог"
+    Assert-HrmFalse ([bool]$result.PluginFound) "флаг найденного плагина недостоверен"
+    Assert-HrmEqual 1 ([int]$result.ExitCode) "код возврата пробы не сохранён"
+    Assert-HrmTrue (@($result.PluginDirs).Count -ge 1) "в результате нет перечня каталогов плагинов"
+    # Версия compose ниже требуемой — тоже отказ (не предупреждение).
+    $world.ComposePluginMissing = $false
+    $world.ComposeVersion = "2.20.1"
+    $oldResult = Test-HrmComposeVersion
+    Assert-HrmFalse ([bool]$oldResult.Passed) "старая версия compose принята"
+    Assert-HrmEqual "version_old" ([string]$oldResult.Reason) "старая версия не классифицирована"
+    Assert-HrmContains ([string]$oldResult.Message) "2.24" "в отказе нет требуемой версии"
+    Assert-HrmContains ([string]$oldResult.Message) "2.20.1" "в отказе нет найденной версии"
+    # Подходящая версия — проверка пройдена, версия видна в фактах.
+    $world.ComposeVersion = "v2.29.7"
+    $okResult = Test-HrmComposeVersion
+    Assert-HrmTrue ([bool]$okResult.Passed) "подходящая версия compose отвергнута"
+    Assert-HrmEqual "ok" ([string]$okResult.Reason) "verdict успешной проверки"
+    Assert-HrmEqual "2.29.7" ([string]$okResult.Version) "версия не сохранена в результате"
+    Assert-HrmContains ([string]$okResult.Message) "2.29.7" "версия не видна в сообщении (её читает отчёт о хосте)"
 }
 
 Write-Host ("Docker Desktop: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

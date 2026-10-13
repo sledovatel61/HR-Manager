@@ -95,7 +95,14 @@ Test-Case "разрешённые имена внешних команд — т�
     # wsl.exe — только чтение состояния WSL2 (--list/--status), без изменений системы.
     # Имени CLI контейнеров в списке больше нет: литерал запрещён, вызов идёт
     # разрешённым путём (Invoke-HrmDocker → Get-HrmDockerCliPath).
-    $allowed = @("icacls.exe", "git.exe", "netsh", "netsh.exe", "wsl.exe")
+    # taskkill.exe — единственный вызов: /PID <pid> /T /F из Stop-HrmProcessTree
+    # (Common.psm1) по таймауту внешней команды. Обоснование расширения списка:
+    # .NET Framework (Windows PowerShell 5.1) не умеет убивать дерево процессов
+    # (Process.Kill($true) появился только в .NET Core), а убийство одного корня
+    # оставляло потомков CLI контейнеров (wsl/buildx) живыми — это и есть
+    # наблюдаемый симптом «десятки процессов не умирают». Команда не читает и не
+    # меняет данные приложения, аргументы — только pid и флаги /T /F.
+    $allowed = @("icacls.exe", "git.exe", "netsh", "netsh.exe", "wsl.exe", "taskkill.exe")
     foreach ($file in Get-HrmEngineFiles) {
         $text = Get-Content -Path $file -Raw -Encoding UTF8
         # Не $matches: это автоматическая переменная, и `-notmatch` ниже затирал бы её.

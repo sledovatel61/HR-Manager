@@ -20,9 +20,23 @@ Set-StrictMode -Version 2.0
 
 $script:SupervisorStateFile = "supervisor.json"
 $script:SupervisorMutexName = "Local\HRManagerPilotSupervisor"
+# Мьютекс единственности ЦИКЛА ДВИЖКА — отдельный от мьютекса значка: трей
+# держит Local\HRManagerPilotSupervisor всё время жизни значка, поэтому тот же
+# мьютекс в процессе движка означал бы «цикл запуска запрещён всегда»
+# (значок сам и запускает движок). Имя переопределяется через
+# HRM_ENGINE_CYCLE_MUTEX — так тест проверяет отказ второго цикла, не завися от
+# живых процессов машины (тот же приём, что и для HRM_SUPERVISOR_MUTEX).
+$script:EngineCycleMutexName = "Local\HRManagerPilotEngineCycle"
 $script:ActionLockFile = "action.lock"
 $script:AutostartShortcutName = "HR Manager (трей).lnk"
 $script:LegacyAutostartNames = @("HR Manager.lnk", "HR Manager — автозапуск.lnk")
+# Порог «операция выглядит зависшей» (минут). Это НЕ срок годности блокировки:
+# пока процесс операции жив, блокировка держится (см. Enter-HrmActionLock).
+$script:ActionLockStallMinutes = 60
+# Сколько подряд идущих отказов движка значок терпит, прежде чем перестать
+# запускать его снова: каждый запуск — новый powershell.exe и новый поход в
+# Docker, а причина отказа от этого не исчезает.
+$script:SupervisorMaxConsecutiveFailures = 3
 
 function Get-HrmSupervisorStateFile {
     param([string]$StateDir)
@@ -31,12 +45,15 @@ function Get-HrmSupervisorStateFile {
 
 function Set-HrmSupervisorState {
     # Состояние supervisor'а для трея и поддержки. Секретов здесь нет.
+    # -FailureCount: явное значение счётчика подряд идущих отказов (сброс действием
+    # человека, сохранение счётчика значком). Без него действует правило ниже.
     param(
         [string]$StateDir,
         [string]$State,
         [string]$Message = "",
         [hashtable]$Extra = @{},
-        [bool]$Busy = $false
+        [bool]$Busy = $false,
+        [int]$FailureCount = -1
     )
     $file = Get-HrmSupervisorStateFile $StateDir
     $previous = $null
@@ -52,6 +69,27 @@ function Set-HrmSupervisorState {
     $merged["busy"] = $Busy
     $merged["pid"] = $PID
     $merged["updated_at"] = (Get-Date).ToString("o")
+    $previousFailures = 0
+    if ($merged.Contains("failure_count")) {
+        try { $previousFailures = [int]$merged["failure_count"] } catch { $previousFailures = 0 }
+    }
+    # ПРАВИЛО СЧЁТЧИКА подряд идущих отказов (дефект P2 дораздела PR #55):
+    #   * -FailureCount задан явно — применяется как есть;
+    #   * «error» — попытка закончилась отказом: счётчик растёт;
+    #   * «ready» — успех: счётчик обнуляется;
+    #   * ЛЮБОЕ другое состояние («starting», «stopped», …) — счётчик
+    #     СОХРАНЯЕТСЯ.
+    # Раньше любое не-error состояние обнуляло счётчик, а каждая попытка движка
+    # начинается записью «starting» (цикл, установка, продолжение операции,
+    # значок, диспетчер). История отказов стиралась собственным началом новой
+    # попытки: счётчик ходил 0 → 1 → 0 → 1, порог «автоматические повторы
+    # остановлены» (3 подряд) был недостижим, и значок запускал движок на каждом
+    # входе в Windows при той же самой причине отказа. Обнуление — только успех
+    # и явное действие человека (Reset-HrmSupervisorFailureCount).
+    if ($FailureCount -ge 0) { $merged["failure_count"] = $FailureCount }
+    elseif ($State -eq "error") { $merged["failure_count"] = ($previousFailures + 1) }
+    elseif ($State -eq "ready") { $merged["failure_count"] = 0 }
+    else { $merged["failure_count"] = $previousFailures }
     foreach ($key in $Extra.Keys) { $merged[$key] = $Extra[$key] }
     Set-HrmJsonFile $StateDir $script:SupervisorStateFile $merged
     # Наружу НЕ отдаём $merged: вызывающие (цикл supervisor'а, трей, установщик)
@@ -60,6 +98,46 @@ function Set-HrmSupervisorState {
     # be found on this object» у читателя). Состояние читается через
     # Get-HrmSupervisorState.
     return
+}
+
+function Get-HrmSupervisorMaxConsecutiveFailures {
+    # Порог подряд идущих отказов, после которого значок перестаёт сам
+    # запускать движок (единый источник для supervisor'а и значка).
+    return $script:SupervisorMaxConsecutiveFailures
+}
+
+function Get-HrmSupervisorFailureCount {
+    # Сколько раз ПОДРЯД движок закончился ошибкой (0 — успех или ещё не
+    # запускался). Значок в трее использует счётчик, чтобы остановить
+    # бесконечные повторные запуски движка при одной и той же причине.
+    param([string]$StateDir = "")
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $file = Get-HrmSupervisorStateFile $StateDir
+    if (-not (Test-Path $file)) { return 0 }
+    try {
+        $data = Get-HrmJsonFile $file
+        if ($null -ne $data -and $data.PSObject.Properties["failure_count"]) { return [int]$data.failure_count }
+    }
+    catch { }
+    return 0
+}
+
+function Reset-HrmSupervisorFailureCount {
+    # Действие человека (пункт меню значка) — новая попытка разрешена: счётчик
+    # обнуляется, прежнее состояние и текст сохраняются.
+    param([string]$StateDir = "")
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $current = Get-HrmSupervisorState -StateDir $StateDir
+    Set-HrmSupervisorState -StateDir $StateDir -State $current.state -Message $current.message -Busy $current.busy -FailureCount 0
+    return 0
+}
+
+function Test-HrmProcessAlive {
+    # Жив ли процесс с таким pid (без внешних команд).
+    param([int]$ProcessId = 0)
+    if ($ProcessId -le 0) { return $false }
+    try { return ($null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) }
+    catch { return $false }
 }
 
 function Get-HrmSupervisorState {
@@ -110,10 +188,19 @@ function Get-HrmSupervisorMutexName {
     return $script:SupervisorMutexName
 }
 
-function Enter-HrmSupervisorLock {
-    # Единственный supervisor на пользователя. Возвращает @{ acquired; mutex }.
+function Get-HrmEngineCycleMutexName {
+    # Имя мьютекса единственности ЦИКЛА ДВИЖКА (не значка). Переопределяется
+    # через HRM_ENGINE_CYCLE_MUTEX — см. комментарий к переменной выше.
+    if ($env:HRM_ENGINE_CYCLE_MUTEX) { return [string]$env:HRM_ENGINE_CYCLE_MUTEX }
+    return $script:EngineCycleMutexName
+}
+
+function Enter-HrmNamedMutexLock {
+    # Общая реализация захвата именованного мьютекса (значок и цикл движка).
+    # Возвращает @{ acquired; mutex }.
+    param([string]$Name)
     try {
-        $mutex = New-Object System.Threading.Mutex($false, (Get-HrmSupervisorMutexName))
+        $mutex = New-Object System.Threading.Mutex($false, $Name)
         $acquired = $false
         try { $acquired = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
         if (-not $acquired) {
@@ -128,7 +215,7 @@ function Enter-HrmSupervisorLock {
     }
 }
 
-function Exit-HrmSupervisorLock {
+function Exit-HrmNamedMutexLock {
     param($Lock)
     if ($null -eq $Lock) { return }
     try {
@@ -140,6 +227,27 @@ function Exit-HrmSupervisorLock {
     catch { }
 }
 
+function Enter-HrmSupervisorLock {
+    # Единственный supervisor на пользователя. Возвращает @{ acquired; mutex }.
+    return (Enter-HrmNamedMutexLock -Name (Get-HrmSupervisorMutexName))
+}
+
+function Exit-HrmSupervisorLock {
+    param($Lock)
+    Exit-HrmNamedMutexLock -Lock $Lock
+}
+
+function Enter-HrmEngineCycleLock {
+    # Единственный ЦИКЛ запуска движка на пользователя: второй параллельный
+    # supervise/resume не начинается (регрессия «параллельные compose-операции»).
+    return (Enter-HrmNamedMutexLock -Name (Get-HrmEngineCycleMutexName))
+}
+
+function Exit-HrmEngineCycleLock {
+    param($Lock)
+    Exit-HrmNamedMutexLock -Lock $Lock
+}
+
 function Get-HrmActionLockFile {
     param([string]$StateDir)
     return (Join-Path $StateDir $script:ActionLockFile)
@@ -147,6 +255,21 @@ function Get-HrmActionLockFile {
 
 function Enter-HrmActionLock {
     # Одна операция движка за раз (например, трей нажали дважды).
+    #
+    # БЛОКИРОВКА НЕ «ПРОТУХАЕТ» (регрессия D3): раньше запись старше 60 минут
+    # считалась протухшей, и новая операция стартовала ПОКЛАДЫВАЯСЬ на то, что
+    # старая мертва — но зависший (живой) процесс движка продолжал держать свой
+    # compose, и машина получала второй параллельный движок. Теперь:
+    #   * pid жив   → блокировка держится СКОЛЬКО УГОДНО долго; если операция
+    #                 идёт дольше порога, это честно помечается «зависла»
+    #                 (stalled): журнал + состояние error с действием для
+    #                 человека, а не молчаливый запуск второй операции;
+    #   * pid мёртв → блокировка снимается (файл удаляется) и берётся заново;
+    #   * тот же pid и та же операция (или служебная отметка «engine», которую
+    #     значок ставит на запущенный им процесс) → повторный вход разрешён:
+    #     значок блокирует операцию, а выполняет её порождённый процесс движка.
+    #     Без этого «Открыть HR Manager» из меню отказывало самому себе
+    #     (движок видел блокировку со своим же pid и не открывал браузер).
     param([string]$StateDir, [string]$Action)
     $file = Get-HrmActionLockFile $StateDir
     if (Test-Path $file) {
@@ -157,33 +280,124 @@ function Enter-HrmActionLock {
             if ($data.PSObject.Properties["pid"]) { $lockPid = [int]$data.pid }
             $startedAt = ""
             if ($data.PSObject.Properties["started_at"]) { $startedAt = [string]$data.started_at }
-            $alive = $false
-            if ($lockPid -gt 0) {
-                try { $alive = ($null -ne (Get-Process -Id $lockPid -ErrorAction SilentlyContinue)) } catch { $alive = $false }
-            }
-            $fresh = $true
+            $runningAction = ""
+            if ($data.PSObject.Properties["action"]) { $runningAction = [string]$data.action }
+            $ageMinutes = -1.0
             if ($startedAt) {
-                try { $fresh = (((Get-Date) - [datetime]::Parse($startedAt)).TotalMinutes -lt 60) } catch { $fresh = $true }
+                try { $ageMinutes = [double](((Get-Date) - [datetime]::Parse($startedAt)).TotalMinutes) } catch { $ageMinutes = -1.0 }
             }
-            if ($alive -and $fresh) {
-                $runningAction = ""
-                if ($data.PSObject.Properties["action"]) { $runningAction = [string]$data.action }
-                return [pscustomobject]@{ acquired = $false; message = ("Операция уже выполняется ({0}). Подождите." -f $runningAction) }
+            $alive = (Test-HrmProcessAlive $lockPid)
+            $reentrant = ($alive -and $lockPid -eq $PID -and ($runningAction -eq $Action -or $runningAction -eq "engine"))
+            if ($reentrant) {
+                # Повторный вход ПЕРЕЗАПИСЫВАЕТ запись блокировки (дефект P5.2
+                # дораздела PR #55): владелец и отсчёт возраста должны описывать
+                # процесс, который РЕАЛЬНО выполняет операцию.
+                #
+                # Зачем: значок ставит служебную отметку action="engine" и
+                # передаёт её порождённому процессу движка. Пока pid в файле не
+                # обновлён (или значок входит повторно сам), процесс выполнял
+                # операцию по записи, созданной другим процессом и в другой
+                # момент времени, а его `finally { Exit-HrmActionLock }`
+                # (Supervisor.psm1, Install.psm1) удалял файл, который описывал
+                # чужое решение: защита от второй операции исчезала, пока первая
+                # ещё шла, а порог «зависла» (ActionLockStallMinutes) считался от
+                # момента, когда операцию задумал значок, а не от её начала.
+                #
+                # Что СОХРАНЯЕТСЯ: имя действия в записи. Служебная отметка
+                # action="engine" — это признак «работает процесс движка», её
+                # читают другие процессы (отказ «Операция уже выполняется
+                # (engine)») и значок; замена её на запрошенное действие лишила
+                # бы процесс возможности войти повторно в ту же операцию, которую
+                # ему передал значок (контракт D10: «та же операция тем же
+                # процессом — тоже повторный вход»).
+                #
+                # Определение «зависшей» ЧУЖОЙ операции не затронуто: ветка ниже
+                # работает только при живом pid, отличном от $PID.
+                Set-HrmJsonFile $StateDir $script:ActionLockFile ([ordered]@{
+                        action = $runningAction
+                        pid = $PID
+                        started_at = (Get-Date).ToString("o")
+                    })
+                return [pscustomobject]@{ acquired = $true; message = ""; stalled = $false; reentrant = $true; pid = $PID; age_minutes = 0.0 }
             }
+            if ($alive) {
+                $stalled = ($ageMinutes -ge $script:ActionLockStallMinutes)
+                if ($stalled) {
+                    $message = ("Операция «{0}» (процесс {1}) идёт уже {2} мин и не завершилась: новая операция НЕ запускается, чтобы не создавать второй параллельный запуск. Если приложение зависло — закройте значок HR Manager, завершите процесс {1} в диспетчере задач и нажмите «Создать отчёт для поддержки»." -f $runningAction, $lockPid, [int]$ageMinutes)
+                    $null = Write-HrmLog "warn" $message
+                    try {
+                        Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $message -Busy $true -Extra @{ code = "action_stalled"; lock_pid = $lockPid }
+                    }
+                    catch { }
+                }
+                else {
+                    $message = ("Операция уже выполняется ({0}). Подождите." -f $runningAction)
+                }
+                return [pscustomobject]@{ acquired = $false; message = $message; stalled = $stalled; reentrant = $false; pid = $lockPid; age_minutes = $ageMinutes }
+            }
+            # Процесс операции мёртв (завершился/аварийно закрыт): блокировка
+            # снимается явно, с записью причины в журнал.
+            $null = Write-HrmLog "info" ("Блокировка операции «{0}» снята: процесс {1} больше не существует." -f $runningAction, $lockPid)
         }
+        Remove-Item -Path $file -Force -ErrorAction SilentlyContinue
     }
     Set-HrmJsonFile $StateDir $script:ActionLockFile ([ordered]@{
             action = $Action
             pid = $PID
             started_at = (Get-Date).ToString("o")
         })
-    return [pscustomobject]@{ acquired = $true; message = "" }
+    return [pscustomobject]@{ acquired = $true; message = ""; stalled = $false; reentrant = $false; pid = $PID; age_minutes = 0.0 }
 }
 
 function Exit-HrmActionLock {
     param([string]$StateDir)
     $file = Get-HrmActionLockFile $StateDir
     if (Test-Path $file) { Remove-Item $file -Force -ErrorAction SilentlyContinue }
+}
+
+function Test-HrmEngineOperationInFlight {
+    # Идёт ли сейчас операция движка (установка/обновление, цикл запуска,
+    # действие из меню значка). Используется:
+    #   * значком — НЕ порождать второй скрытый процесс движка (регрессия D2:
+    #     каждый вход в Windows и каждый повторный запуск Setup.exe добавляли
+    #     ещё один движок, и compose-операции шли параллельно);
+    #   * самим циклом — не начинать второй цикл поверх чужой операции.
+    # Свой pid игнорируется (-IgnorePid): процесс, который уже выполняет
+    # операцию, не должен блокировать сам себя.
+    #
+    # -IgnoreBusyState нужен самому циклу движка: значок записывает busy=true со
+    # СВОИМ pid как обещание «я слежу за состоянием», и без исключения этот
+    # признак навсегда запрещал бы цикл процессу, который значок только что
+    # породил. Значок (спавнер) наоборот ОБЯЗАН смотреть на busy+pid — иначе он
+    # породит второй движок поверх работающего.
+    # Возвращает @{ running; reason; pid }.
+    param([string]$StateDir = "", [int]$IgnorePid = 0, [switch]$IgnoreBusyState)
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    if ($IgnorePid -le 0) { $IgnorePid = $PID }
+    $lockFile = Get-HrmActionLockFile $StateDir
+    if (Test-Path $lockFile) {
+        $data = $null
+        try { $data = Get-HrmJsonFile $lockFile } catch { $data = $null }
+        if ($null -ne $data) {
+            $lockPid = 0
+            if ($data.PSObject.Properties["pid"]) { $lockPid = [int]$data.pid }
+            $lockAction = ""
+            if ($data.PSObject.Properties["action"]) { $lockAction = [string]$data.action }
+            if ($lockPid -gt 0 -and $lockPid -ne $IgnorePid -and (Test-HrmProcessAlive $lockPid)) {
+                return [pscustomobject]@{ running = $true; reason = ("операция «{0}», процесс {1}" -f $lockAction, $lockPid); pid = $lockPid }
+            }
+        }
+    }
+    $marker = Get-HrmSetupMarker -StateDir $StateDir
+    if ($marker.status -and $marker.status -ne "failed" -and $marker.fresh) {
+        return [pscustomobject]@{ running = $true; reason = "мастер установки/обновления"; pid = 0 }
+    }
+    if ($IgnoreBusyState) { return [pscustomobject]@{ running = $false; reason = ""; pid = 0 } }
+    $supervisor = Get-HrmSupervisorState -StateDir $StateDir
+    if ($supervisor.busy -and $supervisor.pid -gt 0 -and $supervisor.pid -ne $IgnorePid -and (Test-HrmProcessAlive $supervisor.pid)) {
+        return [pscustomobject]@{ running = $true; reason = ("операция движка, процесс {0}" -f $supervisor.pid); pid = [int]$supervisor.pid }
+    }
+    return [pscustomobject]@{ running = $false; reason = ""; pid = 0 }
 }
 
 function Get-HrmAutostartShortcutPath {
@@ -409,6 +623,64 @@ function Stop-HrmSupervisor {
 function Invoke-HrmSupervisorCycle {
     # Один полный цикл: среда → стек → готовность → состояние.
     # Никаких бесконечных повторов: каждая фаза ограничена таймаутом.
+    #
+    # ЕДИНСТВЕННОСТЬ ЦИКЛА (регрессия D2). Раньше цикл не брал никакой
+    # блокировки: мьютекс единственности держал только процесс значка, а значок
+    # порождал скрытый движок БЕЗ проверки, идёт ли уже такой цикл. Каждый вход
+    # в Windows (ярлык автозапуска) и каждый повторный запуск Setup.exe
+    # (мастер поднимает значок и тут же запускает -Action install) добавляли ещё
+    # один движок: параллельные `compose build/up`, перегрузка Docker/WSL, гонка
+    # за порт и образы — и процессы, которые никто не завершает.
+    # Теперь цикл:
+    #   1) берёт мьютекс цикла движка (отдельный от мьютекса значка — значок
+    #      держит свой всё время жизни, и общий мьютекс запретил бы цикл всегда);
+    #   2) проверяет, не идёт ли операция движка (установка/обновление, чужой
+    #      цикл, действие из меню) — по живой pid в блокировке действия, свежей
+    #      отметке мастера и busy в supervisor.json;
+    #   3) берёт файловую блокировку действия на всё время цикла, чтобы значок
+    #      видел «операция идёт» и не долбил Docker опросом состояния.
+    # Отказ — честный результат state="busy" (не ошибка и не второй цикл).
+    param(
+        [string]$InstallDir = "",
+        [string]$StateDir = "",
+        [int]$Port = 0,
+        [switch]$AllowInstall,
+        [switch]$Interactive,
+        [int]$TimeoutSeconds = 300
+    )
+    if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $cycleLock = Enter-HrmEngineCycleLock
+    if (-not $cycleLock.acquired) {
+        $message = "Цикл запуска HR Manager уже выполняется другим процессом — второй цикл не запускается."
+        $null = Write-HrmLog "info" $message
+        return [pscustomobject]@{ ok = $false; state = "busy"; message = $message; already_running = $true }
+    }
+    try {
+        # busy в supervisor.json здесь НЕ признак чужой операции: значок пишет
+        # busy со своим pid как обещание «я слежу» (см. -IgnoreBusyState).
+        $inFlight = Test-HrmEngineOperationInFlight -StateDir $StateDir -IgnorePid $PID -IgnoreBusyState
+        if ($inFlight.running) {
+            $message = ("Операция HR Manager уже выполняется ({0}) — цикл запуска не повторяется." -f $inFlight.reason)
+            $null = Write-HrmLog "info" $message
+            return [pscustomobject]@{ ok = $false; state = "busy"; message = $message; already_running = $true }
+        }
+        $actionLock = Enter-HrmActionLock -StateDir $StateDir -Action "supervise"
+        if (-not $actionLock.acquired) {
+            $null = Write-HrmLog "info" ([string]$actionLock.message)
+            return [pscustomobject]@{ ok = $false; state = "busy"; message = ([string]$actionLock.message); already_running = $true }
+        }
+        try {
+            return (Invoke-HrmSupervisorCycleLocked -InstallDir $InstallDir -StateDir $StateDir -Port $Port -AllowInstall:$AllowInstall -Interactive:$Interactive -TimeoutSeconds $TimeoutSeconds)
+        }
+        finally { Exit-HrmActionLock -StateDir $StateDir }
+    }
+    finally { Exit-HrmEngineCycleLock -Lock $cycleLock }
+}
+
+function Invoke-HrmSupervisorCycleLocked {
+    # Тело цикла (вызывается только из Invoke-HrmSupervisorCycle, который держит
+    # блокировки единственности). Возвращает @{ ok; state; message }.
     param(
         [string]$InstallDir = "",
         [string]$StateDir = "",

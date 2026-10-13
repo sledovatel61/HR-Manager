@@ -127,6 +127,65 @@ function Get-HrmDiagnostics {
     # честное значение «not_configured» без захода в приватные настройки.
     $channels = @{ smtp = "not_configured"; telegram = "not_configured" }
 
+    # Факты CLI контейнеров и плагина compose (регрессии D5/D6): какой CLI выбран
+    # и ПОЧЕМУ, какие кандидаты найдены на машине, какие каталоги плагинов
+    # проверены и что в них лежит, чем ответил compose. Без этих фактов отказ
+    # «compose не найден» на чужой машине не воспроизвести: непонятно, то ли CLI
+    # не запустился, то ли плагина нет, то ли он старый.
+    # Проба версии (--version) выполняется только здесь и только для ВЫБРАННОГО
+    # CLI: диагностика вызывается по запросу, а не на каждом обращении к Docker.
+    $cliPath = ""
+    $cliVersion = ""
+    $cliProbeVersion = ""
+    $cliReason = ""
+    $cliCandidates = @()
+    try {
+        $cliFacts = Get-HrmDockerCliFacts -Probe
+        $cliPath = [string]$cliFacts.cli
+        $cliVersion = [string]$cliFacts.cli_version
+        $cliProbeVersion = [string]$cliFacts.cli_version_probed
+        $cliReason = [string]$cliFacts.chosen_reason
+        foreach ($candidate in $cliFacts.candidates) {
+            $cliCandidates += [ordered]@{
+                path = [string]$candidate.path
+                source = [string]$candidate.source
+                file_version = [string]$candidate.file_version
+                install_root = [string]$candidate.install_root
+                desktop_root_match = [bool]$candidate.desktop_root_match
+            }
+        }
+    }
+    catch {
+        # Факты не сняты — это само по себе диагноз: причина пишется в журнал
+        # (редактируется от секретов), а не теряется молча.
+        $null = Write-HrmLog "warn" ("Факты CLI контейнеров не сняты: " + (Redact-HrmText $_.Exception.Message))
+    }
+    if (-not $cliPath) {
+        # Резервный путь: резолвер CLI не запускает процессов, поэтому работает и
+        # тогда, когда проба версии невозможна.
+        try { $cliPath = [string](Get-HrmDockerCliPath) } catch { $cliPath = "" }
+    }
+    $composeProbe = Test-HrmComposeVersion
+    $composeReason = ""
+    $composePluginFound = $false
+    $composePluginDirs = @()
+    if ($composeProbe.PSObject.Properties["Reason"]) { $composeReason = [string]$composeProbe.Reason }
+    if ($composeProbe.PSObject.Properties["PluginFound"]) { $composePluginFound = [bool]$composeProbe.PluginFound }
+    if ($composeProbe.PSObject.Properties["PluginDirs"]) {
+        foreach ($dir in $composeProbe.PluginDirs) {
+            $composePluginDirs += [ordered]@{
+                path = [string]$dir.path
+                exists = [bool]$dir.exists
+                files = @($dir.files | ForEach-Object { [string]$_ })
+                searched_by_cli = [bool]$dir.searched_by_cli
+                note = [string]$dir.note
+            }
+        }
+    }
+    # Память WSL2 (регрессия D9): факт, а не «исправление». Ожидаемый диапазон и
+    # почему движок ничего не удаляет — см. Get-HrmWslMemoryFacts и README.
+    $wsl = Get-HrmWslMemoryFacts
+
     $result = [ordered]@{
         generated_at = (Get-Date).ToString("o")
         install_dir = $InstallDir
@@ -146,8 +205,27 @@ function Get-HrmDiagnostics {
         running_release_sha = $runningSha
         smtp = $channels["smtp"]
         telegram = $channels["telegram"]
+        # --- факты ревизии стабильности (12.10.2026) ---
+        docker_cli = $cliPath
+        docker_cli_version = $cliVersion
+        docker_cli_version_probed = $cliProbeVersion
+        docker_cli_chosen_reason = $cliReason
+        docker_cli_candidates = $cliCandidates
+        compose_reason = $composeReason
+        compose_plugin_found = $composePluginFound
+        compose_plugin_dirs = $composePluginDirs
+        wsl_memory_mb = [int]$wsl["total_mb"]
+        wsl_memory_observed = [bool]$wsl["observed"]
+        wsl_memory_processes = @($wsl["processes"])
+        host_memory_total_mb = [int]$wsl["host_total_mb"]
+        host_memory_free_mb = [int]$wsl["host_free_mb"]
     }
 
+    # Текст про compose для человекочитаемого вывода: причина целиком уходит в
+    # JSON и в журнал, здесь — короткая строка (иначе вывод диагностики
+    # превращается в простыню).
+    $composeText = (Redact-HrmText [string]$composeProbe.Message)
+    if ($composeText.Length -gt 200) { $composeText = $composeText.Substring(0, 197) + "..." }
     # B4 hint for support-bundle shortcut
     $hint = 'Чтобы отправить отчёт разработчику, используйте ярлык "HR Manager — отчёт для разработчика"'
     $result["hint"] = $hint
@@ -165,6 +243,10 @@ function Get-HrmDiagnostics {
             ("version     : {0} (установлено {1}, в работе {2})" -f $result.version, $result.installed_release_sha, $result.running_release_sha),
             ("smtp        : {0}" -f $result.smtp),
             ("telegram    : {0}" -f $result.telegram),
+            ("docker_cli  : {0} (версия {1})" -f $result.docker_cli, $result.docker_cli_version),
+            ("docker_cli  : правило выбора — {0}; кандидатов найдено {1}" -f $result.docker_cli_chosen_reason, @($result.docker_cli_candidates).Count),
+            ("compose     : {0}" -f $composeText),
+            ("wsl_memory  : {0} МБ (на хосте всего {1} МБ, свободно {2} МБ)" -f $result.wsl_memory_mb, $result.host_memory_total_mb, $result.host_memory_free_mb),
             ("url         : {0}" -f $result.url),
             $hint
         )
@@ -202,6 +284,47 @@ function Get-HrmDockerFacts {
         $facts["daemon_ok"] = $true
         $facts["server_version"] = $info.Stdout.Trim()
     }
+    return $facts
+}
+
+function Get-HrmWslMemoryFacts {
+    # Память WSL2-виртуальной машины Docker Desktop (процессы vmmemWSL/vmmem).
+    #
+    # Зачем факт нужен (регрессия D9): на пилотной машине наблюдали vmmemWSL
+    # ≈ 1.8 ГБ и подозревали утечку HR Manager. Это НЕ аномалия и не утечка
+    # приложения: WSL2 по умолчанию разрешено занимать до 50% ОЗУ хоста, внутри
+    # живут демон Docker, контейнеры пилота (Postgres, backend, frontend,
+    # worker) и кэш сборки образов; 1–2 ГБ при запущенном стеке — ожидаемый
+    # диапазон (см. infra\windows\README.md, раздел «Память WSL2 (vmmemWSL)»).
+    # Движок НЕ «экономит» память удалением чего-либо у пользователя: он только
+    # сообщает факт и проверяет, что параллельных compose-операций нет
+    # (единственность цикла движка и блокировка действия — см. Supervisor.psm1).
+    # Ограничение WSL2 по памяти задаёт сам владелец машины файлом .wslconfig;
+    # движок его не создаёт и не меняет.
+    $facts = @{ observed = $false; total_mb = 0; processes = @(); host_total_mb = 0; host_free_mb = 0 }
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+        if ($null -ne $os) {
+            if ($os.TotalVisibleMemorySize) { $facts["host_total_mb"] = [int][Math]::Round(([double]$os.TotalVisibleMemorySize / 1024), 0) }
+            if ($os.FreePhysicalMemory) { $facts["host_free_mb"] = [int][Math]::Round(([double]$os.FreePhysicalMemory / 1024), 0) }
+        }
+    }
+    catch { }
+    try {
+        $items = @(Get-Process -ErrorAction Stop | Where-Object { ([string]$_.ProcessName) -match "(?i)^vmmem" })
+        foreach ($item in $items) {
+            $mb = 0
+            try { $mb = [int][Math]::Round(([double]$item.WorkingSet64 / 1MB), 0) } catch { $mb = 0 }
+            $facts["processes"] += [pscustomobject]@{
+                name = [string]$item.ProcessName
+                id = [int]$item.Id
+                working_set_mb = $mb
+            }
+            $facts["total_mb"] = [int]$facts["total_mb"] + $mb
+            $facts["observed"] = $true
+        }
+    }
+    catch { }
     return $facts
 }
 

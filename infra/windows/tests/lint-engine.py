@@ -109,7 +109,14 @@ def check_file(path: Path) -> None:
         if re.search(r"Invoke-HrmExternal\s+-Name\s+\"docker", text) is None:
             fail(f"{path}: прямой вызов docker")
     allowed = {"docker", "docker.exe", "icacls.exe", "git.exe", "netsh", "netsh.exe",
-               "wsl.exe"}  # wsl.exe — только чтение состояния WSL2 (--list/--status)
+               "wsl.exe",  # wsl.exe — только чтение состояния WSL2 (--list/--status)
+               # taskkill.exe — ЕДИНСТВЕННЫЙ вызов: /PID <pid> /T /F из
+               # Stop-HrmProcessTree (Common.psm1) по таймауту внешней команды.
+               # Без него зависший CLI контейнеров оставлял процесс движка и его
+               # потомков (wsl/buildx) живыми навсегда. Команда не читает и не
+               # меняет данные приложения: только завершает дерево процессов,
+               # которое движок сам и запустил.
+               "taskkill.exe"}
     for name in re.findall(r'Invoke-HrmExternal\s+-Name\s+"([^"]+)"', text):
         if name not in allowed:
             fail(f"{path}: запрещённая внешняя команда '{name}'")
@@ -381,9 +388,14 @@ def main() -> int:
         + sorted((WINDOWS / "engine").glob("*.psm1"))
     )
     test_files = sorted((WINDOWS / "tests").glob("*.ps1"))
+    # Инструменты владельца (infra/windows/tools) — как тесты: движок они не
+    # образуют, но обязаны парситься Windows PowerShell 5.1 и не иметь битых
+    # символов (сбор фактов с пилотной машины запускается на чужой машине, где
+    # починить опечатку будет некому).
+    tool_files = sorted((WINDOWS / "tools").glob("*.ps1"))
     for path in engine_files:
         check_file(path)
-    for path in test_files:
+    for path in test_files + tool_files:
         # Тесты намеренно содержат примеры секретов и Start-Process —
         # проверяем только парсер-приближение и кодировку.
         text = path.read_text(encoding="utf-8")
@@ -394,7 +406,7 @@ def main() -> int:
     for path in installer_files:
         check_installer_script(path)
         check_no_self_referential_trust(path, _strip_ps_comments(path.read_text(encoding="utf-8-sig")))
-    files = engine_files + test_files + installer_files
+    files = engine_files + test_files + tool_files + installer_files
     for path in files:
         check_ps_encoding(path)
         check_no_backtick_fence(path)

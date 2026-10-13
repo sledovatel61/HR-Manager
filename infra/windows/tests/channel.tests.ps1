@@ -7,6 +7,7 @@ param([string]$HarnessPath = $PSScriptRoot)
 . (Join-Path $HarnessPath "test-harness.ps1")
 
 $script:Testdata = Join-Path $PSScriptRoot "..\..\..\infra\release\testdata"
+$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 
 function Get-HrmFixturePath { param([string]$Name) return (Join-Path $script:Testdata $Name) }
 function Get-HrmFixtureText { param([string]$Name) return ((Get-Content (Get-HrmFixturePath $Name) -Raw -Encoding UTF8) -replace "`r", "") }
@@ -484,6 +485,104 @@ Test-Case "хост-отчёт не отправляется без install reco
     $sent = Send-HrmHostReport -InstallDir (Get-HrmTestInstallDir) -StateDir $state
     Assert-HrmEqual $false $sent "без установки отчёт отправлять нечему"
     Assert-HrmEqual $before $global:HRM_ChannelWorld.HostReports.Count "без install record HTTP-вызовов быть не должно"
+}
+
+Write-Host "== Ревизия стабильности (12.10.2026): наблюдатель канала ограничен и останавливаем =="
+
+Test-Case "D8: наблюдатель канала завершается сам — предел циклов, сигнал остановки, чистка pid-файла" {
+    Initialize-HrmTestEngine
+    $world = New-HrmMockWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Set-HrmInstallRecord $state @{ release_sha = ("3" * 40); port = 8080 }
+    # Прежде здесь был while ($true) без единого условия выхода: остановить
+    # наблюдатель можно было только убийством процесса, а запускавший его код не
+    # вызывался ниоткуда. Проверяем ОБА новых выхода из цикла.
+    $global:HRM_ChannelStopFile = Get-HrmChannelStopFile $state
+    $global:HRM_ChannelStopAfter = 2
+    Set-HrmHttpMock {
+        param($Uri, $Method, $Body, $Headers)
+        $global:HRM_MockWorld.HttpCalls += [pscustomobject]@{ Uri = $Uri; Method = $Method; Body = $Body; Headers = $Headers }
+        # Сигнал остановки появляется ПОСЛЕ второго цикла — так проверяется, что
+        # наблюдатель видит его внутри цикла, а не только при запуске.
+        if ([string]$Uri -like "*engine-state*") {
+            $global:HRM_ChannelStopAfter = [int]$global:HRM_ChannelStopAfter - 1
+            if ($global:HRM_ChannelStopAfter -le 0) {
+                Set-Content -Path $global:HRM_ChannelStopFile -Value (Get-Date).ToString("o") -Encoding ASCII
+            }
+        }
+        return @{ StatusCode = 200; Body = [pscustomobject]@{ actions = @(); state = "up_to_date" } }
+    }
+    $result = Start-HrmChannelWatch -InstallDir $install -StateDir $state -MaxCycles 10 -IntervalSeconds 0
+    Assert-HrmEqual 2 ([int]$result.cycles) "наблюдатель не вышел по сигналу остановки"
+    Assert-HrmTrue ([bool]$result.stop_requested) "факт остановки по сигналу не отражён в результате"
+    Assert-HrmFalse (Test-Path (Get-HrmChannelPidFile $state)) "pid-файл наблюдателя не убран после завершения"
+    Assert-HrmFalse (Test-Path (Get-HrmChannelStopFile $state)) "сигнал остановки не убран после завершения"
+    Assert-HrmTrue (@($world.HttpCalls).Count -ge 2) "циклы наблюдателя не обращались к серверу канала"
+    # Предел числа циклов (без сигнала остановки).
+    $global:HRM_ChannelStopAfter = 100
+    $limited = Start-HrmChannelWatch -InstallDir $install -StateDir $state -MaxCycles 3 -IntervalSeconds 0
+    Assert-HrmEqual 3 ([int]$limited.cycles) "наблюдатель не соблюл предел циклов"
+    Assert-HrmFalse ([bool]$limited.stop_requested) "предел циклов помечен как сигнал остановки"
+    # Предел задаётся и переменными окружения (аварийный шов для пилота).
+    $env:HRM_CHANNEL_WATCH_MAX_CYCLES = "1"
+    $envLimited = Start-HrmChannelWatch -InstallDir $install -StateDir $state -IntervalSeconds 0
+    Assert-HrmEqual 1 ([int]$envLimited.cycles) "переменная окружения не ограничила число циклов"
+    Remove-Item Env:HRM_CHANNEL_WATCH_MAX_CYCLES -ErrorAction SilentlyContinue
+    # Второй наблюдатель не стартует, пока жив первый (pid-файл с живым pid).
+    Set-Content -Path (Get-HrmChannelPidFile $state) -Value $PID -Encoding ASCII
+    $duplicate = Start-HrmChannelWatch -InstallDir $install -StateDir $state -MaxCycles 1 -IntervalSeconds 0
+    Assert-HrmTrue ([bool]$duplicate.already_running) "второй наблюдатель запущен поверх первого"
+    Assert-HrmEqual 0 ([int]$duplicate.cycles) "второй наблюдатель выполнил цикл"
+    Remove-Item (Get-HrmChannelPidFile $state) -Force -ErrorAction SilentlyContinue
+    # Stop-HrmChannelWatch: сигнал файлом + чистка за мёртвым процессом.
+    Set-Content -Path (Get-HrmChannelPidFile $state) -Value 999999 -Encoding ASCII
+    $stopped = Stop-HrmChannelWatch -StateDir $state
+    Assert-HrmTrue ([bool]$stopped) "остановка не сняла pid-файл мёртвого наблюдателя"
+    Assert-HrmFalse (Test-Path (Get-HrmChannelPidFile $state)) "pid-файл мёртвого наблюдателя остался"
+    Assert-HrmFalse (Test-Path (Get-HrmChannelStopFile $state)) "сигнал остановки остался после остановки"
+    Assert-HrmFalse (Stop-HrmChannelWatch -StateDir $state) "остановка ненапущенного наблюдателя вернула успех"
+}
+
+Test-Case "P4: -Action channel -Watch принимает -MaxCycles/-MaxMinutes и передаёт их наблюдателю" {
+    # Комментарий к param в hr-manager.ps1 обещал эти ключи, но в param их не
+    # было (дефект P4 дораздела PR #55): предел наблюдателя задавался только
+    # переменными окружения, то есть документация входной точки была ложной.
+    # Проверяем фактический контракт — объявление параметров (AST, а не текст
+    # комментария) и их передачу в Start-HrmChannelWatch.
+    $entryPath = Join-Path $script:RepoRoot "infra\windows\hr-manager.ps1"
+    $tokens = $null
+    $parseErrors = $null
+    # Разбор входной точки парсером PowerShell (сам факт отсутствия ошибок разбора
+    # уже проверяет tests/static.tests.ps1 — здесь нужен AST параметров).
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($entryPath, [ref]$tokens, [ref]$parseErrors)
+    Assert-HrmTrue ($null -eq $parseErrors -or @($parseErrors).Count -eq 0) "hr-manager.ps1 не разбирается парсером PowerShell"
+    $parameterNames = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ParameterAst] }, $true) |
+        ForEach-Object { $_.Name.VariablePath.UserPath })
+    Assert-HrmTrue ($parameterNames -contains "MaxCycles") "в param входной точки нет -MaxCycles"
+    Assert-HrmTrue ($parameterNames -contains "MaxMinutes") "в param входной точки нет -MaxMinutes"
+    $entry = Get-Content -Path $entryPath -Raw -Encoding UTF8
+    Assert-HrmContains $entry "Start-HrmChannelWatch -InstallDir `$InstallDir -StateDir `$StateDir -MaxCycles `$MaxCycles -MaxMinutes `$MaxMinutes" "ключи наблюдателя не передаются насквозь"
+    Assert-HrmContains $entry "-MaxCycles, -MaxMinutes" "справка -Action help не перечисляет ключи наблюдателя"
+    # Смысл ключей уже покрыт поведением наблюдателя: предел циклов соблюдается,
+    # а 0 (значение по умолчанию входной точки) означает «взять из переменных
+    # окружения» — здесь проверяем именно это, чтобы насквозь переданный 0 не
+    # отменял аварийный шов пилота.
+    Initialize-HrmTestEngine
+    $world = New-HrmMockWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Set-HrmInstallRecord $state @{ release_sha = ("3" * 40); port = 8080 }
+    Set-HrmHttpMock {
+        param($Uri, $Method, $Body, $Headers)
+        $global:HRM_MockWorld.HttpCalls += [pscustomobject]@{ Uri = $Uri; Method = $Method; Body = $Body; Headers = $Headers }
+        return @{ StatusCode = 200; Body = [pscustomobject]@{ actions = @(); state = "up_to_date" } }
+    }
+    $env:HRM_CHANNEL_WATCH_MAX_CYCLES = "2"
+    $zeroFromEntry = Start-HrmChannelWatch -InstallDir $install -StateDir $state -MaxCycles 0 -MaxMinutes 0 -IntervalSeconds 0
+    Assert-HrmEqual 2 ([int]$zeroFromEntry.cycles) "ноль из входной точки отменил предел из переменных окружения"
+    Remove-Item Env:HRM_CHANNEL_WATCH_MAX_CYCLES -ErrorAction SilentlyContinue
+    Assert-HrmTrue (@($world.HttpCalls).Count -ge 2) "циклы наблюдателя не обращались к серверу канала"
 }
 
 Write-Host ("Тесты канала: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)
