@@ -932,4 +932,121 @@ Test-Case "ярлык: чужое приложение на порту и нет
     Assert-HrmFalse (Test-Path (Get-HrmSetupUrlFile $state)) "браузер не должен открываться на чужом приложении"
 }
 
+Write-Host "== Ревизия стабильности установщика (12.10.2026): таймауты, отмена, ворота установки =="
+
+Test-Case "D1: зависшая внешняя команда останавливается по таймауту — код 124, дерево процессов, частичный вывод" {
+    Initialize-HrmTestEngine
+    # Здесь нужен НАСТОЯЩИЙ Invoke-HrmExternal (механизм запуска), а не подмена
+    # результата: подменяется только СОЗДАНИЕ процесса (Set-HrmProcessStartMock).
+    Clear-HrmExternalMock
+    Clear-HrmProcessLaunchMock
+    $global:HRM_TestCreatedProcesses = @()
+    # Двойник «висит»: WaitForExit всегда false, пока процесс не убит.
+    $global:HRM_TestHungProcess = New-HrmFakeExternalProcess -ProcessId 424242 -Stderr "частичный stderr" -Hangs $true
+    # Двойник команды остановки дерева — завершается сразу с кодом 0.
+    $global:HRM_TestKillProcess = New-HrmFakeExternalProcess -ProcessId 7 -Stdout "SUCCESS" -Hangs $false -ExitCode 0
+    Set-HrmProcessStartMock {
+        param($StartInfo)
+        $global:HRM_TestCreatedProcesses += , ([pscustomobject]@{
+                Name = [string]$StartInfo.FileName
+                Arguments = [string]$StartInfo.Arguments
+            })
+        if ((Get-HrmMockCliName ([string]$StartInfo.FileName)) -eq "taskkill.exe") { return $global:HRM_TestKillProcess }
+        return $global:HRM_TestHungProcess
+    }
+
+    $result = Invoke-HrmExternal -Name "docker.exe" -Arguments @("compose", "ps") -IgnoreExitCode -TimeoutSeconds 1
+
+    Assert-HrmEqual 124 ([int]$result.ExitCode) "таймаут обязан давать отдельный код 124 (а не 1 и не -1)"
+    Assert-HrmTrue ([bool]$result.TimedOut) "флаг таймаута не установлен"
+    Assert-HrmEqual 1 ([int]$result.TimeoutSeconds) "в результате нет применённого таймаута"
+    Assert-HrmContains ([string]$result.Stderr) "не завершилась за 1 с" "в stderr нет объяснения таймаута"
+    Assert-HrmContains ([string]$result.Stderr) "частичный stderr" "частичный вывод потерялся при таймауте"
+    Assert-HrmContains ([string]$result.Stderr) "отчёт для поддержки" "у отказа нет следующего действия"
+    # Дерево процессов остановлено: /PID <pid> /T /F — потомки CLI (wsl, buildx)
+    # обязаны умереть вместе с корнем, иначе процессы накапливаются.
+    $killCalls = @($global:HRM_TestCreatedProcesses | Where-Object { (Get-HrmMockCliName $_.Name) -eq "taskkill.exe" })
+    Assert-HrmEqual 1 $killCalls.Count "дерево процессов не остановлено"
+    Assert-HrmContains ([string]$killCalls[0].Arguments) "/T" "остановка не охватывает дерево процессов"
+    Assert-HrmContains ([string]$killCalls[0].Arguments) "/F" "остановка не принудительная"
+    Assert-HrmContains ([string]$killCalls[0].Arguments) "424242" "остановлен не тот процесс"
+    Assert-HrmTrue ([bool]$global:HRM_TestHungProcess.State.disposed) "процесс не освобождён (утечка дескрипторов)"
+    Clear-HrmProcessStartMock
+}
+
+Test-Case "D1: таймаут без -IgnoreExitCode бросает исключение с той же причиной (одна точка отказа)" {
+    Initialize-HrmTestEngine
+    Clear-HrmExternalMock
+    $global:HRM_TestCreatedProcesses = @()
+    $global:HRM_TestHungProcess = New-HrmFakeExternalProcess -ProcessId 424243 -Hangs $true
+    $global:HRM_TestKillProcess = New-HrmFakeExternalProcess -ProcessId 8 -Hangs $false -ExitCode 0
+    Set-HrmProcessStartMock {
+        param($StartInfo)
+        if ((Get-HrmMockCliName ([string]$StartInfo.FileName)) -eq "taskkill.exe") { return $global:HRM_TestKillProcess }
+        return $global:HRM_TestHungProcess
+    }
+    $thrown = ""
+    try { Invoke-HrmExternal -Name "docker.exe" -Arguments @("compose", "ps") -TimeoutSeconds 1 | Out-Null }
+    catch { $thrown = [string]$_.Exception.Message }
+    Assert-HrmContains $thrown "не завершилась за 1 с" "исключение не объясняет таймаут"
+    Assert-HrmContains $thrown "124" "в исключении нет кода таймаута"
+    Clear-HrmProcessStartMock
+}
+
+Test-Case "D1: классы таймаутов внешних команд и точное сопоставление аргумента; прежние ожидания не увеличены" {
+    Initialize-HrmTestEngine
+    # Короткие пробы — 60 с: этого хватает на ответ CLI даже при тяжёлом Docker.
+    Assert-HrmEqual 60 (Get-HrmExternalTimeoutSeconds -Name "docker.exe" -Arguments @("--version")) "проба версии CLI"
+    Assert-HrmEqual 60 (Get-HrmExternalTimeoutSeconds -Name "docker.exe" -Arguments @("compose", "version", "--short")) "проба версии compose"
+    Assert-HrmEqual 60 (Get-HrmExternalTimeoutSeconds -Name "docker.exe" -Arguments @("compose", "ps")) "опрос состояния контейнеров"
+    # Операции со стеком — 900 с: запуск контейнеров и миграции.
+    Assert-HrmEqual 900 (Get-HrmExternalTimeoutSeconds -Name "docker.exe" -Arguments @("compose", "up", "-d")) "запуск стека"
+    Assert-HrmEqual 900 (Get-HrmExternalTimeoutSeconds -Name "docker.exe" -Arguments @("compose", "down")) "остановка стека"
+    # Сборка образов — 3600 с: первая сборка (npm/pip) на пилотной машине.
+    Assert-HrmEqual 3600 (Get-HrmExternalTimeoutSeconds -Name "docker.exe" -Arguments @("compose", "build")) "сборка образов"
+    # Остановка дерева — 20 с, прочие команды — 120 с.
+    Assert-HrmEqual 20 (Get-HrmExternalTimeoutSeconds -Name "taskkill.exe" -Arguments @("/PID", "1", "/T", "/F")) "остановка дерева"
+    Assert-HrmEqual 120 (Get-HrmExternalTimeoutSeconds -Name "icacls.exe" -Arguments @("C:\temp")) "прочие команды"
+    # Аргумент сопоставляется ТОЧНЫМ элементом, а не подстрокой в командной
+    # строке: путь к compose-файлу со словом build не делает команду часовой.
+    Assert-HrmEqual 60 (Get-HrmExternalTimeoutSeconds -Name "docker.exe" -Arguments @("compose", "-f", "C:\build\docker-compose.yml", "config", "--quiet")) "подстрока build в пути изменила класс таймаута"
+    # Явный запрос вызывающего важнее класса, переменная окружения важнее класса.
+    Assert-HrmEqual 5 (Get-HrmExternalTimeoutSeconds -Name "docker.exe" -Arguments @("compose", "up") -Requested 5) "явный таймаут не применён"
+    $env:HRM_EXTERNAL_TIMEOUT_SECONDS = "7"
+    Assert-HrmEqual 7 (Get-HrmExternalTimeoutSeconds -Name "docker.exe" -Arguments @("compose", "build")) "аварийный шов таймаута не применён"
+    Remove-Item Env:HRM_EXTERNAL_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
+    # Таймауты внешних команд НЕ «лечились» увеличением прежних ожиданий:
+    # готовность Docker Engine — 300 с, Docker Desktop — 300 с, готовность
+    # приложения — 180 с (значения по умолчанию не изменены).
+    Assert-HrmEqual 300 ((Get-Command Wait-HrmDockerEngine).Parameters["TimeoutSeconds"].DefaultValue) "изменено ожидание готовности Docker Engine"
+    Assert-HrmEqual 300 ((Get-Command Start-HrmDockerDesktop).Parameters["TimeoutSeconds"].DefaultValue) "изменено ожидание запуска Docker Desktop"
+    Assert-HrmEqual 180 ((Get-Command Wait-HrmReady).Parameters["TimeoutSeconds"].DefaultValue) "изменено ожидание готовности приложения"
+}
+
+Test-Case "D7: без плагина compose установка не завершается наполовину — нет installed.json, состояние «Ошибка» с причиной" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    # Проверка compose НЕ переопределена — работает настоящая классификация
+    # (D5): CLI отвечает как docker без плагина.
+    Set-HrmPreflightOverride @{ windows = $true; powershell = $true; docker = $true; daemon = $true; port = $true; state_dir = $true; space = $true; config = $true }
+    $t.World.ComposePluginMissing = $true
+    $thrown = ""
+    try { Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null }
+    catch { $thrown = [string]$_.Exception.Message }
+    Assert-HrmContains $thrown "Предполётная проверка не пройдена" "отказ не называет проверку"
+    Assert-HrmContains $thrown "compose" "отказ не называет проваленную проверку"
+    Assert-HrmContains $thrown "Плагин Docker Compose" "в отказе нет причины (нет плагина)"
+    # Запись установки НЕ создана: иначе значок показывал бы «Запускается» для
+    # приложения, которого нет, а повторный запуск Setup.exe шёл бы по ветке
+    # «обновление поверх несуществующей установки».
+    Assert-HrmFalse (Test-Path (Get-HrmInstalledFile $state)) "установка «завершилась наполовину»: запись есть, приложения нет"
+    $supervisor = Get-HrmSupervisorState $state
+    Assert-HrmEqual "error" ([string]$supervisor.state) "состояние должно быть «Ошибка», а не «Запускается»"
+    Assert-HrmContains ([string]$supervisor.message) "Compose" "в состоянии нет причины отказа"
+    # Отказ посчитан как ОДИН подряд идущий провал (порог значка — 3).
+    Assert-HrmEqual 1 (Get-HrmSupervisorFailureCount -StateDir $state) "счётчик подряд идущих отказов не работает"
+}
+
 Write-Host ("Тесты движка: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)

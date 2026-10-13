@@ -486,4 +486,61 @@ Test-Case "хост-отчёт не отправляется без install reco
     Assert-HrmEqual $before $global:HRM_ChannelWorld.HostReports.Count "без install record HTTP-вызовов быть не должно"
 }
 
+Write-Host "== Ревизия стабильности (12.10.2026): наблюдатель канала ограничен и останавливаем =="
+
+Test-Case "D8: наблюдатель канала завершается сам — предел циклов, сигнал остановки, чистка pid-файла" {
+    Initialize-HrmTestEngine
+    $world = New-HrmMockWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Set-HrmInstallRecord $state @{ release_sha = ("3" * 40); port = 8080 }
+    # Прежде здесь был while ($true) без единого условия выхода: остановить
+    # наблюдатель можно было только убийством процесса, а запускавший его код не
+    # вызывался ниоткуда. Проверяем ОБА новых выхода из цикла.
+    $global:HRM_ChannelStopFile = Get-HrmChannelStopFile $state
+    $global:HRM_ChannelStopAfter = 2
+    Set-HrmHttpMock {
+        param($Uri, $Method, $Body, $Headers)
+        $global:HRM_MockWorld.HttpCalls += [pscustomobject]@{ Uri = $Uri; Method = $Method; Body = $Body; Headers = $Headers }
+        # Сигнал остановки появляется ПОСЛЕ второго цикла — так проверяется, что
+        # наблюдатель видит его внутри цикла, а не только при запуске.
+        if ([string]$Uri -like "*engine-state*") {
+            $global:HRM_ChannelStopAfter = [int]$global:HRM_ChannelStopAfter - 1
+            if ($global:HRM_ChannelStopAfter -le 0) {
+                Set-Content -Path $global:HRM_ChannelStopFile -Value (Get-Date).ToString("o") -Encoding ASCII
+            }
+        }
+        return @{ StatusCode = 200; Body = [pscustomobject]@{ actions = @(); state = "up_to_date" } }
+    }
+    $result = Start-HrmChannelWatch -InstallDir $install -StateDir $state -MaxCycles 10 -IntervalSeconds 0
+    Assert-HrmEqual 2 ([int]$result.cycles) "наблюдатель не вышел по сигналу остановки"
+    Assert-HrmTrue ([bool]$result.stop_requested) "факт остановки по сигналу не отражён в результате"
+    Assert-HrmFalse (Test-Path (Get-HrmChannelPidFile $state)) "pid-файл наблюдателя не убран после завершения"
+    Assert-HrmFalse (Test-Path (Get-HrmChannelStopFile $state)) "сигнал остановки не убран после завершения"
+    Assert-HrmTrue (@($world.HttpCalls).Count -ge 2) "циклы наблюдателя не обращались к серверу канала"
+    # Предел числа циклов (без сигнала остановки).
+    $global:HRM_ChannelStopAfter = 100
+    $limited = Start-HrmChannelWatch -InstallDir $install -StateDir $state -MaxCycles 3 -IntervalSeconds 0
+    Assert-HrmEqual 3 ([int]$limited.cycles) "наблюдатель не соблюл предел циклов"
+    Assert-HrmFalse ([bool]$limited.stop_requested) "предел циклов помечен как сигнал остановки"
+    # Предел задаётся и переменными окружения (аварийный шов для пилота).
+    $env:HRM_CHANNEL_WATCH_MAX_CYCLES = "1"
+    $envLimited = Start-HrmChannelWatch -InstallDir $install -StateDir $state -IntervalSeconds 0
+    Assert-HrmEqual 1 ([int]$envLimited.cycles) "переменная окружения не ограничила число циклов"
+    Remove-Item Env:HRM_CHANNEL_WATCH_MAX_CYCLES -ErrorAction SilentlyContinue
+    # Второй наблюдатель не стартует, пока жив первый (pid-файл с живым pid).
+    Set-Content -Path (Get-HrmChannelPidFile $state) -Value $PID -Encoding ASCII
+    $duplicate = Start-HrmChannelWatch -InstallDir $install -StateDir $state -MaxCycles 1 -IntervalSeconds 0
+    Assert-HrmTrue ([bool]$duplicate.already_running) "второй наблюдатель запущен поверх первого"
+    Assert-HrmEqual 0 ([int]$duplicate.cycles) "второй наблюдатель выполнил цикл"
+    Remove-Item (Get-HrmChannelPidFile $state) -Force -ErrorAction SilentlyContinue
+    # Stop-HrmChannelWatch: сигнал файлом + чистка за мёртвым процессом.
+    Set-Content -Path (Get-HrmChannelPidFile $state) -Value 999999 -Encoding ASCII
+    $stopped = Stop-HrmChannelWatch -StateDir $state
+    Assert-HrmTrue ([bool]$stopped) "остановка не сняла pid-файл мёртвого наблюдателя"
+    Assert-HrmFalse (Test-Path (Get-HrmChannelPidFile $state)) "pid-файл мёртвого наблюдателя остался"
+    Assert-HrmFalse (Test-Path (Get-HrmChannelStopFile $state)) "сигнал остановки остался после остановки"
+    Assert-HrmFalse (Stop-HrmChannelWatch -StateDir $state) "остановка ненапущенного наблюдателя вернула успех"
+}
+
 Write-Host ("Тесты канала: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)
