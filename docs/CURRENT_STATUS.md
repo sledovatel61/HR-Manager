@@ -6,23 +6,31 @@
 > старые формулировки «15–16 не влиты» больше не использовать. Функциональная
 > готовность не является разрешением на публикацию: пилот пока `NO-GO`.
 >
-> **Актуализация 2026-10-13 (Windows installer):** Docker Desktop остаётся
-> runtime, но устанавливается пользователем отдельно и вручную. Setup/движок
-> больше не скачивают и не запускают Docker installer, не принимают лицензию и
-> не используют `docker-install`/Docker-specific pending. Необязательный
-> sidecar можно опубликовать отдельно с официальным URL и SHA256-пином; он не
-> встраивается и автоматически не запускается. Для `pilot-release` sidecar
-> скачивается только при явном вводе его SHA256 в ручном dispatch; пустой ввод
-> оставляет в манифесте только официальный URL. Для отсутствующего Docker кодом
-> предусмотрен честный отказ: ожидаются Setup `10`, `setup-run.json=failed` и
-> Finish без заявления о готовности; этот путь ещё нужно подтвердить Windows
-> smoke и сборкой Inno Setup. После ручной подготовки ярлык HR Manager
-> повторяет первичную настройку из уже скопированных файлов, если
-> `installed.json` ещё не создан; этот путь также требует Windows-проверки.
-> Эта актуализация и текущий `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` supersede
-> более ранние датированные отчёты о прежней автоустановке. Python lint и
-> синтаксический разбор workflow YAML пройдены; Windows/Pester/smoke и сборка
-> Inno Setup ещё требуют прогона на Windows CI.
+> **Актуализация 2026-10-13 (Windows installer follow-up):** Docker Desktop
+> остаётся runtime, но устанавливается пользователем отдельно и вручную.
+> Setup/движок не скачивают и не запускают Docker installer, не принимают
+> лицензию и не используют `docker-install`/Docker-specific pending. Необязательный
+> sidecar остаётся отдельным файлом с официальным URL и SHA256; он не встраивается
+> в Setup и не запускается продуктом. `release.json` хранит те же sidecar metadata,
+> что и release-manifest; движок показывает локальный путь только при совпадении
+> фактического SHA256, иначе оставляет официальный URL и пишет `warn`. Локальная
+> Authenticode-проверка с точными Docker Subject/thumbprint вынесена из движка и
+> запускается `pilot-release` только после pinned download в ручном dispatch.
+>
+> PR #56 CI run [38409576391](https://github.com/sledovatel61/HR-Manager/actions/runs/38409576391)
+> завершился успешно на implementation SHA
+> `f51d9f70e31ff617989fabfdd0bc979f560377e7` (все 8 jobs): Windows PowerShell 5.1
+> engine/Pester + installer smoke, сборка Setup.exe/Inno Setup и остальные CI jobs
+> прошли. Предыдущие формулировки о непроверенных Windows/Pester/smoke/Inno Setup
+> устарели. В этом CI не задавался sidecar SHA256 pin, поэтому отдельный ручной
+> Authenticode download/check не запускался; реальная Windows-машина с Docker
+> Desktop также не проверялась.
+>
+> **Правило статуса:** после зелёного прогона заменять в этом файле все относящиеся
+> к нему формулировки «требует прогона» в том же коммите, который записывает точный
+> run ID и SHA; не оставлять устаревшие обещания о будущей проверке. Локально в
+> sandbox доступны Python structural lint/compile, но нет PowerShell/ISCC для
+> запуска Pester и сборки Windows; это не считать локально пройденным.
 
 ## Что принято
 
@@ -296,15 +304,16 @@ Pester-наборы движка, сборка `Setup.exe` и `silent install/un
 Остаётся (без этого GO нет): ручной чек-лист `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows с реальным
 Docker Desktop (его ручная установка пользователем отдельно от HR Manager; при необходимости UAC/перезагрузка,
 запуск Engine, порт 8080, трей в пользовательской сессии, автозапуск, LAN, активация лицензии, N→N+1 с данными
-и откатом) и письменный owner decision. В среде разработки нет Windows/PowerShell/Docker, поэтому живая установка
-здесь не запускалась.
+и откатом) и письменный owner decision. Автоматические Windows/Pester/installer checks проходят в CI; в sandbox
+нет Windows/PowerShell/Docker, и живая установка на отдельной пользовательской машине не запускалась.
 
 ## Пилотный релиз: что осталось сделать
 
 Этот раздел отвечает на вопрос «можно ли запускать пилот». Ответ на текущий
-момент: **NO-GO** — код финальной сборки 0.15.0 готов, но Windows-приёмка
-(`docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`) ещё не выполнена. Не смешивать
-завершённость функций с release readiness.
+момент: **NO-GO** — код финальной сборки 0.15.0 готов, но полевая Windows-приёмка
+на чистой машине с Docker Desktop (`docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`) ещё не
+выполнена. Автоматические Windows/Pester/installer checks уже зелёные в CI;
+не смешивать их с release readiness.
 
 > **Решение владельца 2026-09-29:** покупной сертификат (Authenticode/TSA)
 > пилот на ПК Марии **не блокирует** — SmartScreen обходится инструкцией.
@@ -312,7 +321,7 @@ Docker Desktop (его ручная установка пользователе�
 
 ### Обязательные задачи пилота (агенты)
 
-- [x] Установщик HR Manager: реализован в 0.15.0; актуальный Docker-путь — отдельная ручная установка пользователем. При отсутствии Docker в коде предусмотрены отказ Setup с кодом `10`, статус `setup-run.json=failed` и Finish без заявления о готовности; Windows-приёмка этого контракта пока не выполнена (см. разделы B/C `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`).
+- [x] Установщик HR Manager: реализован в 0.15.0; актуальный Docker-путь — отдельная ручная установка пользователем. Windows/Pester/installer CI на SHA `f51d9f70e31ff617989fabfdd0bc979f560377e7` зелёный (run `38409576391`); полевую приёмку на чистой Windows с Docker Desktop ещё выполнить (разделы B/C `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`).
 - [ ] График выхода на работу (Этап 18): `prompts/PHASE_18_WORK_SCHEDULE_PROMPT.md`.
 - [ ] Понятные правила + диагностика в администрировании:
   `prompts/UX_RULES_DIAGNOSTICS_PROMPT.md`.
@@ -321,12 +330,12 @@ Docker Desktop (его ручная установка пользователе�
 
 - [x] Полный backend CI и backend test suite, PostgreSQL integration,
   Compose smoke, frontend checks и Windows engine/installer checks на exact
-  release SHA `7a5ed7a` (прогон `37640729694`, 8/8 джобов зелёные):
-  backend, backend-PG, frontend, compose, release-policy, Windows-движок +
-  установщик (Pester + `Setup.exe` + silent install/uninstall + pilot drill),
-  `pilot-setup` (пилотный `Setup.exe` 0.15.0 + `SHA256SUMS.txt`) и
-  license-issuer (bundle + portable exe: `parser/build/portable/runtime/accept`,
-  контракт portable-issuer, backend-проверка выпущенных лицензий 7/7).
+  implementation SHA `f51d9f70e31ff617989fabfdd0bc979f560377e7` (run
+  `38409576391`, 8/8 jobs зелёные): backend, backend-PG, frontend, compose,
+  release-policy, Windows-движок + установщик (PowerShell 5.1/Pester + `Setup.exe`
+  + silent install/uninstall + pilot drill), `pilot-setup` (Setup.exe 0.15.0 +
+  `SHA256SUMS.txt`) и license-issuer. Это CI evidence; полевой Windows acceptance
+  с реальным Docker Desktop остаётся отдельным обязательным шагом.
 - [ ] Провести чистую Windows 10/11 приёмку: установка, первый вход, loopback,
   readiness, backup/restore, update, rollback, resume, сохранность данных и
   uninstall.
