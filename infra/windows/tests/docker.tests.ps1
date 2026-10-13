@@ -110,7 +110,8 @@ Test-Case "Docker readiness больше не публикует pending_docker"
     New-HrmDockerTestContext
     Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true }
     $readiness = Get-HrmDockerReadiness -InstallDir (Get-HrmTestInstallDir) -StateDir (Get-HrmTestStateDir) -Port 8080
-    Assert-HrmFalse ($readiness.PSObject.Properties["pending_docker"]) "Docker-specific pending state остался в readiness"
+    $propertyNames = @($readiness.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    Assert-HrmFalse ($propertyNames -contains "pending_docker") "Docker-specific pending state остался в readiness"
 }
 
 Test-Case "WSL2 отсутствует и виртуализация выключена: шаги показывают предупреждение и действие" {
