@@ -18,12 +18,18 @@
 устанавливает/обновляет приложение и снимает диагностику; **дежурный** —
 следит за бэкапами и реагирует на инциденты.
 
-Хэши пилотных артефактов и итоговый CI-прогон — `docs/PILOT_FINAL_REPORT.md`
-(раздел 4). Веточный CI собирает пилотный файл отдельным джобом
+Текущие Windows acceptance, CI evidence и решение GO/NO-GO фиксируются в
+`docs/CURRENT_STATUS.md`. Хэш конкретного Setup и sidecar берётся из
+`SHA256SUMS.txt` и `release-manifest.json` того же артефакта; значения из
+`docs/PILOT_FINAL_REPORT.md` исторические и не являются источником текущих
+хешей. Веточный CI собирает пилотный файл отдельным джобом
 `Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS` (артефакт
 `pilot-setup-0.15.0-unsigned`, хэш в `SHA256SUMS.txt` и в notice-аннотации шага),
 поэтому отдельный ручной запуск `pilot-release` для пилота не обязателен —
-он нужен, если владелец хочет собрать артефакт своей кнопкой.
+он нужен, если владелец хочет собрать артефакт своей кнопкой. Docker Desktop
+sidecar по умолчанию не скачивается; чтобы приложить его отдельно, в ручном
+`pilot-release` dispatch задают проверенный `docker_desktop_installer_sha256`,
+а пустой input оставляет только официальный URL в манифесте.
 
 ---
 
@@ -33,7 +39,7 @@
 | --- | --- | --- |
 | Windows | 10 сборка 19041+ (2004) или Windows 11 | `winver` |
 | PowerShell | Windows PowerShell 5.1, 64-разрядный | `$PSVersionTable.PSVersion` |
-| Docker Desktop | официальный установщик с docker.com, WSL2 backend, лицензия принята вручную | `docker version` |
+| Docker Desktop | заранее установлен и запущен пользователем вручную с официального сайта [docker.com](https://www.docker.com/products/docker-desktop/); WSL2 backend; лицензию пользователь принимает сам | `docker version` |
 | Docker Compose | v2.24+ (плагин `docker compose`) | `docker compose version` |
 | Свободное место | ≥ 5 ГБ на диске установки | `Get-PSDrive C` |
 | Порт | 8080 (или явно выбранный `-Port`) свободен на 127.0.0.1 | `Get-NetTCPConnection -LocalPort 8080 -State Listen` |
@@ -45,26 +51,29 @@
 
 ## 2. Установка и первый вход
 
-1. Владелец собирает и подписывает релиз (раздел 4) либо передаёт
+1. До Setup проверить, что Docker Desktop установлен и показывает готовый Engine (`docker version`). Если runtime отсутствует, администратор/владелец устанавливает его отдельно с официального сайта, сам принимает лицензию и выполняет нужные UAC/перезагрузку; HR Manager Docker installer не запускает. При наличии sidecar рядом с Setup.exe мастер копирует его в `{app}\docker`, но не запускает.
+2. Владелец собирает и подписывает релиз (раздел 4) либо передаёт
    администратору подписанный `HR-Manager-Setup-<version>.exe` и
    `update-channel.json` + `trust-store.json` из GitHub Release.
-2. Перед запуском установщика: сверить SHA256 с `SHA256SUMS` из релиза.
-3. Запуск `HR-Manager-Setup-<version>.exe` → согласие UAC → мастер Inno.
+3. Перед запуском установщика сверить SHA256 с `SHA256SUMS` из релиза (включая sidecar, если опубликован).
+4. Запустить `HR-Manager-Setup-<version>.exe` → мастер Inno (Setup работает без повышения UAC).
    Установщик раскладывает приложение в `%LOCALAPPDATA%\Programs\HRManager`,
    встраивает trust store (`infra/release/trust-store.json`) в снимок и
-   запускает `hr-manager.ps1 -Action install`.
-4. Первый вход: движок создаёт одноразовый тикет и открывает браузер по
+   запускает `hr-manager.ps1 -Action install`. Если Docker отсутствует/Engine не готов,
+   Setup честно сообщает, что приложение не готово, и возвращает код `10`; после
+   ручной подготовки Docker запустить HR Manager повторно, не использовать `resume` для Docker.
+5. Первый вход: движок создаёт одноразовый тикет и открывает браузер по
    `http://127.0.0.1:8080/#setup=<ticket>`. Владелец задаёт пароль
    администратора, часовой пояс, рабочие дни и тихие часы.
    Тикет одноразовый и не пишется в логи/URL-параметры.
-5. Проверка loopback:
+6. Проверка loopback:
    ```powershell
    Get-NetTCPConnection -State Listen |
      Where-Object { $_.LocalPort -in 8080, 8000, 5432 } |
      Select-Object LocalAddress, LocalPort
    ```
    Ожидается только `127.0.0.1` (8080 — фронтенд; 8000/5432 не публикуются).
-6. Запуск диагностики и хост-отчёта для readiness:
+7. Запуск диагностики и хост-отчёта для readiness:
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File hr-manager.ps1 -Action diagnostics
    ```
@@ -280,7 +289,7 @@ PY
 3. **Откат**: при провале миграции/smoke движок автоматически возвращает
    `:previous` образы и прежнюю версию; данные не откатываются (миграции должны
    быть обратно совместимыми). В UI появляется честный итог «rolled_back».
-4. **Resume**: если операция прервана (перезагрузка, UAC, сбой питания),
+4. **Resume**: если операция обновления HR Manager прервана (перезагрузка, сбой питания или сбой движка),
    выполнить
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File hr-manager.ps1 -Action resume

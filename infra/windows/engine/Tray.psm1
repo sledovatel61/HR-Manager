@@ -41,9 +41,8 @@ function Get-HrmTrayStartupPlan {
     #                     (пункт меню сбрасывает счётчик). Без этого значок при
     #                     каждом входе в Windows снова запускал движок, который
     #                     снова отказывал по той же причине;
-    #   resuming        — есть незавершённое обновление/подготовка среды: значок
-    #                     продолжает операцию (resume) — «после перезагрузки
-    #                     HR Manager продолжит сам»;
+    #   resuming        — есть незавершённое обновление или первичная установка:
+    #                     значок продолжает операцию движка;
     #   not_installed   — приложения нет (значок в каталоге установки, поэтому
     #                     это редкий случай) — честная ошибка;
     #   normal          — обычная работа: поднять среду и показать состояние.
@@ -128,8 +127,8 @@ function Get-HrmTrayStartupPlan {
 
 function Get-HrmTrayCurrentPlan {
     # Планировщик по РЕАЛЬНЫМ файлам состояния: отметка установки, запись об
-    # установке, незавершённое обновление (журнал обновления), отложенная
-    # подготовка среды после перезагрузки.
+    # установке, незавершённое обновление (журнал обновления) или незавершённая
+    # первичная установка. Docker-specific pending state не используется.
     param([string]$StateDir = "", [string]$InstallDir = "")
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
@@ -151,7 +150,6 @@ function Get-HrmTrayCurrentPlan {
         # автоматически повторять обновление нельзя, решает владелец.
         if ($phase -and $phase -ne "rollback") { $resumePending = $true }
     }
-    if (-not $resumePending -and $null -ne (Get-HrmPendingDockerOperation $StateDir)) { $resumePending = $true }
     # Идёт ли уже операция движка (свой pid игнорируем): по живой блокировке
     # действия, свежей отметке мастера или busy с живым pid в supervisor.json.
     $inFlight = Test-HrmEngineOperationInFlight -StateDir $StateDir -IgnorePid $PID

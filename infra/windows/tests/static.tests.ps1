@@ -35,8 +35,8 @@ Test-Case "все файлы движка проходят парсер PowerShe
 }
 
 Test-Case "вспомогательные скрипты infra/windows/tools проходят парсер и имеют BOM" {
-    # Аудит издателя Docker (tools\Audit-HrmDockerPublisher.ps1) запускается только
-    # по кнопке в CI, поэтому синтаксис проверяем здесь, а не ждём ручного прогона.
+    # Вспомогательные Windows-инструменты (pilot facts collector и smoke helpers)
+    # проверяются здесь даже если конкретный workflow в данном прогоне их не вызывает.
     $toolsDir = Join-Path $WindowsDir "tools"
     Assert-HrmTrue (Test-Path $toolsDir) "нет каталога infra\windows\tools"
     $toolFiles = @(Get-ChildItem -Path $toolsDir -File -Filter *.ps1)
@@ -377,18 +377,23 @@ Test-Case "supervisor: единственность, состояния и ав�
     Assert-HrmNotContains $supervisor "Get-Credential" "супервизор не должен запрашивать учётные данные"
 }
 
-Test-Case "Docker: официальный установщик, проверка подписи и отказ от автоматического принятия лицензии" {
+Test-Case "Docker: ручная установка, запуск только существующего Desktop и сохранённая диагностика" {
     $docker = Get-Content -Path (Join-Path $EngineDir "Docker.psm1") -Raw -Encoding UTF8
-    Assert-HrmContains $docker "desktop.docker.com" "установщик берётся не с официального адреса"
-    Assert-HrmContains $docker "Get-AuthenticodeSignature" "подпись установщика не проверяется"
-    # Инвариант проверяется по исполняемым строкам: в комментариях движка
-    # прямо написано, что флаг не передаётся, и это не должно выглядеть как вызов.
-    $dockerCode = [regex]::Replace($docker, '(?s)<#.*?#>', '')
-    $dockerCode = (($dockerCode -split "`r?`n") | Where-Object { -not $_.TrimStart().StartsWith('#') }) -join "`n"
-    Assert-HrmNotContains $dockerCode "--accept-license" "лицензия Docker не принимается за пользователя"
+    Assert-HrmContains $docker "https://www.docker.com/products/docker-desktop/" "нужна официальная страница Docker"
+    Assert-HrmContains $docker "Get-HrmDockerInstallGuide" "нет ручных следующих шагов"
+    Assert-HrmContains $docker "Docker Engine" "нет понятного отказа по готовности Engine"
     Assert-HrmContains $docker "WSL" "нет проверки WSL2"
     Assert-HrmContains $docker "VirtualizationFirmwareEnabled" "нет проверки аппаратной виртуализации"
     Assert-HrmContains $docker "Wait-HrmDockerEngine" "нет ожидания готовности Docker Engine"
+    Assert-HrmContains $docker "Start-HrmDetached" "не сохранён запуск уже установленного Docker Desktop"
+    foreach ($forbidden in @("Install-HrmDockerDesktop", "Save-HrmDownload", "Start-HrmElevatedAndWait",
+            "Get-AuthenticodeSignature", "docker-pending.json", "pending_docker")) {
+        Assert-HrmNotContains $docker $forbidden ("устаревшая Docker-автоматизация: " + $forbidden)
+    }
+    # Даже после удаления автоустановщика лицензия Docker не может приниматься движком.
+    $dockerCode = [regex]::Replace($docker, '(?s)<#.*?#>', '')
+    $dockerCode = (($dockerCode -split "`r?`n") | Where-Object { -not $_.TrimStart().StartsWith('#') }) -join "`n"
+    Assert-HrmNotContains $dockerCode "--accept-license" "лицензия Docker не принимается за пользователя"
     Assert-HrmNotContains $docker "rm -rf" "движок не должен удалять файлы командой rm"
 }
 
@@ -413,14 +418,59 @@ Test-Case "обновление: показ версий, changelog и резу�
     Assert-HrmContains $update "Get-HrmMigrationsHead" "ожидаемая голова миграций не читается из образа"
 }
 
-Test-Case "установщик: значок в трее, галочка установки Docker и автозапуск supervisor'а" {
+Test-Case "установщик: Docker sidecar необязателен, не встраивается и никогда не запускается" {
     $installer = Get-Content -Path (Join-Path $RepoRoot "installer\installer.iss") -Raw -Encoding UTF8
     Assert-HrmContains $installer "hrm-tray.ps1" "установщик не запускает значок в трее"
-    Assert-HrmContains $installer "[Tasks]" "нет галочки установки Docker Desktop"
-    Assert-HrmContains $installer "dockerinstall" "нет задачи установки Docker Desktop"
-    Assert-HrmContains $installer "GetEngineDockerArgs" "движку не передаётся выбор пользователя"
+    Assert-HrmContains $installer 'Source: "{src}\DockerDesktopInstaller.exe"' "нет необязательного sidecar рядом с Setup.exe"
+    Assert-HrmContains $installer 'DestDir: "{app}\docker"' "sidecar копируется не в {app}\docker"
+    Assert-HrmContains $installer "external skipifsourcedoesntexist" "sidecar должен быть внешним и опциональным"
+    foreach ($removed in @("[Tasks]", "dockerinstall", "GetEngineDockerArgs", "-InstallDocker")) {
+        Assert-HrmNotContains $installer $removed ("удалённая установка Docker осталась: " + $removed)
+    }
+    $runSection = [regex]::Match($installer, '(?ms)^\[Run\]\s*(?<body>.*?)(?=^\[UninstallRun\])').Groups['body'].Value
+    Assert-HrmNotContains $runSection "DockerDesktopInstaller.exe" "[Run] не должен запускать sidecar"
+    Assert-HrmContains $installer "GetCustomSetupExitCode" "код выхода мастера не отражает отказ движка"
+    Assert-HrmContains $installer "GetHrmSetupEngineStatus" "Finish не проверяет setup-run.json"
+    Assert-HrmContains $installer "FinishIncompleteTitle" "нет честного Finish при неготовом приложении"
+    Assert-HrmContains $installer "Result := 10" "движковый отказ должен возвращать отдельный ненулевой код"
     Assert-HrmContains $installer '"{userstartup}\HR Manager (трей)"' "автозапуск не запускает supervisor"
     Assert-HrmNotContains $installer "-Action start" "автозапуск всё ещё консольный"
+}
+
+Test-Case "движок не содержит Docker install CLI, но сохраняет общие resume и interactivity" {
+    $cli = Get-Content -Path (Join-Path $WindowsDir "hr-manager.ps1") -Raw -Encoding UTF8
+    $install = Get-Content -Path (Join-Path $EngineDir "Install.psm1") -Raw -Encoding UTF8
+    $tray = Get-Content -Path (Join-Path $EngineDir "Tray.psm1") -Raw -Encoding UTF8
+    $common = Get-Content -Path (Join-Path $EngineDir "Common.psm1") -Raw -Encoding UTF8
+    foreach ($removed in @("docker-install", "InstallDocker", "AllowDockerInstall", "Get-HrmPendingDockerOperation")) {
+        Assert-HrmNotContains $cli $removed ("устаревший CLI-флаг или Docker resume: " + $removed)
+        Assert-HrmNotContains $install $removed ("устаревший Docker install/resume путь: " + $removed)
+        Assert-HrmNotContains $tray $removed ("трей продолжает Docker pending: " + $removed)
+    }
+    Assert-HrmContains $install "Resume-HrmOperation" "не сохранено общее resume-поведение"
+    Assert-HrmContains $install "Get-HrmUpdateJournal" "resume обновления удалён вместе с Docker pending"
+    Assert-HrmContains $install "recordForResume" "resume первичной установки удалён вместе с Docker pending"
+    Assert-HrmContains $common "function Test-HrmInteractive" "удалён общий helper интерактивного режима"
+    Assert-HrmNotContains $common "Start-HrmElevatedAndWait" "устаревший Docker UAC process helper остался"
+}
+
+Test-Case "build публикует необязательный Docker sidecar с URL/SHA256, не загружая его" {
+    $build = Get-Content -Path (Join-Path $RepoRoot "installer\build.ps1") -Raw -Encoding UTF8
+    Assert-HrmContains $build "DockerDesktopInstallerPath" "нельзя передать optional sidecar в build"
+    Assert-HrmContains $build "DockerDesktopInstallerSha256" "нет проверки ожидаемого SHA256"
+    Assert-HrmContains $build "docker_desktop_installer" "release-manifest не описывает sidecar"
+    Assert-HrmContains $build "DockerInstallerSourceUrl" "release-manifest не содержит source URL"
+    Assert-HrmContains $build "SHA256SUMS.txt" "суммы релизной раздачи не создаются"
+    Assert-HrmNotContains $build 'Invoke-WebRequest -Uri $DockerInstallerSourceUrl' "build не должен скачивать installer Docker"
+}
+
+Test-Case "pilot-release скачивает Docker sidecar только по явному SHA256 pin и включает его в артефакт" {
+    $workflow = Get-Content -Path (Join-Path $RepoRoot ".github\workflows\pilot-release.yml") -Raw -Encoding UTF8
+    foreach ($required in @("docker_desktop_installer_sha256", "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
+            'if (-not $expected)', 'Get-FileHash -LiteralPath $sidecar', '$actual -ne $expected',
+            "-DockerDesktopInstallerSha256", "DockerDesktopInstaller.exe", "installer/output/*")) {
+        Assert-HrmContains $workflow $required ("не выполнен optional pinned sidecar release contract: " + $required)
+    }
 }
 
 Test-Case "обязательный запуск приложения нельзя отключить на финальном экране" {

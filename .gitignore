@@ -59,6 +59,7 @@ Thumbs.db
 installer/staging/
 installer/output/
 installer/.cache/
+installer/DockerDesktopInstaller.exe
 installer/release-manifest.json
 installer/authenticode-attestation.json
 installer/authenticode-roots.pem

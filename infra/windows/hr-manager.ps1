@@ -39,7 +39,7 @@ param(
     [ValidateSet("install", "start", "stop", "status", "open", "update",
         "uninstall", "diagnostics", "resume", "channel", "channel-config",
         "support-bundle", "lan-access", "restart", "help",
-        "prepare", "docker-status", "docker-install", "docker-start",
+        "prepare", "docker-status", "docker-start",
         "supervise", "tray", "autostart", "update-preview", "snapshot-previous")]
     [string]$Action = "help",
 
@@ -90,15 +90,7 @@ param(
 
     # lan-access: -Enable включает публикацию на LAN, -Disable выключает
     [switch]$Enable,
-    [switch]$Disable,
-
-    # docker-install / install / resume: разрешить установку Docker Desktop
-    # официальным установщиком Docker (UAC и лицензию принимает человек).
-    [switch]$InstallDocker,
-
-    # autostart: -Enable включает автозапуск, -Disable выключает.
-    # prepare/supervise: -Interactive разрешает диалоги/UAC/установку Docker.
-    [switch]$Interactive
+    [switch]$Disable
 )
 
 $ErrorActionPreference = "Stop"
@@ -130,15 +122,14 @@ function Show-HrmUsage {
         "  update         Обновление из доверенного каталога релиза (-ReleaseDir)",
         "  diagnostics    Диагностика (редакция секретов; -Json) + хост-отчёт для readiness",
         "  uninstall      Удалить приложение (данные сохраняются; -PurgeData удаляет)",
-        "  resume         Продолжить прерванную операцию (после перезагрузки/UAC)",
+        "  resume         Продолжить прерванную установку приложения или обновление",
         "  channel        Цикл канала обновлений (-Watch — блокирующий наблюдатель)",
         "  channel-config Правка канала: -SetUrl <https>, -KeysJson <файл ключей>",
         "  support-bundle Создать архив диагностики на рабочем столе",
         "  lan-access     Доступ по локальной сети: -Enable / -Disable (без флагов — показать адрес)",
         "  restart        Перезапуск приложения (stop + start)",
-        "  prepare        Подготовить рабочую среду (Docker, WSL2, место, порт) и показать состояние",
+        "  prepare        Проверить среду и запустить только уже установленный Docker Desktop",
         "  docker-status  Состояние Docker Desktop, WSL2, виртуализации, места, порта и прав",
-        "  docker-install Установить Docker Desktop официальным установщиком (-Interactive)",
         "  docker-start   Запустить Docker Desktop и дождаться готовности Docker Engine",
         "  supervise      Один цикл управляющего компонента: среда → приложение → готовность",
         "  tray           Показать значок HR Manager в системном трее",
@@ -166,7 +157,7 @@ try {
             $null = Set-HrmSetupMarker -StateDir $StateDir -Status "running" -Message $setupMessage
             $script:SetupMarkerOwner = $true
             Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
-            Install-HrmApp -SourceDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir -Port $Port -AllowDockerInstall:($InstallDocker -or $Interactive)
+            Install-HrmApp -SourceDir $SourceDir -InstallDir $InstallDir -StateDir $StateDir -Port $Port
         }
         "start" {
             Start-HrmApp -InstallDir $InstallDir -StateDir $StateDir
@@ -263,7 +254,7 @@ try {
             Write-HrmLog "info" "Перезапуск завершён."
         }
         "prepare" {
-            $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $Port -AllowInstall:($InstallDocker -or $Interactive) -Interactive:$Interactive
+            $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $Port
             foreach ($line in (Format-HrmDockerReadiness -InstallDir $InstallDir -StateDir $StateDir -Port $Port)) { Write-Output $line }
             if (-not $prepare.ok) {
                 try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
@@ -274,22 +265,13 @@ try {
         "docker-status" {
             foreach ($line in (Format-HrmDockerReadiness -InstallDir $InstallDir -StateDir $StateDir -Port $Port)) { Write-Output $line }
         }
-        "docker-install" {
-            $result = Install-HrmDockerDesktop -StateDir $StateDir -Interactive:($Interactive -or (Test-HrmInteractive)) -AllowSilent
-            Write-Output $result.message
-            if ($result.status -eq "reboot_required") { exit 2 }
-            # installer_timeout — потолок ожидания установщика истёк, установка
-            # НЕ завершена: код возврата обязан быть ненулевым, иначе значок в
-            # трее покажет «готово» при живом установщике (дефект P3 дораздела).
-            if (@("uac_declined", "failed", "manual_required", "installer_timeout") -contains $result.status) { exit 1 }
-        }
         "docker-start" {
             $result = Start-HrmDockerDesktop
             Write-Output $result.message
             if (-not $result.started) { exit 1 }
         }
         "supervise" {
-            $result = Invoke-HrmSupervisorCycle -InstallDir $InstallDir -StateDir $StateDir -Port $Port -AllowInstall:($InstallDocker -or $Interactive) -Interactive:$Interactive
+            $result = Invoke-HrmSupervisorCycle -InstallDir $InstallDir -StateDir $StateDir -Port $Port
             Write-Output $result.message
             if (-not $result.ok) { exit 1 }
         }
