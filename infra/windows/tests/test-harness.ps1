@@ -116,7 +116,6 @@ function Initialize-HrmTestEngine {
     Clear-HrmHttpMock
     Clear-HrmPreflightOverride
     Clear-HrmDockerOverride
-    Clear-HrmDownloadMock
     Clear-HrmProcessLaunchMock
     Clear-HrmProcessStartMock
     Reset-HrmRedaction

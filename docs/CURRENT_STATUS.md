@@ -5,6 +5,24 @@
 > `docs/handoff-release-0.14.0.md` являются актуальным описанием состояния;
 > старые формулировки «15–16 не влиты» больше не использовать. Функциональная
 > готовность не является разрешением на публикацию: пилот пока `NO-GO`.
+>
+> **Актуализация 2026-10-13 (Windows installer):** Docker Desktop остаётся
+> runtime, но устанавливается пользователем отдельно и вручную. Setup/движок
+> больше не скачивают и не запускают Docker installer, не принимают лицензию и
+> не используют `docker-install`/Docker-specific pending. Необязательный
+> sidecar можно опубликовать отдельно с официальным URL и SHA256-пином; он не
+> встраивается и автоматически не запускается. Для `pilot-release` sidecar
+> скачивается только при явном вводе его SHA256 в ручном dispatch; пустой ввод
+> оставляет в манифесте только официальный URL. Для отсутствующего Docker кодом
+> предусмотрен честный отказ: ожидаются Setup `10`, `setup-run.json=failed` и
+> Finish без заявления о готовности; этот путь ещё нужно подтвердить Windows
+> smoke и сборкой Inno Setup. После ручной подготовки ярлык HR Manager
+> повторяет первичную настройку из уже скопированных файлов, если
+> `installed.json` ещё не создан; этот путь также требует Windows-проверки.
+> Эта актуализация и текущий `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` supersede
+> более ранние датированные отчёты о прежней автоустановке. Python lint и
+> синтаксический разбор workflow YAML пройдены; Windows/Pester/smoke и сборка
+> Inno Setup ещё требуют прогона на Windows CI.
 
 ## Что принято
 
@@ -222,10 +240,7 @@ PostgreSQL integration и Compose должны подтверждаться CI �
 Работы по финальной сборке для Windows 10/11 x64: аудит `docs/PILOT_FINAL_AUDIT.md`,
 итоговый отчёт `docs/PILOT_FINAL_REPORT.md`. Реализовано (код + автотесты + документы):
 
-- **Docker-сценарий** (`infra/windows/engine/Docker.psm1`): поиск Docker Desktop/движка, WSL2, виртуализация,
-  права, перезагрузка, место, порт; установка только официального установщика (`desktop.docker.com`, проверка
-  Authenticode + Subject, без `--accept-license`); отмена UAC/reboot → `docker-pending.json`; ожидание движка
-  с прогрессом; человеческие сообщения.
+- **Docker-сценарий (актуализирован 2026-10-13)** (`infra/windows/engine/Docker.psm1`): поиск Docker Desktop/Engine, WSL2, виртуализация, место и порт; ручная установка пользователем с официального сайта; движок может запускать только уже установленный Desktop и ожидать Engine. Автоустановщик, `docker-install`, установочные таймауты и `docker-pending.json` удалены; диагностика, портовая логика и тома сохранены. Sidecar — отдельный optional-файл с SHA256 и официальной ссылкой; никогда не встраивается/не запускается.
 - **Стек** (`Compose.psm1`): состояния `absent/stopped/partial/running/degraded/unknown`, ремонт и запуск
   существующего проекта `hr-manager-pilot` **без удаления томов**.
 - **Трей** (`Tray.psm1`, `Supervisor.psm1`, `hrm-tray.ps1`): значок, меню (открыть/проверить/перезапустить/
@@ -279,9 +294,10 @@ Pester-наборы движка, сборка `Setup.exe` и `silent install/un
 (`HRM engine tests: ВСЕ ТЕСТЫ ПРОЙДЕНЫ (162)`).
 
 Остаётся (без этого GO нет): ручной чек-лист `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows с реальным
-Docker Desktop (UAC, перезагрузка, движок, порт 8080, трей в пользовательской сессии, автозапуск, LAN, активация
-лицензии, N→N+1 с данными и откатом) и письменный owner decision. В среде разработки нет Windows/PowerShell/Docker,
-поэтому живая установка здесь не запускалась.
+Docker Desktop (его ручная установка пользователем отдельно от HR Manager; при необходимости UAC/перезагрузка,
+запуск Engine, порт 8080, трей в пользовательской сессии, автозапуск, LAN, активация лицензии, N→N+1 с данными
+и откатом) и письменный owner decision. В среде разработки нет Windows/PowerShell/Docker, поэтому живая установка
+здесь не запускалась.
 
 ## Пилотный релиз: что осталось сделать
 
@@ -296,8 +312,7 @@ Docker Desktop (UAC, перезагрузка, движок, порт 8080, тр
 
 ### Обязательные задачи пилота (агенты)
 
-- [x] Установщик «из коробки» (B1–B6): реализовано в 0.15.0 (см. раздел выше и `docs/PILOT_FINAL_AUDIT.md`);
-  приёмка на Windows — по `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` (пока не выполнена).
+- [x] Установщик HR Manager: реализован в 0.15.0; актуальный Docker-путь — отдельная ручная установка пользователем. При отсутствии Docker в коде предусмотрены отказ Setup с кодом `10`, статус `setup-run.json=failed` и Finish без заявления о готовности; Windows-приёмка этого контракта пока не выполнена (см. разделы B/C `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`).
 - [ ] График выхода на работу (Этап 18): `prompts/PHASE_18_WORK_SCHEDULE_PROMPT.md`.
 - [ ] Понятные правила + диагностика в администрировании:
   `prompts/UX_RULES_DIAGNOSTICS_PROMPT.md`.
@@ -340,9 +355,11 @@ Docker Desktop (UAC, перезагрузка, движок, порт 8080, тр
 3. Запустить backend/интеграционные/Compose/Windows проверки на итоговом SHA и
    сохранить ссылки на CI evidence.
 4. Взять пилотный `Setup.exe` 0.15.0 из артефакта веточного CI
-   `pilot-setup-0.15.0-unsigned` (или собрать кнопкой workflow `pilot-release`,
-   без Authenticode), сверить SHA256 с `SHA256SUMS.txt` и разделом 4
-   `docs/PILOT_FINAL_REPORT.md`; проверить Ed25519-лицензию portable-issuer-ом.
+   `pilot-setup-0.15.0-unsigned` (или собрать через ручной workflow `pilot-release`,
+   без Authenticode), сверить SHA256 с `SHA256SUMS.txt` и `installer_exe.sha256`
+   из `release-manifest.json` этой же сборки. При включённом sidecar сверить также
+   его сумму; проверить Ed25519-лицензию portable-issuer-ом. Исторический
+   `PILOT_FINAL_REPORT.md` не является источником актуальных хешей.
 5. Выполнить `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md` на чистой Windows (реальный
    Docker Desktop, трей, обновление с данными и откатом) и только после всех
    PASS + письменного owner decision вынести GO/NO-GO.

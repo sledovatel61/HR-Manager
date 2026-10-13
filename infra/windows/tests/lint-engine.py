@@ -469,7 +469,7 @@ def main() -> int:
             fail(f"compose.pilot.yml: обязательная переменная {required} не затребована (:?)")
 
 
-    # --- 0.15.0: пилотный supervisor, трей и установка Docker Desktop ---------
+    # --- Docker: диагностика и ручная установка -----------------------------
     engine_dir = WINDOWS / "engine"
     tray_entry = WINDOWS / "hrm-tray.ps1"
     tray_module = engine_dir / "Tray.psm1"
@@ -477,7 +477,7 @@ def main() -> int:
     docker_module = engine_dir / "Docker.psm1"
     for path in (tray_entry, tray_module, supervisor_module, docker_module):
         if not path.exists():
-            fail(f"0.15.0: отсутствует обязательный файл {path}")
+            fail(f"Docker/Supervisor/Tray: отсутствует обязательный файл {path}")
     pilot_modules = ["Docker", "Supervisor", "Tray"]
     entry_text = entry
     tray_entry_text = tray_entry.read_text(encoding="utf-8") if tray_entry.exists() else ""
@@ -497,18 +497,28 @@ def main() -> int:
             fail(f"Tray.psm1: в меню нет пункта «{required_text}»")
 
     docker_text = docker_module.read_text(encoding="utf-8") if docker_module.exists() else ""
-    # Лицензию Docker принимает человек: движок не передаёт --accept-license.
-    # Упоминания в комментариях разрешены (документируют отказ); важен код.
+    if "https://www.docker.com/products/docker-desktop/" not in docker_text:
+        fail("Docker.psm1: нет ссылки на официальный сайт Docker Desktop")
+    for required in ("Get-HrmDockerInstallGuide", "Get-HrmDockerMissingMessage",
+                     "Get-HrmDockerReadiness", "Invoke-HrmDockerPrepare",
+                     "Start-HrmDockerDesktop", "Wait-HrmDockerEngine",
+                     "VirtualizationFirmwareEnabled"):
+        if required not in docker_text:
+            fail(f"Docker.psm1: нет сохранённого диагностического контракта {required}")
+    docker_code = _strip_ps_comments(docker_text)
+    for forbidden in ("Install-HrmDockerDesktop", "Save-HrmDownload", "Start-HrmElevatedAndWait",
+                      "Get-AuthenticodeSignature", "docker-pending.json", "pending_docker",
+                      "--accept-license"):
+        if forbidden in docker_code:
+            fail(f"Docker.psm1: устаревшая автоустановка/pending-механика {forbidden}")
+
+    # The engine never auto-accepts Docker's license, including in other modules.
     for path in engine_files:
         code = _strip_ps_comments(path.read_text(encoding="utf-8"))
         if "--accept-license" in code:
-            fail(f"{path}: движок не должен принимать лицензию Docker за пользователя (--accept-license)")
-    if "desktop.docker.com" not in docker_text:
-        fail("Docker.psm1: установщик Docker берётся не с официального адреса desktop.docker.com")
-    if "Get-AuthenticodeSignature" not in docker_text:
-        fail("Docker.psm1: подпись скачанного установщика Docker не проверяется")
+            fail(f"{path}: Docker license acceptance must remain a human action")
 
-    # Supervisor: единственность, состояние, автозапуск.
+    # Supervisor: singleton, state, autostart.
     supervisor_text = supervisor_module.read_text(encoding="utf-8") if supervisor_module.exists() else ""
     for required in ("WaitOne", "supervisor.json", "autostart.json", "Get-HrmSupervisorStatusText"):
         if required not in supervisor_text:
@@ -517,7 +527,20 @@ def main() -> int:
         if state_word not in supervisor_text:
             fail(f"Supervisor.psm1: нет понятного состояния «{state_word}»")
 
-    # Данные не должны удаляться ни в одном сценарии, кроме явного purge.
+    # Preserve general resume and interactivity while deleting only Docker pending state.
+    install_text = (engine_dir / "Install.psm1").read_text(encoding="utf-8")
+    for required in ("Resume-HrmOperation", "Get-HrmUpdateJournal", "recordForResume"):
+        if required not in install_text:
+            fail(f"Install.psm1: общий resume-контракт отсутствует ({required})")
+    tray_code = _strip_ps_comments(tray_text)
+    install_code = _strip_ps_comments(install_text)
+    for path, code in ((tray_module, tray_code), (engine_dir / "Install.psm1", install_code)):
+        if "Get-HrmPendingDockerOperation" in code or "docker-pending.json" in code:
+            fail(f"{path}: остался Docker-specific pending/resume-механизм")
+    if "Test-HrmInteractive" not in (engine_dir / "Common.psm1").read_text(encoding="utf-8"):
+        fail("Common.psm1: потерян общий Test-HrmInteractive helper")
+
+    # Data volumes remain protected; only explicit, separately-gated purge is allowed.
     for path in engine_files:
         code = _strip_ps_comments(path.read_text(encoding="utf-8"))
         if re.search(r'"down"[^\n]*"-v"', code) or re.search(r'"--volumes"', code):
@@ -525,13 +548,45 @@ def main() -> int:
         if re.search(r'"volume",\s*"prune"', code) or "volume prune" in code:
             fail(f"{path}: volume prune запрещён (удаление данных)")
 
-    # Установщик: значок в трее, установка Docker по галочке, автозапуск supervisor'а.
+    # Inno: optional, external sidecar; no task/CLI install action; dynamic Finish + custom exit.
     iss = (ROOT / "installer" / "installer.iss").read_text(encoding="utf-8")
-    for required in ("hrm-tray.ps1", "dockerinstall", "GetEngineDockerArgs", "{userstartup}"):
+    for required in ("hrm-tray.ps1", 'Source: "{src}\\DockerDesktopInstaller.exe"',
+                     'DestDir: "{app}\\docker"', "external skipifsourcedoesntexist",
+                     "GetCustomSetupExitCode", "GetHrmSetupEngineStatus", "FinishIncompleteTitle",
+                     "{userstartup}"):
         if required not in iss:
             fail(f"installer.iss: нет обязательного элемента {required}")
+    for removed in ("[Tasks]", "dockerinstall", "GetEngineDockerArgs", "-InstallDocker"):
+        if removed in iss:
+            fail(f"installer.iss: удалённый Docker auto-install элемент всё ещё есть: {removed}")
+    run_section = re.search(r"(?ms)^\[Run\]\s*(.*?)(?=^\[UninstallRun\])", iss)
+    if not run_section:
+        fail("installer.iss: нет [Run] секции")
+    elif "DockerDesktopInstaller.exe" in run_section.group(1):
+        fail("installer.iss: DockerDesktopInstaller.exe нельзя запускать из [Run]")
+    if "Result := 10" not in iss:
+        fail("installer.iss: движковый отказ не меняет custom Setup exit code на 10")
     if 'hr-manager.ps1"" -Action start' in iss:
         fail("installer.iss: автозапуск всё ещё запускает консольный -Action start")
+
+    # Build records the exact optional sidecar SHA/URL; it never downloads Docker Desktop.
+    build_script = (ROOT / "installer" / "build.ps1").read_text(encoding="utf-8")
+    for required in ("DockerDesktopInstallerPath", "DockerDesktopInstallerSha256",
+                     "docker_desktop_installer", "DockerInstallerSourceUrl", "SHA256SUMS.txt"):
+        if required not in build_script:
+            fail(f"installer/build.ps1: отсутствует optional sidecar/hash contract {required}")
+    if "Invoke-WebRequest -Uri $DockerInstallerSourceUrl" in _strip_ps_comments(build_script):
+        fail("installer/build.ps1: не скачивать Docker Desktop Installer автоматически")
+
+    ci_text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    if "docker-publisher-audit" in ci_text or "Audit-HrmDockerPublisher.ps1" in ci_text:
+        fail("ci.yml: устаревший Docker publisher audit job скачивает сторонний installer")
+    pilot_release = (ROOT / ".github" / "workflows" / "pilot-release.yml").read_text(encoding="utf-8")
+    for required in ("docker_desktop_installer_sha256", "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
+                     "if (-not $expected)", "Get-FileHash -LiteralPath $sidecar", "$actual -ne $expected",
+                     "-DockerDesktopInstallerSha256", "installer/output/*"):
+        if required not in pilot_release:
+            fail(f"pilot-release.yml: отсутствует optional pinned sidecar publish contract {required}")
 
     print(f"Проверено файлов: {len(files)}")
     if FAILURES:

@@ -2,10 +2,11 @@
 ; Мастер установки Inno Setup 6.7.3 (закреплено в installer/README.md):
 ;   роль (HR | Руководитель | Администратор) → фамилия владельца →
 ;   часовой пояс (по умолчанию Europe/Moscow) → Установить.
-; Вся автоматизация после копирования файлов — infra/windows/hr-manager.ps1
-; (сборка образов, секреты, Docker, первый запуск). Мастер не трогает
-; Docker и не принимает лицензии за пользователя: Docker Desktop ставится
-; только самим пользователем с официального сайта docker.com.
+; После копирования файлов движок проверяет среду и запускает приложение.
+; Docker Desktop не скачивается и не запускается автоматически: если он
+; отсутствует, пользователь устанавливает его вручную с официального сайта.
+; Необязательный DockerDesktopInstaller.exe рядом с Setup.exe может быть
+; скопирован в {app}\docker, но никогда не запускается этим мастером.
 ;
 ; Сборка: installer/build.ps1 (закрепляет версию Inno Setup и хеши).
 
@@ -41,12 +42,6 @@ UsePreviousAppDir=yes
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
-[Tasks]
-; Пользователь сам решает, устанавливать ли Docker Desktop. По умолчанию
-; галочка стоит — обычному пользователю достаточно нажать «Установить»; при
-; этом лицензию Docker и запрос UAC принимает человек, а не программа.
-Name: "dockerinstall"; Description: "{cm:DockerTaskInstall}"; GroupDescription: "{cm:DockerTaskGroup}"
-
 [CustomMessages]
 russian.RolePageCaption=Роль владельца
 russian.RolePageDescription=Выберите режим работы единственной учётной записи пилота. Роль можно будет изменить позже в настройках приложения.
@@ -58,15 +53,15 @@ russian.SurnamePageCaption=Владелец
 russian.SurnamePageDescription=Введите фамилию владельца. Техническое имя пользователя будет создано автоматически, а пароль вы зададите в браузере на странице первого запуска.
 russian.TimezonePageCaption=Часовой пояс
 russian.TimezonePageDescription=Часовой пояс для уведомлений и расписаний (по умолчанию Europe/Moscow). Изменить можно в настройках приложения.
-russian.DockerNote=HR Manager работает в контейнерах, поэтому нужен Docker Desktop.%n%nЕсли Docker Desktop ещё НЕ установлен — оставьте галочку ниже: HR Manager скачает ОФИЦИАЛЬНЫЙ установщик с сайта docker.com и запустит его. Windows запросит разрешение (UAC), а лицензионное соглашение Docker принимаете вы сами — за вас его никто не принимает.%n%nЕсли Docker Desktop уже установлен, галочка НИЧЕГО не переустанавливает: HR Manager использует установленный Docker Desktop и при необходимости запустит его, а затем дождётся готовности. Если Docker Desktop уже запущен, галочку можно снять.
-russian.DockerTaskGroup=Docker для HR Manager:
-russian.DockerTaskInstall=Установить Docker Desktop, если он ещё не установлен (официальный установщик Docker)
+russian.DockerNote=HR Manager работает в контейнерах, поэтому необходимы Docker Desktop и готовый Docker Engine.%n%nЕсли Docker Desktop ещё не установлен, скачайте его только с официального сайта https://www.docker.com/products/docker-desktop/ и запустите установку самостоятельно. HR Manager не скачивает и не запускает установщик Docker Desktop и не принимает лицензию Docker за пользователя.%n%nПосле установки запустите Docker Desktop, дождитесь готовности Docker Engine и повторите запуск HR Manager. Если в дистрибутиве рядом с Setup.exe есть дополнительный DockerDesktopInstaller.exe, мастер скопирует его в папку docker приложения; этот файл никогда не запускается автоматически.
 russian.SnapshotStop=Установка остановлена, чтобы не потерять возможность вернуться к работающей версии. Файлы программы НЕ изменены. Закройте это окно и запустите Setup.exe заново; если ошибка повторится — создайте отчёт для поддержки из значка HR Manager в трее.
 russian.SnapshotFailed=Не удалось сохранить копию предыдущей версии, поэтому обновление остановлено: так у вас останется возможность вернуться к работающей версии.
 russian.SnapshotFilesReplaced=Файлы программы уже заменены новой версией, а копии прежней версии нет. Запустите установку заново: при повторном запуске копия прежней версии будет создана ДО замены файлов.
 russian.SnapshotHelperFailed=Не удалось запустить подготовку к обновлению. Проверьте, что Windows PowerShell доступен, и запустите Setup.exe заново.
 russian.FinishTitle=HR Manager установлен
-russian.FinishText=Готово! HR Manager уже запускается — это занимает 2–5 минут.%n%nВ правом нижнем углу появится значок HR Manager (в трее): он показывает состояние «Запускается», «Готово», «Ошибка».%nКогда всё будет готово, откроется браузер со страницей первого запуска — задайте пароль администратора.%nЗначок HR Manager на рабочем столе открывает приложение; меню значка позволяет перезапустить приложение и создать отчёт для поддержки.%n%nЕсли что-то пойдёт не так — откройте значок HR Manager в трее и нажмите «Создать отчёт для поддержки».
+russian.FinishText=Файлы HR Manager установлены, приложение запустилось и движок подтвердил готовность.%n%nВ правом нижнем углу появится значок HR Manager (в трее). Когда всё будет готово, откроется браузер со страницей первого запуска — задайте пароль администратора.%nЗначок HR Manager на рабочем столе открывает приложение; меню значка позволяет перезапустить приложение и создать отчёт для поддержки.%n%nЕсли что-то пойдёт не так — откройте значок HR Manager в трее и нажмите «Создать отчёт для поддержки».
+russian.FinishIncompleteTitle=Файлы установлены, но HR Manager не готов
+russian.FinishIncompleteText=Setup.exe установил файлы, однако движок не подтвердил готовность приложения. Код завершения мастера: 10 (установка файлов завершена, настройка приложения — нет).%n%nПроверьте значок HR Manager в системном трее и файл %LOCALAPPDATA%\HRManager\setup-run.json. Если Docker Desktop отсутствует, установите его вручную только с официального сайта https://www.docker.com/products/docker-desktop/, запустите Docker Desktop и дождитесь готовности Docker Engine. Затем повторите запуск HR Manager.%n%nЕсли Docker Desktop уже установлен, откройте его и дождитесь готовности Engine. Для поддержки создайте отчёт из меню значка HR Manager.
 
 [Files]
 ; --- Снимок прежней версии: вспомогательные файлы идут ПЕРВЫМИ --------------
@@ -91,21 +86,24 @@ Source: "staging\app\release.json"; Flags: dontcopy noencryption
 ; Снимок приложения собирает installer/build.ps1 в staging/app:
 ; backend/, frontend/ (исходники, без node_modules), infra/ и release.json.
 Source: "staging\app\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
-; Каталог состояния создаёт движок; здесь — только пустой маркер структуры не нужен.
+; Sidecar is external: it is read from beside Setup.exe at install time, not embedded
+; in Setup.exe. Missing sidecar is allowed; the engine only links to the official site.
+Source: "{src}\DockerDesktopInstaller.exe"; DestDir: "{app}\docker"; Flags: external skipifsourcedoesntexist ignoreversion
+; Neither [Run] nor the engine launches this copied file.
 
 [Run]
 ; Обязательный порядок после копирования файлов (эти записи намеренно НЕ имеют
 ; флага postinstall: пользователь не может отменить запуск приложения):
 ;   1) значок HR Manager в трее (управляющий компонент) — пользователь видит
 ;      состояние «Запускается / Готово / Ошибка» и кнопки действий;
-;   2) движок выполняется СКРЫТО и пишет журнал в каталог состояния: проверка
-;      Windows/WSL2/виртуализации/места/порта, при необходимости установка
-;      Docker Desktop официальным установщиком (UAC и лицензию принимает
-;      пользователь), ожидание Docker Engine, сборка и запуск контейнеров,
-;      первый запуск в браузере.
-; После перезагрузки Windows (если её потребует установка Docker) движок
-; продолжит работу сам — см. действие resume. Трей запускается отдельно и
-; остаётся отзывчивым, пока установочный движок выполняется ниже.
+;   2) движок выполняется СКРЫТО и пишет журнал в каталог состояния: проверяет
+;      Windows/WSL2/виртуализацию/место/порт, проверяет и при необходимости
+;      запускает уже установленный Docker Desktop, ждёт готовности Engine,
+;      собирает и запускает контейнеры, затем открывает первый запуск в браузере.
+; Docker Desktop движок не скачивает и не устанавливает. При его отсутствии
+; установка приложения завершится честным отказом; мастер Finish и код выхода
+; будут отличать копирование файлов от готовности HR Manager. Трей запускается
+; отдельно и остаётся отзывчивым, пока установочный движок выполняется ниже.
 ;
 ; 64-БИТНЫЙ PowerShell обязателен: установщик 32-битный, и простой
 ; "powershell.exe" через WOW64-редирект запускает 32-битный PowerShell,
@@ -119,7 +117,7 @@ Filename: "{win}\SysNative\WindowsPowerShell\v1.0\powershell.exe"; \
   Flags: nowait runhidden
 
 Filename: "{win}\SysNative\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action install -SourceDir ""{app}"" -NonInteractive -OpenBrowser {code:GetEngineDockerArgs}"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action install -SourceDir ""{app}"" -NonInteractive -OpenBrowser"; \
   WorkingDir: "{app}"; \
   StatusMsg: "HR Manager устанавливается (это может занять несколько минут)…"; \
   Flags: runhidden
@@ -533,10 +531,12 @@ begin
   // «HR Manager не установлен» (дефект P2 ревью). Движок обновляет отметку по
   // ходу установки и снимает её при успешном завершении.
   StateDir := ExpandConstant('{localappdata}\HRManager');
-  ForceDirectories(StateDir);
+  if not ForceDirectories(StateDir) then
+    RaiseException('Не удалось создать каталог состояния HR Manager для отметки установки.');
   MarkerFile := StateDir + '\setup-run.json';
   Marker := '{"status": "running", "message": "Устанавливаем HR Manager…"}';
-  SaveStringToFile(MarkerFile, Marker, False);
+  if not SaveStringToFile(MarkerFile, Marker, False) then
+    RaiseException('Не удалось записать отметку установки HR Manager.');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -577,24 +577,73 @@ begin
     Result := GuardError;
 end;
 
-function GetEngineDockerArgs(Param: String): String;
+function GetHrmSetupEngineStatus(): String;
+var
+  MarkerFile, Line: String;
+  Lines: TArrayOfString;
+  I: Integer;
 begin
-  // Галочка «Установить Docker Desktop» передаёт движку разрешение предложить
-  // официальный установщик Docker. Отмена UAC или отказ от лицензии Docker —
-  // штатный результат: движок покажет понятное сообщение, а не «упадёт».
-  if WizardIsTaskSelected('dockerinstall') then
-    Result := '-InstallDocker'
-  else
-    Result := '';
+  // Success is only the engine's successful removal of its marker. A remaining
+  // failed/running/unreadable marker is incomplete, never a successful launch.
+  Result := 'unknown';
+  if not DirExists(HrmStateDir()) then Exit;
+  MarkerFile := HrmStateDir() + '\setup-run.json';
+  if not FileExists(MarkerFile) then
+  begin
+    Result := 'success';
+    Exit;
+  end;
+  try
+    if not LoadStringsFromFile(MarkerFile, Lines) then Exit;
+    for I := 0 to GetArrayLength(Lines) - 1 do
+    begin
+      Line := Lowercase(Trim(Lines[I]));
+      if Pos('"status"', Line) > 0 then
+      begin
+        if Pos('"failed"', Line) > 0 then
+          Result := 'failed'
+        else if Pos('"running"', Line) > 0 then
+          Result := 'running'
+        else
+          Result := 'unknown';
+        Exit;
+      end;
+    end;
+  except
+    Result := 'unknown';
+  end;
+end;
+
+function GetCustomSetupExitCode(): Integer;
+var
+  EngineStatus: String;
+begin
+  // Supported Inno Setup hook: only called after Setup itself has succeeded.
+  // 10 means files were copied but the HR Manager engine did not confirm ready.
+  EngineStatus := GetHrmSetupEngineStatus();
+  Result := 0;
+  if EngineStatus <> 'success' then
+    Result := 10;
+  Log('HRM: setup engine result=' + EngineStatus + ' custom exit=' + IntToStr(Result));
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
+var
+  EngineStatus: String;
 begin
   if CurPageID = wpFinished then
   begin
-    WizardForm.FinishedLabel.Caption :=
-      ExpandConstant('{cm:FinishText}');
-    WizardForm.FinishedHeadingLabel.Caption :=
-      ExpandConstant('{cm:FinishTitle}');
+    EngineStatus := GetHrmSetupEngineStatus();
+    if EngineStatus = 'success' then
+    begin
+      WizardForm.FinishedLabel.Caption := ExpandConstant('{cm:FinishText}');
+      WizardForm.FinishedHeadingLabel.Caption := ExpandConstant('{cm:FinishTitle}');
+    end
+    else
+    begin
+      WizardForm.FinishedLabel.Caption := ExpandConstant('{cm:FinishIncompleteText}');
+      WizardForm.FinishedHeadingLabel.Caption := ExpandConstant('{cm:FinishIncompleteTitle}');
+      Log('HRM: Finish page reports incomplete engine status=' + EngineStatus);
+    end;
   end;
 end;

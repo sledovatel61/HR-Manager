@@ -219,15 +219,14 @@ function Invoke-HrmPreflightGuarded {
 
 function Install-HrmApp {
     # Основной сценарий: повторный запуск распознаёт существующую установку
-    # и только открывает/восстанавливает её.
-    # -AllowDockerInstall: разрешено предложить/выполнить установку Docker Desktop
-    # официальным установщиком (UAC и лицензию Docker принимает человек).
+    # и открывает/восстанавливает её. Docker Desktop при необходимости
+    # устанавливается вручную пользователем; этот движок только проверяет и
+    # запускает уже установленную программу.
     param(
         [string]$SourceDir = "",
         [string]$InstallDir = "",
         [string]$StateDir = "",
-        [int]$Port = 0,
-        [switch]$AllowDockerInstall
+        [int]$Port = 0
     )
     if (-not $SourceDir) {
         # Каталог снимка — ближайший родитель, содержащий infra/compose.pilot.yml
@@ -324,7 +323,7 @@ function Install-HrmApp {
         }
         $existingPort = [int](Get-HrmInstallRecordField -Record $existing -Field "port" -Default 0)
         if ($existingPort -le 0) { $existingPort = $port }
-        $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $existingPort -AllowInstall:$AllowDockerInstall -Interactive:($AllowDockerInstall -or (Test-HrmInteractive))
+        $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $existingPort
         if (-not $prepare.ok) {
             try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
             throw $prepare.message
@@ -367,34 +366,22 @@ function Install-HrmApp {
     }
     # --- Первичная установка (записи установки нет) ---
     Initialize-HrmStateDir $StateDir
-    # Подготовка рабочей среды: Docker Desktop (при разрешении — официальный
-    # установщик), WSL2/виртуализация, ожидание Engine. Без Docker дальше нельзя.
+    # Подготовка рабочей среды: проверка и запуск уже установленного Docker
+    # Desktop, WSL2/виртуализации и готовности Engine. Установку runtime
+    # пользователь выполняет отдельно; без готового Docker дальше нельзя.
     #
     # ПОРЯДОК «prepare → preflight» — осознанный компромисс (обоснование и
     # альтернатива в infra\windows\README.md, раздел «Предполётная проверка»):
-    #  1) prepare ПЕРВЫМ определяет эффективный порт публикации (занятый порт
-    #     заменяется свободным), и предполётная проверка выполняется уже с ним —
-    #     иначе установка падала бы на «порт занят» ещё до подбора, то есть
-    #     отказывала бы там, где выход есть;
-    #  2) prepare приводит среду в проверяемое состояние (устанавливает/запускает
-    #     Docker Desktop, ждёт Engine) — предполётные проверки CLI, демона и
-    #     Compose относятся к подготовленной среде, а не к исходной;
-    #  3) цена: до предполётных проверок (версия Windows, разрядность
-    #     PowerShell, свободное место, доступность каталога состояния) уже
-    #     выполняются действия — скачивание и запуск официального установщика
-    #     Docker. Никакие проверки при этом не отключаются: preflight выполняется
-    #     следом и по-прежнему может отказать (тогда установка останавливается до
-    #     Compose и до записи установки), а сам prepare проверяет WSL2,
-    #     виртуализацию и свободное место для Docker.
-    # Альтернатива «preflight раньше» отклонена: она отказывала бы на чистой
-    # машине до установки Docker (нет CLI/демона/Compose) и на занятом порту — до
-    # подбора свободного.
-    $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port -AllowInstall:$AllowDockerInstall -Interactive:($AllowDockerInstall -or (Test-HrmInteractive))
+    # prepare ПЕРВЫМ определяет эффективный порт (занятый порт заменяется
+    # свободным) и проверяет/запускает уже установленный Docker Desktop, затем
+    # ждёт готовности Engine. Он не скачивает и не устанавливает Docker; если
+    # программа отсутствует, операция завершается с официальной ссылкой и
+    # ручными следующими шагами. Preflight выполняется после готовности среды.
+    $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port
     if (-not $prepare.ok) {
         try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
         if ($prepare.needs_install) {
             Write-HrmLog "warn" $prepare.message
-            foreach ($line in (Get-HrmDockerInstallGuide)) { Write-HrmLog "info" $line }
         }
         throw $prepare.message
     }
@@ -570,7 +557,30 @@ function Open-HrmApp {
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $record = Get-HrmInstallRecord $StateDir
-    if ($null -eq $record) { throw "Установка HR Manager не найдена. Запустите Setup.exe (установку) заново." }
+    if ($null -eq $record) {
+        $composeFile = Join-Path $InstallDir "infra\compose.pilot.yml"
+        if (-not (Test-Path $composeFile -PathType Leaf)) {
+            throw "Установка HR Manager не найдена. Запустите Setup.exe (установку) заново."
+        }
+        # Setup already copied the app files, but the first attempt may have
+        # stopped at the manual Docker prerequisite before installed.json existed.
+        # A deliberate click on the app shortcut retries the app install after the
+        # user has prepared Docker; it does not create Docker-specific pending state.
+        Write-HrmLog "info" "Файлы HR Manager уже установлены; повторяю первичную настройку приложения."
+        $null = Set-HrmSetupMarker -StateDir $StateDir -Status "running" -Message "Подготавливаем HR Manager после установки Docker Desktop…"
+        Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
+        Install-HrmApp -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
+        Clear-HrmSetupMarker -StateDir $StateDir
+        $record = Get-HrmInstallRecord $StateDir
+        $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
+        if ($port -le 0) { $port = Get-HrmPort }
+        # Start-HrmFirstRun has already opened/written the one-time setup URL. If
+        # an existing pilot owner was recovered instead, open the normal app URL.
+        if ([bool](Get-HrmInstallRecordField -Record $record -Field "pilot_created" -Default $false)) {
+            Invoke-HrmOpenBrowser (Get-HrmBaseUrl $port)
+        }
+        return
+    }
     $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
     if ($port -le 0) { $port = Get-HrmPort }
     $snapshotSha = Get-HrmReleaseSha $InstallDir $StateDir
@@ -671,9 +681,9 @@ function Remove-HrmApp {
 }
 
 function Resume-HrmOperation {
-    # Возобновление прерванной операции (после перезагрузки/UAC):
-    # если есть журнал обновления — продолжает обновление; иначе просто
-    # поднимает стек и доводит первый запуск.
+    # Возобновление прерванной операции приложения:
+    # если есть журнал обновления — продолжает обновление; иначе проверяет,
+    # была ли прервана первичная установка, или поднимает уже установленный стек.
     param([string]$InstallDir = "", [string]$StateDir = "")
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
@@ -683,32 +693,6 @@ function Resume-HrmOperation {
         if ($null -ne $data -and $data.phase) {
             Write-HrmLog "info" ("Найден прерванный процесс обновления (фаза {0}) — продолжаю." -f $data.phase)
             Update-HrmApp -ReleaseDir ([string]$data.release_dir) -InstallDir $InstallDir -StateDir $StateDir
-            return
-        }
-    }
-    $pending = Get-HrmPendingDockerOperation $StateDir
-    if ($null -ne $pending) {
-        $kind = ""
-        if ($pending.PSObject.Properties["kind"]) { $kind = [string]$pending.kind }
-        Write-HrmLog "info" "Найдена незавершённая установка рабочей среды — продолжаю автоматически."
-        $null = Set-HrmSetupMarker -StateDir $StateDir -Status "running" -Message "Продолжаем установку HR Manager…"
-        Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
-        $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -AllowInstall -Interactive
-        if (-not $prepare.ok) {
-            try { Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message } catch { }
-            throw $prepare.message
-        }
-        if ($kind -eq "reboot") { Clear-HrmPendingDockerOperation $StateDir }
-        # Записи об установке может ещё НЕ быть: перезагрузка после установки
-        # Docker прерывает ПЕРВИЧНУЮ установку до её записи. Продолжаем её —
-        # файлы снимка уже разложены мастером установки, поэтому запускаем
-        # обычную установку из каталога установки (одинаковые пути безопасны:
-        # снимок проверяется, а не копируется поверх самого себя).
-        $record = Get-HrmInstallRecord $StateDir
-        if ($null -eq $record -and (Test-Path (Join-Path $InstallDir "infra\compose.pilot.yml"))) {
-            Write-HrmLog "info" "Продолжаю первичную установку HR Manager (файлы уже на месте)."
-            Install-HrmApp -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir -AllowDockerInstall
-            Clear-HrmSetupMarker -StateDir $StateDir
             return
         }
     }
@@ -723,7 +707,7 @@ function Resume-HrmOperation {
         Write-HrmLog "info" "Продолжаю первичную установку HR Manager (файлы уже на месте)."
         $null = Set-HrmSetupMarker -StateDir $StateDir -Status "running" -Message "Продолжаем установку HR Manager…"
         Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true
-        Install-HrmApp -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir -AllowDockerInstall
+        Install-HrmApp -SourceDir $InstallDir -InstallDir $InstallDir -StateDir $StateDir
         Clear-HrmSetupMarker -StateDir $StateDir
         return
     }

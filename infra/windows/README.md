@@ -21,11 +21,10 @@ powershell -File hr-manager.ps1 -Action update-preview -ReleaseDir D:\hr-manager
 powershell -File hr-manager.ps1 -Action diagnostics [-Json]
 powershell -File hr-manager.ps1 -Action uninstall [-PurgeData]
 powershell -File hr-manager.ps1 -Action resume
-# 0.15.0: Docker-сценарий, supervisor и трей
-powershell -File hr-manager.ps1 -Action prepare            # что не хватает для запуска (Docker/WSL2/права/место/порт)
-powershell -File hr-manager.ps1 -Action docker-status      # состояние Docker Desktop и движка
-powershell -File hr-manager.ps1 -Action docker-install     # официальный установщик (UAC; exit 2 = нужна перезагрузка)
-powershell -File hr-manager.ps1 -Action docker-start       # запустить Docker Desktop и дождаться движка
+# Диагностика Docker, supervisor и трей
+powershell -File hr-manager.ps1 -Action prepare            # проверить среду; запускается только уже установленный Docker Desktop
+powershell -File hr-manager.ps1 -Action docker-status      # состояние Docker Desktop и Engine
+powershell -File hr-manager.ps1 -Action docker-start       # запустить уже установленный Docker Desktop и дождаться Engine
 powershell -File hr-manager.ps1 -Action supervise          # один supervisor (mutex), файл состояния
 powershell -File hr-manager.ps1 -Action tray               # значок в трее (Windows Forms)
 powershell -File hr-manager.ps1 -Action autostart [-Enable|-Disable]
@@ -33,14 +32,14 @@ powershell -File hr-manager.ps1 -Action autostart [-Enable|-Disable]
 
 | Действие | Что делает |
 |---|---|
-| `install` | Полная установка/восстановление: предполётные проверки, генерация секретов (однократно), копирование снимка, сборка образов, подъём контейнеров, первый запуск. Повторный запуск распознаёт существующую установку (open/repair). |
+| `install` | Полная установка/восстановление: предполётные проверки, генерация секретов (однократно), копирование снимка, сборка образов, подъём контейнеров, первый запуск. Требует вручную установленный и запущенный Docker Desktop; если его нет, движок завершится с официальной ссылкой и не запустит установщик Docker. |
 | `start` / `stop` | Запуск/остановка контейнеров. Данные (тома `pilot_pgdata`, `pilot_backups`) сохраняются. |
 | `status` | Короткий статус: контейнеры, готовность фронтенда/бэкенда, версия в работе. |
 | `open` | Открыть приложение в браузере (запускает, если остановлено). |
 | `update` | Обновление из доверенного каталога релиза `-ReleaseDir` (см. «Обновление»). |
 | `diagnostics` | Агрегированная диагностика (см. «Состояния»). Всегда с редакцией секретов. |
 | `uninstall` | Остановка и снятие контейнеров; **данные и бэкапы сохраняются**. `-PurgeData` удаляет только `pilot_pgdata` после точной фразы-подтверждения, свежего шифрованного бэкапа и успешного deep check; отказ от backup или ошибка запрещают удаление. `pilot_backups` и StateDir сохраняются; `down -v` не используется. Docker Desktop/WSL2 не удаляются никогда. |
-| `resume` | Продолжение прерванной операции (обновление по журналу фаз; после перезагрузки/UAC — подъём приложения и первый запуск). |
+| `resume` | Возобновить прерванное обновление по журналу фаз или незавершённую первичную установку HR Manager. Не возобновляет и не управляет ручной установкой Docker Desktop. |
 
 Параметры: `-SourceDir`, `-ReleaseDir`, `-InstallDir`
 (по умолчанию `%LOCALAPPDATA%\Programs\HRManager`), `-StateDir`
@@ -147,17 +146,35 @@ HTTP 200 на порту — это ещё не наше приложение:
 
 Честные проверки без молчаливых «согласий»:
 
-1. Windows 10/11; 2. PowerShell 5.1+ x64; 3. Docker CLI;
+1. Windows 10/11; 2. PowerShell 5.1+ x64; 3. Docker Desktop и Docker CLI должны быть установлены вручную;
 4. демон Docker (Docker Desktop запущен); 5. Docker Compose v2 ≥ 2.24
 (тег `!reset`); 6. порт свободен (порт собственного работающего пилота —
 норма); 7. каталог состояния доступен для записи; 8. свободное место
 ≥ 5 ГБ; 9. конфигурация compose валидна (`docker compose … config
 --quiet` с env-файлом).
 
-Docker Desktop установщик **не скачивает и не ставит**: пользователь
-устанавливает его сам только с официального сайта docker.com и сам
-принимает лицензию. Требование перезагрузки/UAC снимается сохранением
-состояния и действием `resume`.
+### Docker Desktop — только ручная установка
+
+Движок HR Manager **не скачивает, не устанавливает и не запускает установщик**
+Docker Desktop и не принимает лицензию от имени пользователя. Установите Docker
+Desktop самостоятельно с [официального сайта Docker](https://www.docker.com/products/docker-desktop/),
+прочитайте и примите лицензию сами, затем запустите Docker Desktop и дождитесь
+готовности Docker Engine.
+
+Если дистрибутив содержит `DockerDesktopInstaller.exe` рядом с `Setup.exe`, мастер
+может скопировать этот внешний sidecar в `{app}\docker\DockerDesktopInstaller.exe`.
+HR Manager никогда не запускает его автоматически; запустить файл при желании
+можно только самостоятельно. Если sidecar отсутствует, показывается только
+официальная ссылка — локальный путь не выдумывается. URL и SHA256 sidecar отражаются
+в `release-manifest.json` и `SHA256SUMS.txt`.
+
+Ручная установка Docker может потребовать UAC или перезагрузки Windows. HR Manager
+не создаёт для этого `docker-pending.json` и не возобновляет установку Docker после
+перезагрузки. Действие `resume` относится только к прерванной установке/обновлению
+самого HR Manager. После готовности Engine откройте HR Manager: если Setup успел
+скопировать файлы, но не создал `installed.json`, ярлык завершит первичную настройку
+из этих файлов. `prepare` только проверяет среду, а `start` требует существующую
+запись установки; ни одна из команд не устанавливает Docker.
 
 Таймаут пробы **не выдаётся** за отсутствие Docker (дефект P5.3): проверки
 «Docker CLI» и «демон Docker» различают истёкшее ожидание (`TimedOut`, код 124)
@@ -167,7 +184,7 @@ Docker Desktop установщик **не скачивает и не стави
 отсутствие работающего демона (заново запускать Docker Desktop не требуется).
 Прежние тексты при таймауте отправляли человека переустанавливать Docker Desktop.
 Отсутствие CLI (код 127) по-прежнему сообщает «Docker CLI не найден» с
-инструкцией установки с docker.com.
+инструкцией ручной установки с официального сайта Docker.
 
 ### Порядок «prepare → preflight» (первичная установка)
 
@@ -178,22 +195,18 @@ Docker Desktop установщик **не скачивает и не стави
    чужим приложением порт заменяется свободным. Предполётная проверка
    выполняется уже с этим портом и поэтому не отказывает на «порт занят» там,
    где выход есть. Обратный порядок давал бы ложный отказ ещё до подбора.
-2. **Среда.** Предполётные проверки CLI, демона и Compose относятся к
-   *подготовленной* среде: на чистой машине Docker Desktop ещё не установлен, и
-   проверка «демон не запущен» до prepare отказывала бы всегда. Prepare
-   устанавливает (с официального установщика, при разрешении пользователя) и
-   запускает Docker Desktop, ждёт Engine — и только после этого preflight
-   проверяет готовую среду.
-3. **Цена компромисса.** До проверок версии Windows, разрядности PowerShell,
-   свободного места и доступности каталога состояния уже выполняются действия
-   (скачивание и запуск официального установщика Docker). Ничего не
-   отключается: preflight выполняется следом, может отказать и тогда установка
-   останавливается ДО `compose up` и до записи установки; сам prepare проверяет
-   WSL2, аппаратную виртуализацию и свободное место для Docker.
+2. **Среда.** Предполётные проверки CLI, демона и Compose выполняются после
+   `prepare`. Если Docker Desktop отсутствует, prepare завершится отказом с
+   ручными шагами; автоматического скачивания/установки нет. Если Desktop уже
+   установлен, prepare запускает только его и ждёт Engine.
+3. **Порядок.** До предполётных проверок выполняются только выбор свободного
+   порта и диагностика/запуск имеющегося Docker Desktop. Ничего не отключается:
+   preflight выполняется следом, может отказать до `compose up` и до записи
+   установки; сам prepare проверяет WSL2, виртуализацию и свободное место.
 
-Альтернатива «preflight раньше prepare» отклонена: она отказывала бы на чистой
-машине (нет Docker CLI, демона и Compose) и на занятом порту — до подбора
-свободного порта.
+Альтернатива «preflight раньше prepare» отклонена: она отказала бы на
+неподготовленной среде до попытки запустить уже установленный Docker Desktop
+и на занятом порту — до подбора свободного порта.
 
 Поиск Docker Desktop учитывает и пользовательскую установку без
 администратора: `%LOCALAPPDATA%\Programs\DockerDesktop\Docker Desktop.exe`
@@ -432,26 +445,28 @@ backend (FastAPI), frontend (React) и `tools/license-issuer` (лицензии)
 
 | Модуль | Ответственность |
 |---|---|
-| `engine/Docker.psm1` | Поиск Docker Desktop (реестр + App Paths), состояние движка (`engine_ready/starting/installed_stopped/not_installed`), WSL2, аппаратная виртуализация, права администратора, ожидающая перезагрузка, свободное место, свободный порт. Установка — **только** официальный `https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe` (проверка Authenticode + Subject, без `--accept-license`). Отмена UAC/перезагрузка → `docker-pending.json`, установка продолжается при следующем запуске. Ожидание движка — `Wait-HrmDockerEngine` (300 с) с прогрессом. |
+| `engine/Docker.psm1` | Поиск Docker Desktop (реестр + App Paths), диагностика Engine, WSL2, виртуализации, прав, свободного места и порта. Движок запускает только уже установленный Docker Desktop и ожидает Engine (`Wait-HrmDockerEngine`, 300 с); отсутствующий Docker приводит к ручной инструкции с официальной ссылкой. Установщика, download/authenticode helpers и Docker-specific pending/resume-механизма нет. |
 | `engine/Compose.psm1` | Состояния стека `absent/stopped/partial/running/degraded/unknown`, `Repair-HrmStack`/`Start-HrmStack` (тома не удаляются), голова миграций читается из образа. |
 | `engine/Supervisor.psm1` | Mutex `Local\HRManagerPilotSupervisor` (один supervisor), `supervisor.json` (состояние/сообщение/pid/порт/url), `action.lock` (одно действие за раз), безопасный настраиваемый автозапуск (`autostart.json` — источник истины). |
 | `engine/Tray.psm1` | NotifyIcon и меню: «Открыть HR Manager», «Проверить состояние», «Перезапустить приложение», «Создать отчёт для поддержки», «Остановить приложение», «Выйти»; окно состояния с кнопками «Повторить/Открыть приложение/Создать отчёт»; предупреждения при остановке и выходе. |
 | `engine/Update.psm1` | `Get-HrmUpdatePreview` (текущая/новая версия, changelog, проверки места/лицензии/настроек/порта/сети/Docker/тома бэкапов, предупреждение о данных), фазы prepare→backup→build→switch→migrate→smoke, автоматический откат образов, `update-result.json` (`done|rolled_back|failed`). Даунгрейд БД не выполняется никогда. |
 
-Файлы состояния (каталог `%LOCALAPPDATA%\HRManager`): `supervisor.json`, `autostart.json`, `action.lock`,
-`update-result.json`, `update-journal.json`, `docker-pending.json`, `license_public_key.b64`, `pilot.env`, `logs`.
+Файлы состояния (каталог `%LOCALAPPDATA%\HRManager`): `supervisor.json`, `setup-run.json`, `autostart.json`, `action.lock`,
+`update-result.json`, `update-journal.json`, `license_public_key.b64`, `pilot.env`, `logs`. Docker-specific pending-файла нет.
 
-Установка Docker требует **подтверждения пользователя (UAC)** и иногда **перезагрузки** — это ограничение Windows и лицензии
-Docker Desktop, обходить его нельзя. Документы для людей: `docs/MARIA_GUIDE.md` (Перепечай, 2 страницы),
+При ручной установке Docker Windows может запросить **UAC** или **перезагрузку** — это решает пользователь; движок HR Manager не принимает лицензию и не возобновляет внешнюю установку. Документы для людей: `docs/MARIA_GUIDE.md` (Перепечай, 2 страницы),
 `docs/UPDATE_GUIDE.md`, `docs/RECOVERY_GUIDE.md`, `docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`,
-`docs/DOCKER_RUNTIME_DECISION.md`, итоги — `docs/PILOT_FINAL_REPORT.md`, аудит и план — `docs/PILOT_FINAL_AUDIT.md`.
+`docs/DOCKER_RUNTIME_DECISION.md`. Текущие проверки, хеши и GO/NO-GO фиксируются в
+`docs/CURRENT_STATUS.md`; `docs/PILOT_FINAL_REPORT.md` и `docs/PILOT_FINAL_AUDIT.md` — исторические записи.
 
 ## Ревизия стабильности установщика (12.10.2026)
 
 Пилотный отказ («Состояние: Запускается», «Предпроверка не пройдена: compose…»,
 десятки `powershell.exe`, `vmmemWSL` ≈ 1.8 ГБ) разобран по первопричинам в
 `docs/windows-installer-stability-2026-10-12.md`. Ниже — как движок ведёт себя
-после исправлений и как это проверить на машине.
+после исправлений и как это проверить на машине. Детали прежнего ожидания/запуска
+Docker installer в том датированном разборе исторические: в актуальном движке
+остались только таймауты внешних Docker/Compose-команд и ожидание Engine.
 
 ### Таймауты и отмена внешних команд
 
@@ -498,37 +513,17 @@ deadlock родителя даже без зависания. Так в дисп
 `-TimeoutSeconds` вызывающего → `HRM_EXTERNAL_TIMEOUT_SECONDS` (аварийный шов) →
 класс команды.
 
-Прежние ожидания **не увеличены** (это не способ «починить» зависание):
-`Wait-HrmDockerEngine` — 300 с с интервалом 5 с, `Start-HrmDockerDesktop` — 300 с,
-`Wait-HrmReady` — 180 с. Ограничено и ожидание установщика Docker в
-`Start-HrmElevatedAndWait` — 3600 с (`Get-HrmDockerInstallerWaitSeconds`): раньше
-оно было бесконечным, и движок ждал окно мастера установки, которое пользователь
-уже закрыл.
+Ожидания готовности Docker остаются ограниченными: `Wait-HrmDockerEngine` —
+300 с с интервалом 5 с, `Start-HrmDockerDesktop` — 300 с, `Wait-HrmReady` —
+180 с. Таймаут относится к запуску уже установленного Docker Desktop и к
+готовности Engine; HR Manager не создаёт/ожидает elevated installer process.
+Самостоятельно запущенный Docker installer не контролируется и не завершается
+движком.
 
-Истёкшее ожидание установщика — **отдельное состояние**, а не «код -1»
-(дефект P3). Движок **никогда не убивает** процесс официального установщика
-Docker: прерванная установка хуже явного отказа. По истечении ожидания
-`Start-HrmElevatedAndWait` возвращает `CanceledByUser = $false`, `ExitCode = -1`,
-`TimedOut = $true`, а `Install-HrmDockerDesktop` — статус `installer_timeout`
-(оба пути запуска: тихая установка и обычный мастер). Сообщение называет
-ожидание («…не завершилась за 3600 с»), факт, что процесс не завершался
-принудительно, путь к файлу установщика и следующее действие. Второй установщик
-**автоматически не запускается**: до исправления журнал писал «Тихая установка
-Docker Desktop не удалась (код -1) — открываем обычный мастер установки», и к
-часу молчания добавлялся ещё один час ожидания. `docker-pending.json` при
-таймауте не пишется (установка не завершена — автоматически продолжать нечего),
-`needs_reboot` остаётся `$false` даже при системном признаке ожидающей
-перезагрузки, а `-Action docker-install` возвращает код 1. Отмена UAC
-(`uac_declined`), «требуются действия пользователя» (`manual_required`) и успех
-(`installed` / `reboot_required`) не изменились; `Invoke-HrmDockerPrepare`
-передаёт состояние как есть (`state = "installer_timeout"`, `needs_install =
-$false`).
-
-Проверено тестами: `tests/engine.tests.ps1` (код 124, `/T /F`, частичный вывод,
-исключение без `-IgnoreExitCode`, классы таймаутов и неизменность 300/300/180 с),
-`tests/docker.tests.ps1` (таймаут установщика → `installer_timeout`, один запуск
-установщика, текст с ожиданием и файлом, отсутствие `docker-pending.json`;
-прежние `uac_declined` / `installed` сохранены).
+Проверяется `tests/docker.tests.ps1`: отказ при отсутствии Docker включает
+официальный URL, показывает sidecar-путь только при наличии файла и не запускает
+`DockerDesktopInstaller.exe`; диагностические проверки Engine, WSL2, портов,
+Compose и ожидания запуска остаются.
 
 ### Единственность цикла движка
 
@@ -698,8 +693,8 @@ $false`).
 то есть ровно тот симптом, который чинится.
 
 Кэш выбранного пути (`Reset-HrmDockerCliChoiceCache`) хранит только **успешный**
-выбор и сбрасывается перед ожиданием готовности Docker Engine: установка Docker
-Desktop внутри того же процесса обязана стать видимой движку.
+выбор и сбрасывается перед ожиданием готовности Docker Engine: после запуска
+или перезапуска установленного Desktop выполняется свежая диагностика CLI.
 
 ### Установка не завершается «наполовину»
 

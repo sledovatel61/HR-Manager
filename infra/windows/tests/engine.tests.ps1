@@ -873,6 +873,42 @@ Test-Case "R16: снимок без infra\license\public_key.b64 отклоня�
 
 Write-Host "== Нужное приложение на нужном порту (регрессии 12.10.2026) =="
 
+Test-Case "ярлык: после отказа Docker первичная установка продолжается, когда Engine готов" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Copy-HrmSnapshot $t.Source $install
+    Set-HrmJsonFile $state "first-run-input.json" ([ordered]@{ surname = "Иванова"; working_mode = "hr"; timezone = "Europe/Moscow" })
+    $null = Set-HrmSetupMarker -StateDir $state -Status "failed" -Message "Установите Docker Desktop вручную."
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; linux_engine = $true; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true }
+
+    Open-HrmApp -InstallDir $install -StateDir $state -ReadyTimeoutSeconds 5
+
+    $record = Get-HrmInstallRecord $state
+    Assert-HrmTrue ($null -ne $record) "ярлык не завершил первичную установку после подготовки Docker"
+    Assert-HrmContains (Get-Content (Get-HrmSetupUrlFile $state) -Raw -Encoding UTF8) "#setup=" "первый запуск должен оставить URL настройки владельца"
+    Assert-HrmFalse (Test-Path (Get-HrmSetupMarkerFile $state)) "успешный повторный запуск оставил setup-run.json"
+}
+
+Test-Case "ярлык: файлы есть, записи нет, Docker не готов — отказ с официальной инструкцией, не с Setup.exe" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Copy-HrmSnapshot $t.Source $install
+    Set-HrmJsonFile $state "first-run-input.json" ([ordered]@{ surname = "Иванова"; working_mode = "hr"; timezone = "Europe/Moscow" })
+    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true }
+
+    $failure = ""
+    try { Open-HrmApp -InstallDir $install -StateDir $state -ReadyTimeoutSeconds 5 } catch { $failure = [string]$_.Exception.Message }
+
+    Assert-HrmContains $failure "Docker Desktop" "отказ должен называть Docker Desktop"
+    Assert-HrmContains $failure "https://www.docker.com/products/docker-desktop/" "отказ должен вести только на официальный сайт"
+    Assert-HrmNotContains $failure "Запустите Setup.exe" "файлы уже скопированы — Setup не нужно устанавливать заново"
+    Assert-HrmTrue ($null -eq (Get-HrmInstallRecord $state)) "запись установки создана без готового Docker Engine"
+}
+
 Test-Case "установка на занятом порту: публикация на свободном порту в записи, env и ссылке первого запуска" {
     Initialize-HrmTestEngine
     $t = New-HrmTestWorld

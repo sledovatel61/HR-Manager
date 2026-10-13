@@ -5,11 +5,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      docker_audit:
-        description: "Снять подпись официального установщика Docker Desktop (~600 МБ) и сверить с зафиксированным издателем"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -908,11 +903,18 @@ jobs:
           $setup = Get-ChildItem installer/output/HR-Manager-Setup-*.exe | Select-Object -First 1
           if (-not $setup) { throw "Setup.exe missing" }
           $hash = (Get-FileHash -Path $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          $manifestHash = (Get-FileHash -Path installer/release-manifest.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifestPath = "installer/output/release-manifest.json"
+          if (-not (Test-Path $manifestPath)) { throw "output release-manifest.json missing" }
+          $manifestHash = (Get-FileHash -Path $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $lines = @(
             "$hash  $($setup.Name)"
             "$manifestHash  release-manifest.json"
           )
+          $dockerSidecar = "installer/output/DockerDesktopInstaller.exe"
+          if (Test-Path $dockerSidecar) {
+            $dockerHash = (Get-FileHash -Path $dockerSidecar -Algorithm SHA256).Hash.ToLowerInvariant()
+            $lines += "$dockerHash  DockerDesktopInstaller.exe"
+          }
           $outPath = "installer/output/SHA256SUMS.txt"
           Set-Content -Path $outPath -Value $lines -Encoding ASCII
           Write-Host "SHA256SUMS.txt:"
@@ -942,66 +944,12 @@ jobs:
           if ($entries.Count -eq 0) { Write-Host "SHA256SUMS.txt had no parsable lines"; exit 0 }
           Write-Host ("::notice title=pilot Setup.exe 0.15.0 (unsigned)::" + ($entries -join "; "))
 
-      - name: Upload the pilot Setup.exe + SHA256SUMS
+      - name: Upload the pilot distribution (Setup.exe, optional Docker sidecar, manifest, sums)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pilot-setup-0.15.0-unsigned
-          path: |
-            installer/output/HR-Manager-Setup-*.exe
-            installer/output/SHA256SUMS.txt
-            installer/release-manifest.json
+          path: installer/output/*
           if-no-files-found: error
-
-  docker-publisher-audit:
-    name: Docker Desktop publisher audit (official installer signature)
-    # Ручной аудит: скачивает официальный установщик Docker Desktop и снимает с
-    # него подпись (subject, отпечатки сертификата), сверяя с издателем,
-    # зафиксированным в infra/windows/engine/Docker.psm1. Нужен при смене
-    # сертификата Docker и как доказательство, что список издателей не выдуман.
-    # Запуск только вручную: скачивание 635 МБ на каждый push было бы
-    # неоправданной тратой. Проверка на машине пилота выполняется всегда — перед
-    # запуском установщика, поэтому ручного прогона для годичного цикла хватает.
-    # Значения сняты прогонами 37653666837 (измерение) и 37654388276 (сверка с
-    # зафиксированным издателем, результат — «издатель совпал»).
-    # github.event.inputs вместо inputs: контекст inputs существует только у
-    # workflow_dispatch/workflow_call, поэтому пишем переносимую форму (для
-    # dispatch значение приходит строкой, отсюда сравнение с 'true').
-    # Отдельно про прогон 37655251039 (коммит 7324db3): в нём GitHub не создал
-    # джоб «Compose stack smoke test» и пометил прогон failure, хотя все
-    # созданные джобы были зелёные («cannot be rerun; its workflow file may be
-    # broken»). Файл при этом валиден: те же 9 джобов определены в обоих
-    # коммитах, а следующий прогон (37657489369) создал все 9 джобов и завершился
-    # успешно. Причина осталась необъяснённой — воспроизвести не удалось, кода
-    # это не касается; на всякий случай прогон после такого сбоя перезапускается
-    # новым коммитом, а не считается доказательством.
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.docker_audit == 'true' }}
-    runs-on: windows-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Audit the official installer signature
-        shell: powershell
-        run: |
-          # ASCII only (see the trust store step above): this step runs on Windows
-          # PowerShell 5.1.
-          # Audit exit codes: 0 - measured (and the publisher matched the pinned one),
-          # 1 - alarm (signature or publisher differs from the pinned values),
-          # 2 - could not measure (no network / timeout). Code 2 must not turn the build
-          # red: it is not a publisher change.
-          $lines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tools/Audit-HrmDockerPublisher.ps1 *>&1 | ForEach-Object { $l = $_.ToString(); Write-Host $l; $l })
-          $code = $LASTEXITCODE
-          if ($code -eq 2) {
-            Write-Host "::warning::Docker publisher audit could not download the installer (code 2) - not a publisher change"
-            exit 0
-          }
-          if ($code -ne 0) {
-            Write-Host "::error::Docker publisher audit failed with code $code"
-            exit $code
-          }
-          Write-Host "Docker Desktop publisher audit passed"
 
   license-issuer-windows:
     name: License issuer bundle - Windows PowerShell 5.1 checks
