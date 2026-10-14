@@ -99,11 +99,29 @@ Set-StrictMode -Version 2.0
 $script:EngineDir = Join-Path $PSScriptRoot "engine"
 # Владеет ли этот процесс отметкой установки (setup-run.json): снимаем её
 # только при успешном завершении установки/обновления.
-$script:SetupMarkerOwner = $false
+$script:SetupMarkerOwner = ($Action -eq "install" -or $Action -eq "update")
+try {
 foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", "Update",
         "Diagnostics", "Install", "Snapshot", "Crypto", "Channel", "Lan", "SupportBundle",
         "Docker", "Supervisor", "Tray")) {
     Import-Module (Join-Path $script:EngineDir "$module.psm1") -Force -ErrorAction Stop
+    if ($module -eq "Common") {
+        if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+        # Setup запускает -File напрямую, не через Start-HrmEngineProcess.
+        # Поэтому он тоже обязан получить постоянный журнал, включая отказы
+        # импорта остальных модулей. Ошибка записи лога не блокирует маркер.
+        try {
+            $logsDir = Get-HrmEngineLogsDir $StateDir
+            if (-not (Test-Path $logsDir)) {
+                New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+                Protect-HrmFile $StateDir $logsDir
+            }
+            if (-not $env:HRM_LOG_FILE) { $env:HRM_LOG_FILE = Get-HrmTimestampedLogFile $StateDir $Action }
+        } catch { }
+        if ($script:SetupMarkerOwner) {
+            $null = Set-HrmSetupMarker -StateDir $StateDir -Status "running" -Message "Подготавливаем установку/обновление HR Manager…"
+        }
+    }
 }
 
 if ($env:HRM_NONINTERACTIVE -eq "1") { $global:HrmNonInteractive = $true } else { $global:HrmNonInteractive = [bool]$NonInteractive }
@@ -144,7 +162,6 @@ function Show-HrmUsage {
     $lines | ForEach-Object { Write-Output $_ }
 }
 
-try {
     switch ($Action) {
         "help" { Show-HrmUsage }
         "install" {
@@ -310,23 +327,23 @@ try {
     exit 0
 }
 catch {
-    $message = Redact-HrmText ($_.Exception.Message)
-    Write-Host "ОШИБКА: $message" -ForegroundColor Red
-    Write-HrmLog "error" ("fatal: " + $message)
+    $failure = $_
+    $message = "Движок HR Manager не смог завершить операцию. Создайте отчёт для поддержки."
+    try { $message = Redact-HrmText $failure.Exception.Message } catch { }
+    $stateDirForError = $StateDir
+    if (-not $stateDirForError) { try { $stateDirForError = Get-HrmStateDir } catch { } }
+    # Маркер — ПЕРВЫМ, до логирования и supervisor. Ошибка вывода/журнала
+    # раньше могла прервать сам catch и оставить running. Не подменяем текущий
+    # отказ текстом update-result.json от предыдущей операции.
+    if ($script:SetupMarkerOwner) {
+        try { $null = Set-HrmSetupMarker -StateDir $stateDirForError -Status "failed" -Message $message } catch { }
+    }
+    try { Write-HrmLog "error" ("fatal: " + $message + "`n" + (Redact-HrmText $failure.ScriptStackTrace)) } catch { }
+    try { Write-Host "ОШИБКА: $message" -ForegroundColor Red } catch { }
     try {
-        # Значок в трее должен остаться и показать понятную причину: отметка
-        # установки переводится в failed. Если движок успел записать результат
-        # обновления («прежняя версия восстановлена и отвечает»), показываем
-        # именно его — это текст для человека, а не техническая ошибка.
-        # Каждая запись — в СВОЁМ try/catch: отказ обязан быть записан, даже
-        # если соседняя запись не удалась (например, ACL на одном из файлов).
-        $stateDirForError = if ($StateDir) { $StateDir } else { Get-HrmStateDir }
+        # Supervisor получает текущую причину независимо от успешности
+        # записи маркера и журнала. Отказы записи не маскируют исходную ошибку.
         $markerMessage = $message
-        try {
-            $updateResult = Get-HrmUpdateResult $stateDirForError
-            if ($null -ne $updateResult -and $updateResult.message) { $markerMessage = [string]$updateResult.message }
-        }
-        catch { }
         # Тот же отказ, который движок уже записал в ЭТОМ процессе (например,
         # Invoke-HrmPreflightGuarded в Install.psm1), вторым слоем не
         # удваивается: счётчик подряд идущих отказов считает отказы, а не записи
@@ -341,7 +358,6 @@ catch {
         }
         catch { $failureCountForError = -1 }
         try { Set-HrmSupervisorState -StateDir $stateDirForError -State "error" -Message $markerMessage -FailureCount $failureCountForError } catch { }
-        try { $null = Set-HrmSetupMarker -StateDir $stateDirForError -Status "failed" -Message $markerMessage } catch { }
     }
     catch { }
     exit 1

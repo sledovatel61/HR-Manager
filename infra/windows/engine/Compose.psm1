@@ -157,6 +157,54 @@ function Repair-HrmStack {
     return $after
 }
 
+function Sync-HrmPostgresRolePassword {
+    # Только существующий секрет: старые каталоги без файла секретов не меняем.
+    # local socket (trust у штатного postgres image), НЕ TCP. Пароль/SQL идут
+    # только в stdin; psqlrc, запрос пароля и echo SQL отключены. Ошибки psql
+    # не публикуем: они могут содержать SQL с экранированным паролем.
+    # database_auth_failed = согласовать роль не удалось, данные не удалялись.
+    param([string]$InstallDir, [string]$StateDir)
+    try {
+        $secrets = Get-HrmSecretsMap $StateDir
+        if (-not $secrets.ContainsKey("HRM_POSTGRES_PASSWORD")) {
+            return [pscustomobject]@{ ok = $true; state = "skipped"; message = "Секрет БД отсутствует; синхронизация пропущена."; synced = $false }
+        }
+        $password = Get-HrmSecret $StateDir "HRM_POSTGRES_PASSWORD"
+        $literal = $password.Replace("'", "''")
+        Register-HrmSecret $literal
+        # Не допускаем SQL с паролем в штатные журналы PostgreSQL даже при
+        # включённом логировании statement/duration. SET выполняются ДО ALTER.
+        $sql = "SET log_statement = 'none'; SET log_min_error_statement = 'panic'; SET log_min_duration_statement = -1; SET log_min_duration_sample = -1; SET standard_conforming_strings = on;`nALTER ROLE hr_manager PASSWORD '" + $literal + "';`n"
+        $res = Invoke-HrmCompose $InstallDir $StateDir @("exec", "-T", "db", "psql", "-X", "-w", "-U", "hr_manager", "-d", "hr_manager", "-v", "ON_ERROR_STOP=1") -Stdin $sql -IgnoreExitCode
+        if ($res.ExitCode -eq 0) {
+            $null = Write-HrmLog "info" "Пароль роли hr_manager согласован с каталогом состояния. Данные в pilot_pgdata сохранены."
+            return [pscustomobject]@{ ok = $true; state = "synced"; message = "Пароль роли БД согласован."; synced = $true }
+        }
+    }
+    catch {
+        # Не выводим исключение драйвера/psql: оно может включать stdin.
+    }
+    $message = "database_auth_failed: не удалось согласовать пароль роли hr_manager в томе pilot_pgdata с каталогом состояния (возможны несовпадение пароля или недоступность локального подключения к БД). Данные не удалялись. Создайте отчёт для поддержки; проверьте доступность db и локального сокета PostgreSQL. Не удаляйте том и каталог состояния."
+    $null = Write-HrmLog "error" (Redact-HrmText $message)
+    return [pscustomobject]@{ ok = $false; state = "database_auth_failed"; message = $message; synced = $false }
+}
+
+function Wait-HrmStackAfterPasswordSync {
+    # Ограниченное ожидание restart-policy/healthcheck, отдельно от HTTP readiness.
+    param([string]$InstallDir, [string]$StateDir, [int]$MaxAttempts = 30)
+    $interval = Get-HrmWaitIntervalSeconds
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $state = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+        if ($state.state -eq "running") {
+            return [pscustomobject]@{ ok = $true; state = "running"; message = "Стек восстановлен; данные сохранены." }
+        }
+        if ($attempt -lt $MaxAttempts) { Start-HrmWaitSleep -Seconds $interval }
+    }
+    $message = "Пароль БД согласован, но сервисы не стали healthy. Данные не удалялись. Создайте отчёт для поддержки."
+    $null = Write-HrmLog "error" $message
+    return [pscustomobject]@{ ok = $false; state = "stack_not_running"; message = $message }
+}
+
 function Start-HrmStack {
     # Сборка (если нужно) и запуск. Идемпотентно и безопасно для данных:
     # уже запущенный стек с СООТВЕТСТВУЮЩИМИ образами не пересобирается
@@ -214,6 +262,13 @@ function Start-HrmStack {
         Invoke-HrmCompose $InstallDir $StateDir @("build", "--pull=false") | Out-Null
     }
 
+    $passwordSynced = $false
+    if ($current.state -eq "partial" -or $current.state -eq "degraded") {
+        $sync = Sync-HrmPostgresRolePassword -InstallDir $InstallDir -StateDir $StateDir
+        if (-not $sync.ok) { return $sync }
+        $passwordSynced = $sync.synced
+    }
+
     # 3) Схема ↔ образ ДО запуска контейнеров приложения.
     if ($current.state -eq "stopped" -or $current.state -eq "partial" -or $current.state -eq "degraded") {
         if ($current.state -eq "stopped") { Start-HrmDbForSchemaCheck -InstallDir $InstallDir -StateDir $StateDir | Out-Null }
@@ -232,13 +287,21 @@ function Start-HrmStack {
         # Полный up может собрать отсутствующие сервисы, не удаляя тома.
     }
     $up = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") -IgnoreExitCode
-    if ($up.ExitCode -ne 0) {
+    # Даже неуспешный up мог поднять db и оставить backend unhealthy:
+    # dependency failed to start — именно этот путь был в отчёте владельца.
+    $after = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+    if ($up.ExitCode -ne 0 -and $after.state -ne "partial" -and $after.state -ne "degraded") {
         $message = "Не удалось запустить контейнеры. Нажмите «Создать отчёт для поддержки»."
         Write-HrmLog "error" (Redact-HrmText ("Запуск контейнеров не удался: " + $up.Stderr.Trim()))
         return [pscustomobject]@{ ok = $false; state = "failed"; message = $message }
     }
-    $after = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
     if ($after.state -eq "partial" -or $after.state -eq "degraded") {
+        $sync = Sync-HrmPostgresRolePassword -InstallDir $InstallDir -StateDir $StateDir
+        if (-not $sync.ok) { return $sync }
+        $passwordSynced = $passwordSynced -or $sync.synced
+        if ($up.ExitCode -ne 0 -and -not $passwordSynced) {
+            return [pscustomobject]@{ ok = $false; state = "failed"; message = "Не удалось запустить контейнеры. Создайте отчёт для поддержки." }
+        }
         # Контейнеры уже подняты: база запущена, и рассогласование «схема ↔
         # образ» можно установить точно. Это защита от crash-loop: backend
         # перезапускается бесконечно, а человек видит только «не запускается».
@@ -251,6 +314,9 @@ function Start-HrmStack {
             return [pscustomobject]@{ ok = $false; state = "schema_incompatible"; message = $compat.message }
         }
         $after = Repair-HrmStack -InstallDir $InstallDir -StateDir $StateDir
+    }
+    if ($passwordSynced) {
+        return (Wait-HrmStackAfterPasswordSync -InstallDir $InstallDir -StateDir $StateDir)
     }
     Write-HrmLog "info" "Контейнеры пилота запущены (проект $script:ProjectName)."
     return [pscustomobject]@{ ok = $true; state = $after.state; message = "Контейнеры запущены." }

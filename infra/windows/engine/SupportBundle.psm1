@@ -49,6 +49,13 @@ function New-HrmSupportBundle {
     )
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    # Отчёт запускается отдельным процессом: зарегистрировать секреты ДО
+    # чтения любых журналов, не полагаться на побочный эффект диагностики.
+    $secrets = Get-HrmSecretsMap $StateDir
+    foreach ($value in $secrets.Values) {
+        Register-HrmSecret $value
+        Register-HrmSecret ($value.Replace("'", "''"))
+    }
     $record = Get-HrmInstallRecord $StateDir
     $port = [int](Get-HrmInstallRecordField -Record $record -Field "port" -Default 0)
     if ($port -le 0) { $port = Get-HrmPort }
@@ -157,8 +164,27 @@ function New-HrmSupportBundle {
             } catch {}
         }
 
-        # 7. engine logs: последние журналы из Common Write-HrmLog? Нет файла, но есть install logs
-        #     Соберём update-journal, installed.json уже есть, добавим channel config (без секретов)
+        # 7. Последние 5 журналов движка, по LogTail строк каждый. Читаем
+        # только *.log из StateDir/logs, никогда не копируем каталог целиком.
+        $engineLogs = @()
+        try {
+            $engineLogs = @(Get-ChildItem -LiteralPath (Get-HrmEngineLogsDir $StateDir) -Filter "*.log" -File -ErrorAction Stop |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 5)
+        } catch { }
+        $engineText = @()
+        foreach ($engineLog in $engineLogs) {
+            try {
+                $content = Get-Content -LiteralPath $engineLog.FullName -Tail $LogTail -Encoding UTF8 -ErrorAction Stop
+                $engineText += ("=== " + $engineLog.Name + " ===")
+                $engineText += @($content)
+            } catch {
+                $engineText += "Журнал движка недоступен для чтения."
+            }
+        }
+        if ($engineLogs.Count -eq 0) { $engineText += "Журналы движка не найдены в StateDir/logs." }
+        $cleanEngineText = Redact-HrmPii (Redact-HrmText ($engineText -join "`n"))
+        [System.IO.File]::WriteAllText((Join-Path $tmpDir "logs-engine.txt"), $cleanEngineText, (New-Object System.Text.UTF8Encoding($false)))
+        # update-journal и конфигурация (без секретов).
         try {
             $journalPath = Get-HrmUpdateJournal $StateDir
             if (Test-Path $journalPath) {

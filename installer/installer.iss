@@ -625,7 +625,7 @@ begin
   // Russian user-facing message when the engine reads it as UTF-8.
   if not DirExists(HrmStateDir()) then Exit;
   MarkerFile := HrmStateDir() + '\setup-run.json';
-  Marker := '{"status":"failed","message":"\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0430 HR Manager \u043d\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 Docker Desktop \u0438 Docker Engine; \u0435\u0441\u043b\u0438 Docker Desktop \u043e\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u0435\u0442, \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u0435 \u0435\u0433\u043e \u0432\u0440\u0443\u0447\u043d\u0443\u044e \u0441 \u043e\u0444\u0438\u0446\u0438\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u0441\u0430\u0439\u0442\u0430 https://www.docker.com/products/docker-desktop/, \u0437\u0430\u0442\u0435\u043c \u043e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 HR Manager \u0441\u043d\u043e\u0432\u0430."}';
+  Marker := '{"status":"failed","message":"\u0414\u0432\u0438\u0436\u043e\u043a \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043b\u0441\u044f \u0431\u0435\u0437 \u0438\u0442\u043e\u0433\u043e\u0432\u043e\u0433\u043e \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u0430. \u041f\u0440\u0438\u0447\u0438\u043d\u0430 \u043d\u0435 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0430; \u043f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u0436\u0443\u0440\u043d\u0430\u043b\u044b \u0432 \u043a\u0430\u0442\u0430\u043b\u043e\u0433\u0435 \u0441\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u044f HRManager/logs \u0438 \u0441\u043e\u0437\u0434\u0430\u0439\u0442\u0435 \u043e\u0442\u0447\u0451\u0442 \u0434\u043b\u044f \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0438. \u0414\u0430\u043d\u043d\u044b\u0435 \u043d\u0435 \u0443\u0434\u0430\u043b\u044f\u043b\u0438\u0441\u044c."}';
   if SaveStringToFile(MarkerFile, Marker, False) then
     Log('HRM: incomplete setup marker normalized to failed for tray recovery')
   else
@@ -659,7 +659,14 @@ var
 begin
   if CurPageID = wpFinished then
   begin
+    // [Run] уже завершён. Нормализуем ДО Finish, а не только при выходе:
+    // оборванный/не загрузившийся движок не должен оставлять status=running.
     EngineStatus := GetHrmSetupEngineStatus();
+    if (EngineStatus = 'running') or (EngineStatus = 'unknown') then
+    begin
+      MarkHrmSetupEngineFailed();
+      EngineStatus := GetHrmSetupEngineStatus();
+    end;
     if EngineStatus = 'success' then
     begin
       WizardForm.FinishedLabel.Caption := ExpandConstant('{cm:FinishText}');

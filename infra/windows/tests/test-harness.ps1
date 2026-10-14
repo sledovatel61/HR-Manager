@@ -345,6 +345,12 @@ function New-HrmMockWorld {
         ContainersJson = ""
         UpFails = $false
         UpCount = 0
+        DbPasswordMismatch = $false
+        DbPasswordSyncFails = $false
+        DbPasswordSyncThrows = $false
+        DbPasswordSyncCount = 0
+        DbPasswordSyncArgs = @()
+        DbPasswordRecoveryStuck = $false
         # Метка образа hrmanager.release_sha (ставится сборкой из HRM_RELEASE_SHA
         # env-файла, как в реальном `compose build` с build.labels).
         ImageReleaseSha = ""
@@ -419,6 +425,13 @@ function New-HrmMockWorld {
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "up")) {
                 $global:HRM_MockWorld.UpCount++
+                if ($global:HRM_MockWorld.DbPasswordMismatch) {
+                    $global:HRM_MockWorld.ContainersJson = '[{"Name":"db","Service":"db","State":"running","Health":"healthy"},{"Name":"backend","State":"running","Health":"unhealthy"},{"Name":"frontend","State":"created"}]'
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "dependency failed to start: backend is unhealthy" }
+                }
+                if ($global:HRM_MockWorld.DbPasswordSyncCount -gt 0 -and -not $global:HRM_MockWorld.DbPasswordRecoveryStuck) {
+                    $global:HRM_MockWorld.ContainersJson = ""
+                }
                 if ($global:HRM_MockWorld.UpFails) {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "container failed to start" }
                 }
@@ -458,6 +471,16 @@ function New-HrmMockWorld {
             }
             if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "exec")) {
                 $joined = ($Arguments -join " ")
+                if ($joined -match "psql" -and $Stdin -match "ALTER ROLE hr_manager PASSWORD") {
+                    $global:HRM_MockWorld.DbPasswordSyncCount++
+                    $global:HRM_MockWorld.DbPasswordSyncArgs = @($Arguments)
+                    if ($global:HRM_MockWorld.DbPasswordSyncThrows) { throw ("driver failure: " + $Stdin) }
+                    if ($global:HRM_MockWorld.DbPasswordSyncFails) {
+                        return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = ("psql failure: " + $Stdin) }
+                    }
+                    $global:HRM_MockWorld.DbPasswordMismatch = $false
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "ALTER ROLE"; Stderr = "" }
+                }
                 if ($joined -match "psql" -and $joined -match "alembic_version") {
                     # Ревизия схемы из базы (только чтение) — см. DbRevision.
                     $revision = [string]$global:HRM_MockWorld.DbRevision

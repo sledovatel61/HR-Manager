@@ -483,7 +483,18 @@ jobs:
 
       - name: PowerShell engine tests (Windows PowerShell 5.1)
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 |
+            Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP "hr-engine-tests-full.txt")
+          exit $LASTEXITCODE
+
+      - name: Upload full engine test output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-engine-tests-full
+          path: ${{ runner.temp }}/hr-engine-tests-full.txt
+          if-no-files-found: warn
 
       - name: Upload engine test failures (if any)
         if: failure()
