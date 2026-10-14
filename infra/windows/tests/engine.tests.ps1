@@ -211,6 +211,9 @@ Test-Case "префлайт реально падает при отсутств�
     $world = New-HrmMockWorld
     $world.DockerMissing = $true
     Clear-HrmPreflightOverride
+    # Проверяются Docker CLI/daemon через мок; остальные проверки не должны
+    # читать порт, место на диске или plugin-файлы реальной машины.
+    Set-HrmPreflightOverride @{ compose = $true; port = $true; state_dir = $true; space = $true }
     $threw = $false
     try {
         Assert-HrmPreflight -InstallDir (Get-HrmTestInstallDir) -StateDir (Get-HrmTestStateDir) -Port 8080 -SkipCompose | Out-Null
@@ -1080,6 +1083,7 @@ Test-Case "D7: без плагина compose установка не завер�
     # Проверка compose НЕ переопределена — работает настоящая классификация
     # (D5): CLI отвечает как docker без плагина.
     Set-HrmPreflightOverride @{ windows = $true; powershell = $true; docker = $true; daemon = $true; port = $true; state_dir = $true; space = $true; config = $true }
+    Set-HrmDockerOverride @{ compose_plugin_files = @() }
     $t.World.ComposePluginMissing = $true
     $thrown = ""
     try { Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null }

@@ -140,16 +140,29 @@ function Get-HrmComposePluginFacts {
     # файлов docker-compose*. Используется в тексте отказа («где искали и что
     # нашли»), в диагностике и в отчёте поддержки. Ошибки чтения не бросаются:
     # отсутствие прав на ProgramData — обычный случай.
+    # Тестовый шов задаёт состав файлов целиком и не трогает файловую систему;
+    # без явно заданного ключа выполняется прежний реальный scan.
+    $hasFilesOverride = Test-HrmDockerOverrideKey "compose_plugin_files"
+    $overrideFiles = @()
+    if ($hasFilesOverride) { $overrideFiles = @(Get-HrmDockerOverrideValue "compose_plugin_files") }
     $facts = @()
     foreach ($dir in (Get-HrmComposePluginDirs)) {
         $path = [string]$dir.path
-        $exists = (Test-Path -LiteralPath $path)
         $files = @()
-        if ($exists) {
-            try {
-                $files = @(Get-ChildItem -LiteralPath $path -Filter "docker-compose*" -File -ErrorAction Stop | ForEach-Object { [string]$_.Name })
+        if ($hasFilesOverride) {
+            # В тестовом мире ожидаемые каталоги считаются существующими, а
+            # override задаёт их содержимое (включая явно пустой список).
+            $exists = $true
+            $files = @($overrideFiles)
+        }
+        else {
+            $exists = (Test-Path -LiteralPath $path)
+            if ($exists) {
+                try {
+                    $files = @(Get-ChildItem -LiteralPath $path -Filter "docker-compose*" -File -ErrorAction Stop | ForEach-Object { [string]$_.Name })
+                }
+                catch { $files = @() }
             }
-            catch { $files = @() }
         }
         $facts += [pscustomobject]@{
             path = $path
@@ -254,6 +267,9 @@ function Test-HrmComposeVersion {
         if ($pluginDirsText) { $pluginDirsText += "; " }
         $pluginDirsText += ("{0} ({1}; {2})" -f $fact.path, $content, $fact.note)
     }
+    # PluginFound означает только, что в проверяемых каталогах есть файл
+    # docker-compose*. Это НЕ подтверждает, что команда `docker compose`
+    # запускается: итог Passed/Reason определяется ответом CLI выше.
     $pluginFound = $false
     $userPluginDir = ""
     foreach ($fact in $pluginFacts) {

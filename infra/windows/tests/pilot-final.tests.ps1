@@ -627,6 +627,8 @@ Test-Case "D9: диагностика сообщает память WSL2 и фа
     Initialize-HrmTestEngine
     $world = New-HrmMockWorld
     $world.Running = $true
+    # Изолируем файловые факты плагина от Docker Desktop на машине теста.
+    Set-HrmDockerOverride @{ compose_plugin_files = @() }
     $state = Get-HrmTestStateDir
     $install = Get-HrmTestInstallDir
     Set-HrmInstallRecord $state @{ release_sha = ("1" * 40); port = 8080 }
@@ -641,6 +643,7 @@ Test-Case "D9: диагностика сообщает память WSL2 и фа
         Assert-HrmTrue ($null -ne $d.PSObject.Properties[$key]) ("в диагностике нет факта: " + $key)
     }
     Assert-HrmEqual "docker.exe" ([string]$d.docker_cli) "выбранный CLI не совпал с пином обвязки"
+    Assert-HrmFalse ([bool]$d.compose_plugin_found) "пустой список файлов должен дать PluginFound=false в диагностике"
     Assert-HrmTrue ([int]$d.wsl_memory_mb -ge 0) "память WSL2 должна быть числом не меньше нуля"
     # Каталоги плагинов перечислены честно: машинный каталог Docker CLI 29.2.0+
     # не ищет (GHSA-p436-gjf2-799p) — иначе совет пользователю был бы нерабочим.

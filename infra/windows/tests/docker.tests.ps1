@@ -195,11 +195,12 @@ Test-Case "WSL2 отсутствует и виртуализация выклю�
 
 Test-Case "порт занят: подбор свободного порта и предупреждение, а не молчаливая ошибка" {
     New-HrmDockerTestContext
-    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; port_free = $false; free_mb = 20480; wsl = "ok"; virtualization = "enabled" }
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; port_free = $false; free_port = 8081; free_mb = 20480; wsl = "ok"; virtualization = "enabled" }
     $free = Find-HrmFreePort -StartPort 8080
     $plan = Get-HrmSetupProgressPlan -StateDir (Get-HrmTestStateDir) -Port 8080
     $portStep = @($plan | Where-Object { $_.key -eq "port" })[0]
     Assert-HrmTrue ($portStep.status -eq "warn" -or $portStep.status -eq "ok") "шаг порта должен быть warn/ok"
+    Assert-HrmEqual 8081 $free "результат подбора порта зависит от реальных слушающих портов"
     Assert-HrmTrue ($free -ge 0) "подбор порта должен завершиться"
 }
 
@@ -484,36 +485,61 @@ Test-Case "D6: сравнение версий — числовые разряд
 
 Test-Case "D6: резолвер перечисляет всех кандидатов и не принимает путь со стороны" {
     $world = New-HrmDockerTestContext
-    $fakeBin = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-cli-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
-    New-Item -ItemType Directory -Path $fakeBin -Force | Out-Null
-    Set-Content -Path (Join-Path $fakeBin "docker.exe") -Value "fake" -Encoding ASCII
+    $fakeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-cli-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    $fakeBin = Join-Path $fakeRoot "path-bin"
+    $fakeProgramFiles = Join-Path $fakeRoot "ProgramFiles"
+    $fakeProgramFilesX86 = Join-Path $fakeRoot "ProgramFilesX86"
+    $fakeLocalAppData = Join-Path $fakeRoot "LocalAppData"
+    $fakeMachineBin = Join-Path $fakeProgramFiles "Docker\Docker\resources\bin"
+    $fakeUserBin = Join-Path $fakeLocalAppData "Programs\DockerDesktop\resources\bin"
+    $fakeCli = Join-Path $fakeBin "docker.exe"
+    $fakeMachineCli = Join-Path $fakeMachineBin "docker.exe"
+    $fakeUserCli = Join-Path $fakeUserBin "docker.exe"
+    New-Item -ItemType Directory -Path @($fakeBin, $fakeMachineBin, $fakeUserBin, $fakeProgramFilesX86) -Force | Out-Null
+    Set-Content -Path $fakeCli -Value "fake PATH CLI" -Encoding ASCII
+    Set-Content -Path $fakeMachineCli -Value "fake machine CLI" -Encoding ASCII
+    Set-Content -Path $fakeUserCli -Value "fake user CLI" -Encoding ASCII
     $originalPath = [string]$env:PATH
-    $originalOverride = $null
+    $originalProgramFiles = $env:ProgramFiles
+    $originalProgramFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    $originalLocalAppData = $env:LOCALAPPDATA
     try {
-        # Снимаем пин CLI из обвязки: проверяется НАСТОЯЩИЙ резолвер.
+        # Снимаем пин CLI из обвязки и подменяем все источники каталогов:
+        # кандидаты из Docker Desktop и PATH должны быть только из этого temp-мок-мира.
         Clear-HrmDockerOverride
         Reset-HrmDockerCliChoiceCache
-        $env:PATH = $fakeBin + ";" + $originalPath
-        $fakeCli = Join-Path $fakeBin "docker.exe"
+        $env:ProgramFiles = $fakeProgramFiles
+        [Environment]::SetEnvironmentVariable("ProgramFiles(x86)", $fakeProgramFilesX86, "Process")
+        $env:LOCALAPPDATA = $fakeLocalAppData
+        $env:PATH = $fakeBin
         $paths = @(Get-HrmDockerCliCandidatePaths)
-        Assert-HrmTrue ($paths -contains $fakeCli) "кандидат из PATH не найден резолвером"
-        # -Candidate возвращает путь только если он в списке того же резолвера:
+        foreach ($expectedCli in @($fakeCli, $fakeMachineCli, $fakeUserCli)) {
+            Assert-HrmTrue ($paths -contains $expectedCli) ("кандидат не найден резолвером: " + $expectedCli)
+        }
+        # -Candidate возвращает путь только если он в списке кандидатов того же резолвера:
         # имя внешней команды по-прежнему не может прийти из произвольного места.
         Assert-HrmEqual $fakeCli (Get-HrmDockerCliPath -Candidate $fakeCli) "свой кандидат отклонён"
         Assert-HrmEqual "" (Get-HrmDockerCliPath -Candidate (Join-Path $fakeBin "evil.exe")) "принят путь, которого нет среди кандидатов"
         Assert-HrmEqual "" (Get-HrmDockerCliPath -Candidate "C:\Windows\system32\cmd.exe") "принят произвольный системный путь"
         $facts = Get-HrmDockerCliFacts
-        Assert-HrmTrue ([int]$facts.candidate_count -ge 1) "факты не перечислили кандидатов"
+        Assert-HrmEqual 3 ([int]$facts.candidate_count) "факты должны содержать ровно кандидатов тестового мира"
         Assert-HrmTrue ([bool][string]$facts.chosen_reason) "правило выбора не зафиксировано в фактах"
         Assert-HrmTrue (@($facts.searched_dirs).Count -ge 1) "в фактах нет перечня проверенных каталогов"
         $listed = @($facts.candidates | ForEach-Object { [string]$_.path })
-        Assert-HrmTrue ($listed -contains $fakeCli) "кандидат не попал в факты для журнала"
+        foreach ($expectedCli in @($fakeCli, $fakeMachineCli, $fakeUserCli)) {
+            Assert-HrmTrue ($listed -contains $expectedCli) ("кандидат не попал в факты для журнала: " + $expectedCli)
+        }
     }
     finally {
         $env:PATH = $originalPath
+        if ($null -eq $originalProgramFiles) { Remove-Item Env:ProgramFiles -ErrorAction SilentlyContinue }
+        else { $env:ProgramFiles = [string]$originalProgramFiles }
+        [Environment]::SetEnvironmentVariable("ProgramFiles(x86)", $originalProgramFilesX86, "Process")
+        if ($null -eq $originalLocalAppData) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue }
+        else { $env:LOCALAPPDATA = [string]$originalLocalAppData }
         Reset-HrmDockerCliChoiceCache
         Set-HrmDockerOverride @{}
-        Remove-Item -Path $fakeBin -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $fakeRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
     Assert-HrmEqual "docker.exe" (Get-HrmDockerCliPath) "пин CLI из обвязки не восстановлен"
 }
@@ -558,7 +584,10 @@ Test-Case "D5: классификация ответа compose — CLI не за
 
 Test-Case "D5: отказ по compose называет причину и проверенные каталоги плагинов; проверка не ослаблена" {
     $world = New-HrmDockerTestContext
+    Assert-HrmFalse (Test-HrmDockerOverrideKey "compose_plugin_files") "список файлов плагина не должен подставляться override-defaults"
     $world.ComposePluginMissing = $true
+    # Пустой список задаётся явно: D5 не должен читать Docker Desktop на машине теста.
+    Set-HrmDockerOverride @{ compose_plugin_files = @() }
     $result = Test-HrmComposeVersion
     Assert-HrmFalse ([bool]$result.Passed) "проверка compose ослаблена до предупреждения"
     Assert-HrmEqual "plugin_missing" ([string]$result.Reason) "причина отказа не классифицирована"
@@ -571,8 +600,21 @@ Test-Case "D5: отказ по compose называет причину и про
     Assert-HrmFalse ([bool]$result.PluginFound) "флаг найденного плагина недостоверен"
     Assert-HrmEqual 1 ([int]$result.ExitCode) "код возврата пробы не сохранён"
     Assert-HrmTrue (@($result.PluginDirs).Count -ge 1) "в результате нет перечня каталогов плагинов"
+
+    # Сам CLI всё ещё сообщает plugin_missing даже при наличии файла плагина:
+    # PluginFound описывает только файловый факт и не должен делать probe Passed.
+    Set-HrmDockerOverride @{ compose_plugin_files = @("docker-compose.exe") }
+    $filePresentResult = Test-HrmComposeVersion
+    Assert-HrmTrue ([bool]$filePresentResult.PluginFound) "файл плагина не отразился в PluginFound"
+    Assert-HrmFalse ([bool]$filePresentResult.Passed) "наличие файла ошибочно превратило неуспешную команду compose в успех"
+    Assert-HrmEqual "plugin_missing" ([string]$filePresentResult.Reason) "файл плагина изменил причину отказа CLI"
+    Assert-HrmEqual 1 ([int]$filePresentResult.ExitCode) "код возврата CLI потерян при наличии файла плагина"
+    $overriddenFiles = @($filePresentResult.PluginDirs | ForEach-Object { $_.files } | ForEach-Object { [string]$_ })
+    Assert-HrmTrue ($overriddenFiles -contains "docker-compose.exe") "список файлов override не дошёл до фактов PluginDirs"
+
     # Версия compose ниже требуемой — тоже отказ (не предупреждение).
     $world.ComposePluginMissing = $false
+    Set-HrmDockerOverride @{ compose_plugin_files = @() }
     $world.ComposeVersion = "2.20.1"
     $oldResult = Test-HrmComposeVersion
     Assert-HrmFalse ([bool]$oldResult.Passed) "старая версия compose принята"
