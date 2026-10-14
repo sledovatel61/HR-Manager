@@ -345,6 +345,11 @@ function New-HrmMockWorld {
         ContainersJson = ""
         UpFails = $false
         UpCount = 0
+        # Однократные результаты up для контрпримеров остановленной БД и
+        # ошибок запуска. Значения по умолчанию не меняют прежние фикстуры.
+        NextUpContainersJson = ""
+        NextUpExitCode = -1
+        NextUpStderr = ""
         DbPasswordMismatch = $false
         DbPasswordSyncFails = $false
         DbPasswordSyncThrows = $false
@@ -425,6 +430,17 @@ function New-HrmMockWorld {
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "up")) {
                 $global:HRM_MockWorld.UpCount++
+                if ($global:HRM_MockWorld.NextUpContainersJson) {
+                    $global:HRM_MockWorld.ContainersJson = $global:HRM_MockWorld.NextUpContainersJson
+                    $global:HRM_MockWorld.NextUpContainersJson = ""
+                }
+                if ($global:HRM_MockWorld.NextUpExitCode -ge 0) {
+                    $nextExit = $global:HRM_MockWorld.NextUpExitCode
+                    $nextStderr = $global:HRM_MockWorld.NextUpStderr
+                    $global:HRM_MockWorld.NextUpExitCode = -1
+                    $global:HRM_MockWorld.NextUpStderr = ""
+                    return [pscustomobject]@{ Name = $Name; ExitCode = $nextExit; Stdout = ""; Stderr = $nextStderr }
+                }
                 if ($global:HRM_MockWorld.DbPasswordMismatch) {
                     $global:HRM_MockWorld.ContainersJson = '[{"Name":"db","Service":"db","State":"running","Health":"healthy"},{"Name":"backend","State":"running","Health":"unhealthy"},{"Name":"frontend","State":"created"}]'
                     return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "dependency failed to start: backend is unhealthy" }
@@ -474,6 +490,22 @@ function New-HrmMockWorld {
                 if ($joined -match "psql" -and $Stdin -match "ALTER ROLE hr_manager PASSWORD") {
                     $global:HRM_MockWorld.DbPasswordSyncCount++
                     $global:HRM_MockWorld.DbPasswordSyncArgs = @($Arguments)
+                    # При ЯВНОМ состоянии контейнеров моделируем реальный exec:
+                    # отсутствующий/exited db не может исполнить ALTER ROLE.
+                    # Пустая строка — прежние изолированные фикстуры самого
+                    # sync без модели контейнеров; их контракт не меняем.
+                    if ($global:HRM_MockWorld.ContainersJson) {
+                        $dbRunning = $false
+                        foreach ($container in ($global:HRM_MockWorld.ContainersJson | ConvertFrom-Json)) {
+                            if ($container.Name -match "(^|[-_])db([-_]|\d|$)" -and $container.State -eq "running") {
+                                $dbRunning = $true
+                                break
+                            }
+                        }
+                        if (-not $dbRunning) {
+                            return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "service db is not running" }
+                        }
+                    }
                     if ($global:HRM_MockWorld.DbPasswordSyncThrows) { throw ("driver failure: " + $Stdin) }
                     if ($global:HRM_MockWorld.DbPasswordSyncFails) {
                         return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = ("psql failure: " + $Stdin) }

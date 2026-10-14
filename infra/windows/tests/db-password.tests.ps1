@@ -284,3 +284,155 @@ Test-Case "Setup: отказ удаления маркера не превращ
     Assert-HrmThrows "Clear-HrmSetupMarker обязан сообщить отказ удаления" { Clear-HrmSetupMarker $state }
     Assert-HrmTrue (Test-Path (Get-HrmSetupMarkerFile $state))
 }
+
+# Follow-up PR #57: новые кейсы; прежние 21 кейс выше не менялись.
+foreach ($dbState in @("exited", "absent", "restarting")) {
+    Test-Case "P2: partial с db=$dbState идёт через up без синхронизации" {
+        $world = New-HrmPasswordTestContext
+        $world.ContainersJson = if ($dbState -eq "absent") {
+            '[{"Name":"backend","State":"running"},{"Name":"frontend","State":"created"}]'
+        } else {
+            '[{"Name":"db","State":"' + $dbState + '"},{"Name":"backend","State":"running"}]'
+        }
+        $world.NextUpContainersJson = '[{"Name":"db","State":"running","Health":"healthy"},{"Name":"backend","State":"running","Health":"healthy"}]'
+        Assert-HrmEqual "partial" (Get-HrmStackState (Get-HrmTestInstallDir) (Get-HrmTestStateDir)).state
+        $result = Start-HrmStack (Get-HrmTestInstallDir) (Get-HrmTestStateDir)
+        Assert-HrmEqual 1 @($result).Count
+        Assert-HrmEqual 0 $world.DbPasswordSyncCount "exec не должен вызываться на остановленной БД"
+        Assert-HrmTrue ($world.UpCount -ge 1) "восстановление должно дойти до up"
+        Assert-HrmTrue $result.ok
+        Assert-HrmEqual "running" $result.state
+        Assert-HrmPasswordDataUntouched $world
+    }
+}
+
+Test-Case "P2: работающая db в partial по-прежнему синхронизируется ровно один раз" {
+    $world = New-HrmPasswordTestContext
+    $world.ContainersJson = '[{"Name":"db","State":"running","Health":"healthy"},{"Name":"backend","State":"exited"}]'
+    $world.DbPasswordMismatch = $true
+    $result = Start-HrmStack (Get-HrmTestInstallDir) (Get-HrmTestStateDir)
+    Assert-HrmEqual 1 @($result).Count
+    Assert-HrmEqual 1 $world.DbPasswordSyncCount
+    Assert-HrmTrue $result.ok
+    Assert-HrmEqual "running" $result.state
+    Assert-HrmPasswordDataUntouched $world
+}
+
+foreach ($dbState in @("exited", "absent")) {
+    Test-Case "P2: неуспешный initial up оставил db=$dbState — не database_auth_failed" {
+        $world = New-HrmPasswordTestContext
+        $world.NextUpContainersJson = if ($dbState -eq "absent") {
+            '[{"Name":"backend","State":"running"},{"Name":"frontend","State":"created"}]'
+        } else {
+            '[{"Name":"db","State":"exited"},{"Name":"backend","State":"running"}]'
+        }
+        $world.NextUpExitCode = 1
+        $world.NextUpStderr = "fixture-db-start-failed"
+        $env:HRM_LOG_FILE = Join-Path (Get-HrmTestStateDir) "followup.log"
+        $result = Start-HrmStack (Get-HrmTestInstallDir) (Get-HrmTestStateDir)
+        Assert-HrmEqual 1 @($result).Count
+        Assert-HrmEqual 0 $world.DbPasswordSyncCount
+        Assert-HrmEqual 1 $world.UpCount
+        Assert-HrmFalse $result.ok
+        Assert-HrmEqual "failed" $result.state
+        Assert-HrmContains (Get-Content $env:HRM_LOG_FILE -Raw -Encoding UTF8) "fixture-db-start-failed"
+        Assert-HrmPasswordDataUntouched $world
+    }
+}
+
+Test-Case "P2: мок отказывает ALTER ROLE при явно остановленной db" {
+    $world = New-HrmPasswordTestContext
+    $world.ContainersJson = '[{"Name":"db","State":"exited"},{"Name":"backend","State":"running"}]'
+    # Контроль самого мока: работающий backend не делает остановленный db
+    # пригодным для exec. До follow-up этот вызов ошибочно возвращал успех.
+    $result = Sync-HrmPostgresRolePassword (Get-HrmTestInstallDir) (Get-HrmTestStateDir)
+    Assert-HrmEqual 1 $world.DbPasswordSyncCount
+    Assert-HrmFalse $result.ok
+    Assert-HrmFalse $result.synced
+    Assert-HrmPasswordDataUntouched $world
+}
+
+foreach ($upPath in @("absent", "partial-no-secret", "degraded-sync-failed", "partial-recovered")) {
+    Test-Case "P3.1: stderr initial up ($upPath) сохраняется с редакцией" {
+        $world = New-HrmPasswordTestContext
+        $state = Get-HrmTestStateDir
+        $password = "fixture'" + [guid]::NewGuid().ToString("N")
+        Set-HrmJsonFile $state "secrets.json" @{ HRM_POSTGRES_PASSWORD=$password }
+        Reset-HrmRedaction
+        if ($upPath -eq "partial-no-secret") {
+            # Редактор знает тестовый секрет, но функция sync должна пропустить
+            # каталог БЕЗ секрета. Файлы настоящей установки не затрагиваются.
+            Register-HrmSecret $password
+            Register-HrmSecret ($password.Replace("'", "''"))
+            Remove-Item (Get-HrmSecretsFile $state)
+        }
+        $world.NextUpContainersJson = switch ($upPath) {
+            "absent" { '[]' }
+            "degraded-sync-failed" { '[{"Name":"db","State":"running","Health":"healthy"},{"Name":"backend","State":"running","Health":"unhealthy"}]' }
+            default { '[{"Name":"db","State":"running","Health":"healthy"},{"Name":"backend","State":"exited"}]' }
+        }
+        $world.NextUpExitCode = 1
+        $world.NextUpStderr = "fixture-up-stderr-$upPath $password " + $password.Replace("'", "''")
+        $world.DbPasswordSyncFails = ($upPath -eq "degraded-sync-failed")
+        $env:HRM_LOG_FILE = Join-Path $state "followup.log"
+        $result = Start-HrmStack (Get-HrmTestInstallDir) $state
+        Assert-HrmEqual 1 @($result).Count
+        $log = Get-Content $env:HRM_LOG_FILE -Raw -Encoding UTF8
+        Assert-HrmContains $log "fixture-up-stderr-$upPath"
+        Assert-HrmEqual 1 ([regex]::Matches($log, "fixture-up-stderr-$upPath").Count) "ошибка up должна записываться один раз"
+        Assert-HrmContainsRedacted $log
+        Assert-HrmNotContains $log $password
+        Assert-HrmNotContains $log ($password.Replace("'", "''"))
+        # Мок psql при отказе печатает SQL в stderr, но этот stderr по-прежнему
+        # не смешивается с диагностикой compose up и не попадает в журнал.
+        Assert-HrmNotContains $log "ALTER ROLE"
+        if ($upPath -eq "partial-recovered") {
+            Assert-HrmTrue $result.ok
+            Assert-HrmEqual "running" $result.state
+            Assert-HrmEqual 1 $world.DbPasswordSyncCount
+        } elseif ($upPath -eq "degraded-sync-failed") {
+            Assert-HrmFalse $result.ok
+            Assert-HrmEqual "database_auth_failed" $result.state
+        } else {
+            Assert-HrmFalse $result.ok
+            Assert-HrmEqual "failed" $result.state
+            Assert-HrmEqual 0 $world.DbPasswordSyncCount
+        }
+        Assert-HrmPasswordDataUntouched $world
+    }
+}
+
+Test-Case "P3.2: install/update не вытесняются свежими open, предел пять и tail сохраняются" {
+    $null = New-HrmPasswordTestContext
+    $state = Get-HrmTestStateDir
+    $logsDir = Get-HrmEngineLogsDir $state
+    New-Item -ItemType Directory $logsDir -Force | Out-Null
+    $password = Get-HrmSecret $state "HRM_POSTGRES_PASSWORD"
+    foreach ($action in @("install", "update")) {
+        $file = Join-Path $logsDir "$action-important.log"
+        Set-Content $file @("excluded-head", "$action-important-evidence $password", "fixture@example.com +79161234567") -Encoding UTF8
+        (Get-Item $file).LastWriteTime = (Get-Date).AddDays(-2)
+    }
+    foreach ($i in 1..6) {
+        $file = Join-Path $logsDir "open-case-$i.log"
+        Set-Content $file @("excluded-head", "open-evidence-$i $password", "fixture@example.com +79161234567") -Encoding UTF8
+        (Get-Item $file).LastWriteTime = (Get-Date).AddMinutes(-10 + $i)
+    }
+    $env:HRM_DESKTOP_DIR = Join-Path $state "desktop"
+    New-Item -ItemType Directory $env:HRM_DESKTOP_DIR -Force | Out-Null
+    Reset-HrmRedaction
+    $zip = New-HrmSupportBundle (Get-HrmTestInstallDir) $state -LogTail 2
+    $unpack = Join-Path $state "unpacked"
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $unpack)
+    $text = Get-Content (Join-Path $unpack "logs-engine.txt") -Raw -Encoding UTF8
+    Assert-HrmContains $text "install-important-evidence"
+    Assert-HrmContains $text "update-important-evidence"
+    foreach ($i in 4..6) { Assert-HrmContains $text "open-evidence-$i" }
+    foreach ($i in 1..3) { Assert-HrmNotContains $text "open-evidence-$i" }
+    Assert-HrmEqual 5 ([regex]::Matches($text, '(?m)^=== ').Count)
+    Assert-HrmNotContains $text "excluded-head"
+    Assert-HrmNotContains $text $password
+    Assert-HrmContainsRedacted $text
+    Assert-HrmNotContains $text "fixture@example.com"
+    Assert-HrmNotContains $text "+79161234567"
+}

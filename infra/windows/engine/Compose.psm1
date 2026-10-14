@@ -263,7 +263,11 @@ function Start-HrmStack {
     }
 
     $passwordSynced = $false
-    if ($current.state -eq "partial" -or $current.state -eq "degraded") {
+    # partial/degraded не означает, что db запущен: после сбоя машины может
+    # работать только backend. В этом случае сначала обычный up/repair,
+    # а не exec на остановленном контейнере с ложным database_auth_failed.
+    if (($current.state -eq "partial" -or $current.state -eq "degraded") -and
+        (Test-HrmDbContainerRunning -InstallDir $InstallDir -StateDir $StateDir)) {
         $sync = Sync-HrmPostgresRolePassword -InstallDir $InstallDir -StateDir $StateDir
         if (-not $sync.ok) { return $sync }
         $passwordSynced = $sync.synced
@@ -287,18 +291,35 @@ function Start-HrmStack {
         # Полный up может собрать отсутствующие сервисы, не удаляя тома.
     }
     $up = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") -IgnoreExitCode
+    if ($up.ExitCode -ne 0) {
+        # Сохраняем причину ДО любого возврата/repair, включая partial/degraded.
+        # Предпусковой sync мог быть пропущен: регистрируем существующие
+        # секреты (и SQL-escaped вид) без генерации и без зависимости от sync.
+        $upError = "Подробности stderr скрыты: не удалось загрузить секреты для редакции."
+        try {
+            foreach ($value in (Get-HrmSecretsMap $StateDir).Values) {
+                Register-HrmSecret $value
+                Register-HrmSecret ($value.Replace("'", "''"))
+            }
+            $upError = Redact-HrmText ([string]$up.Stderr).Trim()
+        } catch { }
+        Write-HrmLog "error" ("Запуск контейнеров не удался: " + $upError)
+    }
     # Даже неуспешный up мог поднять db и оставить backend unhealthy:
     # dependency failed to start — именно этот путь был в отчёте владельца.
     $after = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
     if ($up.ExitCode -ne 0 -and $after.state -ne "partial" -and $after.state -ne "degraded") {
         $message = "Не удалось запустить контейнеры. Нажмите «Создать отчёт для поддержки»."
-        Write-HrmLog "error" (Redact-HrmText ("Запуск контейнеров не удался: " + $up.Stderr.Trim()))
         return [pscustomobject]@{ ok = $false; state = "failed"; message = $message }
     }
     if ($after.state -eq "partial" -or $after.state -eq "degraded") {
-        $sync = Sync-HrmPostgresRolePassword -InstallDir $InstallDir -StateDir $StateDir
-        if (-not $sync.ok) { return $sync }
-        $passwordSynced = $passwordSynced -or $sync.synced
+        # up тоже мог оставить db остановленным/несозданным. Это ошибка
+        # запуска контейнера, а не доказательство неверного пароля роли.
+        if (Test-HrmDbContainerRunning -InstallDir $InstallDir -StateDir $StateDir) {
+            $sync = Sync-HrmPostgresRolePassword -InstallDir $InstallDir -StateDir $StateDir
+            if (-not $sync.ok) { return $sync }
+            $passwordSynced = $passwordSynced -or $sync.synced
+        }
         if ($up.ExitCode -ne 0 -and -not $passwordSynced) {
             return [pscustomobject]@{ ok = $false; state = "failed"; message = "Не удалось запустить контейнеры. Создайте отчёт для поддержки." }
         }

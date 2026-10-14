@@ -164,12 +164,16 @@ function New-HrmSupportBundle {
             } catch {}
         }
 
-        # 7. Последние 5 журналов движка, по LogTail строк каждый. Читаем
-        # только *.log из StateDir/logs, никогда не копируем каталог целиком.
+        # 7. Не более 5 журналов, по LogTail строк: сначала свежие install-/
+        # update-, затем остальные. Повторные open из ярлыка не должны
+        # вытеснить причину неудачной установки. Читаем только *.log.
         $engineLogs = @()
         try {
-            $engineLogs = @(Get-ChildItem -LiteralPath (Get-HrmEngineLogsDir $StateDir) -Filter "*.log" -File -ErrorAction Stop |
-                Sort-Object LastWriteTime -Descending | Select-Object -First 5)
+            $allEngineLogs = @(Get-ChildItem -LiteralPath (Get-HrmEngineLogsDir $StateDir) -Filter "*.log" -File -ErrorAction Stop |
+                Sort-Object LastWriteTime -Descending)
+            $setupLogs = @($allEngineLogs | Where-Object { $_.Name -match "^(install|update)-" })
+            $otherLogs = @($allEngineLogs | Where-Object { $_.Name -notmatch "^(install|update)-" })
+            $engineLogs = @(($setupLogs + $otherLogs) | Select-Object -First 5)
         } catch { }
         $engineText = @()
         foreach ($engineLog in $engineLogs) {
