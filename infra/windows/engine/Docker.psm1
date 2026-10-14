@@ -22,9 +22,11 @@ $script:DockerOverride = $null
 # Сбрасывается через Reset-HrmDockerCliChoiceCache и в тестах.
 $script:DockerCliChoiceCache = ""
 # База переопределений (тестовый шов): Set-HrmDockerOverride заменяет набор
-# целиком, поэтому договорённости, на которые опирается весь прогон (свободный
-# порт, путь CLI контейнеров), хранятся отдельно и не стираются, когда тест
-# задаёт свои ключи. Значения теста важнее базы.
+# целиком, поэтому договорённости, на которые опирается прогон (свободный порт,
+# тестовый запас места, путь CLI контейнеров), хранятся отдельно и не стираются,
+# когда тест задаёт свои ключи. compose_plugin_files намеренно остаётся opt-in:
+# без явного ключа Get-HrmComposePluginFacts выполняет настоящий файловый scan.
+# Значения теста важнее базы.
 $script:DockerOverrideDefaults = $null
 
 $script:DockerDownloadPage = "https://www.docker.com/products/docker-desktop/"
@@ -42,8 +44,9 @@ function Set-HrmDockerOverrideDefaults {
 }
 
 function Set-HrmDockerOverride {
-    # Ключи: desktop, cli, cli_path (путь CLI контейнеров; "" — «не найден»),
-    # engine, wsl, virtualization, admin, reboot, port_free, free_mb, desktop_path.
+    # Ключи: desktop, cli, cli_path (путь CLI контейнеров; "" — «не найден"),
+    # engine, wsl, virtualization, admin, reboot, port_free, free_port, free_mb,
+    # desktop_path, compose_plugin_files (тестовый список имён docker-compose*).
     # Набор теста накладывается поверх базы (Set-HrmDockerOverrideDefaults).
     param([hashtable]$State)
     $merged = @{}
@@ -61,6 +64,16 @@ function Get-HrmDockerOverrideValue {
     if ($null -eq $script:DockerOverride) { return $null }
     if (-not $script:DockerOverride.ContainsKey($Key)) { return $null }
     return $script:DockerOverride[$Key]
+}
+
+function Test-HrmDockerOverrideKey {
+    # Проверка присутствия отдельно от значения: Get-HrmDockerOverrideValue
+    # выдаёт элементы в pipeline, поэтому явно заданный пустой массив выглядит
+    # как $null. Для override-ключей, где пустой массив имеет смысл, вызывающий
+    # обязан сначала проверить наличие ключа этим helper'ом.
+    param([string]$Key)
+    if ($null -eq $script:DockerOverride) { return $false }
+    return [bool]$script:DockerOverride.ContainsKey($Key)
 }
 
 # --- Обнаружение записей реестра --------------------------------------------
