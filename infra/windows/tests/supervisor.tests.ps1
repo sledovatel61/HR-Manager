@@ -62,6 +62,49 @@ Test-Case "меню трея содержит все обязательные п
     Assert-HrmContains $texts "Состояние: Готово" "состояние не видно в меню"
     $open = @($model | Where-Object { $_.action -eq "open" })[0]
     Assert-HrmTrue $open.enabled "«Открыть» должно быть доступно в состоянии ready"
+    $firstRunModel = Get-HrmTrayMenuModel -State "error" -Busy $false -AutostartEnabled $false -Message "Docker Desktop не установлен." -OpenAvailable $true
+    $firstRunOpen = @($firstRunModel | Where-Object { $_.action -eq "open" })[0]
+    Assert-HrmTrue $firstRunOpen.enabled "после отказа первой установки пункт «Открыть» должен позволять повторить настройку"
+    $blockedFirstRun = Get-HrmTrayMenuModel -State "error" -Busy $true -OpenAvailable $true
+    $blockedOpen = @($blockedFirstRun | Where-Object { $_.action -eq "open" })[0]
+    Assert-HrmFalse $blockedOpen.enabled "повторная первичная настройка не должна обходить блокировку движка"
+}
+
+Test-Case "E.5: после отказа Docker из трея доступен повтор первичной настройки с браузером" {
+    New-HrmSupervisorTestContext
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $infra = Join-Path $install "infra"
+    $windowsDir = Join-Path $infra "windows"
+    New-Item -ItemType Directory -Path $windowsDir -Force | Out-Null
+    Set-Content -Path (Join-Path $infra "compose.pilot.yml") -Value "services: {}" -Encoding UTF8
+    Set-Content -Path (Join-Path $windowsDir "hr-manager.ps1") -Value "# test stub" -Encoding ASCII
+    Set-HrmSetupMarker -StateDir $state -Status "failed" -Message "Настройка не завершена; проверьте Docker Desktop." | Out-Null
+    $dockerReason = "Docker Desktop отсутствует; Docker Engine не готов. Подробности в журнале."
+    Set-HrmSupervisorState -StateDir $state -State "error" -Message $dockerReason
+
+    $plan = Get-HrmTrayCurrentPlan -StateDir $state -InstallDir $install
+    Assert-HrmEqual "install_failed" ([string]$plan.mode) "первый отказ не распознан треем"
+    Assert-HrmEqual $dockerReason ([string]$plan.message) "fallback Setup скрыл точную причину Docker из состояния движка"
+    Assert-HrmTrue ([bool]$plan.open_available) "после отказа Setup не оставил в трее путь продолжения"
+    $tick = Invoke-HrmTrayRefresh -InstallDir $install -StateDir $state
+    Assert-HrmTrue ([bool]$tick.open_available) "обновление значка потеряло доступность повторной настройки"
+    $model = Get-HrmTrayMenuModel -State $tick.state -Busy $tick.busy -OpenAvailable $tick.open_available
+    $open = @($model | Where-Object { $_.action -eq "open" })[0]
+    Assert-HrmTrue ([bool]$open.enabled) "пункт «Открыть HR Manager» недоступен после отказа Docker"
+
+    $global:HRM_TrayProcessArguments = @()
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        $global:HRM_TrayProcessArguments = @($Arguments)
+        return [pscustomobject]@{ Id = 4321 }
+    }
+    $result = Invoke-HrmTrayMenuAction -ActionId "open" -InstallDir $install -StateDir $state
+    Assert-HrmContains $result "Действие запущено: open" "нажатие в трее не запустило повтор настройки"
+    Assert-HrmTrue ($global:HRM_TrayProcessArguments -contains "-NonInteractive") "движок трея должен остаться неинтерактивным"
+    Assert-HrmTrue ($global:HRM_TrayProcessArguments -contains "-OpenBrowser") "неинтерактивный движок трея не получил явное разрешение открыть браузер"
+    Assert-HrmEqual "-OpenBrowser" (Get-HrmTrayEngineExtraArguments -Action "resume" -StateDir $state) "первичное продолжение из трея должно открыть страницу настройки"
+    Exit-HrmActionLock -StateDir $state
 }
 
 Test-Case "во время операции пункты меню недоступны (нет дублей действий)" {
@@ -271,6 +314,35 @@ function Set-HrmTestActionLock {
             pid = $ProcessId
             started_at = (Get-Date).AddMinutes(-$AgeMinutes).ToString("o")
         })
+}
+
+Test-Case "повтор первичной настройки из ярлыка не обходит занятую action lock" {
+    $world = New-HrmSupervisorTestContext
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $infra = Join-Path $install "infra"
+    New-Item -ItemType Directory -Path $infra -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $infra "compose.pilot.yml") -Value "services: {}" -Encoding UTF8
+    $otherPid = Get-HrmOtherLivePid
+    Assert-HrmTrue ($otherPid -gt 0) "на машине нет другого живого процесса для проверки блокировки"
+    Set-HrmTestActionLock -StateDir $state -Action "install" -ProcessId $otherPid
+    $logDir = Join-Path $state "logs"
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    $env:HRM_LOG_FILE = Join-Path $logDir "open-lock.log"
+    $callsBefore = @($world.Calls).Count
+
+    $threw = $false
+    try { Open-HrmApp -InstallDir $install -StateDir $state }
+    catch { $threw = $true }
+
+    Assert-HrmFalse $threw "занятая блокировка должна дать понятный отказ, а не исключение-краш"
+    Assert-HrmEqual $callsBefore (@($world.Calls).Count) "повтор настройки запустил движок/Docker при занятой блокировке"
+    Assert-HrmFalse (Test-Path (Get-HrmSetupMarkerFile $state)) "движок поставил marker и попытался начать установку при занятой блокировке"
+    $lock = Get-HrmJsonFile (Get-HrmActionLockFile $state)
+    Assert-HrmEqual $otherPid ([int]$lock.pid) "чужая блокировка была перезаписана"
+    Assert-HrmEqual "install" ([string]$lock.action) "чужая операция была переписана"
+    $log = Get-Content -LiteralPath $env:HRM_LOG_FILE -Raw -Encoding UTF8
+    Assert-HrmContains $log "уже выполняется" "отказ не объясняет, что действие уже выполняется"
 }
 
 Test-Case "D2: второй параллельный цикл движка не начинается (мьютекс цикла) и не идёт в Docker" {

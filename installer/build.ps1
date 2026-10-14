@@ -8,17 +8,21 @@
 # молча (/VERYSILENT) ТОЛЬКО на сборочной машине/CI, никогда на машине
 # пользователя - пользователю доставляется готовый HR-Manager-Setup.exe.
 #
-# Результат: installer/output/HR-Manager-Setup-<Version>.exe и
-# installer/release-manifest.json (release_sha, версия, хеши пакета и exe).
+# Результат: installer/output/HR-Manager-Setup-<Version>.exe, manifest и SHA256SUMS.
+# Необязательный официальный Docker Desktop Installer.exe передаётся отдельно
+# рядом с Setup.exe (sidecar), с SHA256 в manifest/суммах, и не встраивается.
 #
 # ИСПОЛЬЗОВАНИЕ (Windows 10/11, PowerShell 5.1+ или pwsh):
 #   powershell -ExecutionPolicy Bypass -File installer\build.ps1 [-Version 0.15.0]
+#   powershell -File installer\build.ps1 -DockerDesktopInstallerPath C:\downloads\DockerDesktopInstaller.exe
 
 [CmdletBinding()]
 param(
     [string]$Version = "0.15.0",
     [string]$TrustStoreFile = "",
-    [string]$TrustStoreSha256 = ""
+    [string]$TrustStoreSha256 = "",
+    [string]$DockerDesktopInstallerPath = "",
+    [string]$DockerDesktopInstallerSha256 = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +36,55 @@ $cacheDir = Join-Path $installerDir ".cache"
 
 $InnoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
 $InnoSha256 = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+$DockerInstallerSourceUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+$DockerDownloadPage = "https://www.docker.com/products/docker-desktop/"
+
+# Docker Desktop is never downloaded during a build. If a release owner supplies
+# the official installer, keep it as a separate distribution sidecar and record
+# its exact hash; an optional expected hash makes local release builds fail-closed.
+if (-not $DockerDesktopInstallerPath) {
+    $defaultDockerInstaller = Join-Path $installerDir "DockerDesktopInstaller.exe"
+    if (Test-Path -LiteralPath $defaultDockerInstaller -PathType Leaf) {
+        $DockerDesktopInstallerPath = $defaultDockerInstaller
+    }
+}
+$dockerInstallerSource = ""
+$dockerInstallerHash = ""
+$dockerInstallerInfo = [ordered]@{
+    available = $false
+    file = $null
+    source_url = $DockerInstallerSourceUrl
+    official_download_page = $DockerDownloadPage
+    sha256 = $null
+    embedded_in_setup = $false
+    copied_to_app = "docker/DockerDesktopInstaller.exe"
+    automatically_launched = $false
+}
+if ($DockerDesktopInstallerPath) {
+    if (-not (Test-Path -LiteralPath $DockerDesktopInstallerPath -PathType Leaf)) {
+        throw "Docker Desktop sidecar source not found: $DockerDesktopInstallerPath"
+    }
+    $dockerInstallerSource = (Resolve-Path -LiteralPath $DockerDesktopInstallerPath).Path
+    $sourceFullPath = [System.IO.Path]::GetFullPath($dockerInstallerSource)
+    $outputFullPath = [System.IO.Path]::GetFullPath($outputDir).TrimEnd([char]92, [char]47)
+    if ($sourceFullPath.StartsWith($outputFullPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Docker Desktop sidecar source must be outside installer/output because that directory is rebuilt: $dockerInstallerSource"
+    }
+    if ($DockerDesktopInstallerSha256 -and $DockerDesktopInstallerSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+        throw "DockerDesktopInstallerSha256 must be exactly 64 hexadecimal characters"
+    }
+    $dockerInstallerHash = (Get-FileHash -LiteralPath $dockerInstallerSource -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($DockerDesktopInstallerSha256 -and $dockerInstallerHash -ne $DockerDesktopInstallerSha256.ToLowerInvariant()) {
+        throw ("Docker Desktop sidecar SHA256 mismatch: actual {0}, expected {1}" -f $dockerInstallerHash, $DockerDesktopInstallerSha256.ToLowerInvariant())
+    }
+    $dockerInstallerInfo.available = $true
+    $dockerInstallerInfo.file = "DockerDesktopInstaller.exe"
+    $dockerInstallerInfo.sha256 = $dockerInstallerHash
+    Write-Host ("Optional Docker Desktop sidecar: {0} sha256={1}" -f $dockerInstallerSource, $dockerInstallerHash)
+}
+else {
+    Write-Host "No Docker Desktop sidecar supplied; distribution will point only to the official Docker download page."
+}
 
 function Write-HrmUtf8NoBom {
     # Windows PowerShell 5.1 пишет Set-Content -Encoding UTF8 с BOM, а Python
@@ -156,6 +209,9 @@ $releaseJson = [ordered]@{
     built_at = (Get-Date).ToString("o")
     installer_commit = $releaseSha
     changelog = $changelog
+    # The installed engine reads this same build-time hash before showing the
+    # optional sidecar path. Reuse the manifest object; do not hash the file twice.
+    docker_desktop_installer = $dockerInstallerInfo
 }
 Write-HrmUtf8NoBom -Path (Join-Path $appStaging "release.json") -Text ($releaseJson | ConvertTo-Json)
 
@@ -262,6 +318,12 @@ Write-Host "ISCC succeeded"
 
 $setupExe = Join-Path $outputDir ("HR-Manager-Setup-" + $Version + ".exe")
 if (-not (Test-Path $setupExe)) { throw "Установщик не создан: $setupExe" }
+$dockerSidecarOutput = Join-Path $outputDir "DockerDesktopInstaller.exe"
+if ($dockerInstallerSource) {
+    Copy-Item -LiteralPath $dockerInstallerSource -Destination $dockerSidecarOutput -Force
+    $copiedDockerHash = (Get-FileHash -LiteralPath $dockerSidecarOutput -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($copiedDockerHash -ne $dockerInstallerHash) { throw "Docker Desktop sidecar changed while copying" }
+}
 
 Write-Host "Writing release manifest..."
 $fileHashes = [ordered]@{}
@@ -286,6 +348,7 @@ $manifest = [ordered]@{
         sha256 = (Get-FileHash -Path $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     trust_store = $trustStoreInfo
+    docker_desktop_installer = $dockerInstallerInfo
     license = [ordered]@{
         public_key_file = "infra/license/public_key.b64"
         sha256 = $licenseFp
@@ -300,8 +363,22 @@ $manifest = [ordered]@{
 }
 $manifestPath = Join-Path $installerDir "release-manifest.json"
 Write-HrmUtf8NoBom -Path $manifestPath -Text ($manifest | ConvertTo-Json -Depth 8)
+$outputManifestPath = Join-Path $outputDir "release-manifest.json"
+Copy-Item -LiteralPath $manifestPath -Destination $outputManifestPath -Force
+$outputManifestHash = (Get-FileHash -LiteralPath $outputManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$sumLines = @(
+    ((Get-FileHash -LiteralPath $setupExe -Algorithm SHA256).Hash.ToLowerInvariant() + "  " + (Split-Path $setupExe -Leaf))
+    ($outputManifestHash + "  release-manifest.json")
+)
+if ($dockerInstallerSource) {
+    $sumLines += ($dockerInstallerHash + "  DockerDesktopInstaller.exe")
+}
+$sumsPath = Join-Path $outputDir "SHA256SUMS.txt"
+[System.IO.File]::WriteAllLines($sumsPath, [string[]]$sumLines, [System.Text.Encoding]::ASCII)
 
 Write-Host ""
 Write-Host "Готово: $setupExe"
 Write-Host ("SHA256 установщика: {0}" -f $manifest.installer_exe.sha256)
-Write-Host "Манифест: $manifestPath"
+if ($dockerInstallerSource) { Write-Host ("Docker Desktop sidecar: {0}" -f $dockerSidecarOutput) }
+Write-Host "SHA256SUMS: $sumsPath"
+Write-Host "Манифест: $manifestPath (also copied to output/)"

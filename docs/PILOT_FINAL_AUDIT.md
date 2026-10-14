@@ -1,5 +1,15 @@
 # Финальная пилотная установка HR Manager — аудит и план (0.15.0)
 
+> **Исторический аудит от 2026-10-07.** В нём зафиксированы требования и
+> реализация прежнего автоматизированного сценария установки Docker Desktop.
+> Этот сценарий, включая кнопку установки, Docker-specific UAC/reboot-pending и
+> загрузку installer из CI, заменён ручной установкой пользователя 2026-10-13.
+> Текущий контракт и приёмка описаны в [installer/README.md](../installer/README.md),
+> [infra/windows/README.md](../infra/windows/README.md),
+> [DOCKER_RUNTIME_DECISION.md](DOCKER_RUNTIME_DECISION.md),
+> [WINDOWS_ACCEPTANCE_CHECKLIST.md](WINDOWS_ACCEPTANCE_CHECKLIST.md) и
+> [CURRENT_STATUS.md](CURRENT_STATUS.md).
+
 Дата: 2026-10-07. База: `main` @ `9d89add00721deeef9e358ced20d6064f896e893` (merge PR #51).
 Рабочая ветка: `arena/4be5f952-hr-manager`.
 

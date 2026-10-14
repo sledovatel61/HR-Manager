@@ -10,6 +10,10 @@ on:
       release_sha:
         description: "Full git SHA to build (по умолчанию HEAD)"
         required: false
+      docker_desktop_installer_sha256:
+        description: "Optional pinned SHA256: download the official Docker Desktop installer as a separate sidecar (leave empty to omit it)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -119,6 +123,50 @@ jobs:
           if (-not (Test-Path "tools/license-issuer/dist/license-issuer-dist.zip")) { throw "license-issuer-dist.zip not created" }
           Get-ChildItem tools/license-issuer/dist -Recurse | ForEach-Object { Write-Host $_.FullName }
 
+      - name: Prepare optional pinned Docker Desktop sidecar
+        id: docker-sidecar
+        shell: pwsh
+        env:
+          DOCKER_DESKTOP_INSTALLER_SHA256: ${{ inputs.docker_desktop_installer_sha256 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sidecar = Join-Path $PWD "installer/DockerDesktopInstaller.exe"
+          $expected = ([string]$env:DOCKER_DESKTOP_INSTALLER_SHA256).Trim().ToLowerInvariant()
+          if (-not $expected) {
+            if (Test-Path -LiteralPath $sidecar) { Remove-Item -LiteralPath $sidecar -Force }
+            Write-Host "Docker Desktop sidecar omitted; build manifest will contain the official download URL only."
+            Add-Content -Path $env:GITHUB_ENV -Value "HRM_DOCKER_DESKTOP_INSTALLER_SHA256="
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "pinned=false"
+            exit 0
+          }
+          if ($expected -notmatch '^[0-9a-f]{64}$') {
+            throw "docker_desktop_installer_sha256 must be exactly 64 hexadecimal characters"
+          }
+          $url = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+          Write-Host "Downloading optional sidecar from fixed official URL; expected SHA256=$expected"
+          Invoke-WebRequest -Uri $url -OutFile $sidecar -UseBasicParsing -ErrorAction Stop
+          $actual = (Get-FileHash -LiteralPath $sidecar -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            Remove-Item -LiteralPath $sidecar -Force -ErrorAction SilentlyContinue
+            throw "Docker Desktop sidecar SHA256 mismatch: actual $actual does not match the supplied pin"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "HRM_DOCKER_DESKTOP_INSTALLER_SHA256=$expected"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "pinned=true"
+          Write-Host "Verified optional Docker Desktop sidecar: $actual"
+
+      - name: Verify Docker Desktop sidecar Authenticode identity
+        if: steps.docker-sidecar.outputs.pinned == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tool = Join-Path $PWD "infra/windows/tools/Assert-HrmDockerInstallerSignature.ps1"
+          $sidecar = Join-Path $PWD "installer/DockerDesktopInstaller.exe"
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $tool -Path $sidecar -ExpectedSha256 $env:HRM_DOCKER_DESKTOP_INSTALLER_SHA256
+          $signatureExitCode = $LASTEXITCODE
+          if ($signatureExitCode -eq 1) { throw "Docker Desktop sidecar signature/publisher alert (exit 1)." }
+          if ($signatureExitCode -eq 2) { throw "Docker Desktop sidecar signature could not be checked (exit 2)." }
+          if ($signatureExitCode -ne 0) { throw "Docker Desktop sidecar signature tool returned unexpected exit code $signatureExitCode." }
+
       - name: Build HR Manager Setup.exe (pilot, unsigned)
         shell: pwsh
         env:
@@ -128,15 +176,21 @@ jobs:
           $ErrorActionPreference = "Stop"
           $version = "${{ steps.resolve.outputs.version }}"
           Write-Host "Building Setup.exe version $version with HRM_RELEASE_SHA=$env:HRM_RELEASE_SHA"
-          # Pilot uses public key from file or env; no trust store (channel trust store not needed for pilot)
-          # But if trust store file exists for pilot (test), we can skip. Build will fail if license missing (desired).
-          & ./installer/build.ps1 -Version $version
-          # Also support explicit TrustStore if present? Not needed for pilot.
+          # Pilot uses public key from file or env; no trust store (channel trust store not needed for pilot).
+          # Docker Desktop remains a separate optional sidecar, verified against the explicit dispatch pin.
+          $buildArgs = @("-Version", $version)
+          if ($env:HRM_DOCKER_DESKTOP_INSTALLER_SHA256) {
+            $buildArgs += @(
+              "-DockerDesktopInstallerPath", (Join-Path $PWD "installer/DockerDesktopInstaller.exe"),
+              "-DockerDesktopInstallerSha256", $env:HRM_DOCKER_DESKTOP_INSTALLER_SHA256
+            )
+          }
+          & ./installer/build.ps1 @buildArgs
           if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed" }
           Get-ChildItem installer/output -Recurse | ForEach-Object { Write-Host $_.FullName }
           Get-Content installer/release-manifest.json -Raw | Write-Host
 
-      - name: Generate SHA256SUMS.txt for pilot artifacts
+      - name: Generate SHA256SUMS.txt for pilot distribution + license issuer
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -146,12 +200,19 @@ jobs:
           $hash = (Get-FileHash -Path $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           $issuerZip = Get-ChildItem tools/license-issuer/dist/license-issuer-dist.zip | Select-Object -First 1
           $issuerHash = (Get-FileHash -Path $issuerZip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          $manifestHash = (Get-FileHash -Path installer/release-manifest.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifestPath = "installer/output/release-manifest.json"
+          if (-not (Test-Path $manifestPath)) { throw "output release-manifest.json missing" }
+          $manifestHash = (Get-FileHash -Path $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $lines = @(
             "$hash  $($setup.Name)"
             "$issuerHash  license-issuer-dist.zip"
             "$manifestHash  release-manifest.json"
           )
+          $dockerSidecar = "installer/output/DockerDesktopInstaller.exe"
+          if (Test-Path $dockerSidecar) {
+            $dockerHash = (Get-FileHash -Path $dockerSidecar -Algorithm SHA256).Hash.ToLowerInvariant()
+            $lines += "$dockerHash  DockerDesktopInstaller.exe"
+          }
           $outPath = "installer/output/SHA256SUMS.txt"
           Set-Content -Path $outPath -Value $lines -Encoding ASCII
           Write-Host "SHA256SUMS.txt:"
@@ -183,8 +244,7 @@ jobs:
         with:
           name: pilot-release-${{ steps.resolve.outputs.version }}
           path: |
-            installer/output/HR-Manager-Setup-*.exe
-            installer/output/SHA256SUMS.txt
+            installer/output/*
             SHA256SUMS.txt
             tools/license-issuer/dist/license-issuer-dist.zip
             installer/release-manifest.json

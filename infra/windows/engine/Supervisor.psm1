@@ -644,8 +644,6 @@ function Invoke-HrmSupervisorCycle {
         [string]$InstallDir = "",
         [string]$StateDir = "",
         [int]$Port = 0,
-        [switch]$AllowInstall,
-        [switch]$Interactive,
         [int]$TimeoutSeconds = 300
     )
     if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
@@ -671,7 +669,7 @@ function Invoke-HrmSupervisorCycle {
             return [pscustomobject]@{ ok = $false; state = "busy"; message = ([string]$actionLock.message); already_running = $true }
         }
         try {
-            return (Invoke-HrmSupervisorCycleLocked -InstallDir $InstallDir -StateDir $StateDir -Port $Port -AllowInstall:$AllowInstall -Interactive:$Interactive -TimeoutSeconds $TimeoutSeconds)
+            return (Invoke-HrmSupervisorCycleLocked -InstallDir $InstallDir -StateDir $StateDir -Port $Port -TimeoutSeconds $TimeoutSeconds)
         }
         finally { Exit-HrmActionLock -StateDir $StateDir }
     }
@@ -685,8 +683,6 @@ function Invoke-HrmSupervisorCycleLocked {
         [string]$InstallDir = "",
         [string]$StateDir = "",
         [int]$Port = 0,
-        [switch]$AllowInstall,
-        [switch]$Interactive,
         [int]$TimeoutSeconds = 300
     )
     if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
@@ -703,7 +699,7 @@ function Invoke-HrmSupervisorCycleLocked {
 
     Set-HrmSupervisorState -StateDir $StateDir -State "starting" -Message "Подготавливаем рабочую среду…" -Busy $true -Extra @{ port = $port }
     try {
-        $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port -AllowInstall:$AllowInstall -Interactive:$Interactive -TimeoutSeconds $TimeoutSeconds
+        $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port -TimeoutSeconds $TimeoutSeconds
         if (-not $prepare.ok) {
             Set-HrmSupervisorState -StateDir $StateDir -State "error" -Message $prepare.message -Busy $false -Extra @{ code = $prepare.state; port = $port }
             return [pscustomobject]@{ ok = $false; state = $prepare.state; message = $prepare.message; needs_reboot = $prepare.needs_reboot }

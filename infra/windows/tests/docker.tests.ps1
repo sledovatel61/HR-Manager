@@ -1,13 +1,13 @@
-﻿# Поведенческие тесты жизненного цикла Docker Desktop (0.15.0).
-# Реальная машина не затрагивается: Docker/процессы/скачивание подменяются
-# моками (Set-HrmDockerOverride, Set-HrmProcessLaunchMock, Set-HrmDownloadMock,
-# Set-HrmExternalMock, Set-HrmHttpMock).
+﻿# Поведенческие тесты диагностики и запуска Docker Desktop (0.15.0).
+# Реальная машина не затрагивается: Docker/процессы подменяются моками
+# (Set-HrmDockerOverride, Set-HrmProcessLaunchMock, Set-HrmExternalMock,
+# Set-HrmHttpMock). Установка Docker Desktop пользователю остаётся ручной.
 
 param([string]$HarnessPath = $PSScriptRoot)
 
 . (Join-Path $HarnessPath "test-harness.ps1")
 
-Write-Host "== Docker Desktop: обнаружение, установка, ожидание Engine =="
+Write-Host "== Docker Desktop: диагностика, ручная установка, ожидание Engine =="
 
 function New-HrmDockerTestContext {
     # Изолированные каталоги + мир моков + базовые предусловия.
@@ -18,15 +18,19 @@ function New-HrmDockerTestContext {
     return $world
 }
 
-Test-Case "Docker Desktop не установлен: prepare не делает вид, что Docker есть, и предлагает установку" {
+Test-Case "Docker Desktop не установлен: prepare отказывает с официальным URL и не запускает installer" {
     $world = New-HrmDockerTestContext
     Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true }
     $state = Get-HrmTestStateDir
     $result = Invoke-HrmDockerPrepare -InstallDir (Get-HrmTestInstallDir) -StateDir $state -Port 8080
     Assert-HrmFalse $result.ok "prepare не должен считаться успешным без Docker"
     Assert-HrmEqual "docker_missing" $result.state "неверное состояние"
-    Assert-HrmTrue $result.needs_install "должно предлагаться установка Docker"
-    Assert-HrmContains $result.message "Docker Desktop" "сообщение должно быть понятным"
+    Assert-HrmTrue $result.needs_install "должна быть отмечена необходимость ручной установки"
+    Assert-HrmContains $result.message "Docker Desktop" "сообщение должно называть Docker Desktop"
+    Assert-HrmContains $result.message "Docker Engine" "сообщение должно называть Docker Engine"
+    Assert-HrmContains $result.message "https://www.docker.com/products/docker-desktop/" "нужна действующая официальная ссылка"
+    Assert-HrmNotContains $result.message "Установить Docker Desktop" "сообщение не должно обещать несуществующую кнопку"
+    Assert-HrmFalse (Test-Path (Join-Path $state "docker-pending.json")) "Docker-specific pending state не должен создаваться"
     # Бесконечного цикла нет: один проход, состояние зафиксировано.
     $steps = Get-HrmSetupProgressPlan -StateDir $state
     $dockerStep = @($steps | Where-Object { $_.key -eq "docker_app" })[0]
@@ -35,9 +39,8 @@ Test-Case "Docker Desktop не установлен: prepare не делает �
 
 Test-Case "Docker Desktop установлен, но не запущен: движок запускает его и ждёт Engine" {
     $world = New-HrmDockerTestContext
-    # Счётчик запусков принадлежит тесту: движок фиксирует действия в журнале и
-    # через docker-pending, а не в глобальных переменных, поэтому инициализируем
-    # его сами (иначе StrictMode падает на несуществующей переменной).
+    # Счётчик запусков принадлежит тесту: инициализируем его явно, иначе
+    # StrictMode упадёт на несуществующей глобальной переменной.
     $global:HRM_DockerLaunches = @()
     Set-HrmProcessLaunchMock {
         param($FilePath, $Arguments, $Mode, $LogFile)
@@ -71,232 +74,110 @@ Test-Case "Docker Engine ещё не готов: таймаут без беск�
     Assert-HrmContains $result.message "Повторить" "сообщение должно предлагать повтор"
 }
 
-Test-Case "установка Docker Desktop: официальный адрес, проверка подписи, UAC и лицензия за пользователя не принимаются" {
-    $world = New-HrmDockerTestContext
-    Set-HrmDownloadMock {
-        param($Uri, $Destination)
-        $global:HRM_DockerDownloads += $Uri
-        Set-Content -Path $Destination -Value "stub-installer" -Encoding ASCII
-        return $Destination
+Test-Case "Docker sidecar отсутствует: инструкция показывает только официальный сайт" {
+    New-HrmDockerTestContext
+    $installDir = Get-HrmTestInstallDir
+    $guide = @(Get-HrmDockerInstallGuide -InstallDir $installDir) -join "`n"
+    Assert-HrmContains $guide "https://www.docker.com/products/docker-desktop/" "нужна ссылка на официальный сайт"
+    Assert-HrmNotContains $guide "DockerDesktopInstaller.exe" "при отсутствии sidecar не следует показывать локальный путь"
+    Assert-HrmContains $guide "лицензи" "лицензию Docker принимает человек"
+    Assert-HrmNotContains $guide "Нажмите «Установить Docker Desktop»" "инструкция не должна ссылаться на несуществующую кнопку"
+}
+
+Test-Case "Docker sidecar с совпавшим SHA256 показывается для ручного запуска и никогда не стартует сам" {
+    New-HrmDockerTestContext
+    $installDir = Get-HrmTestInstallDir
+    $dockerDir = Join-Path $installDir "docker"
+    New-Item -ItemType Directory -Path $dockerDir -Force | Out-Null
+    $sidecar = Join-Path $dockerDir "DockerDesktopInstaller.exe"
+    Set-Content -LiteralPath $sidecar -Value "test placeholder" -Encoding ASCII
+    $sidecarHash = Get-HrmFileSha256 -Path $sidecar
+    $release = [ordered]@{
+        release_sha = ("a" * 40)
+        docker_desktop_installer = [ordered]@{
+            available = $true
+            sha256 = $sidecarHash
+            source_url = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+            automatically_launched = $false
+        }
     }
-    $global:HRM_DockerDownloads = @()
-    Set-HrmProcessLaunchMock {
-        param($FilePath, $Arguments, $Mode, $LogFile)
-        $global:HRM_DockerLaunches += [pscustomobject]@{ Args = @($Arguments); Mode = $Mode }
-        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = 0 }
-    }
+    $release | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $installDir "release.json") -Encoding UTF8
+    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true }
     $global:HRM_DockerLaunches = @()
-    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; install_signature = $true; reboot = $false }
-    $state = Get-HrmTestStateDir
-    $result = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
-    Assert-HrmEqual "installed" $result.status "установка должна считаться успешной при нулевом коде"
-    Assert-HrmEqual 1 $global:HRM_DockerDownloads.Count "должен быть ровно один скачанный установщик"
-    Assert-HrmContains $global:HRM_DockerDownloads[0] "desktop.docker.com" "установщик берётся не с официального адреса Docker"
-    foreach ($launch in $global:HRM_DockerLaunches) {
-        Assert-HrmNotContains ($launch.Args -join " ") "--accept-license" "лицензия Docker не принимается автоматически"
+    Set-HrmProcessLaunchMock {
+        param($FilePath, $Arguments, $Mode, $LogFile)
+        $global:HRM_DockerLaunches += $FilePath
+        return [pscustomobject]@{ Id = 4321 }
     }
-    Assert-HrmTrue (Test-Path (Get-HrmPendingDockerOperationFile $state)) "должна быть зафиксирована автоматическая продолжение после установки"
-    $pending = Get-HrmPendingDockerOperation $state
-    Assert-HrmEqual "resume" ([string]$pending.kind) "вид отложенной операции"
+    $guide = @(Get-HrmDockerInstallGuide -InstallDir $installDir) -join "`n"
+    Assert-HrmContains $guide $sidecar "локальный путь можно показать только для sidecar с совпавшим SHA256"
+    Assert-HrmContains $guide "https://www.docker.com/products/docker-desktop/" "официальный URL должен оставаться видимым"
+    Assert-HrmContains $guide "не запускает" "HR Manager обязан явно сказать, что не запускает sidecar"
+    $result = Invoke-HrmDockerPrepare -InstallDir $installDir -StateDir (Get-HrmTestStateDir) -Port 8080
+    Assert-HrmFalse $result.ok "отсутствие Docker Engine должно оставаться отказом и при sidecar"
+    Assert-HrmEqual 0 $global:HRM_DockerLaunches.Count "Docker installer sidecar был запущен автоматически"
 }
 
-Test-Case "установщик Docker с непроверенной подписью отклоняется (fail-closed)" {
+Test-Case "Docker sidecar с несовпавшим или отсутствующим pin скрывается без ошибки hash-проверки" {
     New-HrmDockerTestContext
-    Set-HrmDownloadMock {
-        param($Uri, $Destination)
-        Set-Content -Path $Destination -Value "stub-installer" -Encoding ASCII
-        return $Destination
-    }
-    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; install_signature = $false }
+    $installDir = Get-HrmTestInstallDir
     $state = Get-HrmTestStateDir
-    $result = Install-HrmDockerDesktop -StateDir $state -Interactive
-    Assert-HrmEqual "failed" $result.status "неподписанный установщик должен быть отклонён"
-    Assert-HrmContains $result.message "подписи" "сообщение должно объяснять причину"
-}
-
-Test-Case "издатель установщика проверяется точно: «Docker» в имени не делает сертификат доверенным" {
-    # P2 ревью раунда 12. Раньше проверка была подстрокой «Docker», и любой
-    # корректно подписанный файл со словом Docker в subject считался доверенным.
-    Assert-HrmFalse (Test-HrmDockerPublisherSubject "CN=Fake Docker Signer, O=Evil Corp, C=US") `
-        "поддельный издатель со словом Docker в имени прошёл проверку"
-    Assert-HrmFalse (Test-HrmDockerPublisherSubject "CN=Dockerizer LLC, O=Dockerizer, C=US") `
-        "посторонний издатель со словом Docker в имени прошёл проверку"
-    Assert-HrmFalse (Test-HrmDockerPublisherSubject "CN=Docker Inc, O=Evil Corp, C=US") `
-        "совпал только CN: издатель не должен приниматься"
-    Assert-HrmFalse (Test-HrmDockerPublisherSubject "CN=Evil Corp, O=Docker Inc") `
-        "совпал только O: издатель не должен приниматься"
-    Assert-HrmFalse (Test-HrmDockerPublisherSubject "") "пустой subject должен считаться недоверенным"
-    Assert-HrmFalse (Test-HrmDockerPublisherSubject "CN=Docker Inc, CN=Docker Inc, O=Docker Inc") `
-        "два атрибута CN должны считаться недоверенными (неоднозначная строка)"
-}
-
-Test-Case "зафиксированный издатель Docker принимается по точному subject и по отпечатку" {
-    $subjects = @(Get-HrmDockerPublisherSubjects)
-    Assert-HrmTrue ($subjects.Count -ge 1) `
-        "список издателей пуст: официальный установщик Docker не будет принят (значения снимаются аудитом CI)"
-    foreach ($subject in $subjects) {
-        Assert-HrmTrue (Test-HrmDockerPublisherSubject $subject) ("зафиксированный издатель не проходит проверку: " + $subject)
+    $dockerDir = Join-Path $installDir "docker"
+    New-Item -ItemType Directory -Path $dockerDir -Force | Out-Null
+    $sidecar = Join-Path $dockerDir "DockerDesktopInstaller.exe"
+    Set-Content -LiteralPath $sidecar -Value "tampered placeholder" -Encoding ASCII
+    $release = [ordered]@{
+        release_sha = ("b" * 40)
+        docker_desktop_installer = [ordered]@{
+            available = $true
+            sha256 = ("0" * 64)
+            source_url = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+            automatically_launched = $false
+        }
     }
-    # Значения из аудита CI (прогон 37653666837): subject настоящего установщика
-    # и его отпечаток. True-случай не выдуман — это реальная подпись.
-    $realSubject = "CN=Docker Inc, O=Docker Inc, L=Palo Alto, S=California, C=US, SERIALNUMBER=4817464, " +
-        "OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
-    Assert-HrmTrue (Test-HrmDockerPublisherSubject $realSubject) "настоящий subject установщика Docker не принят"
-    # Порядок атрибутов и лишние пробелы не должны ломать проверку.
-    $reordered = "O=Docker Inc, CN=Docker Inc, C=US, L=Palo Alto,  S=California"
-    Assert-HrmTrue (Test-HrmDockerPublisherSubject $reordered) "перестановка атрибутов ломает проверку издателя"
-    # Отпечаток сертификата — второй, независимый способ (переживает смену subject).
-    Assert-HrmTrue (Test-HrmDockerPublisherSubject -Subject "CN=Кто-то другой" `
-            -Thumbprints @("b6bd29272b07ad4d0f1322a739499d67ca3bac3f")) "отпечаток сертификата не принят"
-    Assert-HrmFalse (Test-HrmDockerPublisherSubject -Subject "CN=Кто-то другой" `
-            -Thumbprints @("0000000000000000000000000000000000000000")) "чужой отпечаток принят"
+    $release | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $installDir "release.json") -Encoding UTF8
+    $env:HRM_LOG_FILE = Join-Path $state "sidecar-integrity.log"
+    New-Item -ItemType Directory -Path $state -Force | Out-Null
+    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true }
+
+    $threw = $false
+    $message = ""
+    $result = $null
+    try {
+        $message = Get-HrmDockerMissingMessage -InstallDir $installDir
+        $result = Invoke-HrmDockerPrepare -InstallDir $installDir -StateDir $state -Port 8080
+    }
+    catch { $threw = $true }
+
+    Assert-HrmFalse $threw "несовпавший sidecar не должен превращать подсказку/prepare в исключение"
+    Assert-HrmContains $message "https://www.docker.com/products/docker-desktop/" "при несовпадении нужен официальный URL"
+    Assert-HrmNotContains $message "DockerDesktopInstaller.exe" "при несовпадении нельзя показывать локальный путь"
+    Assert-HrmEqual "docker_missing" ([string]$result.state) "должен сохраниться обычный отказ по отсутствующему Docker"
+    Assert-HrmContains $result.message "https://www.docker.com/products/docker-desktop/" "обычный Docker-отказ должен содержать официальный URL"
+    Assert-HrmNotContains $result.message "DockerDesktopInstaller.exe" "ошибка хеша не должна раскрывать локальный путь"
+    $log = Get-Content -LiteralPath $env:HRM_LOG_FILE -Raw -Encoding UTF8
+    Assert-HrmContains $log "[warn]" "hash mismatch должен журналироваться как предупреждение"
+    Assert-HrmContains $log "SHA256 Docker Desktop sidecar не совпал" "журнал не объясняет скрытие sidecar"
+
+    # Отсутствующий ожидаемый SHA — тот же безопасный fallback: оставить URL,
+    # скрыть путь и только предупредить, не превращая проверку в ошибку установки.
+    $release.docker_desktop_installer.sha256 = $null
+    $release | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $installDir "release.json") -Encoding UTF8
+    Set-Content -LiteralPath $env:HRM_LOG_FILE -Value "" -Encoding UTF8
+    $missingPinMessage = Get-HrmDockerMissingMessage -InstallDir $installDir
+    Assert-HrmContains $missingPinMessage "https://www.docker.com/products/docker-desktop/" "без pin должен оставаться официальный URL"
+    Assert-HrmNotContains $missingPinMessage "DockerDesktopInstaller.exe" "без pin нельзя показывать локальный путь"
+    $missingPinLog = Get-Content -LiteralPath $env:HRM_LOG_FILE -Raw -Encoding UTF8
+    Assert-HrmContains $missingPinLog "[warn]" "отсутствующий pin должен журналироваться как предупреждение"
+    Assert-HrmContains $missingPinLog "не содержит доступный sidecar с корректным SHA256" "предупреждение не объясняет отсутствие pin"
 }
 
-Test-Case "проверка издателя end-to-end: строка-subject проходит через настоящее решение" {
-    # Переопределение install_signature строкой заменяет только чтение подписи,
-    # а решение об издателе остаётся настоящим (см. Test-HrmDockerInstallerTrusted).
-    Set-HrmDockerOverride @{ install_signature = "CN=Fake Docker Signer, O=Evil Corp" }
-    $fake = Test-HrmDockerInstallerTrusted -Path "C:\нет-такого-файла.exe"
-    Assert-HrmFalse $fake.trusted "поддельный издатель прошёл end-to-end проверку"
-    Assert-HrmContains $fake.reason "не Docker Inc" "сообщение об отказе должно называть причину"
-    Set-HrmDockerOverride @{ install_signature = "CN=Docker Inc, O=Docker Inc, C=US" }
-    $real = Test-HrmDockerInstallerTrusted -Path "C:\нет-такого-файла.exe"
-    Assert-HrmTrue $real.trusted "настоящий издатель отвергнут"
-    Set-HrmDockerOverride @{ install_signature = $false }
-    $unsigned = Test-HrmDockerInstallerTrusted -Path "C:\нет-такого-файла.exe"
-    Assert-HrmFalse $unsigned.trusted "прежний смысл override = $false не сохранён"
-}
-
-Test-Case "пользователь отменил UAC: это штатный результат с понятным текстом, а не crash-loop" {
+Test-Case "Docker readiness больше не публикует pending_docker" {
     New-HrmDockerTestContext
-    Set-HrmDownloadMock {
-        param($Uri, $Destination)
-        Set-Content -Path $Destination -Value "stub-installer" -Encoding ASCII
-        return $Destination
-    }
-    Set-HrmProcessLaunchMock {
-        param($FilePath, $Arguments, $Mode, $LogFile)
-        return [pscustomobject]@{ Started = $false; CanceledByUser = $true; ExitCode = -1 }
-    }
-    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; install_signature = $true; reboot = $false }
-    $state = Get-HrmTestStateDir
-    $result = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
-    Assert-HrmEqual "uac_declined" $result.status "отмена UAC — не ошибка установки"
-    Assert-HrmContains $result.message "разрешение Windows" "сообщение должно объяснять UAC"
-}
-
-Test-Case "P3: потолок ожидания установщика Docker Desktop — отдельное состояние, а не «код -1» и не второй установщик" {
-    # До исправления (e298202) истёкшее ожидание установщика попадало в ветку
-    # «ExitCode -ne 0»: журнал писал «Тихая установка Docker Desktop не удалась
-    # (код -1) — открываем обычный мастер установки», и движок запускал ВТОРОЙ
-    # установщик с тем же потолком 3600 с. Итог для человека: до двух часов
-    # молчания и текст, который объяснял отказ кодом возврата, а не ожиданием.
-    New-HrmDockerTestContext
-    Set-HrmDownloadMock {
-        param($Uri, $Destination)
-        Set-Content -Path $Destination -Value "stub-installer" -Encoding ASCII
-        return $Destination
-    }
-    $global:HRM_InstallerLaunches = 0
-    Set-HrmProcessLaunchMock {
-        param($FilePath, $Arguments, $Mode, $LogFile)
-        $global:HRM_InstallerLaunches = $global:HRM_InstallerLaunches + 1
-        # Ожидание установщика истекло: процесс жив, код возврата неизвестен.
-        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = -1; TimedOut = $true }
-    }
-    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; install_signature = $true; reboot = $false }
-    $state = Get-HrmTestStateDir
-    # Ожидание установщика не «вылечено» увеличением: потолок остался 3600 с.
-    Assert-HrmEqual 3600 (Get-HrmDockerInstallerWaitSeconds) "изменён потолок ожидания установщика Docker Desktop"
-    $result = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
-    Assert-HrmEqual "installer_timeout" $result.status "таймаут ожидания установщика выдан за ошибку установки"
-    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "после таймаута автоматически запущен второй установщик"
-    Assert-HrmFalse ([bool]$result.needs_reboot) "таймаут помечен как требование перезагрузки"
-    Assert-HrmContains $result.message "не завершилась за 3600 с" "в тексте не названо ожидание"
-    Assert-HrmContains $result.message "НЕ завершался принудительно" "в тексте не сказано, что установщик мог остаться живым"
-    Assert-HrmContains $result.message "DockerDesktopInstaller.exe" "в тексте нет файла установщика"
-    Assert-HrmContains $result.message "«Установить Docker Desktop»" "в тексте нет следующего действия"
-    Assert-HrmTrue ($null -eq (Get-HrmPendingDockerOperation $state)) "после таймаута запланировано автоматическое продолжение"
-    # Неинтерактивный режим: таймаут остаётся таймаутом, а не «требуются действия
-    # пользователя» (иначе установка молча откладывалась на неопределённый срок).
-    $global:HRM_InstallerLaunches = 0
-    $silentOnly = Install-HrmDockerDesktop -StateDir $state -AllowSilent
-    Assert-HrmEqual "installer_timeout" $silentOnly.status "в неинтерактивном режиме таймаут выдан за manual_required"
-    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "в неинтерактивном режиме запущено больше одного установщика"
-    # Состояние доходит до подготовки среды как есть: значок и supervisor.json
-    # показывают причину, а не «установлено».
-    $global:HRM_InstallerLaunches = 0
-    $prepare = Invoke-HrmDockerPrepare -InstallDir (Get-HrmTestInstallDir) -StateDir $state -Port 8080 -AllowInstall -Interactive
-    Assert-HrmFalse ([bool]$prepare.ok) "подготовка среды прошла при незавершённом установщике"
-    Assert-HrmEqual "installer_timeout" ([string]$prepare.state) "подготовка среды потеряла состояние таймаута"
-    Assert-HrmFalse ([bool]$prepare.needs_install) "таймаут требует повторной установки вместо ожидания"
-    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "подготовка среды запустила второй установщик"
-    # Прежние штатные результаты не сломаны: отмена UAC всё ещё uac_declined.
-    Set-HrmProcessLaunchMock {
-        param($FilePath, $Arguments, $Mode, $LogFile)
-        return [pscustomobject]@{ Started = $false; CanceledByUser = $true; ExitCode = -1; TimedOut = $false }
-    }
-    $declined = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
-    Assert-HrmEqual "uac_declined" $declined.status "отмена UAC перестала отличаться от таймаута"
-    # Успех всё ещё успех (таймаут не «съел» штатный код 0).
-    Set-HrmProcessLaunchMock {
-        param($FilePath, $Arguments, $Mode, $LogFile)
-        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = 0; TimedOut = $false }
-    }
-    $installed = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
-    Assert-HrmEqual "installed" $installed.status "успешная установка перестала быть успешной"
-}
-
-Test-Case "P3: таймаут мастера установки Docker Desktop не выдаётся за «код -1» и не требует перезагрузки" {
-    # Второй путь запуска установщика (обычный мастер) до исправления при
-    # истёкшем ожидании сообщал «Установка Docker Desktop завершилась с кодом
-    # -1», а при признаке ожидающей перезагрузки — вообще «нужна перезагрузка
-    # Windows»: человек перезагружал машину при незавершённой установке.
-    New-HrmDockerTestContext
-    Set-HrmDownloadMock {
-        param($Uri, $Destination)
-        Set-Content -Path $Destination -Value "stub-installer" -Encoding ASCII
-        return $Destination
-    }
-    $global:HRM_InstallerLaunches = 0
-    Set-HrmProcessLaunchMock {
-        param($FilePath, $Arguments, $Mode, $LogFile)
-        $global:HRM_InstallerLaunches = $global:HRM_InstallerLaunches + 1
-        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = -1; TimedOut = $true }
-    }
-    # reboot = $true: признак ожидающей перезагрузки в системе есть, но установка
-    # НЕ завершена — требовать перезагрузку в этом случае нельзя.
-    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; install_signature = $true; reboot = $true }
-    $state = Get-HrmTestStateDir
-    $result = Install-HrmDockerDesktop -StateDir $state -Interactive
-    Assert-HrmEqual "installer_timeout" $result.status "таймаут мастера выдан за ошибку с кодом -1"
-    Assert-HrmEqual 1 $global:HRM_InstallerLaunches "мастер установки запущен больше одного раза"
-    Assert-HrmFalse ([bool]$result.needs_reboot) "таймаут мастера требует перезагрузки Windows"
-    Assert-HrmNotContains $result.message "с кодом -1" "текст объясняет отказ кодом возврата, а не ожиданием"
-    Assert-HrmContains $result.message "не завершилась за 3600 с" "в тексте не названо ожидание"
-    Assert-HrmContains $result.message "через мастер" "в тексте не сказано, какой именно запуск не завершился"
-    Assert-HrmTrue ($null -eq (Get-HrmPendingDockerOperation $state)) "после таймаута мастера запланирована перезагрузка"
-}
-
-Test-Case "после установки Docker с требованием перезагрузки фиксируется автоматическое продолжение" {
-    New-HrmDockerTestContext
-    Set-HrmDownloadMock {
-        param($Uri, $Destination)
-        Set-Content -Path $Destination -Value "stub-installer" -Encoding ASCII
-        return $Destination
-    }
-    Set-HrmProcessLaunchMock {
-        param($FilePath, $Arguments, $Mode, $LogFile)
-        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = 0 }
-    }
-    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; install_signature = $true; reboot = $true }
-    $state = Get-HrmTestStateDir
-    $result = Install-HrmDockerDesktop -StateDir $state -Interactive -AllowSilent
-    Assert-HrmTrue $result.needs_reboot "перезагрузка должна быть зафиксирована"
-    $pending = Get-HrmPendingDockerOperation $state
-    Assert-HrmEqual "reboot" ([string]$pending.kind) "вид отложенной операции после перезагрузки"
-    $prepare = Invoke-HrmDockerPrepare -InstallDir (Get-HrmTestInstallDir) -StateDir $state -Port 8080
-    Assert-HrmEqual "reboot_required" $prepare.state "prepare должен честно сообщить о перезагрузке"
+    Set-HrmDockerOverride @{ desktop = "not_installed"; desktop_path = ""; wsl = "ok"; virtualization = "enabled"; free_mb = 20480; port_free = $true }
+    $readiness = Get-HrmDockerReadiness -InstallDir (Get-HrmTestInstallDir) -StateDir (Get-HrmTestStateDir) -Port 8080
+    $propertyNames = @($readiness.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    Assert-HrmFalse ($propertyNames -contains "pending_docker") "Docker-specific pending state остался в readiness"
 }
 
 Test-Case "WSL2 отсутствует и виртуализация выключена: шаги показывают предупреждение и действие" {
@@ -314,21 +195,22 @@ Test-Case "WSL2 отсутствует и виртуализация выклю�
 
 Test-Case "порт занят: подбор свободного порта и предупреждение, а не молчаливая ошибка" {
     New-HrmDockerTestContext
-    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; port_free = $false; free_mb = 20480; wsl = "ok"; virtualization = "enabled" }
+    Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; port_free = $false; free_port = 8081; free_mb = 20480; wsl = "ok"; virtualization = "enabled" }
     $free = Find-HrmFreePort -StartPort 8080
     $plan = Get-HrmSetupProgressPlan -StateDir (Get-HrmTestStateDir) -Port 8080
     $portStep = @($plan | Where-Object { $_.key -eq "port" })[0]
     Assert-HrmTrue ($portStep.status -eq "warn" -or $portStep.status -eq "ok") "шаг порта должен быть warn/ok"
+    Assert-HrmEqual 8081 $free "результат подбора порта зависит от реальных слушающих портов"
     Assert-HrmTrue ($free -ge 0) "подбор порта должен завершиться"
 }
 
-Test-Case "права: обычного пользователя достаточно, UAC нужен только для Docker и LAN" {
+Test-Case "права: обычного пользователя достаточно, UAC может понадобиться при ручной установке Docker и для LAN" {
     New-HrmDockerTestContext
     Set-HrmDockerOverride @{ desktop = "engine_ready"; engine = $true; admin = $false; free_mb = 20480; wsl = "ok"; virtualization = "enabled" }
     $plan = Get-HrmSetupProgressPlan -StateDir (Get-HrmTestStateDir)
     $rightsStep = @($plan | Where-Object { $_.key -eq "rights" })[0]
     Assert-HrmEqual "ok" $rightsStep.status "работа без прав администратора — норма"
-    Assert-HrmContains $rightsStep.detail "разрешение Windows" "нужно честно объяснить, когда появится UAC"
+    Assert-HrmContains $rightsStep.detail "UAC" "нужно честно объяснить, когда потребуется разрешение Windows"
 }
 
 Test-Case "сводная проверка готовности: human-текст без технических команд" {
@@ -344,13 +226,14 @@ Test-Case "сводная проверка готовности: human-текс�
     Assert-HrmContains $text "лицензи" "нужно упомянуть лицензию Docker"
 }
 
-Test-Case "установка Docker: инструкция для пользователя без команд и без сторонних источников" {
-    $guide = (Get-HrmDockerInstallGuide) -join "`n"
-    Assert-HrmContains $guide "docker.com" "нужна официальная ссылка"
-    foreach ($forbidden in @("powershell", "winget", "choco", "msiexec")) {
-        Assert-HrmNotContains $guide $forbidden ("лишняя техническая команда: " + $forbidden)
+Test-Case "ручная установка Docker описана без команд, автоматизации и выдуманной кнопки" {
+    $guide = (Get-HrmDockerInstallGuide -InstallDir (Get-HrmTestInstallDir)) -join "`n"
+    Assert-HrmContains $guide "https://www.docker.com/products/docker-desktop/" "нужна официальная ссылка"
+    foreach ($forbidden in @("powershell", "winget", "choco", "msiexec", "Нажмите «Установить Docker Desktop»")) {
+        Assert-HrmNotContains $guide $forbidden ("лишняя команда/несуществующий шаг: " + $forbidden)
     }
     Assert-HrmContains $guide "лицензи" "принятие лицензии Docker — действие пользователя"
+    Assert-HrmContains $guide "повторите запуск HR Manager" "нужно объяснить следующий шаг после Docker Engine readiness"
 }
 
 Test-Case "занятый порт: prepare возвращает свободный порт для ПРИМЕНЕНИЯ (регрессия 12.10.2026)" {
@@ -602,36 +485,61 @@ Test-Case "D6: сравнение версий — числовые разряд
 
 Test-Case "D6: резолвер перечисляет всех кандидатов и не принимает путь со стороны" {
     $world = New-HrmDockerTestContext
-    $fakeBin = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-cli-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
-    New-Item -ItemType Directory -Path $fakeBin -Force | Out-Null
-    Set-Content -Path (Join-Path $fakeBin "docker.exe") -Value "fake" -Encoding ASCII
+    $fakeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("HRM-cli-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    $fakeBin = Join-Path $fakeRoot "path-bin"
+    $fakeProgramFiles = Join-Path $fakeRoot "ProgramFiles"
+    $fakeProgramFilesX86 = Join-Path $fakeRoot "ProgramFilesX86"
+    $fakeLocalAppData = Join-Path $fakeRoot "LocalAppData"
+    $fakeMachineBin = Join-Path $fakeProgramFiles "Docker\Docker\resources\bin"
+    $fakeUserBin = Join-Path $fakeLocalAppData "Programs\DockerDesktop\resources\bin"
+    $fakeCli = Join-Path $fakeBin "docker.exe"
+    $fakeMachineCli = Join-Path $fakeMachineBin "docker.exe"
+    $fakeUserCli = Join-Path $fakeUserBin "docker.exe"
+    New-Item -ItemType Directory -Path @($fakeBin, $fakeMachineBin, $fakeUserBin, $fakeProgramFilesX86) -Force | Out-Null
+    Set-Content -Path $fakeCli -Value "fake PATH CLI" -Encoding ASCII
+    Set-Content -Path $fakeMachineCli -Value "fake machine CLI" -Encoding ASCII
+    Set-Content -Path $fakeUserCli -Value "fake user CLI" -Encoding ASCII
     $originalPath = [string]$env:PATH
-    $originalOverride = $null
+    $originalProgramFiles = $env:ProgramFiles
+    $originalProgramFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    $originalLocalAppData = $env:LOCALAPPDATA
     try {
-        # Снимаем пин CLI из обвязки: проверяется НАСТОЯЩИЙ резолвер.
+        # Снимаем пин CLI из обвязки и подменяем все источники каталогов:
+        # кандидаты из Docker Desktop и PATH должны быть только из этого temp-мок-мира.
         Clear-HrmDockerOverride
         Reset-HrmDockerCliChoiceCache
-        $env:PATH = $fakeBin + ";" + $originalPath
-        $fakeCli = Join-Path $fakeBin "docker.exe"
+        $env:ProgramFiles = $fakeProgramFiles
+        [Environment]::SetEnvironmentVariable("ProgramFiles(x86)", $fakeProgramFilesX86, "Process")
+        $env:LOCALAPPDATA = $fakeLocalAppData
+        $env:PATH = $fakeBin
         $paths = @(Get-HrmDockerCliCandidatePaths)
-        Assert-HrmTrue ($paths -contains $fakeCli) "кандидат из PATH не найден резолвером"
-        # -Candidate возвращает путь только если он в списке того же резолвера:
+        foreach ($expectedCli in @($fakeCli, $fakeMachineCli, $fakeUserCli)) {
+            Assert-HrmTrue ($paths -contains $expectedCli) ("кандидат не найден резолвером: " + $expectedCli)
+        }
+        # -Candidate возвращает путь только если он в списке кандидатов того же резолвера:
         # имя внешней команды по-прежнему не может прийти из произвольного места.
         Assert-HrmEqual $fakeCli (Get-HrmDockerCliPath -Candidate $fakeCli) "свой кандидат отклонён"
         Assert-HrmEqual "" (Get-HrmDockerCliPath -Candidate (Join-Path $fakeBin "evil.exe")) "принят путь, которого нет среди кандидатов"
         Assert-HrmEqual "" (Get-HrmDockerCliPath -Candidate "C:\Windows\system32\cmd.exe") "принят произвольный системный путь"
         $facts = Get-HrmDockerCliFacts
-        Assert-HrmTrue ([int]$facts.candidate_count -ge 1) "факты не перечислили кандидатов"
+        Assert-HrmEqual 3 ([int]$facts.candidate_count) "факты должны содержать ровно кандидатов тестового мира"
         Assert-HrmTrue ([bool][string]$facts.chosen_reason) "правило выбора не зафиксировано в фактах"
         Assert-HrmTrue (@($facts.searched_dirs).Count -ge 1) "в фактах нет перечня проверенных каталогов"
         $listed = @($facts.candidates | ForEach-Object { [string]$_.path })
-        Assert-HrmTrue ($listed -contains $fakeCli) "кандидат не попал в факты для журнала"
+        foreach ($expectedCli in @($fakeCli, $fakeMachineCli, $fakeUserCli)) {
+            Assert-HrmTrue ($listed -contains $expectedCli) ("кандидат не попал в факты для журнала: " + $expectedCli)
+        }
     }
     finally {
         $env:PATH = $originalPath
+        if ($null -eq $originalProgramFiles) { Remove-Item Env:ProgramFiles -ErrorAction SilentlyContinue }
+        else { $env:ProgramFiles = [string]$originalProgramFiles }
+        [Environment]::SetEnvironmentVariable("ProgramFiles(x86)", $originalProgramFilesX86, "Process")
+        if ($null -eq $originalLocalAppData) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue }
+        else { $env:LOCALAPPDATA = [string]$originalLocalAppData }
         Reset-HrmDockerCliChoiceCache
         Set-HrmDockerOverride @{}
-        Remove-Item -Path $fakeBin -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $fakeRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
     Assert-HrmEqual "docker.exe" (Get-HrmDockerCliPath) "пин CLI из обвязки не восстановлен"
 }
@@ -676,7 +584,10 @@ Test-Case "D5: классификация ответа compose — CLI не за
 
 Test-Case "D5: отказ по compose называет причину и проверенные каталоги плагинов; проверка не ослаблена" {
     $world = New-HrmDockerTestContext
+    Assert-HrmFalse (Test-HrmDockerOverrideKey "compose_plugin_files") "список файлов плагина не должен подставляться override-defaults"
     $world.ComposePluginMissing = $true
+    # Пустой список задаётся явно: D5 не должен читать Docker Desktop на машине теста.
+    Set-HrmDockerOverride @{ compose_plugin_files = @() }
     $result = Test-HrmComposeVersion
     Assert-HrmFalse ([bool]$result.Passed) "проверка compose ослаблена до предупреждения"
     Assert-HrmEqual "plugin_missing" ([string]$result.Reason) "причина отказа не классифицирована"
@@ -689,8 +600,21 @@ Test-Case "D5: отказ по compose называет причину и про
     Assert-HrmFalse ([bool]$result.PluginFound) "флаг найденного плагина недостоверен"
     Assert-HrmEqual 1 ([int]$result.ExitCode) "код возврата пробы не сохранён"
     Assert-HrmTrue (@($result.PluginDirs).Count -ge 1) "в результате нет перечня каталогов плагинов"
+
+    # Сам CLI всё ещё сообщает plugin_missing даже при наличии файла плагина:
+    # PluginFound описывает только файловый факт и не должен делать probe Passed.
+    Set-HrmDockerOverride @{ compose_plugin_files = @("docker-compose.exe") }
+    $filePresentResult = Test-HrmComposeVersion
+    Assert-HrmTrue ([bool]$filePresentResult.PluginFound) "файл плагина не отразился в PluginFound"
+    Assert-HrmFalse ([bool]$filePresentResult.Passed) "наличие файла ошибочно превратило неуспешную команду compose в успех"
+    Assert-HrmEqual "plugin_missing" ([string]$filePresentResult.Reason) "файл плагина изменил причину отказа CLI"
+    Assert-HrmEqual 1 ([int]$filePresentResult.ExitCode) "код возврата CLI потерян при наличии файла плагина"
+    $overriddenFiles = @($filePresentResult.PluginDirs | ForEach-Object { $_.files } | ForEach-Object { [string]$_ })
+    Assert-HrmTrue ($overriddenFiles -contains "docker-compose.exe") "список файлов override не дошёл до фактов PluginDirs"
+
     # Версия compose ниже требуемой — тоже отказ (не предупреждение).
     $world.ComposePluginMissing = $false
+    Set-HrmDockerOverride @{ compose_plugin_files = @() }
     $world.ComposeVersion = "2.20.1"
     $oldResult = Test-HrmComposeVersion
     Assert-HrmFalse ([bool]$oldResult.Passed) "старая версия compose принята"

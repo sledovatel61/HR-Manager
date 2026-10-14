@@ -2,16 +2,19 @@
 
 Графический мастер `HR Manager Setup.exe`: русский мастер из нескольких
 кликов — «Роль владельца → Фамилия → Часовой пояс → Установить» — для
-локального пилота на Windows 10/11 x64. После копирования файлов всю
-автоматизацию выполняет движок `infra/windows/hr-manager.ps1`
-(сборка образов, генерация секретов, Docker, первый запуск в браузере).
+локального пилота на Windows 10/11 x64. После копирования файлов движок
+`infra/windows/hr-manager.ps1` проверяет среду, запускает только уже
+установленный Docker Desktop, собирает образы и открывает первый запуск в
+браузере. Docker Desktop пользователь устанавливает отдельно и вручную.
 
 Сборка установщика **не требует** установленного Inno Setup заранее:
 `installer/build.ps1` сам скачивает закреплённую версию, проверяет её
 SHA256 и компилирует `installer.iss`. Бинарный установщик в git
 **не хранится** — в репозитории только исходники сборки; готовый exe
 собирается в CI (`.github/workflows/ci.yml`, job `windows-installer`)
-и публикуется как артефакт вместе с манифестом хешей.
+и публикуется как артефакт с `release-manifest.json` и `SHA256SUMS.txt`.
+Если сборщику передан официальный `DockerDesktopInstaller.exe`, он публикуется
+отдельным sidecar рядом с Setup.exe; в Setup.exe он не встраивается.
 
 ## Закреплённая инструментальная цепочка
 
@@ -30,7 +33,11 @@ URL: `https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6
 ## Сборка
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 0.13.0
+powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 0.15.0
+# Optional: provide the official Docker Desktop installer as a separate sidecar
+powershell -File installer\build.ps1 -Version 0.15.0 `
+  -DockerDesktopInstallerPath C:\downloads\DockerDesktopInstaller.exe `
+  -DockerDesktopInstallerSha256 <64-hex-sha256>
 ```
 
 Что происходит:
@@ -42,15 +49,50 @@ powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 0.13.0
    `backend/` (без `tests/` и кешей), `frontend/` (исходники без
    `node_modules/` и `dist/` — контейнеры собираются из исходников через
    `docker build`), `infra/` (включая движок и compose), `release.json`
-   (`release_sha` = текущий коммит, `version`).
+   (`release_sha` = текущий коммит, `version` и `docker_desktop_installer` с
+   тем же URL/available/SHA256-объектом, что попадёт в release-manifest).
 3. `ISCC.exe` компилирует `installer.iss` →
-   `installer/output/HR-Manager-Setup-<Version>.exe`.
-4. Пишется `installer/release-manifest.json`: версия, `release_sha`,
-   SHA256 готового exe и **детерминированные SHA256 всех файлов пакета**
-   (отсортированный список). Один и тот же коммит даёт один и тот же
-   манифест — это проверка воспроизводимости. (Байт-в-байт сам exe может
-   отличаться из-за меток времени внутри PE — это свойство Inno Setup;
-   честная сверка ведётся по манифесту.)
+   `installer/output/HR-Manager-Setup-<Version>.exe`. Необязательный
+   `DockerDesktopInstaller.exe` копируется в `installer/output/` после
+   компиляции и остаётся отдельным файлом — он не входит в Setup.exe.
+4. Пишется `installer/release-manifest.json` и его копия рядом с дистрибутивом:
+   версия, `release_sha`, SHA256 Setup.exe, **детерминированные SHA256 всех
+   файлов пакета** и `docker_desktop_installer` (official source URL, `available`,
+   SHA256, `embedded_in_setup=false`, `automatically_launched=false`).
+   `installer/output/SHA256SUMS.txt` фиксирует Setup.exe, manifest и sidecar,
+   если он есть. Без sidecar в manifest остаётся официальный URL, `available=false`,
+   а локальный путь не показывается.
+
+Сборщик может положить файл в `installer/DockerDesktopInstaller.exe` (имя
+игнорируется Git) или передать `-DockerDesktopInstallerPath`. Для release-build
+передайте известный SHA256 через `-DockerDesktopInstallerSha256`: при несовпадении
+сборка останавливается. Файл-источник не должен находиться в `installer/output/`
+(этот каталог пересоздаётся). `build.ps1` никогда не скачивает Docker Desktop.
+
+В ручном GitHub Actions workflow `pilot-release` есть необязательный input
+`docker_desktop_installer_sha256`. Если release-оператор явно задаёт 64-символьный
+SHA256, workflow скачивает только с фиксированного официального URL, сверяет точный
+хеш и передаёт отдельный sidecar в сборку; пустой input исключает загрузку и оставляет
+в манифесте только официальный сайт. Обычный CI этот 600-МБ файл не скачивает.
+Перед передачей артефакта `pilot-release` запускает отдельный локальный Authenticode-
+проверяльщик только для фактически скачанного и SHA256-pinned sidecar; workflow —
+только `workflow_dispatch`, поэтому PR/push не загружают Docker installer.
+
+Локально проверить уже имеющийся файл (без загрузки и запуска) можно так, заменив
+путь и пример pin на доверенные значения:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File infra\windows\tools\Assert-HrmDockerInstallerSignature.ps1 `
+  -Path 'C:\downloads\DockerDesktopInstaller.exe' `
+  -ExpectedSha256 'REPLACE_WITH_64_HEX_SHA256'
+$LASTEXITCODE
+```
+
+Результат `0` означает совпадение SHA256, статус Authenticode `Valid`, точного
+Subject Docker и отпечатка `b6bd29272b07ad4d0f1322a739499d67ca3bac3f`; `1` —
+обнаружено расхождение подписи/издателя/hash; `2` — проверить не удалось
+(например, отсутствует файл или недоступна проверка). Subject закреплён в скрипте
+целиком. Проверка подписи — отдельное действие владельца релиза, не часть движка.
 
 Проверка манифеста: `git diff --exit-code installer/release-manifest.json`
 после повторной сборки того же коммита.
@@ -73,6 +115,36 @@ powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 0.13.0
 Пользователь может проверить SHA256 опубликованного exe по манифесту
 релиза (GitHub Releases / CI-артефакт).
 
+## Docker Desktop: ручная установка и sidecar
+
+HR Manager требует установленный и запущенный Docker Desktop. Если он отсутствует,
+движок откажется от запуска приложения, объяснит, что нужны Docker Desktop и Docker
+Engine, и покажет официальный сайт:
+`https://www.docker.com/products/docker-desktop/`. HR Manager не скачивает и не
+запускает Docker installer и не принимает лицензию Docker за пользователя.
+
+Если `DockerDesktopInstaller.exe` находится рядом с Setup.exe при установке,
+Inno Setup копирует его в `{app}\docker\DockerDesktopInstaller.exe` через
+`external skipifsourcedoesntexist`. Отсутствие файла не мешает Setup скопировать
+приложение, а в подсказке остаётся только официальный URL. Движок показывает локальный
+путь только если `Get-HrmFileSha256` совпал с `release.json`
+`docker_desktop_installer.sha256` при `available=true`. Если hash-pin отсутствует,
+метаданные невалидны или SHA256 не совпал, путь скрывается, записывается `warn`, а
+пользователь видит официальный URL; проверка sidecar сама по себе не создаёт ошибку
+установки. Authenticode движок не проверяет. Даже при совпавшем SHA HR Manager никогда
+sidecar не запускает; решение и запуск остаются за человеком.
+
+В интерактивном Setup страница Finish читает `%LOCALAPPDATA%\HRManager\setup-run.json`.
+Исчезнувшая отметка означает, что движок завершился и подтвердил готовность;
+оставшиеся `failed`, `running` или нечитаемая отметка показывают честную страницу
+«Файлы установлены, но HR Manager не готов» и возвращают custom Inno exit code `10`.
+Это отделяет успешное копирование файлов Setup.exe от успешного запуска приложения.
+Если Setup остановился именно из-за отсутствия Docker, после ручной установки и
+готовности Engine нажмите ярлык **HR Manager**: когда файлы уже скопированы, но
+`installed.json` ещё нет, ярлык завершит первичную настройку из этих файлов.
+Docker-specific pending или автоматическое продолжение внешнего installer не
+создаются.
+
 ## Что мастер делает и чего НЕ делает
 
 - **Делает:** выбор роли (`HR | Руководитель | Администратор`), ввод
@@ -86,10 +158,11 @@ powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 0.13.0
   обязателен и не представлен отключаемыми флажками на финальной странице.
   Трей запускается первым, остаётся отзывчивым во время установки и показывает
   ошибку, если установочный движок завершился неуспешно.
-- **Не делает:** не скачивает и не принимает лицензию Docker (Docker
-  Desktop ставится пользователем с официального docker.com), не требует
-  прав администратора (`PrivilegesRequired=lowest`, UAC не нужен), не
-  хранит секреты в командной строке, не пишет паролей в реестр.
+- **Не делает:** не скачивает, не устанавливает и не запускает Docker Desktop;
+  не принимает лицензию Docker за пользователя. Docker устанавливается вручную
+  с официального сайта. Setup сам не требует прав администратора
+  (`PrivilegesRequired=lowest`); отдельный ручной запуск Docker installer может
+  вызвать UAC. Секреты не попадают в командную строку или реестр.
 - **Канал обновлений (Phase 13):** установщик дополнительно запускает
   скрытый наблюдатель `hr-manager.ps1 -Action channel -Watch`; пакет
   обновлений скачивается и проверяется сервером, а установку выполняет
@@ -114,6 +187,7 @@ installer/
   build.ps1            # воспроизводимая сборка + манифест хешей
   release-manifest.json# результат сборки (генерируется, в CI — артефакт)
   staging/, output/, .cache/  # генерируются; в git не хранятся
+  DockerDesktopInstaller.exe # optional sidecar input; ignored, never embedded/launched
 ```
 
 ## Authenticode-подпись и trust store (Phase 14)

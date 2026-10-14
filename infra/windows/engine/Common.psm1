@@ -112,7 +112,6 @@ function Protect-HrmOutput {
 
 $script:MockExternal = $null
 $script:MockHttp = $null
-$script:MockDownload = $null
 $script:MockProcessLaunch = $null
 $script:MockProcessStart = $null
 
@@ -447,49 +446,14 @@ function Get-HrmResultTimeoutSeconds {
     return [int]$Result.TimeoutSeconds
 }
 
-function Set-HrmDownloadMock {
-    # Тестовый шов: подменяет скачивание файла (официальный установщик).
-    param([scriptblock]$Mock)
-    $script:MockDownload = $Mock
-}
-
-function Clear-HrmDownloadMock { $script:MockDownload = $null }
-
 function Set-HrmProcessLaunchMock {
-    # Тестовый шов: подменяет запуск процессов (Docker Desktop, установщик,
-    # процесс движка). В тестах реальные программы не запускаются.
+    # Тестовый шов: подменяет запуск уже установленного Docker Desktop и
+    # процесса движка. В тестах реальные программы не запускаются.
     param([scriptblock]$Mock)
     $script:MockProcessLaunch = $Mock
 }
 
 function Clear-HrmProcessLaunchMock { $script:MockProcessLaunch = $null }
-
-function Save-HrmDownload {
-    # Скачивание файла (только официальные источники, вызывающий обязан
-    # проверить источник и подпись). Единственная точка скачивания — мокабельна.
-    param(
-        [Parameter(Mandatory = $true)][string]$Uri,
-        [Parameter(Mandatory = $true)][string]$Destination
-    )
-    # Каталог назначения создаём ДО мока: иначе тестовый шов вёл бы себя
-    # иначе, чем настоящая загрузка (мок писал файл в несуществующий каталог,
-    # установка Docker падала с «Не удалось скачать установщик»).
-    $dir = Split-Path $Destination -Parent
-    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    if ($null -ne $script:MockDownload) {
-        return (& $script:MockDownload -Uri $Uri -Destination $Destination)
-    }
-    $previous = $ProgressPreference
-    $ProgressPreference = "SilentlyContinue"
-    try {
-        Invoke-WebRequest -Uri $Uri -OutFile $Destination -UseBasicParsing -TimeoutSec 600
-    }
-    finally { $ProgressPreference = $previous }
-    if (-not (Test-Path $Destination)) {
-        throw "Не удалось скачать файл: $Uri"
-    }
-    return $Destination
-}
 
 function Get-HrmFileSha256 {
     param([string]$Path)
@@ -757,49 +721,6 @@ function Start-HrmDetached {
     }
     $process = Start-Process @startArgs -PassThru
     return $process
-}
-
-function Start-HrmElevatedAndWait {
-    # Запуск программы с повышением прав (UAC) и ожиданием завершения.
-    # Возвращает @{ Started; CanceledByUser; ExitCode; TimedOut }.
-    # Отмена UAC пользователем — штатный результат, а не сбой движка.
-    #
-    # ОЖИДАНИЕ ОГРАНИЧЕНО (регрессия «вечное зависание»): установщик Docker
-    # Desktop интерактивный (лицензию принимает человек), но WaitForExit() без
-    # аргумента означал, что забытое окно установщика удерживает процесс движка
-    # живым навсегда. По таймауту движок честно сообщает, что установщик не
-    # завершился, и НЕ убивает его: прерванная установка Docker Desktop хуже
-    # явного отказа (половинчатая установка, требующая ручного восстановления).
-    param(
-        [Parameter(Mandatory = $true)][string]$FilePath,
-        [string[]]$Arguments = @(),
-        [string]$WorkingDirectory = "",
-        [int]$TimeoutSeconds = 3600
-    )
-    $startArgs = @{ FilePath = $FilePath; Verb = "RunAs"; PassThru = $true }
-    if ($Arguments.Count -gt 0) { $startArgs["ArgumentList"] = $Arguments }
-    if ($WorkingDirectory) { $startArgs["WorkingDirectory"] = $WorkingDirectory }
-    if ($null -ne $script:MockProcessLaunch) {
-        return (& $script:MockProcessLaunch -FilePath $FilePath -Arguments $Arguments -Mode "elevated_wait")
-    }
-    try {
-        $process = Start-Process @startArgs
-    }
-    catch {
-        return [pscustomobject]@{ Started = $false; CanceledByUser = $true; ExitCode = -1; TimedOut = $false }
-    }
-    $exited = $true
-    try { $exited = $process.WaitForExit([int]($TimeoutSeconds * 1000)) } catch { $exited = $true }
-    if (-not $exited) {
-        $note = ("Повышенный процесс не завершился за {0} с: {1}" -f $TimeoutSeconds, $FilePath)
-        $null = Write-HrmLog "warn" $note
-        try { $process.Dispose() } catch { }
-        return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = -1; TimedOut = $true }
-    }
-    $code = -1
-    try { $code = [int]$process.ExitCode } catch { $code = -1 }
-    try { $process.Dispose() } catch { }
-    return [pscustomobject]@{ Started = $true; CanceledByUser = $false; ExitCode = $code; TimedOut = $false }
 }
 
 function Start-HrmEngineProcess {

@@ -1,5 +1,16 @@
 # Итоговый отчёт: финальная пилотная сборка HR Manager 0.15.0 (Windows 10/11 x64)
 
+> **Исторический отчёт от 2026-10-07.** Описания автоустановки Docker Desktop,
+> кнопки «Установить Docker Desktop», UAC/reboot-pending для Docker и скачивания
+> Docker installer в CI относятся к прежней реализации и больше не являются
+> инструкцией или текущим контрактом. С 2026-10-13 Docker Desktop — ручная
+> предварительная зависимость пользователя; installer/движок его не скачивают и
+> не запускают. Текущие правила и приёмка: [installer/README.md](../installer/README.md),
+> [infra/windows/README.md](../infra/windows/README.md),
+> [DOCKER_RUNTIME_DECISION.md](DOCKER_RUNTIME_DECISION.md),
+> [WINDOWS_ACCEPTANCE_CHECKLIST.md](WINDOWS_ACCEPTANCE_CHECKLIST.md) и
+> [CURRENT_STATUS.md](CURRENT_STATUS.md).
+
 Дата: 2026-10-07. Ветка: `arena/4be5f952-hr-manager` (от `main` = `9d89add`).
 Аудит и план работ: `docs/PILOT_FINAL_AUDIT.md` (таблица A/B/C/D + план P1–P12).
 

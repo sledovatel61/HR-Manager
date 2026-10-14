@@ -31,7 +31,7 @@
 #  10. каталог состояния %LOCALAPPDATA%\HRManager: список файлов (имя, размер, дата),
 #      содержимое JSON-состояний (supervisor.json, installed.json, setup-run.json,
 #      action.lock, update-journal.json, update-result.json, channel.json,
-#      docker-pending.json, autostart.json) и хвосты файлов журнала.
+#      autostart.json) и хвосты файлов журнала.
 #
 # ЧЕГО НЕ ДЕЛАЕТ (принципиально)
 #   * ничего не устанавливает, не обновляет, не останавливает и НЕ УДАЛЯЕТ:
@@ -87,7 +87,7 @@ $script:ForbiddenContentFiles = @(
 $script:StateJsonFiles = @(
     "supervisor.json", "installed.json", "setup-run.json", "action.lock",
     "update-journal.json", "update-result.json", "channel.json",
-    "docker-pending.json", "autostart.json", "last-support-bundle.json"
+    "autostart.json", "last-support-bundle.json"
 )
 
 function Limit-FactText {

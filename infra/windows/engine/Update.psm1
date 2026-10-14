@@ -831,13 +831,13 @@ function Update-HrmApp {
         # npipe:////./pipe/dockerDesktopLinuxEngine уже ПОСЛЕ операций, которым
         # нужен Docker. Гейт стоит после захвата update.lock и до фазы
         # prepare (то есть до любой compose-операции); обновление не ставит
-        # Docker самостоятельно (-AllowInstall:$false). При отказе гейта
+        # Docker автоматически. При отказе гейта
         # управление переходит в catch: блокировка снимается, результат
         # записывается честно, файлы не изменены.
         # Кроме возобновления с фазой done: обновление УЖЕ завершено, гейт не
         # нужен, а отказ гейта не должен приводить к откату завершённого обновления.
         if ($phase -ne "done") {
-            $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port -AllowInstall:$false -Interactive:$false
+            $prepare = Invoke-HrmDockerPrepare -InstallDir $InstallDir -StateDir $StateDir -Port $port
             if (-not $prepare.ok) {
                 Write-HrmLog "error" ("Docker-гейт: обновление остановлено до фазы prepare (состояние: {0})." -f $prepare.state)
                 throw $prepare.message

@@ -41,9 +41,8 @@ function Get-HrmTrayStartupPlan {
     #                     (пункт меню сбрасывает счётчик). Без этого значок при
     #                     каждом входе в Windows снова запускал движок, который
     #                     снова отказывал по той же причине;
-    #   resuming        — есть незавершённое обновление/подготовка среды: значок
-    #                     продолжает операцию (resume) — «после перезагрузки
-    #                     HR Manager продолжит сам»;
+    #   resuming        — есть незавершённое обновление или первичная установка:
+    #                     значок продолжает операцию движка;
     #   not_installed   — приложения нет (значок в каталоге установки, поэтому
     #                     это редкий случай) — честная ошибка;
     #   normal          — обычная работа: поднять среду и показать состояние.
@@ -128,8 +127,8 @@ function Get-HrmTrayStartupPlan {
 
 function Get-HrmTrayCurrentPlan {
     # Планировщик по РЕАЛЬНЫМ файлам состояния: отметка установки, запись об
-    # установке, незавершённое обновление (журнал обновления), отложенная
-    # подготовка среды после перезагрузки.
+    # установке, незавершённое обновление (журнал обновления) или незавершённая
+    # первичная установка. Docker-specific pending state не используется.
     param([string]$StateDir = "", [string]$InstallDir = "")
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     if (-not $InstallDir) { $InstallDir = Get-HrmInstallDefaultDirSafe }
@@ -151,7 +150,6 @@ function Get-HrmTrayCurrentPlan {
         # автоматически повторять обновление нельзя, решает владелец.
         if ($phase -and $phase -ne "rollback") { $resumePending = $true }
     }
-    if (-not $resumePending -and $null -ne (Get-HrmPendingDockerOperation $StateDir)) { $resumePending = $true }
     # Идёт ли уже операция движка (свой pid игнорируем): по живой блокировке
     # действия, свежей отметке мастера или busy с живым pid в supervisor.json.
     $inFlight = Test-HrmEngineOperationInFlight -StateDir $StateDir -IgnorePid $PID
@@ -160,7 +158,19 @@ function Get-HrmTrayCurrentPlan {
     $failureMessage = ""
     $stored = Get-HrmSupervisorState -StateDir $StateDir
     if ($stored.state -eq "error") { $failureMessage = [string]$stored.message }
-    return (Get-HrmTrayStartupPlan -HasRecord $hasRecord -MarkerStatus $marker.status -MarkerFresh $marker.fresh -MarkerMessage $marker.message -ResumePending $resumePending -InstallDirReady $installDirReady -EngineOperationRunning $inFlight.running -EngineOperationReason $inFlight.reason -FailureCount $failureCount -FailureMessage $failureMessage -MaxConsecutiveFailures (Get-HrmSupervisorMaxConsecutiveFailures))
+    $markerMessage = [string]$marker.message
+    # Inno's post-Run fallback can only give a generic recovery hint. Prefer the
+    # engine's saved refusal when it has one, so the tray keeps the exact Docker
+    # reason and log guidance after Setup returns.
+    if ($marker.status -eq "failed" -and $stored.state -eq "error" -and $stored.message) {
+        $markerMessage = [string]$stored.message
+    }
+    $plan = Get-HrmTrayStartupPlan -HasRecord $hasRecord -MarkerStatus $marker.status -MarkerFresh $marker.fresh -MarkerMessage $markerMessage -ResumePending $resumePending -InstallDirReady $installDirReady -EngineOperationRunning $inFlight.running -EngineOperationReason $inFlight.reason -FailureCount $failureCount -FailureMessage $failureMessage -MaxConsecutiveFailures (Get-HrmSupervisorMaxConsecutiveFailures)
+    # При первом отказе Docker запись installed.json ещё отсутствует, но файлы
+    # приложения уже скопированы. Оставляем явный путь «Открыть HR Manager» в
+    # меню трея: после ручной установки Docker он повторит первичную настройку.
+    $plan | Add-Member -NotePropertyName open_available -NotePropertyValue ([bool](-not $hasRecord -and $installDirReady)) -Force
+    return $plan
 }
 
 function Get-HrmTrayIconKind {
@@ -190,7 +200,8 @@ function Get-HrmTrayMenuModel {
         [string]$State = "unknown",
         [bool]$Busy = $false,
         [bool]$AutostartEnabled = $false,
-        [string]$Message = ""
+        [string]$Message = "",
+        [bool]$OpenAvailable = $false
     )
     $ready = ($State -eq "ready")
     $label = Get-HrmSupervisorStatusText $State
@@ -201,7 +212,9 @@ function Get-HrmTrayMenuModel {
         if (-not $line) { continue }
         $model += [pscustomobject]@{ id = "status-detail"; text = ("   " + $line); action = ""; enabled = $false; separator = $false }
     }
-    $model += [pscustomobject]@{ id = "open"; text = "Открыть HR Manager"; action = "open"; enabled = ($ready -and -not $Busy); separator = $true }
+    # Помимо готового приложения разрешаем «Открыть» после неудачной первичной
+    # установки: этот пункт повторит настройку из уже скопированных файлов.
+    $model += [pscustomobject]@{ id = "open"; text = "Открыть HR Manager"; action = "open"; enabled = (($ready -or $OpenAvailable) -and -not $Busy); separator = $true }
     $model += [pscustomobject]@{ id = "check"; text = "Проверить состояние"; action = "check"; enabled = (-not $Busy); separator = $false }
     $model += [pscustomobject]@{ id = "restart"; text = "Перезапустить приложение"; action = "restart"; enabled = (-not $Busy); separator = $false }
     $model += [pscustomobject]@{ id = "support-bundle"; text = "Создать отчёт для поддержки"; action = "support-bundle"; enabled = (-not $Busy); separator = $false }
@@ -341,6 +354,17 @@ function Get-HrmTrayEngineScript {
     return (Join-Path $InstallDir "infra\windows\hr-manager.ps1")
 }
 
+function Get-HrmTrayEngineExtraArguments {
+    # Действие «Открыть» (и resume первичной установки) должно запускать браузер,
+    # хотя движок работает скрыто и неинтерактивно. Иначе ссылка #setup= была бы
+    # только записана в файл, а пользователь видел бы пустое действие в трее.
+    param([string]$Action, [string]$StateDir = "")
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    if ($Action -eq "open") { return "-OpenBrowser" }
+    if ($Action -eq "resume" -and $null -eq (Get-HrmInstallRecord $StateDir)) { return "-OpenBrowser" }
+    return ""
+}
+
 function Start-HrmTrayAction {
     # Запуск действия движка отдельным скрытым процессом + файл-блокировка,
     # чтобы два нажатия не создали две параллельные операции.
@@ -361,7 +385,8 @@ function Start-HrmTrayAction {
         return [pscustomobject]@{ started = $false; message = "Не найден управляющий файл HR Manager. Переустановите Setup.exe." }
     }
     $logFile = Get-HrmTimestampedLogFile -StateDir $StateDir -Action $Action
-    $process = Start-HrmEngineProcess -ScriptPath $scriptPath -Action $Action -InstallDir $InstallDir -StateDir $StateDir -LogFile $logFile
+    $extraArguments = Get-HrmTrayEngineExtraArguments -Action $Action -StateDir $StateDir
+    $process = Start-HrmEngineProcess -ScriptPath $scriptPath -Action $Action -InstallDir $InstallDir -StateDir $StateDir -ExtraArguments $extraArguments -LogFile $logFile
     Update-HrmActionLockProcess -StateDir $StateDir -ProcessId ([int]$process.Id)
     return [pscustomobject]@{ started = $true; message = ""; pid = [int]$process.Id; log = $logFile }
 }
@@ -418,7 +443,8 @@ function Start-HrmTrayEngineProcess {
         return [pscustomobject]@{ started = $false; reason = "no_script"; message = "Не найден управляющий файл HR Manager. Переустановите Setup.exe."; pid = 0; log = "" }
     }
     $logFile = Get-HrmTimestampedLogFile -StateDir $StateDir -Action $Action
-    $process = Start-HrmEngineProcess -ScriptPath $ScriptPath -Action $Action -InstallDir $InstallDir -StateDir $StateDir -LogFile $logFile
+    $extraArguments = Get-HrmTrayEngineExtraArguments -Action $Action -StateDir $StateDir
+    $process = Start-HrmEngineProcess -ScriptPath $ScriptPath -Action $Action -InstallDir $InstallDir -StateDir $StateDir -ExtraArguments $extraArguments -LogFile $logFile
     $enginePid = 0
     if ($null -ne $process -and $process.PSObject.Properties["Id"]) { $enginePid = [int]$process.Id }
     if ($enginePid -le 0) {
@@ -553,6 +579,7 @@ function Invoke-HrmTrayRefresh {
             state = $effective.state; message = $effective.message; busy = $effective.busy
             notify = $true; event = $plan.notify_event; probed = $false
             interval_ms = $interval; reason = $plan.mode
+            open_available = [bool]$plan.open_available
         }
     }
     $actionRunning = (Test-HrmTrayActionRunning -StateDir $StateDir)
@@ -568,6 +595,7 @@ function Invoke-HrmTrayRefresh {
             state = $effective.state; message = $effective.message; busy = $effective.busy
             notify = $false; event = ""; probed = $false
             interval_ms = $interval; reason = $(if ($actionRunning) { "action-running" } else { "engine-running" })
+            open_available = [bool]$plan.open_available
         }
     }
     $snapshot = Get-HrmTraySnapshot -InstallDir $InstallDir -StateDir $StateDir
@@ -582,6 +610,7 @@ function Invoke-HrmTrayRefresh {
         state = $state; message = $message; busy = $false
         notify = $true; event = ""; probed = $true
         interval_ms = $interval; reason = "probe"
+        open_available = [bool]$plan.open_available
     }
 }
 
@@ -601,7 +630,7 @@ function Start-HrmTrayUi {
     $viewState = @{ last = "" }
 
     $applyState = {
-        param([string]$State, [string]$Message, [bool]$Busy, [bool]$Notify, [string]$Event = "")
+        param([string]$State, [string]$Message, [bool]$Busy, [bool]$Notify, [string]$Event = "", [bool]$OpenAvailable = $false)
         $kind = Get-HrmTrayIconKind -State $State -Busy $Busy
         switch ($kind) {
             "ready" { $icon.Icon = [System.Drawing.SystemIcons]::Application }
@@ -615,7 +644,7 @@ function Start-HrmTrayUi {
         if ($tooltip.Length -gt 63) { $tooltip = $tooltip.Substring(0, 60) + '...' }
         $icon.Text = $tooltip
         $autostart = Get-HrmAutostartState -StateDir $StateDir
-        $model = Get-HrmTrayMenuModel -State $State -Busy $Busy -AutostartEnabled ([bool]$autostart.enabled) -Message $Message
+        $model = Get-HrmTrayMenuModel -State $State -Busy $Busy -AutostartEnabled ([bool]$autostart.enabled) -Message $Message -OpenAvailable $OpenAvailable
         $menu.Items.Clear()
         foreach ($item in $model) {
             if ($item.separator) { [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) }
@@ -653,7 +682,7 @@ function Start-HrmTrayUi {
         $refreshState.running = $true
         try {
             $tick = Invoke-HrmTrayRefresh -InstallDir $InstallDir -StateDir $StateDir
-            & $applyState $tick.state $tick.message $tick.busy $tick.notify $tick.event
+            & $applyState $tick.state $tick.message $tick.busy $tick.notify $tick.event $tick.open_available
             # Интервал зависит от состояния: в покое значок опрашивает редко.
             if ($tick.interval_ms -ne $timer.Interval) { $timer.Interval = [int]$tick.interval_ms }
         }
