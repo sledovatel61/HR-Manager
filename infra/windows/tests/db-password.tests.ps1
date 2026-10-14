@@ -174,7 +174,7 @@ Test-Case "DB password: пароль исправлен, но unhealthy не с�
     Assert-HrmPasswordDataUntouched $world
 }
 
-Test-Case "bundle: последние пять engine logs, tail и редакция в отдельном процессе" {
+Test-Case "bundle: последние пять engine logs, tail и редакция с пустым реестром секретов" {
     $null = New-HrmPasswordTestContext
     $state = Get-HrmTestStateDir
     $logsDir = Get-HrmEngineLogsDir $state
@@ -266,4 +266,21 @@ Test-Case "Setup Finish: running нормализуется до выбора т
     $iss = Get-Content (Join-Path $PSScriptRoot "..\..\..\installer\installer.iss") -Raw -Encoding UTF8
     $finish = $iss.Substring($iss.IndexOf("procedure CurPageChanged("))
     Assert-HrmTrue ($finish.IndexOf("MarkHrmSetupEngineFailed();") -lt $finish.IndexOf("if EngineStatus = 'success'"))
+}
+
+Test-Case "Setup: отказ удаления маркера не превращается в exit 0" {
+    Initialize-HrmTestEngine
+    $null = New-HrmMockWorld
+    $state = Get-HrmTestStateDir
+    $null = Set-HrmSetupMarker -StateDir $state -Status "running" -Message "fixture-running"
+    # Ошибка файловой системы имитируется только внутри Common; реальный файл
+    # остаётся. Не меняем ACL на машине и не перехватываем исключение в функции.
+    & (Get-Module Common) {
+        function script:Remove-Item {
+            [CmdletBinding()] param([string]$Path, [switch]$Force)
+            Write-Error "fixture-marker-delete-denied"
+        }
+    }
+    Assert-HrmThrows "Clear-HrmSetupMarker обязан сообщить отказ удаления" { Clear-HrmSetupMarker $state }
+    Assert-HrmTrue (Test-Path (Get-HrmSetupMarkerFile $state))
 }

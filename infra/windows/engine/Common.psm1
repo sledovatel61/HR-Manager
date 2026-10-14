@@ -205,7 +205,8 @@ function Clear-HrmSetupMarker {
     param([string]$StateDir = "")
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $file = Get-HrmSetupMarkerFile $StateDir
-    if (Test-Path $file) { Remove-Item -Path $file -Force -ErrorAction SilentlyContinue }
+    # Не скрываем отказ удаления: иначе движок вышел бы с 0, оставив running.
+    if (Test-Path $file) { Remove-Item -Path $file -Force -ErrorAction Stop }
 }
 
 function Set-HrmHttpMock {

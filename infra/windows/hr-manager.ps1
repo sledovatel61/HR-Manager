@@ -105,7 +105,7 @@ foreach ($module in @("Common", "Secrets", "Preflight", "Compose", "Bootstrap", 
         "Diagnostics", "Install", "Snapshot", "Crypto", "Channel", "Lan", "SupportBundle",
         "Docker", "Supervisor", "Tray")) {
     Import-Module (Join-Path $script:EngineDir "$module.psm1") -Force -ErrorAction Stop
-    if ($module -eq "Common") {
+    if ($module -eq "Common" -and $Action -ne "help") {
         if (-not $StateDir) { $StateDir = Get-HrmStateDir }
         # Setup запускает -File напрямую, не через Start-HrmEngineProcess.
         # Поэтому он тоже обязан получить постоянный журнал, включая отказы

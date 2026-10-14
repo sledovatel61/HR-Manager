@@ -648,7 +648,10 @@ begin
     // action as soon as Setup returns instead of treating a finished failure as
     // a still-running installation.
     if (EngineStatus = 'running') or (EngineStatus = 'unknown') then
+    begin
       MarkHrmSetupEngineFailed();
+      EngineStatus := GetHrmSetupEngineStatus();
+    end;
   end;
   Log('HRM: setup engine result=' + EngineStatus + ' custom exit=' + IntToStr(Result));
 end;
