@@ -167,3 +167,106 @@ installer.iss и схема хранения секретов в follow-up не 
 `HRM_BACKUP_KEY`. Согласование роли **не восстанавливает** прежний ключ:
 старые зашифрованные backup без него не расшифровать. StateDir/ключи хранить
 защищённо; не удалять их ради переустановки. Код backup/лицензии не менялся.
+
+
+## Follow-up 15.10.2026: пилот наследовал dev-порт 8080 (prompt `1fcc46f`)
+
+### Что подтверждено, что ещё нет
+
+Ревьюер предоставил живое evidence в `origin/main` @ `ed0f27e`:
+`tests/PR57-reviewer-evidence-20261015-092151.txt`. В полученном git blob кодировка
+UTF-8 с BOM (не UTF-16LE, как сказано в промпте). Просмотрены только технические
+строки, исходный отчёт с путями/данными пользователя не копируется в этот PR.
+
+В журнале две успешные синхронизации пароля (08:35:26 и 08:35:57), затем ошибка
+`Bind for 127.0.0.1:8080 failed: port is already allocated`. В записи установки
+и env выбран 8081. Backend отвечает на внутренний `/health` кодом 200.
+По отчёту ревьюера том и контрольные данные целы. Предмет исправления пароля
+подтверждён живым прогоном; это **не доказывает доступность frontend с хоста**:
+`8080/tcp` в docker ps означает exposed-only, а не публикацию порта.
+
+### Причина и исправление
+
+База публикует frontend на `127.0.0.1:8080:8080`. Обычный список ports в pilot
+добавлял к нему выбранный порт (8081), не заменяя базу. Занятый чужим dev-стеком
+8080 блокировал запуск frontend даже при свободном 8081. Теперь frontend
+использует **`ports: !override`**, не `!reset` (последний удалил бы публикацию
+целиком). Минимум Compose поднят до **2.24.4**, включая диагностическое сообщение
+и default version verdict. Сравнение patch/prerelease покрыто новыми тестами.
+
+Сценарий I1 чек-листа больше не блокируется наследованием 8080 **по конфигурации**;
+живой прогон I1 после этой правки ещё обязателен. При реальном bind-конфликте
+`Start-HrmStack` и обе попытки `Repair-HrmStack` возвращают `port_conflict` с
+HOST-портом и следующим шагом, а не ждут HTTP readiness. Ошибка networking без
+`already allocated`/`address already in use` даёт `container_network_failed`,
+не утверждая недоказанную занятость порта. Сырые ошибки psql не печатаются,
+парольная механика, маркеры и readiness не менялись.
+
+### Контрпример и автоматические проверки
+
+- До правки новый `test_merged_pilot_replaces_all_active_service_port_publications`
+  локально **упал**: frontend получил два значения — dev `127.0.0.1:8080:8080`
+  и публикацию `${HRM_PILOT_PORT}`. Отрицательный контроль с plain ports прошёл.
+- После правки **19/19 Python overlay tests** проходят (прежде 16). Загрузчик
+  понимает !override, модель объединения учитывает теги, а отдельный контроль
+  показывает, почему !reset не является заменой !override.
+- Модель Python ограничена port-sequences; она не выдаётся за полный Compose.
+  **Реальный CLI** проверяет `infra/scripts/check_pilot_ports.py` в Compose CI job:
+  synthetic before без override → 8080 + 8081; текущий overlay → ровно одна
+  публикация для loopback 8080, loopback 8081, LAN 8091. Активные db/backend/
+  worker/backup не публикуют порты. Скрипт не запускает контейнеры, не трогает
+  тома и не печатает environment. Артефакт `pilot-port-merge` содержит только
+  порты, результаты и SHA256 входных файлов; секреты временные и удаляются.
+- К прежним 302 PowerShell-кейсам добавлены **16**, ожидаемый итог **318**:
+  один структурный по тегам ports; один по сравнению версий; пять preflight
+  версий; четыре initial-up bind-формата; три repair/fallback/after-sync;
+  один по networking без bind; один по не-портовой ошибке. Фактический CI итог
+  и точный SHA — в PR #57. Прежние кейсы не удалены и не ослаблены.
+- Локально: pytest, ruff check/format, py_compile обоих изменённых/новых Python
+  файлов, structural lint, diff --check. Docker/PowerShell в sandbox отсутствуют.
+
+P3: постоянный дополнительный config/ps-запрос в каждом preflight **не добавлен**:
+после !override выбранный порт — единственная публикация, а новый повторный
+запрос к Docker расширил бы этот точечный патч и обработку секретного config.
+Вместо него есть однократная проверка настоящим CLI в CI и обязательная
+проверка фактической конфигурации/публикации на машине ниже. CI использует
+синтетический env и не сверяет запись установки пользователя — это не подмена
+диагностики живой машины.
+
+### Один безопасный диагностический заход на Windows (до и после)
+
+Движок читает compose из **InstallDir**, а не из текущего каталога запуска.
+Зафиксировать SHA снимка/Setup и SHA256 обоих фактически используемых compose.
+Для приёмки нового кода установить свежий Setup либо явно задать InstallDir
+на проверенный снимок (передать `-InstallDir`/`HRM_INSTALL_DIR`); запуск одного
+нового hr-manager.ps1 со старыми compose в установленной папке невалиден.
+
+В PowerShell, без вывода полного env/config и без изменения контейнеров:
+
+```powershell
+$install = Join-Path $env:LOCALAPPDATA 'Programs\HRManager'
+$state = Join-Path $env:LOCALAPPDATA 'HRManager'
+$base = Join-Path $install 'infra\docker-compose.yml'
+$pilot = Join-Path $install 'infra\compose.pilot.yml'
+Get-FileHash $base, $pilot -Algorithm SHA256
+docker port hr-manager-pilot-frontend-1
+docker inspect hr-manager-pilot-frontend-1 --format '{{json .NetworkSettings.Ports}}'
+Get-NetTCPConnection -LocalPort 8080,8081 -State Listen -ErrorAction SilentlyContinue |
+    Select-Object LocalAddress,LocalPort,OwningProcess
+curl.exe -s -o NUL -w '%{http_code}' http://127.0.0.1:8080/
+curl.exe -s -o NUL -w '%{http_code}' http://127.0.0.1:8081/
+# Весь config содержит секреты: только переменная в памяти, не transcript/file.
+$json = docker compose --project-name hr-manager-pilot --env-file (Join-Path $state 'pilot.env') -f $base -f $pilot config --format json 2>$null
+if ($LASTEXITCODE -ne 0) { throw 'Compose config failed; do not publish raw config/stderr' }
+$config = ($json -join "`n") | ConvertFrom-Json
+$config.services.frontend.ports | Select-Object host_ip,published,target,protocol
+Remove-Variable json,config
+```
+
+До правки ожидаем две публикации в config при выбранном 8081; фактические
+NetworkSettings.Ports и ответы хоста надо измерить, а не угадать по healthy.
+После — ровно 127.0.0.1:8081 -> 8080/tcp (либо явно разрешённый LAN bind).
+Далее I1 на изолированном стенде: 8080 занят чужой программой, пилот доступен
+на 8081, чужой сервис не остановлен, контрольные данные старого тома совпали,
+повторный start идемпотентен. Полный Windows runner без Skip — на этой машине.
+**Эта часть пока BLOCKED / NO-GO; новый CI и сборка Setup её не заменяют.**

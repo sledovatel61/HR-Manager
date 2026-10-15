@@ -332,6 +332,17 @@ jobs:
           fi
           echo "production overlay is clean (no dev credentials, no published ports)"
 
+      - name: Pilot ports - real Compose merge before and after override
+        run: python3 infra/scripts/check_pilot_ports.py --output pilot-port-merge.json
+
+      - name: Upload pilot port merge evidence (ports only, no secrets)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pilot-port-merge
+          path: pilot-port-merge.json
+          if-no-files-found: warn
+
       - name: Build and start the full stack (wait for healthy)
         run: docker compose -f infra/docker-compose.yml up --build --wait --wait-timeout 300
 

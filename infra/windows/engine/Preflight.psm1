@@ -203,7 +203,7 @@ function Get-HrmComposeVersionVerdict {
         [string]$Stdout = "",
         [string]$Stderr = "",
         [bool]$TimedOut = $false,
-        [string]$MinimumVersion = "2.24"
+        [string]$MinimumVersion = "2.24.4"
     )
     if ($TimedOut) {
         return [pscustomobject]@{ verdict = "probe_failed"; version = ""; detail = "команда не завершилась за отведённое время (движок остановил её дерево процессов)" }
@@ -246,13 +246,13 @@ function Test-HrmComposeVersion {
 
     $override = Get-HrmPreflightOverrideResult "compose"
     if ($null -ne $override) { return $override }
-    # Требуется Compose v2 (плагин docker compose), минимум 2.24 (тег !reset).
+    # Требуется Compose v2 (плагин docker compose), минимум 2.24.4 (теги !reset и !override).
     #
     # Проверка НЕ ослабляется до предупреждения: без плагина compose стек не
     # поднимется вообще, а «предупреждение» оставило бы пользователя с вечным
     # «Запускается» и без причины (симптом пилотной машины 12.10.2026).
     # Отказ обязан называть ПРИЧИНУ и следующее действие.
-    $minimumVersion = "2.24"
+    $minimumVersion = "2.24.4"
     $out = Invoke-HrmDocker -Arguments @("compose", "version", "--short") -IgnoreExitCode
     $timedOut = $false
     if ($out.PSObject.Properties["TimedOut"]) { $timedOut = [bool]$out.TimedOut }
@@ -298,7 +298,7 @@ function Test-HrmComposeVersion {
             $message = ("Не удалось разобрать версию Docker Compose из ответа: {0}. Проверенные каталоги плагинов: {1}." -f $verdict.detail, $pluginDirsText)
         }
         "version_old" {
-            $message = ("Требуется Docker Compose {0} или новее (в файле пилота используется тег !reset); найдено: {1}. Обновите Docker Desktop — плагин compose обновляется вместе с ним." -f $minimumVersion, $verdict.version)
+            $message = ("Требуется Docker Compose {0} или новее (в файле пилота используются теги !reset и !override); найдено: {1}. Обновите Docker Desktop — плагин compose обновляется вместе с ним." -f $minimumVersion, $verdict.version)
         }
         "probe_failed" {
             $message = ("Проверка Docker Compose не прошла: {0} (код возврата {1}). Запустите Docker Desktop и повторите." -f $verdict.detail, $out.ExitCode)

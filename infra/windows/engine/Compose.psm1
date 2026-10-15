@@ -134,6 +134,33 @@ function Get-HrmStackState {
     return [pscustomobject]@{ state = "running"; total = $items.Count; running = $running.Count; unhealthy = 0; message = "Все сервисы запущены." }
 }
 
+function Get-HrmComposePortFailure {
+    # Не выводим сырой stderr. Из него берём только признак ошибки и числовой
+    # HOST-порт (не target 8080 контейнера). Без номера — порт этой установки.
+    # Ошибка networking без bind-признака сама по себе НЕ доказывает занятость.
+    param([string]$Stderr, [string]$StateDir)
+    $conflict = ($Stderr -match "(?i)port\s+is\s+already\s+allocated|address\s+already\s+in\s+use")
+    if (-not $conflict -and $Stderr -notmatch "(?i)failed to set up container networking") { return $null }
+    $port = 0
+    $pattern = '(?i)(?:Bind for |listen tcp[46]? |failed to bind host port for |exposing port (?:TCP|UDP) )(?:\[[^\]]+\]|[^\s:]*):(?<port>\d{1,5})'
+    if ($Stderr -match $pattern) { $port = [int]$Matches['port'] }
+    if ($port -lt 1 -or $port -gt 65535) {
+        $port = 0
+        [void][int]::TryParse((Get-HrmEnvFileValue $StateDir "HRM_PILOT_PORT"), [ref]$port)
+        if ($port -lt 1 -or $port -gt 65535) {
+            $record = Get-HrmInstallRecord $StateDir
+            $port = [int](Get-HrmInstallRecordField $record "port" 0)
+        }
+        if ($port -lt 1 -or $port -gt 65535) { $port = Get-HrmPort }
+    }
+    if ($conflict) {
+        $message = "Порт $port занят другой программой: Docker не смог опубликовать приложение. Освободите этот порт или задайте другой через -Port при установке. Чужие программы не останавливались, данные не удалялись."
+        return [pscustomobject]@{ ok = $false; state = "port_conflict"; port = $port; message = (Redact-HrmText $message) }
+    }
+    $message = "Docker не смог настроить сеть контейнера (порт публикации $port). Занятость порта не подтверждена. Проверьте сеть Docker Desktop и создайте отчёт для поддержки. Данные не удалялись."
+    return [pscustomobject]@{ ok = $false; state = "container_network_failed"; port = $port; message = (Redact-HrmText $message) }
+}
+
 function Repair-HrmStack {
     # Ремонт частично запущенного/нездорового стека БЕЗ удаления томов:
     # пересоздаём только то, что не работает. `down -v` и удаление volume здесь
@@ -150,8 +177,21 @@ function Repair-HrmStack {
     Write-HrmLog "info" ("Стек запущен не полностью ({0}) — перезапускаем только незапущенные сервисы…" -f $before.state)
     $recreate = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans", "--force-recreate") -IgnoreExitCode
     if ($recreate.ExitCode -ne 0) {
+        $portFailure = Get-HrmComposePortFailure -Stderr $recreate.Stderr -StateDir $StateDir
+        if ($null -ne $portFailure) {
+            Write-HrmLog "error" $portFailure.message
+            return $portFailure
+        }
         Write-HrmLog "warn" "Пересоздание не прошло — пробуем обычный запуск."
-        Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
+        $retry = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") -IgnoreExitCode
+        if ($retry.ExitCode -ne 0) {
+            $portFailure = Get-HrmComposePortFailure -Stderr $retry.Stderr -StateDir $StateDir
+            if ($null -ne $portFailure) {
+                Write-HrmLog "error" $portFailure.message
+                return $portFailure
+            }
+            throw ("Команда '{0}' завершилась с кодом {1}: {2}" -f $retry.Name, $retry.ExitCode, (Redact-HrmText $retry.Stderr.Trim()))
+        }
     }
     $after = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
     return $after
@@ -285,6 +325,7 @@ function Start-HrmStack {
 
     if ($current.state -eq "partial" -or $current.state -eq "degraded") {
         $repaired = Repair-HrmStack -InstallDir $InstallDir -StateDir $StateDir
+        if ($repaired.state -eq "port_conflict" -or $repaired.state -eq "container_network_failed") { return $repaired }
         if ($repaired.state -eq "running") {
             return [pscustomobject]@{ ok = $true; state = "running"; message = "Стек восстановлен без потери данных." }
         }
@@ -304,6 +345,11 @@ function Start-HrmStack {
             $upError = Redact-HrmText ([string]$up.Stderr).Trim()
         } catch { }
         Write-HrmLog "error" ("Запуск контейнеров не удался: " + $upError)
+        $portFailure = Get-HrmComposePortFailure -Stderr $up.Stderr -StateDir $StateDir
+        if ($null -ne $portFailure) {
+            Write-HrmLog "error" $portFailure.message
+            return $portFailure
+        }
     }
     # Даже неуспешный up мог поднять db и оставить backend unhealthy:
     # dependency failed to start — именно этот путь был в отчёте владельца.
@@ -335,6 +381,7 @@ function Start-HrmStack {
             return [pscustomobject]@{ ok = $false; state = "schema_incompatible"; message = $compat.message }
         }
         $after = Repair-HrmStack -InstallDir $InstallDir -StateDir $StateDir
+        if ($after.state -eq "port_conflict" -or $after.state -eq "container_network_failed") { return $after }
     }
     if ($passwordSynced) {
         return (Wait-HrmStackAfterPasswordSync -InstallDir $InstallDir -StateDir $StateDir)

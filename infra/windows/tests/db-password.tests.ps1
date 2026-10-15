@@ -436,3 +436,99 @@ Test-Case "P3.2: install/update не вытесняются свежими open,
     Assert-HrmNotContains $text "fixture@example.com"
     Assert-HrmNotContains $text "+79161234567"
 }
+
+# Port publication regression (reviewer 1fcc46f): previous cases unchanged.
+foreach ($portCase in @("docker-bind", "listen-tcp", "host-port", "bare-conflict")) {
+    Test-Case "PORT: initial up ($portCase) называет занятый host-порт без утечки секретов" {
+        $world = New-HrmPasswordTestContext
+        $state = Get-HrmTestStateDir
+        Set-Content (Get-HrmEnvFile $state) "HRM_PILOT_PORT=8081" -Encoding UTF8
+        $secret = Get-HrmSecret $state "HRM_POSTGRES_PASSWORD"
+        $expected = 8081
+        $stderr = switch ($portCase) {
+            "docker-bind" { $expected = 8080; "Bind for 127.0.0.1:8080 failed: port is already allocated" }
+            "listen-tcp" { "listen tcp 127.0.0.1:8081: bind: address already in use" }
+            "host-port" { $expected = 8091; "failed to bind host port for 127.0.0.1:8091:172.19.0.2:8080/tcp: address already in use" }
+            default { "port is already allocated" }
+        }
+        $world.NextUpExitCode = 1
+        $world.NextUpStderr = $stderr + " fixture-password=" + $secret
+        $world.NextUpContainersJson = '[{"Name":"db","State":"running"},{"Name":"backend","State":"exited"}]'
+        $env:HRM_LOG_FILE = Join-Path $state "port.log"
+        $result = Start-HrmStack (Get-HrmTestInstallDir) $state
+        Assert-HrmEqual 1 @($result).Count
+        Assert-HrmFalse $result.ok
+        Assert-HrmEqual "port_conflict" $result.state
+        Assert-HrmEqual $expected $result.port
+        Assert-HrmContains $result.message "Порт $expected занят"
+        Assert-HrmContains $result.message "-Port"
+        Assert-HrmNotContains $result.message $secret
+        Assert-HrmNotContains (Get-Content $env:HRM_LOG_FILE -Raw -Encoding UTF8) $secret
+        Assert-HrmEqual 0 $world.DbPasswordSyncCount "bind-ошибка не повод менять пароль"
+        Assert-HrmEqual 1 $world.UpCount "bind-ошибка не должна приводить к повторным up"
+        Assert-HrmPasswordDataUntouched $world
+    }
+}
+
+Test-Case "PORT: repair force-recreate немедленно возвращает port_conflict" {
+    $world = New-HrmPasswordTestContext
+    $world.ContainersJson = '[{"Name":"db","State":"exited"},{"Name":"backend","State":"running"}]'
+    $world.NextUpExitCode = 1
+    $world.NextUpStderr = "Bind for 127.0.0.1:8081 failed: port is already allocated"
+    $result = Start-HrmStack (Get-HrmTestInstallDir) (Get-HrmTestStateDir)
+    Assert-HrmFalse $result.ok
+    Assert-HrmEqual "port_conflict" $result.state
+    Assert-HrmEqual 8081 $result.port
+    Assert-HrmEqual 1 $world.UpCount
+    Assert-HrmPasswordDataUntouched $world
+}
+
+Test-Case "PORT: bind-ошибка fallback up из repair не теряется в общем исключении" {
+    $world = New-HrmPasswordTestContext
+    $world.ContainersJson = '[{"Name":"db","State":"exited"},{"Name":"backend","State":"running"}]'
+    $world.UpResults = @(
+        [pscustomobject]@{ ExitCode=1; Stdout=""; Stderr="temporary recreate failure" },
+        [pscustomobject]@{ ExitCode=1; Stdout=""; Stderr="Bind for 127.0.0.1:8081 failed: port is already allocated" }
+    )
+    $result = Start-HrmStack (Get-HrmTestInstallDir) (Get-HrmTestStateDir)
+    Assert-HrmFalse $result.ok
+    Assert-HrmEqual "port_conflict" $result.state
+    Assert-HrmEqual 8081 $result.port
+    Assert-HrmEqual 2 $world.UpCount
+    Assert-HrmPasswordDataUntouched $world
+}
+
+Test-Case "PORT: repair после успешного sync не уходит в readiness при bind-ошибке" {
+    $world = New-HrmPasswordTestContext
+    $world.NextUpContainersJson = '[{"Name":"db","State":"running"},{"Name":"backend","State":"exited"}]'
+    $world.NextUpExitCode = 1
+    $world.NextUpStderr = "dependency failed to start: backend unhealthy"
+    # Очередь применяется ПОСЛЕ одноразового NextUp, на repair.
+    $world.UpResults = @([pscustomobject]@{ ExitCode=1; Stdout=""; Stderr="Bind for 127.0.0.1:8081 failed: port is already allocated" })
+    $result = Start-HrmStack (Get-HrmTestInstallDir) (Get-HrmTestStateDir)
+    Assert-HrmFalse $result.ok
+    Assert-HrmEqual "port_conflict" $result.state
+    Assert-HrmEqual 1 $world.DbPasswordSyncCount
+    Assert-HrmEqual 2 $world.UpCount
+    Assert-HrmPasswordDataUntouched $world
+}
+
+Test-Case "PORT: ошибка networking без bind-признака не выдаётся за занятый порт" {
+    $world = New-HrmPasswordTestContext
+    $state = Get-HrmTestStateDir
+    Set-Content (Get-HrmEnvFile $state) "HRM_PILOT_PORT=8081" -Encoding UTF8
+    $world.NextUpExitCode = 1
+    $world.NextUpStderr = "failed to set up container networking: network not found"
+    $result = Start-HrmStack (Get-HrmTestInstallDir) $state
+    Assert-HrmFalse $result.ok
+    Assert-HrmEqual "container_network_failed" $result.state
+    Assert-HrmEqual 8081 $result.port
+    Assert-HrmContains $result.message "Занятость порта не подтверждена"
+    Assert-HrmPasswordDataUntouched $world
+}
+
+Test-Case "PORT: обычная ошибка compose не классифицируется как конфликт порта" {
+    $null = New-HrmPasswordTestContext
+    $result = Get-HrmComposePortFailure -Stderr "permission denied" -StateDir (Get-HrmTestStateDir)
+    Assert-HrmTrue ($null -eq $result)
+}

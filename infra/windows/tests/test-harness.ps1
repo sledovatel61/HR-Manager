@@ -344,6 +344,7 @@ function New-HrmMockWorld {
         SuspendEngine = $false
         ContainersJson = ""
         UpFails = $false
+        UpResults = @() # optional FIFO for repair/fallback port failures
         UpCount = 0
         # Однократные результаты up для контрпримеров остановленной БД и
         # ошибок запуска. Значения по умолчанию не меняют прежние фикстуры.
@@ -440,6 +441,11 @@ function New-HrmMockWorld {
                     $global:HRM_MockWorld.NextUpExitCode = -1
                     $global:HRM_MockWorld.NextUpStderr = ""
                     return [pscustomobject]@{ Name = $Name; ExitCode = $nextExit; Stdout = ""; Stderr = $nextStderr }
+                }
+                if ($global:HRM_MockWorld.UpResults.Count -gt 0) {
+                    $result = $global:HRM_MockWorld.UpResults[0]
+                    $global:HRM_MockWorld.UpResults = @($global:HRM_MockWorld.UpResults | Select-Object -Skip 1)
+                    return [pscustomobject]@{ Name=$Name; ExitCode=$result.ExitCode; Stdout=$result.Stdout; Stderr=$result.Stderr }
                 }
                 if ($global:HRM_MockWorld.DbPasswordMismatch) {
                     $global:HRM_MockWorld.ContainersJson = '[{"Name":"db","Service":"db","State":"running","Health":"healthy"},{"Name":"backend","State":"running","Health":"unhealthy"},{"Name":"frontend","State":"created"}]'
