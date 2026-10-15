@@ -266,7 +266,7 @@ def _merged_pilot_ports(
         for field, value in service_node.value:
             if field.value == "ports":
                 tags[key.value] = value.tag
-    merged = {}
+    merged: dict[str, list[str]] = {}
     for name in set(base["services"]) | set(overlay["services"]):
         original = base["services"].get(name, {}).get("ports", [])
         replacement = overlay["services"].get(name, {}).get("ports", [])
