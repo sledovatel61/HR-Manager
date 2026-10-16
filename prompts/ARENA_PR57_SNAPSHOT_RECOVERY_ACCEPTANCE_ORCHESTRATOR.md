@@ -13,6 +13,35 @@
 
 ---
 
+## ★ АКТУАЛЬНОЕ СОСТОЯНИЕ (вечер 16.10.2026): Setup.exe получен
+
+**Setup.exe из точного коммита `6ae189a` собран и готов к приёмке.**
+
+Как получен: **ручной запуск CI** — `Actions → CI → Run workflow → ветка
+`arena/3cadc6a9-hr-manager``, прогон `38945912191`. Ручной запуск на ветке даёт
+`github.sha` = коммит ветки, поэтому артефакт собран именно из `6ae189a`, **не** из
+мёрдж-коммита. В CI есть жёсткая проверка: `release_sha` в манифесте обязан равняться
+`GITHUB_SHA`, иначе задание падает. Она прошла.
+
+- прогон `38945912191`, итог **success, 9/9 заданий**
+- тесты pwsh — **348/348**, наборы включают `db-password` и `snapshot-recovery`
+- артефакт: **`pilot-setup-0.15.0-unsigned`**, 2 418 440 байт
+- внутри: `HR-Manager-Setup-0.15.0.exe`, `release-manifest.json`, `SHA256SUMS.txt`
+- sha256 `HR-Manager-Setup-0.15.0.exe`:
+  `E7A397E554744FD81C28B7D95620BB6B8EEC074209761391D68F0ECC46DE1271`
+- sha256 `release-manifest.json`:
+  `33CE5A200C342AD0E8BA529A9174A4D2E0A56156F8025C6DF551C5FD20FCC91F`
+
+**Скачать из песочницы невозможно** — хост, с которого GitHub отдаёт артефакты, там
+заблокирован. Только из браузера: страница прогона → внизу блок `Artifacts` →
+`pilot-setup-0.15.0-unsigned`. После скачивания **обязательно сверить sha256** —
+должен совпасть до последнего символа. Не совпал = файл побился при передаче, для
+приёмки не годится.
+
+**Путь `Pilot release (Windows)` не используйте** — он сломан, см. раздел 8А.
+
+---
+
 ## 0. Что уже проверено ревьюером (не повторяйте)
 
 - Guard **не ослаблен**: добавлены причины отказа `install_dir_mismatch` и
@@ -227,6 +256,49 @@ Compose-проектом/томами**. Новый StateDir сам по себ�
 - **Тома** `hr-manager-pilot_pilot_pgdata` и `hr-manager-pilot_pilot_backups` на месте.
 - **Защиты snapshot не обойдены:** повторный отказ по несовпадению по-прежнему дает отказ,
   а не успех.
+
+---
+
+## 8А. Не используйте workflow «Pilot release (Windows)» — он сломан
+
+Отдельный дефект, не связанный с приёмкой: workflow `Pilot release (Windows)`
+(на `main`, `.github/workflows/pilot-release.yml`) падает при сборке.
+
+- прогон `38918703168` (workflow_dispatch на `main`, `release_sha` = `6ae189a`)
+- шаги `Resolve version and SHA`, `Build autonomous license-issuer bundle`,
+  `Prepare optional pinned Docker Desktop sidecar` — success
+- шаг **`Build HR Manager Setup.exe (pilot, unsigned)`** — failure на
+  `installer/build.ps1:280`:
+
+```
+Resolving trust store: 0.15.0 (cwd D:\a\HR-Manager\HR-Manager)
+Exception: installer\build.ps1:280
+  { throw "TrustStoreFile not found: $TrustStoreFile (cwd ...)" }
+```
+
+То есть строка версии `0.15.0` попадает в параметр `-TrustStoreFile`, и сборка
+отказывается искать «файл хранилища доверия» с именем `0.15.0`. Пилотная сборка
+хранилища доверия не использует вовсе.
+
+Уже проверено ревьюером (повторно не проверять):
+
+- param-блок `installer/build.ps1` побайтово одинаков на `main` и на `6ae189a`
+- `$TrustStoreFile` нигде не перезаписывается в `build.ps1`
+- `pilot-release.yml` передаёт только `$buildArgs = @("-Version", $version)` со
+  сплаттингом; слова `TrustStore` в файле нет
+- `pilot-release.yml` идентичен на `main` и на ветке; в истории `main` у него один коммит
+- `.gitignore` строка 32 — `dist/`, поэтому сборка лицензионного бандла **не** грязнит
+  дерево и guard «чистый checkout» проходит
+
+Отброшено: «грязнит дерево» (`dist/` игнорируется), «патч сломал param-блок»
+(идентичен `main`), «не тот коммит» (шаг резолва прошёл, checkout = `6ae189a`).
+
+Задание исполнителю выдано отдельно: `ARENA_PR57_PILOT_RELEASE_TRUSTSTORE_FIX_PROMPT.md`.
+Там требование — сначала repro на Windows с pwsh, только потом правка.
+
+**Для приёмки это не blocker:** `ci.yml` работает, Setup.exe уже получен. Но это путь,
+которым владелец делает настоящий пилотный релиз, так что при мерже PR сломается
+штатный релизный сценарий.
 
 ---
 
