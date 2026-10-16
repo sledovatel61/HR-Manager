@@ -82,11 +82,13 @@
 
 ## 4. Тесты и границы локального результата
 
-Добавлен `snapshot-recovery.tests.ps1`: **20 новых кейсов**, полный runner ожидается **338 = 318 + 20** для этого checkout. Существующие suites, включая отказы iteration14/iteration15, не удалены и не ослаблены. Новый процессный тест запускает helper тем же PowerShell host, что и новый suite.
+Добавлен `snapshot-recovery.tests.ps1`: **21 новый кейс** (20 объявлений, одно — цикл на два значения). Ожидаемый полный счёт runner-а — **339 = 318 + 21**; 318 — фактическая аннотация CI `HRM engine tests` для базового коммита 97df390, 339 — ожидание, а не результат. Существующие suites, включая отказы iteration14/iteration15, не удалены и не ослаблены. Новый процессный тест запускает helper тем же PowerShell host, что и новый suite.
 
-Новые кейсы: канонический digest/метаданные, изменение содержимого/имени, один commit с другими байтами, идентичная завершённая установка, незавершённый и legacy retry, повторное reuse, missing/string pilot flag, отсутствие/расхождение/нормализация каталога, полный диагностический transport, конкретный CLI и процессный exit, чужой record SHA, повреждённый digest/копия, маскирование зарегистрированных секретов и защита transport от CR/LF, проводка Inno, чистота build и порядок content hashing.
+CI-джоба `Windows engine tests + installer smoke` запускает runner **только в Windows PowerShell 5.1** и публикует счётчик аннотацией; там же ISCC компилирует `installer.iss`, а silent smoke выполняет установку и обновление собранным Setup. pwsh-прогона runner-а в CI нет — его выполняет владелец на Windows (см. ниже). CI собирает merge-коммит PR, а не точный коммит ветки, и не заменяет живую приёмку на установке пилота.
 
-`test_snapshot_contract.py` — **только source-wiring контракты**, не интерпретатор PowerShell. Локально: 8 failing на исходном экспорте → 8 passing после исправления. Дополнительно — структурный lint и синтаксический tree-sitter parse изменённых PowerShell-файлов. Это **не** доказательство прохождения 338 runtime-кейсов.
+Новые кейсы: канонический digest/метаданные, изменение содержимого/имени, один commit с другими байтами, идентичная завершённая установка, незавершённый и legacy retry, повторное reuse, missing/string pilot flag, отсутствие/расхождение/нормализация каталога, полный диагностический transport, конкретный CLI и процессный exit, чужой record SHA, повреждённый digest/копия, маскирование зарегистрированных секретов и защита transport от CR/LF, проводка Inno, выбор диалога `files_replaced` по `reason` без строки «Причина: failed / files_replaced» (runtime: helper пишет status=failed + reason=files_replaced; статика: исключающая цепочка сообщений в PreservePreviousSnapshot, на исходном installer.iss тест красный), чистота build и порядок content hashing.
+
+`test_snapshot_contract.py` — **только source-wiring контракты**, не интерпретатор PowerShell. Локально: 8 failing на исходном экспорте → 8 passing после исправления. Дополнительно — структурный lint и синтаксический tree-sitter parse изменённых PowerShell-файлов. Это **не** доказательство прохождения 339 runtime-кейсов.
 
 На Windows обязательно отдельно:
 

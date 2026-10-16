@@ -248,6 +248,34 @@ Test-Case "SNAP: installer retains helper fields and no longer recommends blind 
     Assert-HrmNotContains $iss "при повторном запуске копия прежней версии будет создана"
 }
 
+Test-Case "SNAP: files_replaced dialog is chosen by reason and hides raw status/reason codes" {
+    # Reviewed defect: the wizard compared Status with 'files_replaced', but the
+    # helper reports this refusal as status=failed + reason=files_replaced, so
+    # the dedicated SnapshotFilesReplaced text was dead code and the user saw
+    # the generic "Причина: failed / files_replaced". Runtime half: prove the
+    # helper's actual field values for this refusal.
+    $c = New-HrmRecoveryCase
+    $null = Save-HrmVerifiedPreviousSnapshot -InstallDir $c.install -StateDir $c.state -ResultFile $c.result -NewReleaseSha ("a" * 40)
+    Assert-HrmEqual "failed" (Get-HrmRecoveryResultField $c.result "status")
+    Assert-HrmEqual "files_replaced" (Get-HrmRecoveryResultField $c.result "reason")
+    # Static half (Inno Pascal is not executable in this harness): the message
+    # chain of PreservePreviousSnapshot is an exclusive if / else-if / else.
+    $repo = (Resolve-Path (Join-Path $HarnessPath "../../..")).Path
+    $iss = Get-Content (Join-Path $repo "installer/installer.iss") -Raw -Encoding UTF8
+    $start = $iss.IndexOf("function PreservePreviousSnapshot(): String;")
+    $end = $iss.IndexOf("function HrmVerifySnapshotGuard(): String;")
+    Assert-HrmTrue ($start -ge 0 -and $end -gt $start) "PreservePreviousSnapshot not found"
+    $body = $iss.Substring($start, $end - $start)
+    Assert-HrmNotContains $body "Status = 'files_replaced'" "files_replaced must not be compared with Status"
+    $chain = [regex]::Match($body, "(?s)if Reason = 'files_replaced' then\s*(?<dedicated>[^;]*?)\s*else if Status = '' then\s*(?<helper>[^;]*?)\s*else\s*(?<generic>Message := CustomMessage\('SnapshotFailed'\)[^;]*);")
+    Assert-HrmTrue $chain.Success "exclusive message chain not found"
+    Assert-HrmEqual "Message := CustomMessage('SnapshotFilesReplaced')" $chain.Groups["dedicated"].Value.Trim()
+    Assert-HrmNotContains $chain.Groups["dedicated"].Value "Причина"
+    Assert-HrmContains $chain.Groups["generic"].Value "'Причина: '"
+    # The raw status/reason line exists only in the generic fallback branch.
+    Assert-HrmEqual 1 ([regex]::Matches($body, "'Причина: '")).Count
+}
+
 Test-Case "SNAP: build rejects dirty source and hashes final staged content" {
     $repo = (Resolve-Path (Join-Path $HarnessPath "../../..")).Path
     $build = Get-Content (Join-Path $repo "installer/build.ps1") -Raw -Encoding UTF8
