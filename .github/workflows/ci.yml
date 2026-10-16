@@ -853,6 +853,42 @@ jobs:
             }
           }
 
+  windows-engine-tests-pwsh:
+    # Same runner script as the "Windows engine tests + installer smoke" job,
+    # but hosted by PowerShell 7 (pwsh). The installed engine itself runs under
+    # Windows PowerShell 5.1; this separate check run makes a host-specific
+    # regression visible on its own (own annotations, own conclusion) instead of
+    # being inferred from the 5.1 result. No installer build, no artifacts.
+    name: Windows engine tests (PowerShell 7 / pwsh)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install cryptography for trust-store tooling (pinned)
+        shell: pwsh
+        run: |
+          python -m pip install cryptography==50.0.1
+          if ($LASTEXITCODE -ne 0) { throw "pip install cryptography==50.0.1 failed: $LASTEXITCODE" }
+
+      - name: PowerShell engine tests (pwsh 7)
+        shell: pwsh
+        run: |
+          Write-Host ("runner host: {0} {1}" -f $PSVersionTable.PSEdition, $PSVersionTable.PSVersion)
+          pwsh -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
+          exit $LASTEXITCODE
+
   pilot-setup:
     name: Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS
     runs-on: windows-latest

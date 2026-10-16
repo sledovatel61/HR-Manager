@@ -46,7 +46,10 @@ if ($exitCode -eq 0) {
     # Успех тоже публикуется аннотацией: журнал шага снаружи недоступен, а по
     # числу пройденных кейсов видно, что наборы действительно выполнялись, а не
     # были пропущены (например, при случайном удалении файла теста).
-    Write-Host ("::notice title=HRM engine tests::ВСЕ ТЕСТЫ ПРОЙДЕНЫ ({0}); наборы: static, engine, channel, installer-roots, docker, stack, supervisor, pilot-final, iteration14, iteration15, db-password, snapshot-recovery" -f $global:HRM_TestPassed)
+    # Хост в аннотации: один и тот же runner выполняется и в Windows PowerShell 5.1,
+    # и в pwsh (отдельные джобы CI), счёт одного хоста не выдаётся за другой.
+    $hostLabel = ("{0} {1}" -f $PSVersionTable.PSEdition, $PSVersionTable.PSVersion)
+    Write-Host ("::notice title=HRM engine tests::ВСЕ ТЕСТЫ ПРОЙДЕНЫ ({0}); host={1}; наборы: static, engine, channel, installer-roots, docker, stack, supervisor, pilot-final, iteration14, iteration15, db-password, snapshot-recovery" -f $global:HRM_TestPassed, $hostLabel)
 }
 else {
     Write-Host ("ЕСТЬ ПРОВАЛЫ: {0}" -f $global:HRM_TestFailed) -ForegroundColor Red
