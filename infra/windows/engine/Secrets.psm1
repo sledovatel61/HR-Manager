@@ -86,7 +86,7 @@ function Get-HrmSecret {
             [Convert]::ToBase64String($bytes)
         }
         "HRM_BACKUP_KEY_ID" { "pilot-" + (New-HrmHex 4) }
-        "HRM_EXCHANGE_TOKEN" { New-HrmHex 16 }
+        "HRM_EXCHANGE_TOKEN" { New-HrmHex 32 }
         "HRM_UPDATE_ENGINE_TOKEN" { New-HrmHex 16 }
     }
     $file = Get-HrmSecretsFile $StateDir
@@ -99,6 +99,22 @@ function Get-HrmSecret {
     Set-HrmJsonFile $StateDir "secrets.json" $merged
     Register-HrmSecret $value
     return $value
+}
+
+function Set-HrmSecret {
+    # Replace one pending setup secret without rotating any other secret.
+    param([string]$StateDir, [string]$Name, [string]$Value)
+    if ($script:SecretNames -notcontains $Name) { throw "Неизвестный секрет: $Name" }
+    $file = Get-HrmSecretsFile $StateDir
+    $data = Get-HrmJsonFile $file
+    $merged = [ordered]@{}
+    if ($null -ne $data) {
+        foreach ($prop in $data.PSObject.Properties) { $merged[$prop.Name] = $prop.Value }
+    }
+    $merged[$Name] = $Value
+    Set-HrmJsonFile $StateDir "secrets.json" $merged
+    Register-HrmSecret $Value
+    return $Value
 }
 
 function Clear-HrmExchangeToken {
