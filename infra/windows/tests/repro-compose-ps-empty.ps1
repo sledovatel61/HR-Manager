@@ -119,11 +119,13 @@ try {
         @{ name = "garbage"; json = "compose: unexpected output (not json)"; missing = $false },
         @{ name = "single-array"; json = '[{"Name":"backend","State":"running"}]'; missing = $false },
         @{ name = "ndjson"; json = $ndjson; missing = $false },
-        @{ name = "docker-missing"; json = ""; missing = $true }
+        @{ name = "docker-missing"; json = ""; missing = $true },
+        @{ name = "compose-2.21-empty-output"; json = ""; missing = $false; empty = $true }
     )
     foreach ($case in $cases) {
         $world.ContainersJson = $case.json
         $world.DockerMissing = $case.missing
+        $world.ComposePsEmptyOutput = [bool]($case.ContainsKey("empty") -and $case.empty)
         $text = "6 engine " + $case.name + ": "
         try {
             $containers = Get-HrmComposeContainers -InstallDir $install -StateDir $state
@@ -135,6 +137,7 @@ try {
     }
     $world.ContainersJson = ""
     $world.DockerMissing = $false
+    $world.ComposePsEmptyOutput = $false
 }
 catch { Add-ReproFact ("6 engine section failed: " + (Format-ReproError $_)) }
 

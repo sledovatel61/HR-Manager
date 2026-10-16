@@ -343,6 +343,10 @@ function New-HrmMockWorld {
         WslAvailable = $true
         SuspendEngine = $false
         ContainersJson = ""
+        # Compose 2.21+ печатает для ПУСТОГО проекта пустой вывод (построчный JSON
+        # без строк): v2.40.3 на CI-раннере — код 0, 0 символов (PR #57, repro);
+        # старые версии и ветка по умолчанию ниже — «[]».
+        ComposePsEmptyOutput = $false
         UpFails = $false
         UpResults = @() # optional FIFO for repair/fallback port failures
         UpCount = 0
@@ -421,6 +425,9 @@ function New-HrmMockWorld {
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ""; Stderr = "" }
             }
             if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "ps")) {
+                if ($global:HRM_MockWorld.ComposePsEmptyOutput) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ""; Stderr = "" }
+                }
                 if ($global:HRM_MockWorld.ContainersJson) {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.ContainersJson; Stderr = "" }
                 }
