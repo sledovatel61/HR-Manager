@@ -31,6 +31,16 @@
 - `record_directory_equals_target=false` указывает на смешение каталогов;
 - существующий пригодный/принимаемый снимок имеет приоритет перед этими предикатами: скрипт не вызывает изменяющую состояние adoption и не выдаёт предикаты за полное решение guard-а.
 
+### Что предсказывает сравнение для пересборки из нового коммита
+
+Setup, собранный из нового чистого коммита, имеет **другой** `release_sha`, чем установленный 0.15.0, поэтому ветки same-SHA (А — `build_digest`, Б — незавершённый повтор) на 8081 не задействуются. Guard идёт обычной веткой:
+
+- `record_directory_equals_target=true` и `file_equals_record=true` → снимок копируется и проверяется (`saved`/`reused`), обновление продолжается;
+- `record_directory_equals_target=false` → `install_dir_mismatch` с обоими каталогами; выбрать каталог из записи, запись не переписывать;
+- `file_equals_record=false` при непустых SHA обоих файлов → по-прежнему отказ `files_replaced` (`guard_branch=record_identity_mismatch`), теперь с конкретными полями; простая пересборка его **не** снимает — нужны соответствующие записи файлы или проверенный снимок.
+
+Это прогноз по коду, а не результат: подтверждается только самим приватным сравнением и затем живым запуском.
+
 Сверить с двумя строками журнала мастера (`HRM: snapshot decision`, `HRM: снимок предыдущей версии`) **локально**. Если исходное staging отсутствует, значение пакета неизвестно — гипотезу не объявлять доказанной. Не отправлять отчёт или сырые строки журнала в репозиторий/чат.
 
 ## 2. Исправленная цепочка диагностики
@@ -82,9 +92,9 @@
 
 ## 4. Тесты и границы локального результата
 
-Добавлен `snapshot-recovery.tests.ps1`: **21 новый кейс** (20 объявлений, одно — цикл на два значения). Ожидаемый полный счёт runner-а — **339 = 318 + 21**; 318 — фактическая аннотация CI `HRM engine tests` для базового коммита 97df390, 339 — ожидание, а не результат. Существующие suites, включая отказы iteration14/iteration15, не удалены и не ослаблены. Новый процессный тест запускает helper тем же PowerShell host, что и новый suite.
+Добавлен `snapshot-recovery.tests.ps1`: **21 новый кейс** (20 объявлений, одно — цикл на два значения). Полный счёт runner-а — **339 = 318 + 21**: 318 — аннотация CI `HRM engine tests` для базового коммита 97df390; 339 — аннотация CI для коммита 4ebda29 (`ВСЕ ТЕСТЫ ПРОЙДЕНЫ (339)`, Windows PowerShell 5.1, наборы до snapshot-recovery включительно). Существующие suites, включая отказы iteration14/iteration15, не удалены и не ослаблены. Новый процессный тест запускает helper тем же PowerShell host, что и новый suite.
 
-CI-джоба `Windows engine tests + installer smoke` запускает runner **только в Windows PowerShell 5.1** и публикует счётчик аннотацией; там же ISCC компилирует `installer.iss`, а silent smoke выполняет установку и обновление собранным Setup. pwsh-прогона runner-а в CI нет — его выполняет владелец на Windows (см. ниже). CI собирает merge-коммит PR, а не точный коммит ветки, и не заменяет живую приёмку на установке пилота.
+CI-джоба `Windows engine tests + installer smoke` запускает runner **только в Windows PowerShell 5.1** и публикует счётчик аннотацией; там же ISCC компилирует `installer.iss`, а silent smoke выполняет установку и обновление собранным Setup. В том же CI-прогоне ISCC 6.7.3 скомпилировал изменённый `installer.iss`, а silent smoke прошёл установку и обновление (`setup-snapshot.json`: status=verified, reason=saved), то есть новый JSON с полями guard-а разбирается. Отдельная джоба `Windows engine tests (PowerShell 7 / pwsh)` запускает тот же runner в pwsh; аннотация успеха содержит `host=` (`Desktop 5.1…` или `Core 7…`), поэтому счёт одного хоста не выдаётся за другой. CI собирает merge-коммит PR, а не точный коммит ветки; ограниченный режим раннера (без Linux-движка Docker) не покрывает сборку образов, стек, первый запуск и owner claim — это не замена живой приёмке на установке пилота.
 
 Новые кейсы: канонический digest/метаданные, изменение содержимого/имени, один commit с другими байтами, идентичная завершённая установка, незавершённый и legacy retry, повторное reuse, missing/string pilot flag, отсутствие/расхождение/нормализация каталога, полный диагностический transport, конкретный CLI и процессный exit, чужой record SHA, повреждённый digest/копия, маскирование зарегистрированных секретов и защита transport от CR/LF, проводка Inno, выбор диалога `files_replaced` по `reason` без строки «Причина: failed / files_replaced» (runtime: helper пишет status=failed + reason=files_replaced; статика: исключающая цепочка сообщений в PreservePreviousSnapshot, на исходном installer.iss тест красный), чистота build и порядок content hashing.
 
@@ -103,7 +113,26 @@ pwsh -NoProfile -File infra\windows\tests\run-tests.ps1
 
 ## 5. Сборка и живая приёмка — только после фиксации исходников
 
-1. Зафиксировать реальные локальные Bootstrap/Secrets-правки и этот патч. Не переносить StateDir/evidence в git. `build.ps1` теперь отказывает при dirty/untracked source, несоответствии HRM_RELEASE_SHA текущему commit, изменении HEAD/дерева во время staging. Простой выбор старого HEAD для маркировки dirty EXE больше не допускается.
+1. Зафиксировать реальные локальные Bootstrap/Secrets-правки и этот патч. Не переносить StateDir/evidence в git. Правки извлекаются из того приватного checkout, где они лежат незакоммиченными, **как код** (а не восстанавливаются по памяти):
+
+   ```powershell
+   # В приватном checkout с незакоммиченными правками; $privateDir — каталог с ограниченными ACL вне checkout/StateDir.
+   git status --short
+   git diff --stat -- infra/windows/engine/Bootstrap.psm1 infra/windows/engine/Secrets.psm1 infra/windows/tests
+   # Новые (неотслеживаемые) тест-файлы иначе не попадут в diff:
+   git add -N -- <новые тест-файлы>
+   # Файл пишет сам git: конвейер PowerShell превратил бы вывод в строки и испортил байты патча.
+   git diff --binary ("--output=" + (Join-Path $privateDir "exchange-recovery.patch")) -- `
+       infra/windows/engine/Bootstrap.psm1 infra/windows/engine/Secrets.psm1 <их тест-файлы>
+   # Просмотреть патч: только код и тесты; нет токенов, паролей, значений env, путей StateDir, PII.
+   # В чистом checkout ветки сессии (актуальный head):
+   git apply --3way --check (Join-Path $privateDir "exchange-recovery.patch")
+   git apply --3way (Join-Path $privateDir "exchange-recovery.patch")
+   git add -- <изменённые файлы>; git commit -m "<что исправляет exchange recovery>"
+   git push origin arena/3cadc6a9-hr-manager   # обычный push, без force
+   ```
+
+   Патч по содержимому применим и после переписывания истории: неизменённые файлы сохраняют те же blob. Если `--check` не проходит, разрешить конфликт вручную, не подменяя правки версиями из чужих веток. `build.ps1` теперь отказывает при dirty/untracked source, несоответствии HRM_RELEASE_SHA текущему commit, изменении HEAD/дерева во время staging. Простой выбор старого HEAD для маркировки dirty EXE больше не допускается.
 2. Выполнить оба полных Windows-прогона. Из чистого checkout запустить `installer/build.ps1 -Version 0.15.0` с существующим штатным публичным ключом. Лицензионные требования/проверки подписей не ослаблять. Собранный EXE, его SHA256 и метаданные хранить только локально, без публикации.
 3. На существующей установке перед Setup зафиксировать приватно идентичность/данные обоих томов и контрольные файлы состояния. Стандартный Setup на 8081 должен сначала получить verified/reused snapshot, затем пройти recovery → owner claim → установка пароля → вход. Проверить helper/Setup/engine exit codes, локальные setup-snapshot.json/setup-run.json/supervisor.json, реальную frontend-доступность, сохранность томов и идемпотентный повтор.
 4. **Разделить проверки secrets.json:** вокруг snapshot-guard он должен быть побайтово неизменен. В полном exchange recovery ожидаемое изменение/очистка exchange token уже меняет байты файла — одновременно требовать byte-identical всего файла нельзя. За этим участком отдельно подтвердить, что менялось только разрешённое поле exchange token, а пароль БД, signing/backup keys и другие секреты не менялись. Не обходить owner claim ручной установкой пароля.
