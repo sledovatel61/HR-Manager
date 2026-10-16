@@ -882,22 +882,6 @@ jobs:
           python -m pip install cryptography==50.0.1
           if ($LASTEXITCODE -ne 0) { throw "pip install cryptography==50.0.1 failed: $LASTEXITCODE" }
 
-      # Diagnostic only (PR #57 review): exact behaviour of each host on the
-      # empty `compose ps --format json` output and of the engine functions on
-      # it, plus what the real Compose CLI prints for an empty project. Facts are
-      # published as notice annotations; these steps never fail the job.
-      - name: Repro - compose ps empty output on pwsh (diagnostic)
-        shell: pwsh
-        run: |
-          pwsh -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/repro-compose-ps-empty.ps1
-          exit 0
-
-      - name: Repro - compose ps empty output on Windows PowerShell 5.1 (diagnostic)
-        shell: powershell
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/repro-compose-ps-empty.ps1
-          exit 0
-
       - name: PowerShell engine tests (pwsh 7)
         shell: pwsh
         run: |

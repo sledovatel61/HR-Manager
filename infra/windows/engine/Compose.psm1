@@ -59,22 +59,41 @@ function Test-HrmComposeRunning {
 
 function Get-HrmComposeContainers {
     # Список контейнеров проекта (включая остановленные) в виде объектов.
+    # $null — ТОЛЬКО «список получить не удалось» (ненулевой код compose ps,
+    # нечитаемый вывод, JSON null вместо списка): Get-HrmStackState называет это
+    # unknown. Успешно полученный ПУСТОЙ список — пустая коллекция (absent).
+    # Одинаково на обоих хостах (PR #57, CI repro): Compose 2.21+ печатает для
+    # пустого проекта пустой вывод, старые версии — «[]». Windows PowerShell 5.1
+    # выдаёт JSON-массив одним объектом, pwsh 7 — поэлементно («[]» — ноль
+    # объектов, без исключения); -NoEnumerate (есть только в pwsh 7+) выравнивает
+    # разбор. Возврат через унарную запятую: иначе пустая коллекция развернулась
+    # бы у вызывающего в $null — тот же признак, что и ошибка.
     param([string]$InstallDir, [string]$StateDir)
     $ps = Invoke-HrmCompose $InstallDir $StateDir @("ps", "-a", "--format", "json") -IgnoreExitCode
     if ($ps.ExitCode -ne 0) { return $null }
+    if ([string]::IsNullOrWhiteSpace([string]$ps.Stdout)) { return , @() }
+    $parse = @{ ErrorAction = "Stop" }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey("NoEnumerate")) { $parse["NoEnumerate"] = $true }
     $items = @()
     try {
-        try { $items = @($ps.Stdout | ConvertFrom-Json -ErrorAction Stop) }
+        try { $items = @($ps.Stdout | ConvertFrom-Json @parse) }
         catch {
             foreach ($line in ($ps.Stdout -split "`r?`n")) {
                 if (-not [string]::IsNullOrWhiteSpace($line)) {
-                    $items += ($line | ConvertFrom-Json -ErrorAction Stop)
+                    $items += ($line | ConvertFrom-Json @parse)
                 }
             }
         }
     }
     catch { return $null }
-    return @($items | Where-Object { $null -ne $_ })
+    $containers = New-Object System.Collections.ArrayList
+    foreach ($entry in $items) {
+        if ($null -eq $entry) { return $null }
+        foreach ($container in @($entry)) {
+            if ($null -ne $container) { [void]$containers.Add($container) }
+        }
+    }
+    return , ($containers.ToArray())
 }
 
 function Test-HrmContainerRunning {
