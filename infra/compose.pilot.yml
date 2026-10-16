@@ -39,7 +39,7 @@
 # start without it (fail-closed): an unset or empty key makes Compose stop
 # with a clear message instead of a crash-looping stack.
 #
-# REQUIRES Docker Compose v2.24+ (the !reset YAML tag), like compose.prod.yml.
+# REQUIRES Docker Compose v2.24.4+ (!reset and !override YAML tags).
 
 name: hr-manager-pilot
 
@@ -136,7 +136,10 @@ services:
     # HRM_PILOT_BIND accordingly (default 127.0.0.1, LAN 0.0.0.0). The setting
     # survives updates (StateDir/lan.json). HTTPS is not used in office LAN
     # (accepted pilot risk — see docs/runbook-pilot-release.md).
-    ports:
+    # Replace, do not append the dev base publication 127.0.0.1:8080:8080.
+    # Otherwise an occupied dev port prevents the pilot on 8081 from starting.
+    # !reset is NOT a substitute: it discards the supplied publication too.
+    ports: !override
       - "${HRM_PILOT_BIND:-127.0.0.1}:${HRM_PILOT_PORT:-8080}:8080"
 
   # Local SMTP sink is development-only: excluded from the pilot by the

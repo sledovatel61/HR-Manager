@@ -61,6 +61,22 @@ function Invoke-HrmFirstRunClaim {
             # Владелец уже создан — обмен закрыт.
             return @{ AlreadyCreated = $true }
         }
+        if ($response.StatusCode -eq 422) {
+            # Never print the raw validation response: FastAPI includes input
+            # values (including exchange_token). Report only known field names.
+            $fields = @()
+            try {
+                $validation = $response.Body
+                if ($validation -is [string]) { $validation = $validation | ConvertFrom-Json -ErrorAction Stop }
+                foreach ($item in @($validation.detail)) {
+                    foreach ($field in @($item.loc)) {
+                        if ($field -in @("exchange_token", "surname", "working_mode", "timezone")) { $fields += $field }
+                    }
+                }
+            } catch { }
+            $hint = if ($fields.Count -gt 0) { ($fields | Select-Object -Unique) -join ", " } else { "surname, working_mode, timezone" }
+            throw ("Первичная настройка не завершена (HTTP 422; поля: {0}). Приложение запущено, данные сохранены. Исправьте данные мастера и повторите первый запуск; переустановка с удалением данных не требуется." -f $hint)
+        }
         if ($response.StatusCode -eq 404) {
             # Обмен отключён (нет токена в конфигурации бэкенда): повторим
             # после перезапуска, если бэкенд ещё не перечитал env.
@@ -92,6 +108,17 @@ function Start-HrmFirstRun {
     }
     if ($null -eq $record -or -not (Get-HrmInstallRecordField -Record $record -Field "release_sha")) {
         throw "Запись установки отсутствует: сначала выполните -Action install."
+    }
+    # Older installers generated 16 random bytes / 32 hex characters, rejected
+    # by SetupOwnerClaimRequest (minimum 43). Repair only that exact legacy
+    # format, only while setup is pending; never rotate database/backup keys.
+    $legacyToken = Get-HrmSecret $StateDir "HRM_EXCHANGE_TOKEN"
+    if ($legacyToken -match '^[0-9a-fA-F]{32}$') {
+        $repairedToken = Set-HrmSecret $StateDir "HRM_EXCHANGE_TOKEN" (New-HrmHex 32)
+        $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $Port
+        Invoke-HrmCompose $InstallDir $StateDir @("up", "-d") | Out-Null
+        Wait-HrmReady -BaseUrl $baseUrl
+        Write-HrmLog "info" "Формат кода первого запуска исправлен; данные и ключи хранилища сохранены."
     }
     $input = Get-HrmFirstRunInput $StateDir
     $result = Invoke-HrmFirstRunClaim -StateDir $StateDir -BaseUrl $baseUrl `

@@ -99,7 +99,7 @@ Test-Case "секреты уникальны между установками �
     Assert-HrmEqual 32 ([Convert]::FromBase64String($backupKey)).Length "ключ бэкапов должен декодироваться в 32 байта"
     Assert-HrmEqual 32 (Get-HrmSecret $a "HRM_POSTGRES_PASSWORD").Length "длина пароля БД"
     Assert-HrmEqual 32 (Get-HrmSecret $a "HRM_BOOTSTRAP_ADMIN_PASSWORD").Length "длина bootstrap-пароля"
-    Assert-HrmEqual 32 (Get-HrmSecret $a "HRM_EXCHANGE_TOKEN").Length "длина токена обмена"
+    Assert-HrmEqual 64 (Get-HrmSecret $a "HRM_EXCHANGE_TOKEN").Length "длина токена обмена"
 }
 
 Test-Case "pilot.env: токен обмена есть до создания владельца и retired-заглушка после" {
@@ -311,6 +311,57 @@ Test-Case "claim повторяется при недоступности обм
     Assert-HrmEqual 3 $t.World.ClaimCount "количество попыток claim"
     $url = (Get-Content (Get-HrmSetupUrlFile $state) -Raw).Trim()
     Assert-HrmContains $url "#setup=ticket-after-retry" "тикет после повторов не попал в ссылку"
+}
+
+Test-Case "exchange token соответствует контракту API и сохраняется при повторном чтении" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $token = Get-HrmSecret $state "HRM_EXCHANGE_TOKEN"
+    Assert-HrmTrue ($token -match '^[0-9a-f]{64}$') "API требует минимум 43 символа, генератор должен выдавать 64 hex"
+    Assert-HrmEqual $token (Get-HrmSecret $state "HRM_EXCHANGE_TOKEN") "валидный токен ротируется"
+}
+
+Test-Case "здоровая установка с claim 422 сохраняет данные и не повторяет неверный запрос" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $token = Get-HrmSecret $state "HRM_EXCHANGE_TOKEN"
+    $t.World.ClaimResponses = @(@{ StatusCode = 422; Body = ('{"detail":[{"loc":["body","exchange_token"],"input":"' + $token + '","msg":"invalid"}]}') })
+    $message = ""
+    try { Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8081 | Out-Null }
+    catch { $message = $_.Exception.Message }
+    Assert-HrmContains $message "HTTP 422" "нет ясной причины ошибки"
+    Assert-HrmContains $message "exchange_token" "нет имени поля"
+    Assert-HrmNotContains $message $token "секрет попал в ошибку"
+    Assert-HrmEqual 1 $t.World.ClaimCount "неверный payload повторяется"
+    Assert-HrmFalse (Get-HrmInstallRecord $state).pilot_created "ложно отмечено создание владельца"
+    Assert-HrmTrue (Test-Path (Get-HrmSecretsFile $state)) "секреты удалены"
+    Assert-HrmFalse (Test-Path (Get-HrmSetupUrlFile $state)) "создана ложная ссылка"
+    Assert-HrmEqual $token (Get-HrmSecret $state "HRM_EXCHANGE_TOKEN") "валидный токен изменился"
+}
+
+Test-Case "первый запуск восстанавливает старый короткий токен без замены ключей данных" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8081 | Out-Null
+    $before = Get-HrmSecretsMap $state
+    $before["HRM_EXCHANGE_TOKEN"] = '0123456789abcdef0123456789abcdef'
+    Set-HrmJsonFile $state "secrets.json" $before
+    Start-HrmFirstRun -InstallDir $install -StateDir $state -Port 8081 | Out-Null
+    $after = Get-HrmSecretsMap $state
+    Assert-HrmTrue ($after.HRM_EXCHANGE_TOKEN -match '^[0-9a-f]{64}$') "старый токен не исправлен"
+    foreach ($name in @("HRM_POSTGRES_PASSWORD", "HRM_BACKUP_KEY", "HRM_SIGNING_KEY")) {
+        Assert-HrmEqual $before[$name] $after[$name] "изменён ключ данных $name"
+    }
+    $claim = $t.World.HttpCalls | Where-Object { $_.Uri -like "*/api/setup/owner/claim" } | Select-Object -Last 1
+    Assert-HrmEqual $after.HRM_EXCHANGE_TOKEN $claim.Body.exchange_token "claim использует старый токен"
+    Assert-HrmContains ((Get-Content (Get-HrmEnvFile $state) -Raw)) ("HRM_EXCHANGE_TOKEN=" + $after.HRM_EXCHANGE_TOKEN) "env не синхронизирован"
+    Start-HrmFirstRun -InstallDir $install -StateDir $state -Port 8081 | Out-Null
+    Assert-HrmEqual $after.HRM_EXCHANGE_TOKEN (Get-HrmSecret $state "HRM_EXCHANGE_TOKEN") "восстановленный токен снова изменён"
 }
 
 Write-Host "== Обновление =="

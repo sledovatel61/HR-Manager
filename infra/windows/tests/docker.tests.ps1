@@ -631,3 +631,29 @@ Test-Case "D5: отказ по compose называет причину и про
 }
 
 Write-Host ("Docker Desktop: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)
+
+Test-Case "PORT: сравнение версии Compose учитывает patch 2.24.4 и prerelease" {
+    Assert-HrmEqual -1 (Compare-HrmCliVersion "2.24" "2.24.4")
+    Assert-HrmEqual -1 (Compare-HrmCliVersion "2.24.3" "2.24.4")
+    Assert-HrmEqual -1 (Compare-HrmCliVersion "2.24.4-beta" "2.24.4")
+    Assert-HrmEqual 0 (Compare-HrmCliVersion "v2.24.4" "2.24.4")
+    Assert-HrmEqual 1 (Compare-HrmCliVersion "5.5.0" "2.24.4")
+}
+
+foreach ($version in @("2.24.0", "2.24.3", "2.24.4-beta", "2.24.4", "5.5.0")) {
+    Test-Case "PORT: preflight Compose $version проверяет поддержку !override" {
+        $world = New-HrmDockerTestContext
+        Set-HrmDockerOverride @{ compose_plugin_files = @() }
+        $world.ComposeVersion = $version
+        $result = Test-HrmComposeVersion
+        if ($version -eq "2.24.4" -or $version -eq "5.5.0") {
+            Assert-HrmTrue $result.Passed
+            Assert-HrmEqual "ok" $result.Reason
+        } else {
+            Assert-HrmFalse $result.Passed
+            Assert-HrmEqual "version_old" $result.Reason
+            Assert-HrmContains $result.Message "2.24.4"
+            Assert-HrmContains $result.Message "!override"
+        }
+    }
+}

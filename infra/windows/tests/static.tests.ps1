@@ -643,3 +643,20 @@ Test-Case "шаг CI-смоука — ASCII-обёртка над сценари
 }
 
 Write-Host ("Статические проверки: {0} пройдено, {1} провалено" -f $global:HRM_TestPassed, $global:HRM_TestFailed)
+
+Test-Case "PORT: каждая публикация пилотного оверлея явно сбрасывает или заменяет базу" {
+    $overlay = Get-Content (Join-Path $RepoRoot "infra\compose.pilot.yml") -Raw -Encoding UTF8
+    $service = ""
+    $seen = @()
+    foreach ($line in ($overlay -split "`n")) {
+        if ($line -match '^  ([a-z][a-z0-9_-]*):\s*$') { $service = $Matches[1] }
+        if ($line -match '^    ports:') {
+            Assert-HrmTrue ($line -match '^    ports:\s+!(reset|override)(\s|$)') ("порты " + $service + " наследуют dev-публикации")
+            $seen += $service
+        }
+    }
+    foreach ($name in @("db", "backend", "frontend", "worker", "backup")) {
+        Assert-HrmTrue ($seen -contains $name) ("нет явного ports для " + $name)
+    }
+    Assert-HrmEqual 5 $seen.Count
+}

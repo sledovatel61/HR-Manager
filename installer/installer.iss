@@ -54,9 +54,9 @@ russian.SurnamePageDescription=Введите фамилию владельца.
 russian.TimezonePageCaption=Часовой пояс
 russian.TimezonePageDescription=Часовой пояс для уведомлений и расписаний (по умолчанию Europe/Moscow). Изменить можно в настройках приложения.
 russian.DockerNote=HR Manager работает в контейнерах, поэтому необходимы Docker Desktop и готовый Docker Engine.%n%nЕсли Docker Desktop ещё не установлен, скачайте его только с официального сайта https://www.docker.com/products/docker-desktop/ и запустите установку самостоятельно. HR Manager не скачивает и не запускает установщик Docker Desktop и не принимает лицензию Docker за пользователя.%n%nПосле установки запустите Docker Desktop, дождитесь готовности Docker Engine и повторите запуск HR Manager. Если в дистрибутиве рядом с Setup.exe есть дополнительный DockerDesktopInstaller.exe, мастер скопирует его в папку docker приложения; этот файл никогда не запускается автоматически.
-russian.SnapshotStop=Установка остановлена, чтобы не потерять возможность вернуться к работающей версии. Файлы программы НЕ изменены. Закройте это окно и запустите Setup.exe заново; если ошибка повторится — создайте отчёт для поддержки из значка HR Manager в трее.
+russian.SnapshotStop=Установка остановлена ДО замены файлов. Сверьте каталоги установки и состояния и конкретную причину в локальном setup-snapshot.json. Восстановите соответствующие записанной версии файлы или проверенный снимок; простой повтор Setup не исправляет несовпадение.
 russian.SnapshotFailed=Не удалось сохранить копию предыдущей версии, поэтому обновление остановлено: так у вас останется возможность вернуться к работающей версии.
-russian.SnapshotFilesReplaced=Файлы программы уже заменены новой версией, а копии прежней версии нет. Запустите установку заново: при повторном запуске копия прежней версии будет создана ДО замены файлов.
+russian.SnapshotFilesReplaced=Нельзя подтвердить прежнюю версию файлов, а проверенного снимка нет. Проверьте InstallDir/StateDir и локальную диагностику. Нужны соответствующие записи исходные файлы или проверенный снимок, а не повтор установки без изменения состояния.
 russian.SnapshotHelperFailed=Не удалось запустить подготовку к обновлению. Проверьте, что Windows PowerShell доступен, и запустите Setup.exe заново.
 russian.FinishTitle=HR Manager установлен
 russian.FinishText=Файлы HR Manager установлены, приложение запустилось и движок подтвердил готовность.%n%nВ правом нижнем углу появится значок HR Manager (в трее). Когда всё будет готово, откроется браузер со страницей первого запуска — задайте пароль администратора.%nЗначок HR Manager на рабочем столе открывает приложение; меню значка позволяет перезапустить приложение и создать отчёт для поддержки.%n%nЕсли что-то пойдёт не так — откройте значок HR Manager в трее и нажмите «Создать отчёт для поддержки».
@@ -180,6 +180,8 @@ var
   // файл диагностики (setup-snapshot.json) — по нему видно, почему установка
   // остановилась ДО перезаписи файлов.
   SnapshotExitCode: Integer;
+  SnapshotDetailKeys: TArrayOfString;
+  SnapshotDetailValues: TArrayOfString;
 
 procedure InitializeWizard();
 var
@@ -237,6 +239,9 @@ begin
   Result := S;
   StringChange(Result, '\', '\\');
   StringChange(Result, '"', '\"');
+  StringChange(Result, #13, '\r');
+  StringChange(Result, #10, '\n');
+  StringChange(Result, #9, '\t');
 end;
 
 procedure WriteFirstRunInput();
@@ -278,6 +283,32 @@ begin
   Result := HrmStateDir() + '\setup-snapshot.json';
 end;
 
+procedure HrmInitSnapshotDetails();
+begin
+  SetArrayLength(SnapshotDetailKeys, 9);
+  SetArrayLength(SnapshotDetailValues, 9);
+  SnapshotDetailKeys[0] := 'file_sha';
+  SnapshotDetailValues[0] := '';
+  SnapshotDetailKeys[1] := 'new_release_sha';
+  SnapshotDetailValues[1] := '';
+  SnapshotDetailKeys[2] := 'record_sha';
+  SnapshotDetailValues[2] := '';
+  SnapshotDetailKeys[3] := 'record_install_dir';
+  SnapshotDetailValues[3] := '';
+  SnapshotDetailKeys[4] := 'target_install_dir';
+  SnapshotDetailValues[4] := '';
+  SnapshotDetailKeys[5] := 'record_pilot_created';
+  SnapshotDetailValues[5] := '';
+  SnapshotDetailKeys[6] := 'message';
+  SnapshotDetailValues[6] := '';
+  SnapshotDetailKeys[7] := 'guard_branch';
+  SnapshotDetailValues[7] := '';
+  SnapshotDetailKeys[8] := 'new_build_digest';
+  SnapshotDetailValues[8] := '';
+  SnapshotDetailValues[4] := ExpandConstant('{app}');
+  SnapshotDetailValues[5] := 'unknown';
+end;
+
 procedure HrmLogSnapshotDecision(const Needed: Boolean; const Status, Reason: String;
   const RunOk: Boolean; const RunExit: Integer; const Stop: Boolean);
 // Решение мастера о снимке прежней версии одной строкой в журнале мастера
@@ -303,8 +334,12 @@ procedure HrmWriteSnapshotDiagnostics(const Needed: Boolean; const Status, Reaso
 // нет (чистая установка), решение всё равно видно в журнале мастера.
 var
   FileName, Json, NeededText, RunOkText, StopText: String;
+  I: Integer;
 begin
+  if GetArrayLength(SnapshotDetailKeys) = 0 then HrmInitSnapshotDetails();
   HrmLogSnapshotDecision(Needed, Status, Reason, RunOk, RunExit, Stop);
+  for I := 0 to GetArrayLength(SnapshotDetailKeys) - 1 do
+    Log('HRM: snapshot detail ' + SnapshotDetailKeys[I] + '=' + SnapshotDetailValues[I]);
   if not DirExists(HrmStateDir()) then Exit;
   if Needed then NeededText := 'true' else NeededText := 'false';
   if RunOk then RunOkText := 'true' else RunOkText := 'false';
@@ -313,9 +348,19 @@ begin
           GetDateTimeString('yyyy/mm/dd hh:nn:ss', '-', ':') + '", "needed": ' +
           NeededText + ', "status": "' + Status + '", "reason": "' + Reason +
           '", "run_ok": ' + RunOkText + ', "run_exit": ' + IntToStr(RunExit) +
-          ', "stop": ' + StopText + '}';
+          ', "stop": ' + StopText;
+  for I := 0 to GetArrayLength(SnapshotDetailKeys) - 1 do
+  begin
+    if (SnapshotDetailKeys[I] = 'record_pilot_created') and
+       ((SnapshotDetailValues[I] = 'true') or (SnapshotDetailValues[I] = 'false')) then
+      Json := Json + ', "' + SnapshotDetailKeys[I] + '": ' + SnapshotDetailValues[I]
+    else
+      Json := Json + ', "' + SnapshotDetailKeys[I] + '": "' +
+              EscapeJson(SnapshotDetailValues[I]) + '"';
+  end;
+  Json := Json + '}';
   FileName := HrmSnapshotDiagnosticsFile();
-  if not SaveStringToFile(FileName, Json, False) then
+  if not SaveStringToFile(FileName, UTF8Encode(Json), False) then
     Log('HRM: файл диагностики снимка не записан: ' + FileName);
 end;
 
@@ -333,6 +378,8 @@ begin
   for I := 0 to GetArrayLength(Lines) - 1 do
   begin
     Line := Lines[I];
+    if (Length(Line) > 0) and (Ord(Line[1]) = 65279) then
+      Line := Copy(Line, 2, Length(Line) - 1);
     if (Length(Line) > 0) and (Line[Length(Line)] = #13) then
       Line := Copy(Line, 1, Length(Line) - 1);
     P := Pos('=', Line);
@@ -432,10 +479,12 @@ function PreservePreviousSnapshot(): String;
 // каталог состояния уже есть, в файл диагностики setup-snapshot.json.
 var
   ResultFile, Status, Reason, Message: String;
+  I: Integer;
   Needed, RunOk: Boolean;
 begin
   Result := '';
   if SnapshotGuardPassed then Exit;
+  HrmInitSnapshotDetails();
   Needed := HrmProgramFilesExist();
   ResultFile := ExpandConstant('{tmp}\hrm-snapshot-result.txt');
   SnapshotStatus := '';
@@ -469,6 +518,8 @@ begin
   RunOk := HrmRunSnapshotHelper(ResultFile);
   Status := HrmReadResultKeySafe(ResultFile, 'status');
   Reason := HrmReadResultKeySafe(ResultFile, 'reason');
+  for I := 0 to GetArrayLength(SnapshotDetailKeys) - 1 do
+    SnapshotDetailValues[I] := HrmReadResultKeySafe(ResultFile, SnapshotDetailKeys[I]);
   SnapshotStatus := Status;
   SnapshotReason := Reason;
   if RunOk then
@@ -485,13 +536,15 @@ begin
     HrmWriteSnapshotDiagnostics(True, Status, Reason, True, SnapshotExitCode, False);
     Exit;
   end;
-  if Status = 'files_replaced' then
+  if Reason = 'files_replaced' then
     Message := CustomMessage('SnapshotFilesReplaced')
   else if Status = '' then
     Message := CustomMessage('SnapshotHelperFailed')
   else
     Message := CustomMessage('SnapshotFailed') + #13#10 +
       'Причина: ' + Status + ' / ' + Reason;
+  if SnapshotDetailValues[6] <> '' then
+    Message := Message + #13#10 + SnapshotDetailValues[6];
   Log('HRM: установка остановлена ДО перезаписи файлов (' + Status + '/' + Reason + ').');
   HrmWriteSnapshotDiagnostics(True, Status, Reason, RunOk, SnapshotExitCode, True);
   SuppressibleMsgBox(Message, mbCriticalError, MB_OK, IDOK);
@@ -625,7 +678,7 @@ begin
   // Russian user-facing message when the engine reads it as UTF-8.
   if not DirExists(HrmStateDir()) then Exit;
   MarkerFile := HrmStateDir() + '\setup-run.json';
-  Marker := '{"status":"failed","message":"\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0430 HR Manager \u043d\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 Docker Desktop \u0438 Docker Engine; \u0435\u0441\u043b\u0438 Docker Desktop \u043e\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u0435\u0442, \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u0435 \u0435\u0433\u043e \u0432\u0440\u0443\u0447\u043d\u0443\u044e \u0441 \u043e\u0444\u0438\u0446\u0438\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u0441\u0430\u0439\u0442\u0430 https://www.docker.com/products/docker-desktop/, \u0437\u0430\u0442\u0435\u043c \u043e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 HR Manager \u0441\u043d\u043e\u0432\u0430."}';
+  Marker := '{"status":"failed","message":"\u0414\u0432\u0438\u0436\u043e\u043a \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043b\u0441\u044f \u0431\u0435\u0437 \u0438\u0442\u043e\u0433\u043e\u0432\u043e\u0433\u043e \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u0430. \u041f\u0440\u0438\u0447\u0438\u043d\u0430 \u043d\u0435 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0430; \u043f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u0436\u0443\u0440\u043d\u0430\u043b\u044b \u0432 \u043a\u0430\u0442\u0430\u043b\u043e\u0433\u0435 \u0441\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u044f HRManager/logs \u0438 \u0441\u043e\u0437\u0434\u0430\u0439\u0442\u0435 \u043e\u0442\u0447\u0451\u0442 \u0434\u043b\u044f \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0438. \u0414\u0430\u043d\u043d\u044b\u0435 \u043d\u0435 \u0443\u0434\u0430\u043b\u044f\u043b\u0438\u0441\u044c."}';
   if SaveStringToFile(MarkerFile, Marker, False) then
     Log('HRM: incomplete setup marker normalized to failed for tray recovery')
   else
@@ -648,7 +701,10 @@ begin
     // action as soon as Setup returns instead of treating a finished failure as
     // a still-running installation.
     if (EngineStatus = 'running') or (EngineStatus = 'unknown') then
+    begin
       MarkHrmSetupEngineFailed();
+      EngineStatus := GetHrmSetupEngineStatus();
+    end;
   end;
   Log('HRM: setup engine result=' + EngineStatus + ' custom exit=' + IntToStr(Result));
 end;
@@ -659,7 +715,14 @@ var
 begin
   if CurPageID = wpFinished then
   begin
+    // [Run] уже завершён. Нормализуем ДО Finish, а не только при выходе:
+    // оборванный/не загрузившийся движок не должен оставлять status=running.
     EngineStatus := GetHrmSetupEngineStatus();
+    if (EngineStatus = 'running') or (EngineStatus = 'unknown') then
+    begin
+      MarkHrmSetupEngineFailed();
+      EngineStatus := GetHrmSetupEngineStatus();
+    end;
     if EngineStatus = 'success' then
     begin
       WizardForm.FinishedLabel.Caption := ExpandConstant('{cm:FinishText}');

@@ -27,6 +27,89 @@ Test-Case "первый запуск: контейнеров нет — стек
     Assert-HrmTrue ($world.BuildCount -ge 1) "образы должны собираться при первом запуске"
 }
 
+# Регресс PR #57 (pwsh 338/1, этот файл, строка 24): «контейнеров нет» и
+# «состояние неопределимо» — разные состояния на ОБОИХ хостах. Пустой успешно
+# разобранный список — absent; ошибка compose ps и нечитаемый вывод — unknown;
+# непустые списки (JSON-массив из одного элемента, построчный JSON Compose
+# 2.21+) считаются как раньше.
+Test-Case "пустой стек: compose ps -> [] (код 0) — absent, а не unknown" {
+    $world = New-HrmStackTestContext
+    $world.ContainersJson = "[]"
+    $install = Get-HrmTestInstallDir
+    $state = Get-HrmTestStateDir
+    $containers = Get-HrmComposeContainers -InstallDir $install -StateDir $state
+    Assert-HrmFalse ($null -eq $containers) "успешно разобранный пустой список не равен «состояние неопределимо»"
+    Assert-HrmEqual 0 @($containers).Count "в пустом стеке нет контейнеров"
+    $stack = Get-HrmStackState -InstallDir $install -StateDir $state
+    Assert-HrmEqual "absent" $stack.state "пустой стек должен быть absent"
+    Assert-HrmEqual "Контейнеры ещё не созданы." $stack.message "текст состояния absent"
+    Assert-HrmEqual 0 $stack.total "в пустом стеке нет контейнеров"
+}
+
+Test-Case "compose ps недоступен (код не 0) — по-прежнему unknown, а не absent" {
+    $world = New-HrmStackTestContext
+    $world.DockerMissing = $true
+    $install = Get-HrmTestInstallDir
+    $state = Get-HrmTestStateDir
+    Assert-HrmTrue ($null -eq (Get-HrmComposeContainers -InstallDir $install -StateDir $state)) "ошибка compose ps не может стать пустым списком"
+    $stack = Get-HrmStackState -InstallDir $install -StateDir $state
+    Assert-HrmEqual "unknown" $stack.state "«не удалось определить» не превращается в «контейнеров нет»"
+    Assert-HrmEqual "Не удалось получить состояние контейнеров." $stack.message "текст состояния unknown"
+}
+
+Test-Case "нечитаемый вывод compose ps (код 0) — по-прежнему unknown" {
+    $world = New-HrmStackTestContext
+    $world.ContainersJson = "compose: unexpected output (not json)"
+    $install = Get-HrmTestInstallDir
+    $state = Get-HrmTestStateDir
+    Assert-HrmTrue ($null -eq (Get-HrmComposeContainers -InstallDir $install -StateDir $state)) "нечитаемый вывод не может стать пустым списком"
+    $stack = Get-HrmStackState -InstallDir $install -StateDir $state
+    Assert-HrmEqual "unknown" $stack.state "нечитаемый вывод — unknown"
+}
+
+Test-Case "пустой проект Compose 2.21+: пустой вывод compose ps (код 0) — absent, а не unknown" {
+    # Docker Compose 2.21+ печатает для пустого проекта НИЧЕГО (построчный JSON
+    # без строк): v2.40.3 на CI-раннере — код 0, 0 символов (PR #57, repro).
+    # Это успешно полученный пустой список на ОБОИХ хостах, а не «неопределимо».
+    $world = New-HrmStackTestContext
+    $world.ComposePsEmptyOutput = $true
+    $install = Get-HrmTestInstallDir
+    $state = Get-HrmTestStateDir
+    $containers = Get-HrmComposeContainers -InstallDir $install -StateDir $state
+    Assert-HrmFalse ($null -eq $containers) "пустой вывод успешного compose ps — пустой список, а не «неопределимо»"
+    Assert-HrmEqual 0 @($containers).Count "контейнеров нет"
+    $stack = Get-HrmStackState -InstallDir $install -StateDir $state
+    Assert-HrmEqual "absent" $stack.state "пустой проект Compose 2.21+ — absent"
+    Assert-HrmEqual "Контейнеры ещё не созданы." $stack.message "текст состояния absent"
+}
+
+Test-Case "JSON null вместо списка compose ps (код 0) — по-прежнему unknown" {
+    # Граница фикса: absent — только для пустого списка (пустой вывод или «[]»);
+    # значение, которое не является списком контейнеров, остаётся unknown.
+    $world = New-HrmStackTestContext
+    $world.ContainersJson = "null"
+    $install = Get-HrmTestInstallDir
+    $state = Get-HrmTestStateDir
+    Assert-HrmTrue ($null -eq (Get-HrmComposeContainers -InstallDir $install -StateDir $state)) "JSON null не может стать пустым списком"
+    $stack = Get-HrmStackState -InstallDir $install -StateDir $state
+    Assert-HrmEqual "unknown" $stack.state "JSON null — unknown"
+}
+
+Test-Case "один контейнер в JSON-массиве и построчный JSON compose ps считаются как раньше" {
+    $world = New-HrmStackTestContext
+    $install = Get-HrmTestInstallDir
+    $state = Get-HrmTestStateDir
+    $world.ContainersJson = '[{"Name":"backend","State":"running"}]'
+    $single = Get-HrmStackState -InstallDir $install -StateDir $state
+    Assert-HrmEqual "running" $single.state "один запущенный контейнер в JSON-массиве"
+    Assert-HrmEqual 1 $single.total "ровно один контейнер"
+    $world.ContainersJson = '{"Name":"db","State":"running"}' + "`n" + '{"Name":"backend","State":"exited"}'
+    $lines = Get-HrmStackState -InstallDir $install -StateDir $state
+    Assert-HrmEqual "partial" $lines.state "построчный JSON: запущен один контейнер из двух"
+    Assert-HrmEqual 2 $lines.total "оба контейнера из построчного JSON"
+    Assert-HrmEqual 1 $lines.running "запущен один контейнер"
+}
+
 Test-Case "результат Start-HrmStack — ровно один объект с ok (журнал не в конвейере)" {
     $null = New-HrmStackTestContext
     $install = Get-HrmTestInstallDir

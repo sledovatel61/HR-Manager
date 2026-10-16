@@ -83,9 +83,8 @@ function Get-HrmSnapshotRelativePath {
     # Путь файла относительно корня снимка — всегда с прямыми слэшами, чтобы
     # манифест не зависел от разделителей пути.
     param([string]$Root, [string]$Path)
-    $rootFull = [System.IO.Path]::GetFullPath($Root)
-    if (-not $rootFull.EndsWith("\")) { $rootFull = $rootFull + "\" }
-    $full = [System.IO.Path]::GetFullPath($Path)
+    $rootFull = ([System.IO.Path]::GetFullPath($Root)).Replace("\", "/").TrimEnd("/") + "/"
+    $full = ([System.IO.Path]::GetFullPath($Path)).Replace("\", "/")
     if ($full.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
         return ($full.Substring($rootFull.Length)).Replace("\", "/")
     }
@@ -134,6 +133,26 @@ function Get-HrmSnapshotManifestDigest {
     $text = ""
     if ($lines.Count -gt 0) { $text = (($lines -join "`n") + "`n") }
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $digest = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+    return (($digest | ForEach-Object { $_.ToString("x2") }) -join "")
+}
+
+function Get-HrmSnapshotBuildDigest {
+    # Content identity of the deployed code tree. release.json is excluded:
+    # it holds this digest, timestamps and presentation metadata (no recursion).
+    # Include every file in infra/backend/frontend, including license/trust files.
+    # Ordinal ordering, UTF-8, LF and invariant decimal lengths are canonical.
+    param([string]$Root)
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @(Get-HrmSnapshotManifest -Root $Root)) {
+        if ($entry.path -eq "release.json") { continue }
+        $size = ([long]$entry.size).ToString([System.Globalization.CultureInfo]::InvariantCulture)
+        $lines.Add(([string]$entry.path + "`t" + $size + "`t" + [string]$entry.sha256))
+    }
+    if ($lines.Count -eq 0) { throw "Code tree is empty; build identity is unavailable." }
+    $lines.Sort([System.StringComparer]::Ordinal)
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($lines -join "`n") + "`n")
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { $digest = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
     return (($digest | ForEach-Object { $_.ToString("x2") }) -join "")
@@ -276,30 +295,42 @@ function Write-HrmSnapshotDescriptor {
     return $descriptor
 }
 
+function ConvertTo-HrmSnapshotResultValue {
+    # Single-line key=value transport. No log/JSON field injection from paths
+    # or exception messages. These diagnostics stay private on the machine.
+    param($Value)
+    return ((Redact-HrmText ([string]$Value)) -replace "[\r\n\t]", " ")
+}
+
 function Write-HrmSnapshotResultFile {
-    # Машиночитаемый результат для мастера установки: строки key=value, только
-    # коды, хеши и статусы. Секретов и пользовательских данных здесь нет.
+    # Helper transport is key=value, not setup-snapshot.json. Inno copies the
+    # fields into its own JSON decision file using JSON escaping.
     param(
-        [string]$Path,
-        [string]$Status,
-        [string]$Reason,
-        [string]$ReleaseSha = "",
-        [int]$Files = 0,
-        [string]$Digest = ""
+        [string]$Path, [string]$Status, [string]$Reason,
+        [string]$ReleaseSha = "", [int]$Files = 0, [string]$Digest = "",
+        [string]$FileSha = "", [string]$NewReleaseSha = "", [string]$RecordSha = "",
+        [string]$RecordInstallDir = "", [string]$TargetInstallDir = "",
+        $RecordPilotCreated = $null, [string]$Message = "", [string]$GuardBranch = "",
+        [string]$NewBuildDigest = ""
     )
     if (-not $Path) { return }
-    $lines = @(
-        ("status=" + $Status),
-        ("reason=" + $Reason),
-        ("release_sha=" + $ReleaseSha),
-        ("files=" + $Files),
-        ("digest=" + $Digest),
-        ("written_at=" + (Get-Date).ToString("o"))
-    )
+    $pilot = "unknown"
+    if ($RecordPilotCreated -is [bool]) { $pilot = ([string]$RecordPilotCreated).ToLowerInvariant() }
+    $fields = [ordered]@{
+        status = $Status; reason = $Reason; release_sha = $ReleaseSha
+        files = $Files; digest = $Digest; written_at = (Get-Date).ToString("o")
+        file_sha = $FileSha; new_release_sha = $NewReleaseSha; record_sha = $RecordSha
+        record_install_dir = $RecordInstallDir; target_install_dir = $TargetInstallDir
+        record_pilot_created = $pilot; message = $Message; guard_branch = $GuardBranch
+        new_build_digest = $NewBuildDigest
+    }
+    $lines = @($fields.GetEnumerator() | ForEach-Object {
+        [string]$_.Key + "=" + (ConvertTo-HrmSnapshotResultValue $_.Value)
+    })
     try {
         $dir = Split-Path $Path -Parent
         if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        [System.IO.File]::WriteAllLines($Path, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllLines($Path, [string[]]$lines, (New-Object System.Text.UTF8Encoding($true)))
     }
     catch { }
 }
@@ -374,6 +405,7 @@ function New-HrmVerifiedSnapshotFromDir {
         [string]$ReleaseSha = "",
         [string]$Version = "",
         [string]$Origin = "engine",
+        [string]$ExpectedBuildDigest = "",
         [switch]$SkipLicenseKey
     )
     $target = Get-HrmPreviousSnapshotDir $StateDir
@@ -392,11 +424,27 @@ function New-HrmVerifiedSnapshotFromDir {
         # Тот же безопасный копировщик, что и при обновлении: он проверяет
         # границы путей и полноту снимка (infra, backend, frontend,
         # release.json) и бросает исключение вместо «половинчатой» копии.
+        $sourceSha = Get-HrmSnapshotReleaseSha -Directory $SourceDir
+        if ($ReleaseSha -and $sourceSha -and $sourceSha -ne $ReleaseSha) {
+            throw "Source release identity changed before copying."
+        }
+        $sourceManifest = @(Get-HrmSnapshotManifest -Root $SourceDir)
+        $sourceDigest = Get-HrmSnapshotManifestDigest -Manifest $sourceManifest
         Copy-HrmSnapshot -SourceDir $SourceDir -InstallDir $temp -SkipLicenseKey:$SkipLicenseKey
         Assert-HrmSnapshotComplete -Dir $temp -Label "Снимок прежней версии" -SkipLicenseKey:$SkipLicenseKey | Out-Null
         $manifest = @(Get-HrmSnapshotManifest -Root $temp)
         if ($manifest.Count -eq 0) { throw "Манифест снимка прежней версии пуст — снимок недостоверен." }
-        $check = Test-HrmSnapshotManifest -Root $temp -Manifest $manifest
+        if ((Get-HrmSnapshotReleaseSha -Directory $temp) -ne $sourceSha) {
+            throw "Release identity changed while copying."
+        }
+        if ($ExpectedBuildDigest -and (Get-HrmSnapshotBuildDigest -Root $temp) -ne $ExpectedBuildDigest) {
+            throw "Code content changed after the guard decision."
+        }
+        $check = Test-HrmSnapshotManifest -Root $temp -Manifest $sourceManifest
+        if ((Get-HrmSnapshotManifestDigest -Manifest $manifest) -ne $sourceDigest -or
+            (Get-HrmSnapshotManifestDigest -Manifest @(Get-HrmSnapshotManifest -Root $SourceDir)) -ne $sourceDigest) {
+            throw "Source or copied snapshot changed while copying; verification refused."
+        }
         if (-not $check.ok) {
             throw ("Копия снимка не совпала с манифестом: " + (($check.problems | Select-Object -First 3) -join "; "))
         }
@@ -435,7 +483,7 @@ function New-HrmVerifiedSnapshotFromDir {
     }
 }
 
-function Save-HrmVerifiedPreviousSnapshot {
+function Invoke-HrmPreviousSnapshotDecision {
     # Снимок УСТАНОВЛЕННОЙ версии ДО того, как мастер установки заменит файлы
     # {app}. Возвращает @{saved; verified; skipped; reason; message}:
     #   saved/verified = true — снимок готов (или уже был готов) и проверен;
@@ -451,21 +499,29 @@ function Save-HrmVerifiedPreviousSnapshot {
         # разложил файлы новой версии» даже когда запись установки не содержит
         # release_sha (старые установки): снимок из новых файлов вернул бы откат
         # к сбойному коду и объявил успех.
-        [string]$NewReleaseSha = ""
+        [string]$NewReleaseSha = "",
+        [string]$NewBuildDigest = "",
+        $Record = $null
     )
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     # Каталог состояния здесь НЕ создаём: на чистой машине его создаёт движок
     # (со строгими правами на каталог), а мастеру установки важно лишь одно —
     # есть ли что сохранять. Создание каталога «на будущее» ослабило бы права.
-    $record = $null
-    if (Test-Path $StateDir) { $record = Get-HrmInstallRecord $StateDir }
+    $record = $Record
     if ($null -eq $record) {
         # Свежая установка: прежней версии нет, останавливать мастера не за чем.
-        Write-HrmSnapshotResultFile -Path $ResultFile -Status "skipped" -Reason "first_install"
         return [pscustomobject]@{
             saved = $false; verified = $false; skipped = $true; reason = "first_install"
             message = "Установка ещё не выполнялась — сохранять нечего."
+        }
+    }
+    $recordDir = [string](Get-HrmSnapshotField -Metadata $record -Field "install_dir")
+    if ($recordDir -and -not (Test-HrmSamePath -Left $recordDir -Right $InstallDir)) {
+        return [pscustomobject]@{
+            saved = $false; verified = $false; skipped = $false; reason = "install_dir_mismatch"
+            guard_branch = "record_directory_mismatch"
+            message = ("Каталог записи ({0}) не совпадает с каталогом мастера ({1}). Выберите каталог из записи либо отдельный StateDir другой установки. Запись и файлы не изменены." -f $recordDir, $InstallDir)
         }
     }
     $installedSha = [string](Get-HrmSnapshotField -Metadata $record -Field "release_sha")
@@ -483,7 +539,6 @@ function Save-HrmVerifiedPreviousSnapshot {
         # нечего (прежней версии на диске уже нет). Это не отказ: установка
         # может продолжаться, а политика отката честно скажет, что прежняя
         # версия недоступна.
-        Write-HrmSnapshotResultFile -Path $ResultFile -Status "skipped" -Reason "no_previous_files"
         return [pscustomobject]@{
             saved = $false; verified = $false; skipped = $true; reason = "no_previous_files"
             message = "Файлов предыдущей версии в каталоге установки нет — сохранять нечего."
@@ -496,46 +551,109 @@ function Save-HrmVerifiedPreviousSnapshot {
     # безопасно продолжить восстановление.
     $existing = Resolve-HrmPreviousSnapshot -StateDir $StateDir -ReleaseSha $identity
     if ($existing.usable) {
-        $metadata = $existing.metadata
-        Write-HrmSnapshotResultFile -Path $ResultFile -Status "verified" -Reason "reused" -ReleaseSha $identity `
-            -Files ([int](Get-HrmSnapshotField -Metadata $metadata -Field "files")) `
-            -Digest ([string](Get-HrmSnapshotField -Metadata $metadata -Field "digest"))
         return [pscustomobject]@{
             saved = $false; verified = $true; skipped = $true; reason = "reused"
             message = "Проверенный снимок этой версии уже сохранён."
         }
     }
+    $retryIncomplete = $false
+    $sourceBuildDigest = ""
     if ($NewReleaseSha -and $fileSha -and ($fileSha -eq $NewReleaseSha)) {
-        # В {app} уже лежат файлы НОВОГО релиза, а валидного снимка прежней
-        # версии нет: это результат прерванной установки, и продолжать нельзя.
-        $message = "Файлы каталога установки уже заменены новой версией — снимок прежней версии невозможен."
-        Write-HrmSnapshotResultFile -Path $ResultFile -Status "failed" -Reason "files_replaced" -ReleaseSha $identity
-        return [pscustomobject]@{
-            saved = $false; verified = $false; skipped = $false; reason = "files_replaced"
-            message = $message
+        $differentBuild = $false
+        if ($NewBuildDigest) {
+            if ($NewBuildDigest -notmatch '^[0-9a-fA-F]{64}$') { throw "Invalid package build_digest." }
+            $actualDigest = Get-HrmSnapshotBuildDigest -Root $InstallDir
+            $sourceBuildDigest = $actualDigest
+            $declaredDigest = Get-HrmSnapshotReleaseField -Directory $InstallDir -Field "build_digest"
+            if ($declaredDigest -and $declaredDigest -ne $actualDigest) {
+                return [pscustomobject]@{
+                    saved = $false; verified = $false; skipped = $false; reason = "build_digest_mismatch"
+                    guard_branch = "installed_content_mismatch"
+                    message = "Файлы установки не соответствуют её build_digest. Нужна проверка исходной сборки/снимка; повтор Setup без исправления состояния не поможет."
+                }
+            }
+            $differentBuild = ($actualDigest -ne $NewBuildDigest)
+        }
+        # Explicit false only; a missing/string flag or a stale setup marker
+        # alone cannot authorize retry. Bind the record to THIS directory/SHA.
+        $pilot = Get-HrmSnapshotField -Metadata $record -Field "pilot_created"
+        $retryIncomplete = ($pilot -is [bool] -and -not $pilot -and $recordDir -and
+            $installedSha -and $installedSha -eq $fileSha)
+        # Legacy packages without digest retain the old refusal except for the
+        # narrowly bound unfinished-first-install recovery above.
+        if (-not ($installedSha -and $installedSha -eq $fileSha -and ($differentBuild -or $retryIncomplete))) {
+            return [pscustomobject]@{
+                saved = $false; verified = $false; skipped = $false; reason = "files_replaced"
+                guard_branch = "package_identity_present"
+                message = "В каталоге уже идентичность пакета, а проверенного прежнего снимка нет. Восстановите соответствующие записанной версии файлы/проверенный снимок либо проверьте выбор InstallDir/StateDir. Повтор Setup без изменения состояния не поможет."
+            }
         }
     }
     if ($fileSha -and $identity -and $fileSha -ne $identity) {
         # Файлы {app} уже заменены новой версией: снимок из них был бы НОВЫМ
         # кодом. Это отказ, а не «продолжаем молча»: откат должен быть возможен.
         $message = ("Файлы каталога установки уже не совпадают с установленной версией ({0} вместо {1}) — снимок прежней версии невозможен." -f $fileSha, $identity)
-        Write-HrmSnapshotResultFile -Path $ResultFile -Status "failed" -Reason "files_replaced" -ReleaseSha $identity
         return [pscustomobject]@{
             saved = $false; verified = $false; skipped = $false; reason = "files_replaced"
+            guard_branch = "record_identity_mismatch"
             message = $message
         }
     }
     # Снимок УСТАНОВЛЕННОЙ версии: у старой установки ключа лицензии в {app}
     # может не быть — снимок прежней версии не требует его (ключ восстановится
     # из нового релиза при обновлении).
-    $created = New-HrmVerifiedSnapshotFromDir -SourceDir $InstallDir -StateDir $StateDir -ReleaseSha $identity -Version $installedVersion -Origin "installer" -SkipLicenseKey
-    if ($created.verified) {
-        Write-HrmSnapshotResultFile -Path $ResultFile -Status "verified" -Reason "saved" -ReleaseSha $identity -Files $created.files -Digest $created.digest
-    }
-    else {
-        Write-HrmSnapshotResultFile -Path $ResultFile -Status "failed" -Reason $created.reason -ReleaseSha $identity
+    $created = New-HrmVerifiedSnapshotFromDir -SourceDir $InstallDir -StateDir $StateDir -ReleaseSha $identity -Version $installedVersion -Origin "installer" -ExpectedBuildDigest $sourceBuildDigest -SkipLicenseKey
+    if ($created.verified -and $retryIncomplete) {
+        $created.reason = "incomplete_retry"
+        $created.message = "Незавершённая установка: текущие файлы сохранены и проверены для отката. Это не подтверждение готовности приложения."
     }
     return $created
+}
+
+function Save-HrmVerifiedPreviousSnapshot {
+    param([string]$InstallDir = "", [string]$StateDir = "", [string]$ResultFile = "",
+        [string]$NewReleaseSha = "", [string]$NewBuildDigest = "")
+    if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
+    if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $record = $null
+    if (Test-Path $StateDir) { $record = Get-HrmInstallRecord $StateDir }
+    $fileSha = Get-HrmSnapshotReleaseSha -Directory $InstallDir
+    $recordSha = [string](Get-HrmSnapshotField -Metadata $record -Field "release_sha")
+    $identity = $recordSha
+    if (-not $identity) { $identity = $fileSha }
+    $context = @{
+        FileSha = $fileSha; NewReleaseSha = $NewReleaseSha; RecordSha = $recordSha
+        RecordInstallDir = [string](Get-HrmSnapshotField -Metadata $record -Field "install_dir")
+        TargetInstallDir = $InstallDir
+        RecordPilotCreated = (Get-HrmSnapshotField -Metadata $record -Field "pilot_created")
+        NewBuildDigest = $NewBuildDigest
+    }
+    try {
+        $result = Invoke-HrmPreviousSnapshotDecision -InstallDir $InstallDir -StateDir $StateDir `
+            -NewReleaseSha $NewReleaseSha -NewBuildDigest $NewBuildDigest -Record $record
+    }
+    catch {
+        $result = [pscustomobject]@{
+            saved = $false; verified = $false; skipped = $false; reason = "helper_error"
+            message = (Redact-HrmText $_.Exception.Message)
+        }
+    }
+    $status = "failed"
+    if ($result.verified) { $status = "verified" } elseif ($result.skipped) { $status = "skipped" }
+    $reason = $result.reason
+    if ($result.verified -and -not $reason) { $reason = "saved" }
+    $files = 0
+    $digest = ""
+    if ($result.reason -eq "reused") {
+        $meta = Get-HrmPreviousSnapshotMetadata -StateDir $StateDir
+        $files = [int](Get-HrmSnapshotField -Metadata $meta -Field "files")
+        $digest = [string](Get-HrmSnapshotField -Metadata $meta -Field "digest")
+    }
+    elseif ($result.PSObject.Properties["files"]) { $files = $result.files; $digest = $result.digest }
+    $branch = [string](Get-HrmSnapshotField -Metadata $result -Field "guard_branch")
+    Write-HrmSnapshotResultFile -Path $ResultFile -Status $status -Reason $reason -ReleaseSha $identity `
+        -Files $files -Digest $digest -Message $result.message -GuardBranch $branch @context
+    return $result
 }
 
 function Invoke-HrmSnapshotCli {
@@ -555,25 +673,27 @@ function Invoke-HrmSnapshotCli {
     )
     if (-not $InstallDir) { $InstallDir = Get-HrmDefaultInstallDir }
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
+    $newBuildDigest = Get-HrmSnapshotReleaseField -Directory $PackageReleaseDir -Field "build_digest"
     $newReleaseSha = ""
     if ($PackageReleaseDir) { $newReleaseSha = Get-HrmSnapshotReleaseSha -Directory $PackageReleaseDir }
     try {
         $result = Save-HrmVerifiedPreviousSnapshot -InstallDir $InstallDir -StateDir $StateDir `
-            -ResultFile $ResultFile -NewReleaseSha $newReleaseSha
+            -ResultFile $ResultFile -NewReleaseSha $newReleaseSha -NewBuildDigest $newBuildDigest
     }
     catch {
         $message = Redact-HrmText $_.Exception.Message
-        Write-HrmSnapshotResultFile -Path $ResultFile -Status "failed" -Reason "helper_error"
+        Write-HrmSnapshotResultFile -Path $ResultFile -Status "failed" -Reason "helper_error" -Message $message -TargetInstallDir $InstallDir -NewReleaseSha $newReleaseSha
         Write-Host ("Снимок предыдущей версии не подготовлен: " + $message)
         return 1
     }
     if ($result.verified -or $result.skipped) {
         # Сводка — только в консоль, не в выходной поток: иначе значение
         # функции стало бы массивом и код возврата потерялся бы.
-        Write-Host ("Снимок предыдущей версии: " + (Format-HrmSnapshotReason -Reason $result.reason))
+        Write-Host ("Снимок предыдущей версии: " + (Redact-HrmText ([string]$result.message)))
         return 0
     }
-    Write-Host ("Не удалось подготовить откат к предыдущей версии: " + (Format-HrmSnapshotReason -Reason $result.reason))
+    Write-Host ("Не удалось подготовить откат к предыдущей версии: " + (Redact-HrmText ([string]$result.message)))
+    if ($result.reason -eq "helper_error") { return 1 }
     return 3
 }
 
@@ -585,6 +705,9 @@ function Format-HrmSnapshotReason {
     param([string]$Reason = "")
     switch ($Reason) {
         "first_install" { return "Прежней версии нет — это первая установка." }
+        "incomplete_retry" { return "Проверенный снимок незавершённой установки сохранён; готовность приложения ещё не подтверждена." }
+        "install_dir_mismatch" { return "Каталог мастера не совпадает с каталогом записи установки." }
+        "build_digest_mismatch" { return "Содержимое установки не соответствует её build_digest." }
         "reused" { return "Снимок предыдущей версии уже сохранён." }
         "saved" { return "Снимок предыдущей версии сохранён и проверен." }
         "files_replaced" { return "Файлы программы уже заменены новой версией — вернуть прежнюю автоматически нельзя." }

@@ -67,6 +67,7 @@ def _construct_reset(loader: yaml.Loader, node: yaml.Node) -> Any:
 
 
 _ComposeLoader.add_constructor("!reset", _construct_reset)
+_ComposeLoader.add_constructor("!override", _construct_reset)
 
 _INTERP = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::\?([^}]*)|:-([^}]*))?\}")
 
