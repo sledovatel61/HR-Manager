@@ -178,12 +178,10 @@ jobs:
           Write-Host "Building Setup.exe version $version with HRM_RELEASE_SHA=$env:HRM_RELEASE_SHA"
           # Pilot uses public key from file or env; no trust store (channel trust store not needed for pilot).
           # Docker Desktop remains a separate optional sidecar, verified against the explicit dispatch pin.
-          $buildArgs = @("-Version", $version)
+          $buildArgs = @{ Version = $version }
           if ($env:HRM_DOCKER_DESKTOP_INSTALLER_SHA256) {
-            $buildArgs += @(
-              "-DockerDesktopInstallerPath", (Join-Path $PWD "installer/DockerDesktopInstaller.exe"),
-              "-DockerDesktopInstallerSha256", $env:HRM_DOCKER_DESKTOP_INSTALLER_SHA256
-            )
+            $buildArgs.DockerDesktopInstallerPath = Join-Path $PWD "installer/DockerDesktopInstaller.exe"
+            $buildArgs.DockerDesktopInstallerSha256 = $env:HRM_DOCKER_DESKTOP_INSTALLER_SHA256
           }
           & ./installer/build.ps1 @buildArgs
           if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed" }
