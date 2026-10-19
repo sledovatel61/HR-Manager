@@ -25,10 +25,11 @@ def check(install_dir: Path) -> dict[str, Any]:
     base = install_dir / "infra/docker-compose.yml"
     pilot = install_dir / "infra/compose.pilot.yml"
     text = pilot.read_text(encoding="utf-8-sig")
-    # Negative control: reproduce precisely the pre-fix frontend port merge.
+    # Negative control: both frontend and backend must inherit dev publications
+    # without !override; the positive cases must replace both sequences.
     before = text.replace("ports: !override", "ports:")
     if before == text:
-        raise RuntimeError("frontend !override is missing")
+        raise RuntimeError("pilot !override is missing")
     env = {
         key: value
         for key, value in os.environ.items()
@@ -47,6 +48,8 @@ def check(install_dir: Path) -> dict[str, Any]:
         ).decode()
         values["HRM_BACKUP_KEY"] = base64.b64encode(secrets.token_bytes(32)).decode()
         values["HRM_STAGING_DIR"] = directory.as_posix()
+        values["HRM_PILOT_CLAIM_PORT"] = "18001"
+        values["HRM_PILOT_TRUST_PORT"] = "18002"
         for name, overlay, host, port in (
             ("before_plain_ports", previous, "127.0.0.1", 8081),
             ("after_default", pilot, "127.0.0.1", 8080),
@@ -85,28 +88,61 @@ def check(install_dir: Path) -> dict[str, Any]:
                 # CLI stderr can echo interpolated values; never publish it.
                 raise RuntimeError(f"{name}: compose config exited {result.returncode}")
             services = json.loads(result.stdout)["services"]
-            ports = services["frontend"].get("ports", [])
-            expected = [{"host_ip": host, "published": str(port), "target": 8080}]
+            expected = {
+                "frontend": [
+                    {
+                        "host_ip": host,
+                        "published": values["HRM_PILOT_PORT"],
+                        "target": 8080,
+                    },
+                    {
+                        "host_ip": "127.0.0.1",
+                        "published": values["HRM_PILOT_TRUST_PORT"],
+                        "target": 8081,
+                    },
+                ],
+                "backend": [
+                    {
+                        "host_ip": "127.0.0.1",
+                        "published": values["HRM_PILOT_CLAIM_PORT"],
+                        "target": 8000,
+                    },
+                ],
+            }
             if name == "before_plain_ports":
-                expected.insert(
+                expected["frontend"].insert(
                     0, {"host_ip": "127.0.0.1", "published": "8080", "target": 8080}
                 )
-            actual = [
-                {
-                    "host_ip": item.get("host_ip"),
-                    "published": str(item.get("published")),
-                    "target": item.get("target"),
-                }
-                for item in ports
-            ]
-            # Ordering is not part of the Compose port contract.
-            sort_key = lambda item: (item["host_ip"], item["published"])
-            if sorted(actual, key=sort_key) != sorted(expected, key=sort_key):
-                raise RuntimeError(f"{name}: unexpected frontend port publications")
-            for service in ("db", "backend", "worker", "backup"):
+                expected["backend"].insert(
+                    0, {"host_ip": "127.0.0.1", "published": "8000", "target": 8000}
+                )
+            publications = {}
+            for service in ("frontend", "backend"):
+                actual = [
+                    {
+                        "host_ip": item.get("host_ip"),
+                        "published": str(item.get("published")),
+                        "target": item.get("target"),
+                    }
+                    for item in services[service].get("ports", [])
+                ]
+                # Ordering is not part of the Compose port contract.
+                sort_key = lambda item: (
+                    item["host_ip"],
+                    item["published"],
+                    item["target"],
+                )
+                if sorted(actual, key=sort_key) != sorted(
+                    expected[service], key=sort_key
+                ):
+                    raise RuntimeError(
+                        f"{name}: unexpected {service} port publications"
+                    )
+                publications[f"{service}_ports"] = actual
+            for service in ("db", "worker", "backup"):
                 if services[service].get("ports"):
                     raise RuntimeError(f"{name}: {service} inherited dev ports")
-            cases.append({"name": name, "frontend_ports": actual, "ok": True})
+            cases.append({"name": name, **publications, "ok": True})
     return {
         "scope": "compose config only; no containers or volumes modified",
         "files": {
