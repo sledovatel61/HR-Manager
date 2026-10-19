@@ -50,6 +50,26 @@ PASSWORD = "Str0ng-Pilot-Pass-2026"
 SQLITE_URL = "sqlite+pysqlite://"
 
 
+@pytest.mark.parametrize("source", ["10.0.0.5", "192.168.1.50", "192.168.65.1", "172.18.0.1"])
+def test_browser_setup_rejects_network_source(source: str, pilot_settings: Settings) -> None:
+    """The public proxy's source marker must not grant loopback privileges."""
+    from starlette.requests import Request
+
+    from app.setup_owner import loopback_client_ok
+
+    request = Request(
+        {
+            "type": "http",
+            "client": ("172.18.0.2", 43210),
+            "headers": [
+                (b"x-real-ip", source.encode("ascii")),
+                (b"x-forwarded-for", b"127.0.0.1"),
+            ],
+        }
+    )
+    assert not loopback_client_ok(request, pilot_settings)
+
+
 @pytest.fixture()
 def pilot_settings() -> Settings:
     return Settings.model_validate(

@@ -2,8 +2,8 @@
 #
 # ONE stable Compose project — `hr-manager-pilot` — runs PostgreSQL, backend,
 # frontend, worker and backup in Linux containers on Docker Desktop/WSL2.
-# ONLY the frontend is published, bound to 127.0.0.1; the database, backend
-# and worker are unreachable from the local network.
+# Frontend and the installer's direct backend port are published on loopback;
+# the backend publication NEVER follows the frontend's optional LAN binding.
 #
 # The pilot serves plain http on loopback, so the session/CSRF cookies are
 # explicitly non-Secure (SESSION_COOKIE_SECURE=false) and the backend runs
@@ -114,7 +114,9 @@ services:
       SMTP_ENCRYPTION: "starttls"
       SMTP_USERNAME: ""
       SMTP_PASSWORD: ""
-    ports: !reset []
+    # Bypass nginx only for the local installer, never expose on the LAN.
+    ports: !override
+      - "127.0.0.1:${HRM_PILOT_CLAIM_PORT:-18001}:8000"
     volumes:
       - pilot_backups:/var/backups/hr-manager:ro
       # Verified update packages land here (server download -> host dir via
@@ -141,6 +143,8 @@ services:
     # !reset is NOT a substitute: it discards the supplied publication too.
     ports: !override
       - "${HRM_PILOT_BIND:-127.0.0.1}:${HRM_PILOT_PORT:-8080}:8080"
+      # Trusted browser origin: never follow optional LAN access.
+      - "127.0.0.1:${HRM_PILOT_TRUST_PORT:-18002}:8081"
 
   # Local SMTP sink is development-only: excluded from the pilot by the
   # profile (a service with a profile is not started by a plain `up`).

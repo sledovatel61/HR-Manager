@@ -290,6 +290,12 @@ function Write-HrmPilotEnv {
         $recordPort = [int](Get-HrmInstallRecordField -Record $state -Field "port" -Default 0)
         if ($recordPort -gt 0) { $port = $recordPort }
     }
+    $claimPort = Get-HrmClaimPort $StateDir
+    $trustPort = Get-HrmTrustPort $StateDir
+    if ($trustPort -eq $port -or $trustPort -eq $claimPort) { throw "HRM_PILOT_TRUST_PORT должен отличаться от портов приложения и claim." }
+    if ($claimPort -eq $port) { throw "Порт первого запуска совпадает с портом приложения. Укажите другой HRM_PILOT_CLAIM_PORT." }
+    Set-HrmInstallRecord $StateDir @{ claim_port = $claimPort }
+    Set-HrmInstallRecord $StateDir @{ trust_port = $trustPort }
     $engineToken = Get-HrmSecret $StateDir "HRM_UPDATE_ENGINE_TOKEN"
     # Конфигурация канала обновлений (Phase 13) — серверная/host-конфигурация
     # из channel.json; staging-каталог host отделён от каталога секретов.
@@ -327,6 +333,8 @@ function Write-HrmPilotEnv {
         ("HRM_BACKUP_KEY_ID={0}" -f $secrets["HRM_BACKUP_KEY_ID"]),
         ("HRM_RELEASE_SHA={0}" -f $ReleaseSha),
         ("HRM_PILOT_PORT={0}" -f $port),
+        ("HRM_PILOT_CLAIM_PORT={0}" -f $claimPort),
+        ("HRM_PILOT_TRUST_PORT={0}" -f $trustPort),
         ("HRM_PILOT_BIND={0}" -f $pilotBind),
         ("HRM_UPDATE_ENGINE_TOKEN={0}" -f $engineToken),
         ("HRM_STAGING_DIR={0}" -f (Get-HrmStagingHostDir)),

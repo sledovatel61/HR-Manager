@@ -637,7 +637,26 @@ function Set-HrmJsonFile {
 function Get-HrmJsonFile {
     param([string]$Path)
     if (-not (Test-Path $Path)) { return $null }
-    return (Get-Content -Path $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+    $data = Get-Content -Path $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    # pwsh converts ISO JSON dates into DateTime, unlike Windows PS 5.1.
+    # Restore ISO strings before consumers cast them using the host culture.
+    return (ConvertTo-HrmJsonDateStrings $data)
+}
+
+function ConvertTo-HrmJsonDateStrings {
+    param($Value)
+    if ($Value -is [datetime]) { return $Value.ToString("o", [Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [array]) {
+        $items = @()
+        foreach ($item in $Value) { $items += ,(ConvertTo-HrmJsonDateStrings $item) }
+        return ,$items
+    }
+    if ($Value -is [pscustomobject]) {
+        foreach ($property in @($Value.PSObject.Properties)) {
+            $property.Value = ConvertTo-HrmJsonDateStrings $property.Value
+        }
+    }
+    return $Value
 }
 
 # --- Мелкие утилиты -----------------------------------------------------------
@@ -690,6 +709,33 @@ function Get-HrmPort {
     $envPort = 0
     if ([int]::TryParse([string]$env:HRM_PILOT_PORT, [ref]$envPort) -and $envPort -gt 0) { return $envPort }
     return 8080
+}
+
+function Get-HrmClaimPort {
+    # Persist the selected port so repair/update cannot silently change it.
+    param([string]$StateDir)
+    $record = Get-HrmInstallRecord $StateDir
+    $value = [string](Get-HrmInstallRecordField -Record $record -Field "claim_port" -Default "")
+    if (-not $value) { $value = [string]$env:HRM_PILOT_CLAIM_PORT }
+    if (-not $value) { $value = "18001" }
+    $port = 0
+    if (-not [int]::TryParse($value, [ref]$port) -or $port -lt 1024 -or $port -gt 65535) {
+        throw "HRM_PILOT_CLAIM_PORT должен быть целым числом от 1024 до 65535."
+    }
+    return $port
+}
+
+function Get-HrmTrustPort {
+    param([string]$StateDir)
+    $record = Get-HrmInstallRecord $StateDir
+    $value = [string](Get-HrmInstallRecordField -Record $record -Field "trust_port" -Default "")
+    if (-not $value) { $value = [string]$env:HRM_PILOT_TRUST_PORT }
+    if (-not $value) { $value = "18002" }
+    $port = 0
+    if (-not [int]::TryParse($value, [ref]$port) -or $port -lt 1024 -or $port -gt 65535) {
+        throw "HRM_PILOT_TRUST_PORT должен быть целым числом от 1024 до 65535."
+    }
+    return $port
 }
 
 function Get-HrmBaseUrl {

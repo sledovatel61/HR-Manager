@@ -682,7 +682,7 @@ function New-HrmMockWorld {
             }
             return @{ StatusCode = $global:HRM_MockWorld.BackendStatus; Body = $healthBody }
         }
-        if ($Uri -like "*/api/setup/owner/claim") {
+        if ($Uri -like "*/setup/owner/claim") {
             $global:HRM_MockWorld.ClaimCount++
             if ($global:HRM_MockWorld.ClaimResponses.Count -gt 0) {
                 $response = $global:HRM_MockWorld.ClaimResponses[0]

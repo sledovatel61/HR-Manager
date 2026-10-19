@@ -37,7 +37,12 @@ function Invoke-HrmFirstRunClaim {
     # Возвращает @{ Ticket = ... } или @{ AlreadyCreated = $true }.
     param([string]$StateDir, [string]$BaseUrl, [string]$Surname, [string]$WorkingMode, [string]$Timezone)
     $token = Get-HrmSecret $StateDir "HRM_EXCHANGE_TOKEN"
-    if ([string]::IsNullOrEmpty($token)) { return @{ AlreadyCreated = $true } }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw "Токен первого запуска отсутствует. Наличие владельца не подтверждено; проверьте каталог состояния установки."
+    }
+    if ($token.StartsWith("retired-", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Токен первого запуска погашен, но создание владельца не подтверждено. Проверьте состояние установки."
+    }
     $body = @{
         exchange_token = $token
         surname = $Surname
@@ -52,7 +57,8 @@ function Invoke-HrmFirstRunClaim {
     # Несколько попыток: бэкенд регистрирует хеш токена при старте; между
     # `up` и готовностью claim может вернуть 403.
     for ($attempt = 1; $attempt -le 12; $attempt++) {
-        $response = Invoke-HrmHttp -Uri "$BaseUrl/api/setup/owner/claim" -Method "POST" -Body $body -Headers $headers
+        $claimPort = Get-HrmClaimPort $StateDir
+        $response = Invoke-HrmHttp -Uri "http://127.0.0.1:$claimPort/setup/owner/claim" -Method "POST" -Body $body -Headers $headers
         $lastStatus = $response.StatusCode
         if ($response.StatusCode -eq 201 -and $null -ne $response.Body -and $response.Body.ticket) {
             return @{ Ticket = [string]$response.Body.ticket }
@@ -78,10 +84,9 @@ function Invoke-HrmFirstRunClaim {
             throw ("Первичная настройка не завершена (HTTP 422; поля: {0}). Приложение запущено, данные сохранены. Исправьте данные мастера и повторите первый запуск; переустановка с удалением данных не требуется." -f $hint)
         }
         if ($response.StatusCode -eq 404) {
-            # Обмен отключён (нет токена в конфигурации бэкенда): повторим
-            # после перезапуска, если бэкенд ещё не перечитал env.
-            Start-Sleep -Seconds $interval
-            continue
+            # 404 also hides requests rejected by the loopback guard. Retrying
+            # the same request cannot fix either configuration or proxy routing.
+            throw "Первоначальная настройка недоступна (HTTP 404). Проверьте наличие токена обмена в запущенном backend и loopback-маршрут через nginx. Повторная попытка без исправления конфигурации не поможет."
         }
         Start-Sleep -Seconds $interval
     }
@@ -112,9 +117,23 @@ function Start-HrmFirstRun {
     # Older installers generated 16 random bytes / 32 hex characters, rejected
     # by SetupOwnerClaimRequest (minimum 43). Repair only that exact legacy
     # format, only while setup is pending; never rotate database/backup keys.
-    $legacyToken = Get-HrmSecret $StateDir "HRM_EXCHANGE_TOKEN"
-    if ($legacyToken -match '^[0-9a-fA-F]{32}$') {
-        $repairedToken = Set-HrmSecret $StateDir "HRM_EXCHANGE_TOKEN" (New-HrmHex 32)
+    # Read without generation: Get-HrmSecret creates missing values, hiding
+    # whether pilot.env and the running backend must be synchronized.
+    $secretMap = Get-HrmSecretsMap $StateDir
+    $legacyToken = [string]$secretMap["HRM_EXCHANGE_TOKEN"]
+    $syncToken = $false
+    if ([string]::IsNullOrEmpty($legacyToken)) {
+        $null = Get-HrmSecret $StateDir "HRM_EXCHANGE_TOKEN"
+        $syncToken = $true
+    }
+    elseif ($legacyToken -match '^[0-9a-fA-F]{32}$') {
+        $null = Set-HrmSecret $StateDir "HRM_EXCHANGE_TOKEN" (New-HrmHex 32)
+        $syncToken = $true
+    }
+    elseif ($legacyToken -notmatch '^[0-9a-fA-F]{64}$') {
+        throw "Некорректное или погашенное состояние токена первого запуска. Наличие владельца не подтверждено; проверьте состояние установки."
+    }
+    if ($syncToken) {
         $null = Write-HrmPilotEnv $StateDir (Get-HrmReleaseSha $InstallDir $StateDir) $Port
         Invoke-HrmCompose $InstallDir $StateDir @("up", "-d") | Out-Null
         Wait-HrmReady -BaseUrl $baseUrl
@@ -137,7 +156,8 @@ function Start-HrmFirstRun {
         Write-HrmLog "info" "Владелец уже существует; первый запуск пропущен."
         return
     }
-    $setupUrl = "$baseUrl/#setup=$($result.Ticket)"
+    $trustPort = Get-HrmTrustPort $StateDir
+    $setupUrl = "http://127.0.0.1:$trustPort/#setup=$($result.Ticket)"
     Write-HrmLog "info" "Тикет первого запуска получен; открываю защищённую страницу настройки."
     Invoke-HrmOpenBrowser $setupUrl -StateDir $StateDir
     Set-HrmInstallRecord $StateDir @{ first_run_started_at = (Get-Date).ToString("o") }
