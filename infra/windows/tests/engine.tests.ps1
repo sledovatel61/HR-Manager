@@ -53,6 +53,40 @@ function Assert-HrmNoSecretInArgs {
 
 Write-Host "== Секреты =="
 
+Test-Case "installer browser flags open automatically in noninteractive mode" {
+    Initialize-HrmTestEngine
+    New-HrmMockWorld | Out-Null
+    $common = Get-Module Common
+    & $common {
+        $oldFlag = $global:HrmOpenBrowser
+        $oldEnv = $env:HRM_OPEN_BROWSER
+        $script:BrowserCalls = 0
+        function script:Start-Process { param([string]$FilePath) $script:BrowserCalls++ }
+        try {
+            $state = Get-HrmStateDir
+            New-Item -ItemType Directory -Path $state -Force | Out-Null
+            foreach ($case in @(
+                @{ Flag = $false; Env = ""; Expected = 0 },
+                @{ Flag = $true; Env = ""; Expected = 1 },
+                @{ Flag = $false; Env = "1"; Expected = 1 }
+            )) {
+                $global:HrmOpenBrowser = $case.Flag
+                $env:HRM_OPEN_BROWSER = $case.Env
+                $script:BrowserCalls = 0
+                Invoke-HrmOpenBrowser -Url "http://127.0.0.1:8081/setup?token=test-only" -StateDir $state
+                if ($script:BrowserCalls -ne $case.Expected) { throw "Browser launch count does not match explicit installer flag" }
+                if (-not (Test-Path (Get-HrmSetupUrlFile $state))) { throw "Protected fallback URL file missing" }
+            }
+        }
+        finally {
+            Remove-Item Function:script:Start-Process
+            Remove-Variable BrowserCalls -Scope Script
+            $global:HrmOpenBrowser = $oldFlag
+            $env:HRM_OPEN_BROWSER = $oldEnv
+        }
+    }
+}
+
 Test-Case "ACL использует наследуемые права только для каталога, а прямые — для файла" {
     Initialize-HrmTestEngine
     $world = New-HrmMockWorld

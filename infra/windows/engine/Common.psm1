@@ -572,7 +572,7 @@ function Invoke-HrmConfirmationPrompt {
 
 function Invoke-HrmOpenBrowser {
     param([string]$Url, [string]$StateDir = "")
-    $open = (Test-HrmInteractive -or $global:HrmOpenBrowser -or $env:HRM_OPEN_BROWSER -eq "1")
+    $open = ((Test-HrmInteractive) -or $global:HrmOpenBrowser -or $env:HRM_OPEN_BROWSER -eq "1")
     if (-not (Test-HrmInteractive)) {
         # Неинтерактивно: одноразовая ссылка — всегда в защищённый файл.
         $stateDir = if ($StateDir) { $StateDir } else { Get-HrmStateDir }
