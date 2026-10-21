@@ -95,10 +95,19 @@ function Get-HrmSmokeStateDump {
         } catch { $parts += ($name + ": нечитаем") }
     }
     $artifacts = @()
-    foreach ($name in @("secrets.json", "license_public_key.b64", "pilot.env", "installed.json", "update.lock", "update-journal.json", "setup-run.json.tmp", "supervisor.json.tmp")) {
+    foreach ($name in @("secrets.json", "license_public_key.b64", "pilot.env", "installed.json", "update.lock", "update-journal.json")) {
         $present = if (Test-Path -LiteralPath (Join-Path $StateDir $name)) { "есть" } else { "нет" }
         $artifacts += ($name + "=" + $present)
     }
+    # Временные файлы состояния: имя уникально для процесса (Set-HrmJsonFile),
+    # поэтому перечисляем по маске *.tmp, а не по двум прежним точным именам.
+    $leftovers = @()
+    foreach ($candidate in @("setup-run.json", "supervisor.json", "update-result.json")) {
+        foreach ($hit in (Get-ChildItem -LiteralPath $StateDir -Filter "$candidate.*.tmp" -File -ErrorAction SilentlyContinue)) {
+            $leftovers += $hit.Name
+        }
+    }
+    $artifacts += ("tmp=" + $(if ($leftovers.Count -gt 0) { $leftovers -join "," } else { "нет" }))
     $parts += ("артефакты: " + ($artifacts -join ", "))
     if ($parts.Count -eq 0) { return "нет файлов состояния" }
     return ($parts -join " | ")

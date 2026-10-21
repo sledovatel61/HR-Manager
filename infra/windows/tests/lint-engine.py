@@ -548,6 +548,17 @@ def main() -> int:
         if re.search(r'"volume",\s*"prune"', code) or "volume prune" in code:
             fail(f"{path}: volume prune запрещён (удаление данных)")
 
+    # Временный файл записи состояния обязан быть уникальным для процесса.
+    # Общее "$target.tmp" гоняли трей и движок: мастер поднимает трей с nowait,
+    # и Set-HrmSupervisorState выполнялся одновременно с обеих сторон. Один писал
+    # .tmp, второй переносил его на место, и Move-Item первого падал с «Объект по
+    # указанному пути ... .tmp не существует» — движок умирал с fatal, установка
+    # отдавала код 10 при живом приложении.
+    common_engine = (ROOT / "infra" / "windows" / "engine" / "Common.psm1").read_text(encoding="utf-8")
+    if '$tmp = "$target.tmp"' in common_engine:
+        fail("Common.psm1: Set-HrmJsonFile пишет через общее имя $target.tmp - "
+             "гонка трея и движка за файлом состояния (fatal, код 10)")
+
     # Inno: optional, external sidecar; no task/CLI install action; dynamic Finish + custom exit.
     iss = (ROOT / "installer" / "installer.iss").read_text(encoding="utf-8")
     for required in ("hrm-tray.ps1", 'Source: "{src}\\DockerDesktopInstaller.exe"',

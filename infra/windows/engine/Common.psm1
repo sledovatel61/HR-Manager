@@ -628,7 +628,16 @@ function Set-HrmJsonFile {
     $dir = Join-Path $StateDir (Split-Path $RelativeName -Parent)
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $target = Join-Path $StateDir $RelativeName
-    $tmp = "$target.tmp"
+    # Имя временного файла уникально для процесса. Общее "$target.tmp" гоняли
+    # два процесса: мастер установки поднимает значок в трее с флагом nowait, и
+    # трей в своей стартовой ветке вызывает Set-HrmSupervisorState одновременно
+    # с движком. Один пишет .tmp, второй пишет тот же .tmp и переносит его на
+    # место, после чего Move-Item первого падает с «Объект по указанному пути
+    # ... .tmp не существует» — движок умирал с fatal на supervisor.json и
+    # установка отдавала код 10. Живой прогон: трей стартовал 15:50:47, fatal
+    # в 15:50:49. Такой же приём с уникальным именем уже применён в
+    # Snapshot.psm1 (previous-snapshot.tmp-<guid>).
+    $tmp = "$target.$PID.tmp"
     $Value | ConvertTo-Json -Depth 10 | Set-Content -Path $tmp -Encoding UTF8
     Move-Item -Path $tmp -Destination $target -Force
     Protect-HrmFile $StateDir $target
