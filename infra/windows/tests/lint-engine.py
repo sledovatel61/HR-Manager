@@ -555,6 +555,10 @@ def main() -> int:
     # указанному пути ... .tmp не существует» — движок умирал с fatal, установка
     # отдавала код 10 при живом приложении.
     common_engine = (ROOT / "infra" / "windows" / "engine" / "Common.psm1").read_text(encoding="utf-8")
+    if '$params["Body"] = ($Body | ConvertTo-Json' in common_engine:
+        fail("Common.psm1: тело HTTP отдаётся строкой в -Body; PowerShell 5.1 "
+             "кодирует её системной кодировкой, а сервер читает UTF-8 - "
+             "кириллица приезжает символом замены и validate_surname отвечает 422")
     if '$tmp = "$target.tmp"' in common_engine:
         fail("Common.psm1: Set-HrmJsonFile пишет через общее имя $target.tmp - "
              "гонка трея и движка за файлом состояния (fatal, код 10)")

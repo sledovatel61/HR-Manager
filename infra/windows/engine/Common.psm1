@@ -528,8 +528,16 @@ function Invoke-HrmHttp {
     }
     $params = @{ Uri = $Uri; Method = $Method; UseBasicParsing = $true; TimeoutSec = 10 }
     if ($null -ne $Body) {
-        $params["ContentType"] = "application/json"
-        $params["Body"] = ($Body | ConvertTo-Json -Compress -Depth 8)
+        # Тело отдаём явными байтами UTF-8 и объявляем charset. Строку в -Body
+        # PowerShell 5.1 кодирует системной кодировкой по умолчанию, а не UTF-8,
+        # и сервер читает тело как UTF-8. Кириллица в фамилии приезжала байтами,
+        # невалидными для UTF-8, Starlette подставлял U+FFFD, и validate_surname
+        # отвечал 422 «Фамилия может содержать только буквы, пробелы, дефис или
+        # апостроф» — сервер получал не букву, а символ замены. Сама проверка
+        # юникодная (char.isalpha()), кириллицу она пропускает.
+        $params["ContentType"] = "application/json; charset=utf-8"
+        $json = ($Body | ConvertTo-Json -Compress -Depth 8)
+        $params["Body"] = [System.Text.Encoding]::UTF8.GetBytes($json)
     }
     if ($Headers.Count -gt 0) { $params["Headers"] = $Headers }
     try {
