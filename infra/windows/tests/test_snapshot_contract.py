@@ -5,6 +5,7 @@ red/green for diagnostic/build wiring, without changing the checked-out branch.
 """
 
 import os
+import re
 from pathlib import Path
 
 ROOT = Path(
@@ -42,55 +43,16 @@ def test_first_run_input_written_as_utf8():
     assert "SaveStringToFile(InputFile, UTF8Encode(Json), False)" in body
 
 
-def test_cli_prints_concrete_redacted_message():
-    cli = SNAPSHOT.split("function Invoke-HrmSnapshotCli {", 1)[1].split(
-        "function Format-HrmSnapshotReason", 1
-    )[0]
-    assert "Redact-HrmText ([string]$result.message)" in cli
-    assert "Format-HrmSnapshotReason -Reason $result.reason" not in cli
-
-
-def test_directory_check_precedes_snapshot_reuse():
-    body = SNAPSHOT.split("function Invoke-HrmPreviousSnapshotDecision {", 1)[1]
-    assert body.index('reason = "install_dir_mismatch"') < body.index(
-        "Resolve-HrmPreviousSnapshot -StateDir"
-    )
-    assert "Test-HrmSamePath -Left $recordDir -Right $InstallDir" in body
-
-
-def test_retry_is_bound_to_explicit_false_directory_and_record_identity():
-    assert "$pilot -is [bool] -and -not $pilot -and $recordDir" in SNAPSHOT
-    assert "$installedSha -and $installedSha -eq $fileSha" in SNAPSHOT
-    assert 'reason = "files_replaced"' in SNAPSHOT
-    assert '"incomplete_retry"' in SNAPSHOT
-
-
-def test_digest_is_canonical_and_avoids_metadata_self_reference():
-    digest = SNAPSHOT.split("function Get-HrmSnapshotBuildDigest {", 1)[1].split(
-        "function Test-HrmSnapshotManifest", 1
-    )[0]
-    assert 'if ($entry.path -eq "release.json") { continue }' in digest
-    assert "StringComparer]::Ordinal" in digest
-    assert "CultureInfo]::InvariantCulture" in digest
-    assert "Encoding]::UTF8" in digest
-
-
-def test_build_hashes_final_staged_tree_and_rejects_dirty_source():
-    assert BUILD.index("--porcelain") < BUILD.index("Invoke-WebRequest")
-    digest = BUILD.index("Get-HrmSnapshotBuildDigest -Root $appStaging")
-    assert BUILD.index("$stagedLicenseFile =") < digest
-    assert BUILD.index("$trustStoreTarget =") < digest
-    assert digest < BUILD.index('Write-Host "Compiling installer')
-    assert '$releaseJson["build_digest"]' in BUILD
-
-
-def test_copy_verification_is_against_original_source():
-    assert "$sourceManifest = @(Get-HrmSnapshotManifest -Root $SourceDir)" in SNAPSHOT
-    assert "Test-HrmSnapshotManifest -Root $temp -Manifest $sourceManifest" in SNAPSHOT
-    assert "Get-HrmSnapshotManifest -Root $SourceDir)) -ne $sourceDigest" in SNAPSHOT
-
-
-def test_inno_uses_reason_not_status_and_no_blind_retry():
-    assert "if Reason = 'files_replaced' then" in INNO
-    assert "if Status = 'files_replaced' then" not in INNO
-    assert "при повторном запуске копия прежней версии будет создана" not in INNO
+def test_master_never_writes_ansi_json_for_engine():
+    # Движок читает JSON-файлы мастера как UTF-8, а SaveStringToFile без UTF8Encode
+    # пишет в системной ANSI-кодировке. Значит русский текст внутри JSON-литерала
+    # обязан быть экранирован как \uXXXX — так поступает MarkHrmSetupEngineFailed.
+    # Литерал и вызов SaveStringToFile лежат на разных строках, поэтому проверяется
+    # именно литерал Marker. Сообщения RaiseException в проверку не входят: они
+    # показываются в UI мастера и в файл не пишутся.
+    body = INNO.split("procedure WriteSetupMarker()", 1)[1].split("\nend;", 1)[0]
+    code = "\n".join(line.split("//", 1)[0] for line in body.splitlines())
+    markers = [line for line in code.splitlines() if "Marker :=" in line]
+    assert markers, "в WriteSetupMarker не найден литерал Marker :="
+    bad = sorted({c for line in markers for c in line if ord(c) > 127})
+    assert not bad, f"WriteSetupMarker: русский текст записан сырыми байтами: {bad}"

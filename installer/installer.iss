@@ -591,7 +591,12 @@ begin
   if not ForceDirectories(StateDir) then
     RaiseException('Не удалось создать каталог состояния HR Manager для отметки установки.');
   MarkerFile := StateDir + '\setup-run.json';
-  Marker := '{"status": "running", "message": "Устанавливаем HR Manager…"}';
+  // JSON Unicode escapes, как и в MarkHrmSetupEngineFailed: файл остаётся
+  // чистым ASCII на диске. SaveStringToFile без UTF8Encode писал бы русский
+  // текст в системной ANSI-кодировке, а движок читает этот же файл как UTF-8
+  // (Get-HrmSetupMarker -> Get-HrmJsonFile) и видел бы «Файл состояния
+  // установки повреждён».
+  Marker := '{"status": "running", "message": "\u0423\u0441\u0442\u0430\u043d\u0430\u0432\u043b\u0438\u0432\u0430\u0435\u043c HR Manager\u2026"}';
   if not SaveStringToFile(MarkerFile, Marker, False) then
     RaiseException('Не удалось записать отметку установки HR Manager.');
 end;
