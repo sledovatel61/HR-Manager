@@ -565,6 +565,32 @@ def main() -> int:
 
     # Inno: optional, external sidecar; no task/CLI install action; dynamic Finish + custom exit.
     iss = (ROOT / "installer" / "installer.iss").read_text(encoding="utf-8")
+
+    # Каждая строка Parameters в [Run]/[UninstallRun] - одна строка Inno.
+    # Внутри значения кавычки экранируются парой "", поэтому после закрывающей
+    # кавычки должен идти только ";" и перенос строки "\". Лишняя кавычка закрывает
+    # строку раньше времени, остаток параметров выпадает за строку, и ISCC падает
+    # на разборе секции - ошибка выглядит как проблема в [Setup], хотя дело в [Run].
+    for _line in iss.splitlines():
+        _st = _line.strip()
+        if not _st.startswith("Parameters:"):
+            continue
+        _body = _st[len("Parameters:"):].strip()
+        if not _body.startswith('"'):
+            fail(f"installer.iss: Parameters без открывающей кавычки: {_st[:70]}")
+            continue
+        _i = 1
+        while _i < len(_body):
+            if _body[_i] == '"':
+                if _i + 1 < len(_body) and _body[_i + 1] == '"':
+                    _i += 2
+                    continue
+                break
+            _i += 1
+        _rest = _body[_i + 1:].strip() if _i < len(_body) else ""
+        if not _rest.startswith(";") or _rest.lstrip(";").strip().rstrip("\\").strip():
+            fail(f"installer.iss: строка Parameters развалилась после закрывающей "
+                 f"кавычки (лишняя кавычка закрывает значение): {_st[:70]}")
     for required in ("hrm-tray.ps1", 'Source: "{src}\\DockerDesktopInstaller.exe"',
                      'DestDir: "{app}\\docker"', "external skipifsourcedoesntexist",
                      "GetCustomSetupExitCode", "GetHrmSetupEngineStatus", "FinishIncompleteTitle",
