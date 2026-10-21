@@ -32,6 +32,16 @@ def test_diagnostic_fields_reach_helper_and_inno_json():
     assert "UTF8Encode(Json)" in INNO
 
 
+def test_first_run_input_written_as_utf8():
+    # Движок читает first-run-input.json как UTF-8 (Common.psm1 → Get-HrmJsonFile →
+    # Get-Content -Encoding UTF8). SaveStringToFile без UTF8Encode пишет в системной
+    # ANSI-кодировке, поэтому кириллица в фамилии портилась ещё до регистрации.
+    # Проверяем именно тело WriteFirstRunInput: наличие UTF8Encode у другого вызова
+    # (диагностика снимка) дефект не ловит.
+    body = INNO.split("procedure WriteFirstRunInput()", 1)[1].split("\nend;", 1)[0]
+    assert "SaveStringToFile(InputFile, UTF8Encode(Json), False)" in body
+
+
 def test_cli_prints_concrete_redacted_message():
     cli = SNAPSHOT.split("function Invoke-HrmSnapshotCli {", 1)[1].split(
         "function Format-HrmSnapshotReason", 1

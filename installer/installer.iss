@@ -1,4 +1,4 @@
-﻿; HR Manager — локальный пилот для Windows (phase 12).
+; HR Manager — локальный пилот для Windows (phase 12).
 ; Мастер установки Inno Setup 6.7.3 (закреплено в installer/README.md):
 ;   роль (HR | Руководитель | Администратор) → фамилия владельца →
 ;   часовой пояс (по умолчанию Europe/Moscow) → Установить.
@@ -257,7 +257,11 @@ begin
           GetWorkingMode() + '", "timezone": "' +
           EscapeJson(Trim(TimezonePage.Values[0])) + '"}';
   InputFile := StateDir + '\first-run-input.json';
-  SaveStringToFile(InputFile, Json, False);
+  // UTF-8 без BOM: движок читает файл как UTF-8 (Get-HrmJsonFile ->
+  // Get-Content -Encoding UTF8). SaveStringToFile без UTF8Encode пишет в
+  // системной ANSI-кодировке, поэтому на русской Windows фамилия с кириллицей
+  // приезжала в регистрацию кракозябрами, а исправить её потом было нельзя.
+  SaveStringToFile(InputFile, UTF8Encode(Json), False);
 end;
 
 function HrmStateDir(): String;
