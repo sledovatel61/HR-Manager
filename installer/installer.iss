@@ -622,9 +622,16 @@ begin
     GuardError := HrmVerifySnapshotGuard();
     if GuardError <> '' then
       RaiseException(GuardError);
-  end;
-  if CurStep = ssPostInstall then
-  begin
+    // Файл ввода и отметку установки пишем ЗДЕСЬ, в ssInstall. Секция [Run]
+    // выполняется РАНЬШЕ события CurStepChanged(ssPostInstall): в компиляторе
+    // Inno сначала ProcessRunEntries, и только потом SetStep(ssPostInstall, True).
+    // Пока записи жили в ssPostInstall, порядок был обратным ожидаемому:
+    //   - движок из [Run] читал first-run-input.json ДО его записи, не находил
+    //     фамилию и молча подставлял "Owner" (Get-HrmFirstRunInput);
+    //   - WriteSetupMarker затирал честный итог движка словом "running".
+    // Мастер отдавал код 10 при живом приложении, а владелец создавался под
+    // чужим именем. Живой дефект приёмки 21.10.2026: фамилия "Перепечай" в
+    // файле верна, а владелец создан как "Owner".
     WriteFirstRunInput();
     WriteSetupMarker();
   end;

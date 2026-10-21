@@ -632,6 +632,32 @@ def main() -> int:
                 fail(f"installer.iss: {label} не передают {flag}: мастер и движок "
                      f"могут разойтись в путях каталога состояния/установки")
 
+    # Порядок внутри CurStepChanged. Секция [Run] выполняется ДО события
+    # CurStepChanged(ssPostInstall): в компиляторе Inno сначала ProcessRunEntries,
+    # и только потом SetStep(ssPostInstall, True). Поэтому файл ввода и отметку
+    # setup-run.json мастер обязан написать в ветке ssInstall. Пока они жили в
+    # ssPostInstall, порядок был обратным ожидаемому: движок из [Run] читал
+    # first-run-input.json ДО его записи, не находил фамилию и молча подставлял
+    # "Owner" (Get-HrmFirstRunInput, Bootstrap.psm1), а WriteSetupMarker затирал
+    # честный итог движка словом "running" - мастер отдавал код 10 при живом
+    # приложении. Живой дефект приёмки 21.10.2026.
+    csc = re.search(r"(?ms)^procedure CurStepChanged\(CurStep: TSetupStep\);(.*?)^end;", iss)
+    if not csc:
+        fail("installer.iss: не найдена процедура CurStepChanged")
+    else:
+        body = csc.group(1)
+        for proc in ("WriteFirstRunInput()", "WriteSetupMarker()"):
+            if proc not in body:
+                fail(f"installer.iss: CurStepChanged не вызывает {proc}")
+                continue
+            idx = body.index(proc)
+            before = body[:idx]
+            if before.rfind("if CurStep = ssPostInstall then") > before.rfind("if CurStep = ssInstall then"):
+                fail(f"installer.iss: {proc} вызывается в ветке ssPostInstall, а секция "
+                     f"[Run] выполняется раньше этого события - движок прочитает "
+                     f"first-run-input.json до записи и молча подставит фамилию "
+                     f"\"Owner\", а отметка затрёт честный итог движка словом \"running\"")
+
     # Build records the exact optional sidecar SHA/URL; the installed release.json
     # and external manifest must reuse the same object (no second hash calculation).
     build_script = (ROOT / "installer" / "build.ps1").read_text(encoding="utf-8")

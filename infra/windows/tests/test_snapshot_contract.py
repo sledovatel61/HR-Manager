@@ -56,3 +56,32 @@ def test_master_never_writes_ansi_json_for_engine():
     assert markers, "в WriteSetupMarker не найден литерал Marker :="
     bad = sorted({c for line in markers for c in line if ord(c) > 127})
     assert not bad, f"WriteSetupMarker: русский текст записан сырыми байтами: {bad}"
+
+
+def test_first_run_input_and_marker_written_before_run_section():
+    # Секция [Run] выполняется РАНЬШЕ события CurStepChanged(ssPostInstall): в
+    # компиляторе Inno сначала ProcessRunEntries, и только потом
+    # SetStep(ssPostInstall, True). Значит first-run-input.json и отметку
+    # setup-run.json мастер обязан написать в ветке ssInstall. Пока они жили в
+    # ssPostInstall, порядок был обратным ожидаемому: движок из [Run] читал файл
+    # ввода ДО его записи, не находил фамилию и молча подставлял "Owner"
+    # (Get-HrmFirstRunInput в Bootstrap.psm1), а WriteSetupMarker затирал честный
+    # итог движка словом "running" — мастер отдавал код 10 при живом приложении.
+    # Живой дефект приёмки 21.10.2026: фамилия "Перепечай" в файле верна, а
+    # владелец создан как "Owner".
+    match = re.search(
+        r"(?ms)^procedure CurStepChanged\(CurStep: TSetupStep\);(.*?)^end;", INNO
+    )
+    assert match, "в installer.iss нет процедуры CurStepChanged"
+    body = match.group(1)
+    for proc in ("WriteFirstRunInput()", "WriteSetupMarker()"):
+        assert proc in body, f"CurStepChanged не вызывает {proc}"
+        before = body[: body.index(proc)]
+        post = before.rfind("if CurStep = ssPostInstall then")
+        install = before.rfind("if CurStep = ssInstall then")
+        assert post <= install, (
+            f"{proc} вызывается в ветке ssPostInstall, а секция [Run] выполняется "
+            "раньше этого события: движок прочитает first-run-input.json до записи "
+            "и молча подставит фамилию \"Owner\", а отметка затрёт итог движка "
+            "словом \"running\" — мастер отдаст код 10 при живом приложении"
+        )
