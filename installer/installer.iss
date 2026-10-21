@@ -111,13 +111,23 @@ Source: "{src}\DockerDesktopInstaller.exe"; DestDir: "{app}\docker"; Flags: exte
 ; SysNative — виртуальный каталог, из которого 32-битный процесс видит
 ; настоящий (64-битный) System32. Ярлыки [Icons] запускаются из 64-битного
 ; Explorer и в исправлении не нуждаются.
+;
+; -InstallDir и -StateDir передаются ЯВНО всем трём записям запуска (трей, движок,
+; деинсталляция). Без них мастер и движок вычисляют пути независимо и расходятся:
+; мастер пишет first-run-input.json/installed.json/setup-run.json по жёсткому
+; HrmStateDir() = {localappdata}\HRManager, а движок берёт Get-HrmStateDir(),
+; который уважает HRM_STATE_DIR, и Get-HrmDefaultInstallDir(), игнорируя /DIR.
+; При расхождении фамилия не находится, Get-HrmFirstRunInput молча подставляет
+; "Owner", и установка уходит с кодом 0, потеряв введённые данные. Живой дефект
+; приёмки CI625: фамилия "Перепечай" в файле верна, а владелец создан как "Owner".
+; Передача явного пути убирает возможность разойтись по построению, а не по договорённости.
 Filename: "{win}\SysNative\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hrm-tray.ps1"" -InstallDir ""{app}"""; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\infra\windows\hrm-tray.ps1"" -InstallDir ""{app}"" -StateDir ""{localappdata}\HRManager"""; \
   WorkingDir: "{app}"; \
   Flags: nowait runhidden
 
 Filename: "{win}\SysNative\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action install -SourceDir ""{app}"" -NonInteractive -OpenBrowser"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action install -SourceDir ""{app}"" -InstallDir ""{app}"" -StateDir ""{localappdata}\HRManager""" -NonInteractive -OpenBrowser"; \
   WorkingDir: "{app}"; \
   StatusMsg: "HR Manager устанавливается (это может занять несколько минут)…"; \
   Flags: runhidden
@@ -138,7 +148,7 @@ Filename: "{win}\SysNative\WindowsPowerShell\v1.0\powershell.exe"; \
 ; СОХРАНЯЮТСЯ (тома pilot_pgdata/pilot_backups). Docker Desktop и WSL2
 ; не удаляются никогда. Тот же 64-битный PowerShell, что и в [Run] (см. выше).
 Filename: "{win}\SysNative\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action uninstall -NonInteractive"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\infra\windows\hr-manager.ps1"" -Action uninstall -InstallDir ""{app}"" -StateDir ""{localappdata}\HRManager""" -NonInteractive"; \
   WorkingDir: "{app}"; \
   Flags: runhidden; \
   RunOnceId: "HRMUninstallStop"

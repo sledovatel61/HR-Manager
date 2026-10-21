@@ -568,6 +568,28 @@ def main() -> int:
         fail("installer.iss: движковый отказ не меняет custom Setup exit code на 10")
     if 'hr-manager.ps1"" -Action start' in iss:
         fail("installer.iss: автозапуск всё ещё запускает консольный -Action start")
+    # Мастер и движок делят один каталог состояния (first-run-input.json,
+    # installed.json, setup-run.json). Мастер пишет туда жёстко через HrmStateDir(),
+    # а движок вычисляет путь сам и уважает HRM_STATE_DIR. Если запуск не передаёт
+    # -StateDir явно, при заданной переменной окружения движок читает другой каталог:
+    # фамилия не находится, Get-HrmFirstRunInput молча подставляет "Owner"
+    # (Bootstrap.psm1), установка «успешна» с кодом 0. Живой дефект приёмки CI625.
+    # -InstallDir тоже обязан передаваться: иначе движок ставит в свой путь по
+    # умолчанию и игнорирует выбор пользователя в /DIR.
+    for label, needle in (("движку", '-Action install'),
+                          ("трею", 'hrm-tray.ps1'),
+                          ("деинсталляции", '-Action uninstall')):
+        lines = [l for l in run_section.group(1).splitlines()
+                 if needle in l] if needle != '-Action uninstall' else \
+                [l for l in iss.splitlines() if '-Action uninstall' in l]
+        if not lines:
+            fail(f"installer.iss: не найдена запись запуска ({label})")
+            continue
+        entry = lines[0]
+        for flag in ("-StateDir", "-InstallDir"):
+            if flag not in entry:
+                fail(f"installer.iss: {label} не передают {flag}: мастер и движок "
+                     f"могут разойтись в путях каталога состояния/установки")
 
     # Build records the exact optional sidecar SHA/URL; the installed release.json
     # and external manifest must reuse the same object (no second hash calculation).
