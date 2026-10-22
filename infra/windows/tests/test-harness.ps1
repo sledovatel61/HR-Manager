@@ -343,8 +343,24 @@ function New-HrmMockWorld {
         WslAvailable = $true
         SuspendEngine = $false
         ContainersJson = ""
+        # Compose 2.21+ печатает для ПУСТОГО проекта пустой вывод (построчный JSON
+        # без строк): v2.40.3 на CI-раннере — код 0, 0 символов (PR #57, repro);
+        # старые версии и ветка по умолчанию ниже — «[]».
+        ComposePsEmptyOutput = $false
         UpFails = $false
+        UpResults = @() # optional FIFO for repair/fallback port failures
         UpCount = 0
+        # Однократные результаты up для контрпримеров остановленной БД и
+        # ошибок запуска. Значения по умолчанию не меняют прежние фикстуры.
+        NextUpContainersJson = ""
+        NextUpExitCode = -1
+        NextUpStderr = ""
+        DbPasswordMismatch = $false
+        DbPasswordSyncFails = $false
+        DbPasswordSyncThrows = $false
+        DbPasswordSyncCount = 0
+        DbPasswordSyncArgs = @()
+        DbPasswordRecoveryStuck = $false
         # Метка образа hrmanager.release_sha (ставится сборкой из HRM_RELEASE_SHA
         # env-файла, как в реальном `compose build` с build.labels).
         ImageReleaseSha = ""
@@ -409,6 +425,9 @@ function New-HrmMockWorld {
                 return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ""; Stderr = "" }
             }
             if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "ps")) {
+                if ($global:HRM_MockWorld.ComposePsEmptyOutput) {
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = ""; Stderr = "" }
+                }
                 if ($global:HRM_MockWorld.ContainersJson) {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = $global:HRM_MockWorld.ContainersJson; Stderr = "" }
                 }
@@ -419,6 +438,29 @@ function New-HrmMockWorld {
             }
             if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "up")) {
                 $global:HRM_MockWorld.UpCount++
+                if ($global:HRM_MockWorld.NextUpContainersJson) {
+                    $global:HRM_MockWorld.ContainersJson = $global:HRM_MockWorld.NextUpContainersJson
+                    $global:HRM_MockWorld.NextUpContainersJson = ""
+                }
+                if ($global:HRM_MockWorld.NextUpExitCode -ge 0) {
+                    $nextExit = $global:HRM_MockWorld.NextUpExitCode
+                    $nextStderr = $global:HRM_MockWorld.NextUpStderr
+                    $global:HRM_MockWorld.NextUpExitCode = -1
+                    $global:HRM_MockWorld.NextUpStderr = ""
+                    return [pscustomobject]@{ Name = $Name; ExitCode = $nextExit; Stdout = ""; Stderr = $nextStderr }
+                }
+                if ($global:HRM_MockWorld.UpResults.Count -gt 0) {
+                    $result = $global:HRM_MockWorld.UpResults[0]
+                    $global:HRM_MockWorld.UpResults = @($global:HRM_MockWorld.UpResults | Select-Object -Skip 1)
+                    return [pscustomobject]@{ Name=$Name; ExitCode=$result.ExitCode; Stdout=$result.Stdout; Stderr=$result.Stderr }
+                }
+                if ($global:HRM_MockWorld.DbPasswordMismatch) {
+                    $global:HRM_MockWorld.ContainersJson = '[{"Name":"db","Service":"db","State":"running","Health":"healthy"},{"Name":"backend","State":"running","Health":"unhealthy"},{"Name":"frontend","State":"created"}]'
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "dependency failed to start: backend is unhealthy" }
+                }
+                if ($global:HRM_MockWorld.DbPasswordSyncCount -gt 0 -and -not $global:HRM_MockWorld.DbPasswordRecoveryStuck) {
+                    $global:HRM_MockWorld.ContainersJson = ""
+                }
                 if ($global:HRM_MockWorld.UpFails) {
                     return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "container failed to start" }
                 }
@@ -458,6 +500,32 @@ function New-HrmMockWorld {
             }
             if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "compose" -and ($Arguments -contains "exec")) {
                 $joined = ($Arguments -join " ")
+                if ($joined -match "psql" -and $Stdin -match "ALTER ROLE hr_manager PASSWORD") {
+                    $global:HRM_MockWorld.DbPasswordSyncCount++
+                    $global:HRM_MockWorld.DbPasswordSyncArgs = @($Arguments)
+                    # При ЯВНОМ состоянии контейнеров моделируем реальный exec:
+                    # отсутствующий/exited db не может исполнить ALTER ROLE.
+                    # Пустая строка — прежние изолированные фикстуры самого
+                    # sync без модели контейнеров; их контракт не меняем.
+                    if ($global:HRM_MockWorld.ContainersJson) {
+                        $dbRunning = $false
+                        foreach ($container in ($global:HRM_MockWorld.ContainersJson | ConvertFrom-Json)) {
+                            if ($container.Name -match "(^|[-_])db([-_]|\d|$)" -and $container.State -eq "running") {
+                                $dbRunning = $true
+                                break
+                            }
+                        }
+                        if (-not $dbRunning) {
+                            return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = "service db is not running" }
+                        }
+                    }
+                    if ($global:HRM_MockWorld.DbPasswordSyncThrows) { throw ("driver failure: " + $Stdin) }
+                    if ($global:HRM_MockWorld.DbPasswordSyncFails) {
+                        return [pscustomobject]@{ Name = $Name; ExitCode = 1; Stdout = ""; Stderr = ("psql failure: " + $Stdin) }
+                    }
+                    $global:HRM_MockWorld.DbPasswordMismatch = $false
+                    return [pscustomobject]@{ Name = $Name; ExitCode = 0; Stdout = "ALTER ROLE"; Stderr = "" }
+                }
                 if ($joined -match "psql" -and $joined -match "alembic_version") {
                     # Ревизия схемы из базы (только чтение) — см. DbRevision.
                     $revision = [string]$global:HRM_MockWorld.DbRevision
@@ -614,7 +682,7 @@ function New-HrmMockWorld {
             }
             return @{ StatusCode = $global:HRM_MockWorld.BackendStatus; Body = $healthBody }
         }
-        if ($Uri -like "*/api/setup/owner/claim") {
+        if ($Uri -like "*/setup/owner/claim") {
             $global:HRM_MockWorld.ClaimCount++
             if ($global:HRM_MockWorld.ClaimResponses.Count -gt 0) {
                 $response = $global:HRM_MockWorld.ClaimResponses[0]

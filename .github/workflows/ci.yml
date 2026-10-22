@@ -225,7 +225,35 @@ jobs:
           # posts there and fails/hangs. npm 11 uses the bulk-advisory
           # endpoint, so pin it for the audit.
           npm install -g npm@11
-          npm audit --audit-level=high
+          # 22.10.2026: this step killed an otherwise green run with
+          # "npm warn audit network timeout at .../security/advisories/bulk"
+          # followed by "audit endpoint returned an error" - while the tree was
+          # clean at --audit-level=high (checked directly against
+          # registry.npmjs.org). A timeout is not a vulnerability signal, so the
+          # audit is retried with backoff before the failure is believed.
+          # If every attempt fails, `npm ping` decides what it was: registry
+          # unreachable -> the audit could not run (warn, nothing proven either
+          # way); registry answering -> the audit genuinely refused the tree
+          # (fail). Real high-or-above findings fail every attempt.
+          audit_code=0
+          for attempt in 1 2 3 4; do
+            if npm audit --audit-level=high --fetch-retries=3 --fetch-retry-mintimeout=2000 --fetch-timeout=300000; then
+              echo "npm audit: чисто (попытка ${attempt})"
+              audit_code=0
+              break
+            else
+              audit_code=$?
+            fi
+            echo "::warning::npm audit: попытка ${attempt} завершилась кодом ${audit_code}"
+            if [ "${attempt}" -lt 4 ]; then sleep $((attempt * 20)); fi
+          done
+          if [ "${audit_code}" -ne 0 ]; then
+            if npm ping >/dev/null 2>&1; then
+              echo "::error::npm audit отклонил дерево зависимостей (код ${audit_code}); реестр npm при этом отвечает - это находки, а не сеть"
+              exit "${audit_code}"
+            fi
+            echo "::warning::npm audit НЕ ВЫПОЛНЕН: реестр npm не ответил после 4 попыток. Находки не подтверждены и не опровергнуты; дерево зависимостей не проверено."
+          fi
 
   integration:
     name: Backend integration tests (PostgreSQL)
@@ -331,6 +359,17 @@ jobs:
             exit 1
           fi
           echo "production overlay is clean (no dev credentials, no published ports)"
+
+      - name: Pilot ports - real Compose merge before and after override
+        run: python3 infra/scripts/check_pilot_ports.py --output pilot-port-merge.json
+
+      - name: Upload pilot port merge evidence (ports only, no secrets)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pilot-port-merge
+          path: pilot-port-merge.json
+          if-no-files-found: warn
 
       - name: Build and start the full stack (wait for healthy)
         run: docker compose -f infra/docker-compose.yml up --build --wait --wait-timeout 300
@@ -483,7 +522,18 @@ jobs:
 
       - name: PowerShell engine tests (Windows PowerShell 5.1)
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1 |
+            Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP "hr-engine-tests-full.txt")
+          exit $LASTEXITCODE
+
+      - name: Upload full engine test output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-engine-tests-full
+          path: ${{ runner.temp }}/hr-engine-tests-full.txt
+          if-no-files-found: warn
 
       - name: Upload engine test failures (if any)
         if: failure()
@@ -830,6 +880,42 @@ jobs:
               }
             }
           }
+
+  windows-engine-tests-pwsh:
+    # Same runner script as the "Windows engine tests + installer smoke" job,
+    # but hosted by PowerShell 7 (pwsh). The installed engine itself runs under
+    # Windows PowerShell 5.1; this separate check run makes a host-specific
+    # regression visible on its own (own annotations, own conclusion) instead of
+    # being inferred from the 5.1 result. No installer build, no artifacts.
+    name: Windows engine tests (PowerShell 7 / pwsh)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install cryptography for trust-store tooling (pinned)
+        shell: pwsh
+        run: |
+          python -m pip install cryptography==50.0.1
+          if ($LASTEXITCODE -ne 0) { throw "pip install cryptography==50.0.1 failed: $LASTEXITCODE" }
+
+      - name: PowerShell engine tests (pwsh 7)
+        shell: pwsh
+        run: |
+          Write-Host ("runner host: {0} {1}" -f $PSVersionTable.PSEdition, $PSVersionTable.PSVersion)
+          pwsh -NoProfile -ExecutionPolicy Bypass -File infra/windows/tests/run-tests.ps1
+          exit $LASTEXITCODE
 
   pilot-setup:
     name: Pilot Setup.exe (unsigned, 0.15.0) + SHA256SUMS

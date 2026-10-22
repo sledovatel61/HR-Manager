@@ -14,7 +14,7 @@ $exitCode = 0
 $totalPassed = 0
 $failures = @()
 try {
-    foreach ($file in @("static.tests.ps1", "engine.tests.ps1", "channel.tests.ps1", "installer-roots.tests.ps1", "docker.tests.ps1", "stack.tests.ps1", "supervisor.tests.ps1", "pilot-final.tests.ps1", "iteration14.tests.ps1", "iteration15.tests.ps1")) {
+    foreach ($file in @("static.tests.ps1", "engine.tests.ps1", "channel.tests.ps1", "installer-roots.tests.ps1", "docker.tests.ps1", "stack.tests.ps1", "supervisor.tests.ps1", "pilot-final.tests.ps1", "iteration14.tests.ps1", "iteration15.tests.ps1", "db-password.tests.ps1", "snapshot-recovery.tests.ps1")) {
         $path = Join-Path $testsDir $file
         & (Resolve-Path $path).Path -HarnessPath $testsDir
         if (-not $?) { $exitCode = 1 }
@@ -41,12 +41,15 @@ $global:HRM_TestPassed = $totalPassed
 $global:HRM_TestFailures = $failures
 $global:HRM_TestFailed = $failures.Count
 if ($global:HRM_TestFailed -gt 0) { $exitCode = 1 }
+# Хост в аннотациях: один и тот же runner выполняется и в Windows PowerShell 5.1,
+# и в pwsh (отдельные джобы CI), счёт одного хоста не выдаётся за другой.
+$hostLabel = ("{0} {1}" -f $PSVersionTable.PSEdition, $PSVersionTable.PSVersion)
 if ($exitCode -eq 0) {
     Write-Host ("ВСЕ ТЕСТЫ ПРОЙДЕНЫ ({0})" -f $global:HRM_TestPassed) -ForegroundColor Green
     # Успех тоже публикуется аннотацией: журнал шага снаружи недоступен, а по
     # числу пройденных кейсов видно, что наборы действительно выполнялись, а не
     # были пропущены (например, при случайном удалении файла теста).
-    Write-Host ("::notice title=HRM engine tests::ВСЕ ТЕСТЫ ПРОЙДЕНЫ ({0}); наборы: static, engine, channel, installer-roots, docker, stack, supervisor, pilot-final, iteration14, iteration15" -f $global:HRM_TestPassed)
+    Write-Host ("::notice title=HRM engine tests::ВСЕ ТЕСТЫ ПРОЙДЕНЫ ({0}); host={1}; наборы: static, engine, channel, installer-roots, docker, stack, supervisor, pilot-final, iteration14, iteration15, db-password, snapshot-recovery" -f $global:HRM_TestPassed, $hostLabel)
 }
 else {
     Write-Host ("ЕСТЬ ПРОВАЛЫ: {0}" -f $global:HRM_TestFailed) -ForegroundColor Red
@@ -72,7 +75,7 @@ if ($failuresFile) {
         # notice-аннотациями (свой лимит 10), чтобы читать его через API.
         $rx = "(?<![A-Za-z0-9+/_-])(?:[0-9a-fA-F]{64,}|[A-Za-z0-9+/_-]{40,}={0,2})(?![A-Za-z0-9+/_=-])"
         $chunks = New-Object System.Collections.ArrayList
-        $cur = "failure list (" + $global:HRM_TestFailed + "):"
+        $cur = "failure list (" + $global:HRM_TestFailed + "; passed " + $global:HRM_TestPassed + "; host " + $hostLabel + "):"
         foreach ($failure in @($global:HRM_TestFailures)) {
             $safe = [regex]::Replace([string]$failure, $rx, "<redacted>")
             # Запись уже содержит компактный стектрейс; короткий лимит нужен,

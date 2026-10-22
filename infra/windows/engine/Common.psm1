@@ -205,7 +205,8 @@ function Clear-HrmSetupMarker {
     param([string]$StateDir = "")
     if (-not $StateDir) { $StateDir = Get-HrmStateDir }
     $file = Get-HrmSetupMarkerFile $StateDir
-    if (Test-Path $file) { Remove-Item -Path $file -Force -ErrorAction SilentlyContinue }
+    # Не скрываем отказ удаления: иначе движок вышел бы с 0, оставив running.
+    if (Test-Path $file) { Remove-Item -Path $file -Force -ErrorAction Stop }
 }
 
 function Set-HrmHttpMock {
@@ -527,8 +528,16 @@ function Invoke-HrmHttp {
     }
     $params = @{ Uri = $Uri; Method = $Method; UseBasicParsing = $true; TimeoutSec = 10 }
     if ($null -ne $Body) {
-        $params["ContentType"] = "application/json"
-        $params["Body"] = ($Body | ConvertTo-Json -Compress -Depth 8)
+        # Тело отдаём явными байтами UTF-8 и объявляем charset. Строку в -Body
+        # PowerShell 5.1 кодирует системной кодировкой по умолчанию, а не UTF-8,
+        # и сервер читает тело как UTF-8. Кириллица в фамилии приезжала байтами,
+        # невалидными для UTF-8, Starlette подставлял U+FFFD, и validate_surname
+        # отвечал 422 «Фамилия может содержать только буквы, пробелы, дефис или
+        # апостроф» — сервер получал не букву, а символ замены. Сама проверка
+        # юникодная (char.isalpha()), кириллицу она пропускает.
+        $params["ContentType"] = "application/json; charset=utf-8"
+        $json = ($Body | ConvertTo-Json -Compress -Depth 8)
+        $params["Body"] = [System.Text.Encoding]::UTF8.GetBytes($json)
     }
     if ($Headers.Count -gt 0) { $params["Headers"] = $Headers }
     try {
@@ -571,7 +580,7 @@ function Invoke-HrmConfirmationPrompt {
 
 function Invoke-HrmOpenBrowser {
     param([string]$Url, [string]$StateDir = "")
-    $open = (Test-HrmInteractive -or $global:HrmOpenBrowser -or $env:HRM_OPEN_BROWSER -eq "1")
+    $open = ((Test-HrmInteractive) -or $global:HrmOpenBrowser -or $env:HRM_OPEN_BROWSER -eq "1")
     if (-not (Test-HrmInteractive)) {
         # Неинтерактивно: одноразовая ссылка — всегда в защищённый файл.
         $stateDir = if ($StateDir) { $StateDir } else { Get-HrmStateDir }
@@ -627,7 +636,16 @@ function Set-HrmJsonFile {
     $dir = Join-Path $StateDir (Split-Path $RelativeName -Parent)
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $target = Join-Path $StateDir $RelativeName
-    $tmp = "$target.tmp"
+    # Имя временного файла уникально для процесса. Общее "$target.tmp" гоняли
+    # два процесса: мастер установки поднимает значок в трее с флагом nowait, и
+    # трей в своей стартовой ветке вызывает Set-HrmSupervisorState одновременно
+    # с движком. Один пишет .tmp, второй пишет тот же .tmp и переносит его на
+    # место, после чего Move-Item первого падает с «Объект по указанному пути
+    # ... .tmp не существует» — движок умирал с fatal на supervisor.json и
+    # установка отдавала код 10. Живой прогон: трей стартовал 15:50:47, fatal
+    # в 15:50:49. Такой же приём с уникальным именем уже применён в
+    # Snapshot.psm1 (previous-snapshot.tmp-<guid>).
+    $tmp = "$target.$PID.tmp"
     $Value | ConvertTo-Json -Depth 10 | Set-Content -Path $tmp -Encoding UTF8
     Move-Item -Path $tmp -Destination $target -Force
     Protect-HrmFile $StateDir $target
@@ -636,7 +654,26 @@ function Set-HrmJsonFile {
 function Get-HrmJsonFile {
     param([string]$Path)
     if (-not (Test-Path $Path)) { return $null }
-    return (Get-Content -Path $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+    $data = Get-Content -Path $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    # pwsh converts ISO JSON dates into DateTime, unlike Windows PS 5.1.
+    # Restore ISO strings before consumers cast them using the host culture.
+    return (ConvertTo-HrmJsonDateStrings $data)
+}
+
+function ConvertTo-HrmJsonDateStrings {
+    param($Value)
+    if ($Value -is [datetime]) { return $Value.ToString("o", [Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [array]) {
+        $items = @()
+        foreach ($item in $Value) { $items += ,(ConvertTo-HrmJsonDateStrings $item) }
+        return ,$items
+    }
+    if ($Value -is [pscustomobject]) {
+        foreach ($property in @($Value.PSObject.Properties)) {
+            $property.Value = ConvertTo-HrmJsonDateStrings $property.Value
+        }
+    }
+    return $Value
 }
 
 # --- Мелкие утилиты -----------------------------------------------------------
@@ -689,6 +726,33 @@ function Get-HrmPort {
     $envPort = 0
     if ([int]::TryParse([string]$env:HRM_PILOT_PORT, [ref]$envPort) -and $envPort -gt 0) { return $envPort }
     return 8080
+}
+
+function Get-HrmClaimPort {
+    # Persist the selected port so repair/update cannot silently change it.
+    param([string]$StateDir)
+    $record = Get-HrmInstallRecord $StateDir
+    $value = [string](Get-HrmInstallRecordField -Record $record -Field "claim_port" -Default "")
+    if (-not $value) { $value = [string]$env:HRM_PILOT_CLAIM_PORT }
+    if (-not $value) { $value = "18001" }
+    $port = 0
+    if (-not [int]::TryParse($value, [ref]$port) -or $port -lt 1024 -or $port -gt 65535) {
+        throw "HRM_PILOT_CLAIM_PORT должен быть целым числом от 1024 до 65535."
+    }
+    return $port
+}
+
+function Get-HrmTrustPort {
+    param([string]$StateDir)
+    $record = Get-HrmInstallRecord $StateDir
+    $value = [string](Get-HrmInstallRecordField -Record $record -Field "trust_port" -Default "")
+    if (-not $value) { $value = [string]$env:HRM_PILOT_TRUST_PORT }
+    if (-not $value) { $value = "18002" }
+    $port = 0
+    if (-not [int]::TryParse($value, [ref]$port) -or $port -lt 1024 -or $port -gt 65535) {
+        throw "HRM_PILOT_TRUST_PORT должен быть целым числом от 1024 до 65535."
+    }
+    return $port
 }
 
 function Get-HrmBaseUrl {

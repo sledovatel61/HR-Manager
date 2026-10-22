@@ -30,6 +30,19 @@ Set-StrictMode -Version 2.0
 
 $installerDir = $PSScriptRoot
 $repoRoot = Split-Path $installerDir -Parent
+# A dirty source checkout cannot identify the shipped bytes by its commit.
+# Stop before downloads/staging; never include raw git status (paths) in output.
+$buildSourceHead = (& git -C $repoRoot rev-parse HEAD | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $buildSourceHead -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "Cannot identify committed installer source."
+}
+if ($env:HRM_RELEASE_SHA -and $env:HRM_RELEASE_SHA -ne $buildSourceHead) {
+    throw "HRM_RELEASE_SHA must name the checked-out commit; refusing an unrelated release identity."
+}
+$sourceStatus = @(& git -C $repoRoot status "--porcelain" "--untracked-files=normal")
+if ($LASTEXITCODE -ne 0 -or $sourceStatus.Count -gt 0) {
+    throw "Installer build requires a clean committed Git checkout. Commit the intended code first."
+}
 $stagingDir = Join-Path $installerDir "staging"
 $outputDir = Join-Path $installerDir "output"
 $cacheDir = Join-Path $installerDir ".cache"
@@ -304,6 +317,20 @@ else {
     }
 }
 
+# Detect source/HEAD changes during staging as well as at entry.
+$finalSourceStatus = @(& git -C $repoRoot status "--porcelain" "--untracked-files=normal")
+if ($LASTEXITCODE -ne 0 -or $finalSourceStatus.Count -gt 0) { throw "Source changed during installer staging." }
+$finalSourceHead = (& git -C $repoRoot rev-parse HEAD | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $finalSourceHead -ne $buildSourceHead) { throw "Source HEAD changed during installer staging." }
+
+# Final staged bytes (including injected public key/trust store) determine
+# content identity. Exclude release.json itself to avoid a self-reference.
+Import-Module (Join-Path $repoRoot "infra/windows/engine/Common.psm1") -Force
+Import-Module (Join-Path $repoRoot "infra/windows/engine/Snapshot.psm1") -Force
+$releaseJson["build_digest"] = Get-HrmSnapshotBuildDigest -Root $appStaging
+$releaseJson["build_digest_schema"] = "hrm-code-tree-1"
+Write-HrmUtf8NoBom -Path (Join-Path $appStaging "release.json") -Text ($releaseJson | ConvertTo-Json)
+
 Write-Host "Compiling installer with ISCC..."
 Write-Host "ISCC path: $iscc exists $(Test-Path $iscc)"
 Write-Host "ISS path: $(Join-Path $installerDir 'installer.iss') exists $(Test-Path (Join-Path $installerDir 'installer.iss'))"
@@ -334,6 +361,7 @@ foreach ($file in $packageFiles) {
 }
 $manifest = [ordered]@{
     product = "hr-manager-pilot-windows"
+    build_digest = $releaseJson["build_digest"]
     version = $Version
     release_sha = $releaseSha
     toolchain = [ordered]@{

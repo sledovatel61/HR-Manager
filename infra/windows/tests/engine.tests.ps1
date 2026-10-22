@@ -53,6 +53,40 @@ function Assert-HrmNoSecretInArgs {
 
 Write-Host "== Секреты =="
 
+Test-Case "installer browser flags open automatically in noninteractive mode" {
+    Initialize-HrmTestEngine
+    New-HrmMockWorld | Out-Null
+    $common = Get-Module Common
+    & $common {
+        $oldFlag = $global:HrmOpenBrowser
+        $oldEnv = $env:HRM_OPEN_BROWSER
+        $script:BrowserCalls = 0
+        function script:Start-Process { param([string]$FilePath) $script:BrowserCalls++ }
+        try {
+            $state = Get-HrmStateDir
+            New-Item -ItemType Directory -Path $state -Force | Out-Null
+            foreach ($case in @(
+                @{ Flag = $false; Env = ""; Expected = 0 },
+                @{ Flag = $true; Env = ""; Expected = 1 },
+                @{ Flag = $false; Env = "1"; Expected = 1 }
+            )) {
+                $global:HrmOpenBrowser = $case.Flag
+                $env:HRM_OPEN_BROWSER = $case.Env
+                $script:BrowserCalls = 0
+                Invoke-HrmOpenBrowser -Url "http://127.0.0.1:8081/setup?token=test-only" -StateDir $state
+                if ($script:BrowserCalls -ne $case.Expected) { throw "Browser launch count does not match explicit installer flag" }
+                if (-not (Test-Path (Get-HrmSetupUrlFile $state))) { throw "Protected fallback URL file missing" }
+            }
+        }
+        finally {
+            Remove-Item Function:script:Start-Process
+            Remove-Variable BrowserCalls -Scope Script
+            $global:HrmOpenBrowser = $oldFlag
+            $env:HRM_OPEN_BROWSER = $oldEnv
+        }
+    }
+}
+
 Test-Case "ACL использует наследуемые права только для каталога, а прямые — для файла" {
     Initialize-HrmTestEngine
     $world = New-HrmMockWorld
@@ -99,7 +133,7 @@ Test-Case "секреты уникальны между установками �
     Assert-HrmEqual 32 ([Convert]::FromBase64String($backupKey)).Length "ключ бэкапов должен декодироваться в 32 байта"
     Assert-HrmEqual 32 (Get-HrmSecret $a "HRM_POSTGRES_PASSWORD").Length "длина пароля БД"
     Assert-HrmEqual 32 (Get-HrmSecret $a "HRM_BOOTSTRAP_ADMIN_PASSWORD").Length "длина bootstrap-пароля"
-    Assert-HrmEqual 32 (Get-HrmSecret $a "HRM_EXCHANGE_TOKEN").Length "длина токена обмена"
+    Assert-HrmEqual 64 (Get-HrmSecret $a "HRM_EXCHANGE_TOKEN").Length "длина токена обмена"
 }
 
 Test-Case "pilot.env: токен обмена есть до создания владельца и retired-заглушка после" {
@@ -249,10 +283,11 @@ Test-Case "установка: секреты, env-файл, claim по loopback
 
     # Ссылка первого запуска (неинтерактивно — в файл, браузер не открывался).
     $url = (Get-Content (Get-HrmSetupUrlFile $state) -Raw).Trim()
-    Assert-HrmContains $url "http://127.0.0.1:8080/#setup=ticket-test-123" "неверная ссылка первого запуска"
+    Assert-HrmContains $url "http://127.0.0.1:18002/#setup=ticket-test-123" "неверная ссылка первого запуска"
 
     # Claim был по loopback с данными из файла ввода и токеном из env-файла.
-    $claim = $t.World.HttpCalls | Where-Object { $_.Uri -like "*/api/setup/owner/claim" } | Select-Object -First 1
+    $claim = $t.World.HttpCalls | Where-Object { $_.Uri -like "*/setup/owner/claim" } | Select-Object -First 1
+    Assert-HrmEqual ("http://127.0.0.1:{0}/setup/owner/claim" -f (Get-HrmClaimPort $state)) $claim.Uri "claim must bypass nginx and its /api prefix"
     Assert-HrmTrue ($null -ne $claim) "claim не выполнялся"
     Assert-HrmEqual "127.0.0.1" $claim.Headers["X-Real-IP"] "claim не помечен loopback"
     Assert-HrmEqual "Иванова" $claim.Body.surname "фамилия не из файла ввода"
@@ -311,6 +346,178 @@ Test-Case "claim повторяется при недоступности обм
     Assert-HrmEqual 3 $t.World.ClaimCount "количество попыток claim"
     $url = (Get-Content (Get-HrmSetupUrlFile $state) -Raw).Trim()
     Assert-HrmContains $url "#setup=ticket-after-retry" "тикет после повторов не попал в ссылку"
+}
+
+Test-Case "exchange token соответствует контракту API и сохраняется при повторном чтении" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $token = Get-HrmSecret $state "HRM_EXCHANGE_TOKEN"
+    Assert-HrmTrue ($token -match '^[0-9a-f]{64}$') "API требует минимум 43 символа, генератор должен выдавать 64 hex"
+    Assert-HrmEqual $token (Get-HrmSecret $state "HRM_EXCHANGE_TOKEN") "валидный токен ротируется"
+}
+
+Test-Case "здоровая установка с claim 422 сохраняет данные и не повторяет неверный запрос" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $token = Get-HrmSecret $state "HRM_EXCHANGE_TOKEN"
+    $t.World.ClaimResponses = @(@{ StatusCode = 422; Body = ('{"detail":[{"loc":["body","exchange_token"],"input":"' + $token + '","msg":"invalid"}]}') })
+    $message = ""
+    try { Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8081 | Out-Null }
+    catch { $message = $_.Exception.Message }
+    Assert-HrmContains $message "HTTP 422" "нет ясной причины ошибки"
+    Assert-HrmContains $message "exchange_token" "нет имени поля"
+    Assert-HrmNotContains $message $token "секрет попал в ошибку"
+    Assert-HrmEqual 1 $t.World.ClaimCount "неверный payload повторяется"
+    Assert-HrmFalse (Get-HrmInstallRecord $state).pilot_created "ложно отмечено создание владельца"
+    Assert-HrmTrue (Test-Path (Get-HrmSecretsFile $state)) "секреты удалены"
+    Assert-HrmFalse (Test-Path (Get-HrmSetupUrlFile $state)) "создана ложная ссылка"
+    Assert-HrmEqual $token (Get-HrmSecret $state "HRM_EXCHANGE_TOKEN") "валидный токен изменился"
+}
+
+Test-Case "первый запуск восстанавливает старый короткий токен без замены ключей данных" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8081 | Out-Null
+    $before = Get-HrmSecretsMap $state
+    $before["HRM_EXCHANGE_TOKEN"] = '0123456789abcdef0123456789abcdef'
+    Set-HrmJsonFile $state "secrets.json" $before
+    Start-HrmFirstRun -InstallDir $install -StateDir $state -Port 8081 | Out-Null
+    $after = Get-HrmSecretsMap $state
+    Assert-HrmTrue ($after.HRM_EXCHANGE_TOKEN -match '^[0-9a-f]{64}$') "старый токен не исправлен"
+    foreach ($name in @("HRM_POSTGRES_PASSWORD", "HRM_BACKUP_KEY", "HRM_SIGNING_KEY")) {
+        Assert-HrmEqual $before[$name] $after[$name] "изменён ключ данных $name"
+    }
+    $claim = $t.World.HttpCalls | Where-Object { $_.Uri -like "*/setup/owner/claim" } | Select-Object -Last 1
+    Assert-HrmEqual $after.HRM_EXCHANGE_TOKEN $claim.Body.exchange_token "claim использует старый токен"
+    Assert-HrmContains ((Get-Content (Get-HrmEnvFile $state) -Raw)) ("HRM_EXCHANGE_TOKEN=" + $after.HRM_EXCHANGE_TOKEN) "env не синхронизирован"
+    Start-HrmFirstRun -InstallDir $install -StateDir $state -Port 8081 | Out-Null
+    Assert-HrmEqual $after.HRM_EXCHANGE_TOKEN (Get-HrmSecret $state "HRM_EXCHANGE_TOKEN") "восстановленный токен снова изменён"
+}
+
+Test-Case "claim: 404 fails immediately without marking owner created or opening browser" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $install = Get-HrmTestInstallDir
+    $t.World.ClaimResponses = @(
+        @{ StatusCode = 404; Body = "" },
+        @{ StatusCode = 201; Body = [pscustomobject]@{ ticket = "must-not-be-used" } }
+    )
+    $message = ""
+    try {
+        Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8080 | Out-Null
+    }
+    catch { $message = $_.Exception.Message }
+    Assert-HrmContains $message "HTTP 404" "404 must produce an actionable failure"
+    Assert-HrmEqual 1 $t.World.ClaimCount "404 must not be retried"
+    $record = Get-HrmInstallRecord $state
+    Assert-HrmFalse ([bool]$record.pilot_created) "404 must not confirm an owner"
+    Assert-HrmFalse (Test-Path (Get-HrmSetupUrlFile $state)) "404 must not open setup"
+}
+
+Test-Case "missing and empty pending exchange tokens synchronize env and restart before claim" {
+    foreach ($missing in @($true, $false)) {
+        Initialize-HrmTestEngine
+        $t = New-HrmTestWorld
+        $state = Get-HrmTestStateDir
+        $install = Get-HrmTestInstallDir
+        Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8081 | Out-Null
+        $before = Get-HrmSecretsMap $state
+        $keys = @{}
+        foreach ($name in @("HRM_POSTGRES_PASSWORD", "HRM_BACKUP_KEY", "HRM_SIGNING_KEY")) { $keys[$name] = $before[$name] }
+        if ($missing) { $before.Remove("HRM_EXCHANGE_TOKEN") } else { $before["HRM_EXCHANGE_TOKEN"] = "" }
+        Set-HrmJsonFile $state "secrets.json" $before
+        $ups = @($t.World.Calls | Where-Object { $_.Args -contains "up" }).Count
+        Start-HrmFirstRun -InstallDir $install -StateDir $state -Port 8081 | Out-Null
+        $after = Get-HrmSecretsMap $state
+        Assert-HrmTrue ($after.HRM_EXCHANGE_TOKEN -match '^[0-9a-f]{64}$') "missing token not repaired"
+        Assert-HrmEqual ($ups + 1) @($t.World.Calls | Where-Object { $_.Args -contains "up" }).Count "backend must restart"
+        Assert-HrmContains (Get-Content (Get-HrmEnvFile $state) -Raw) ("HRM_EXCHANGE_TOKEN=" + $after.HRM_EXCHANGE_TOKEN) "env not synchronized"
+        foreach ($name in $keys.Keys) { Assert-HrmEqual $keys[$name] $after[$name] "data key rotated" }
+    }
+}
+
+Test-Case "retired whitespace and malformed pending token states fail before claim without rotation" {
+    foreach ($bad in @("retired-old-token", "   ", "not-a-valid-token")) {
+        Initialize-HrmTestEngine
+        $t = New-HrmTestWorld
+        $state = Get-HrmTestStateDir
+        $install = Get-HrmTestInstallDir
+        Install-HrmApp -SourceDir $t.Source -InstallDir $install -StateDir $state -Port 8081 | Out-Null
+        $null = Set-HrmSecret $state "HRM_EXCHANGE_TOKEN" $bad
+        $claims = $t.World.ClaimCount
+        $message = ""
+        try { Start-HrmFirstRun -InstallDir $install -StateDir $state -Port 8081 | Out-Null } catch { $message = $_.Exception.Message }
+        Assert-HrmTrue ([bool]$message) "invalid state accepted"
+        Assert-HrmEqual $claims $t.World.ClaimCount "invalid state contacted backend"
+        Assert-HrmEqual $bad (Get-HrmSecretsMap $state).HRM_EXCHANGE_TOKEN "invalid state rotated silently"
+        Assert-HrmFalse (Get-HrmInstallRecord $state).pilot_created "invalid state confirmed owner"
+    }
+}
+
+Test-Case "trusted browser port persists and rejects collisions and invalid configuration" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $saved = $env:HRM_PILOT_TRUST_PORT
+    try {
+        $env:HRM_PILOT_TRUST_PORT = "18995"
+        $null = Write-HrmPilotEnv $state "test-sha" 8081
+        $env:HRM_PILOT_TRUST_PORT = "18996"
+        Assert-HrmEqual 18995 (Get-HrmTrustPort $state) "persisted trusted port ignored"
+        Assert-HrmContains (Get-Content (Get-HrmEnvFile $state) -Raw) "HRM_PILOT_TRUST_PORT=18995" "trusted compose port mismatch"
+        foreach ($bad in @(8081, (Get-HrmClaimPort $state), 70000)) {
+            Set-HrmInstallRecord $state @{ trust_port = $bad }
+            $message = ""
+            try { Write-HrmPilotEnv $state "test-sha" 8081 | Out-Null } catch { $message = $_.Exception.Message }
+            Assert-HrmContains $message "HRM_PILOT_TRUST_PORT" "invalid trusted port accepted"
+        }
+    } finally { $env:HRM_PILOT_TRUST_PORT = $saved }
+}
+
+Test-Case "claim port persists independently of frontend and rejects invalid configuration" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    $saved = $env:HRM_PILOT_CLAIM_PORT
+    try {
+        $env:HRM_PILOT_CLAIM_PORT = "18993"
+        $null = Write-HrmPilotEnv $state "test-sha" 8081
+        $env:HRM_PILOT_CLAIM_PORT = "18994"
+        Assert-HrmEqual 18993 (Get-HrmClaimPort $state) "persisted port ignored"
+        Assert-HrmContains (Get-Content (Get-HrmEnvFile $state) -Raw) "HRM_PILOT_CLAIM_PORT=18993" "compose port mismatch"
+        Set-HrmInstallRecord $state @{ claim_port = 70000 }
+        $message = ""
+        try { Get-HrmClaimPort $state | Out-Null } catch { $message = $_.Exception.Message }
+        Assert-HrmContains $message "HRM_PILOT_CLAIM_PORT" "invalid port accepted"
+    } finally { $env:HRM_PILOT_CLAIM_PORT = $saved }
+}
+
+Test-Case "claim: empty and retired tokens fail closed without contacting backend" {
+    Initialize-HrmTestEngine
+    $t = New-HrmTestWorld
+    $state = Get-HrmTestStateDir
+    Initialize-HrmStateDir $state | Out-Null
+    # Override the secret provider only in this isolated test engine instance.
+    Set-Item Function:Get-HrmSecret { param($StateDir, $Name) return $global:HRM_TestClaimToken }
+    try {
+        foreach ($token in @("", "   ", "retired-test-placeholder")) {
+            $global:HRM_TestClaimToken = $token
+            $failed = $false
+            try {
+                Invoke-HrmFirstRunClaim -StateDir $state -BaseUrl "http://127.0.0.1:8080" -Surname "Test" -WorkingMode "solo" -Timezone "UTC" | Out-Null
+            }
+            catch { $failed = $true }
+            Assert-HrmTrue $failed "unusable token must not imply owner already exists"
+        }
+        Assert-HrmEqual 0 $t.World.ClaimCount "unusable token must not contact backend"
+    }
+    finally { Remove-Variable HRM_TestClaimToken -Scope Global -ErrorAction SilentlyContinue }
 }
 
 Write-Host "== Обновление =="
@@ -929,7 +1136,7 @@ Test-Case "установка на занятом порту: публикаци
     $env = Get-Content (Get-HrmEnvFile $state) -Raw -Encoding UTF8
     Assert-HrmContains $env "HRM_PILOT_PORT=8081" "Compose должен публиковать приложение на свободном порту"
     $url = (Get-Content (Get-HrmSetupUrlFile $state) -Raw -Encoding UTF8).Trim()
-    Assert-HrmContains $url "http://127.0.0.1:8081" "ссылка первого запуска должна вести на рабочий порт"
+    Assert-HrmContains $url "http://127.0.0.1:18002/#setup=" "ссылка первого запуска должна вести на отдельный loopback-порт"
     Assert-HrmNoSecretInArgs $t.World $state
 }
 

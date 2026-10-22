@@ -548,8 +548,49 @@ def main() -> int:
         if re.search(r'"volume",\s*"prune"', code) or "volume prune" in code:
             fail(f"{path}: volume prune запрещён (удаление данных)")
 
+    # Временный файл записи состояния обязан быть уникальным для процесса.
+    # Общее "$target.tmp" гоняли трей и движок: мастер поднимает трей с nowait,
+    # и Set-HrmSupervisorState выполнялся одновременно с обеих сторон. Один писал
+    # .tmp, второй переносил его на место, и Move-Item первого падал с «Объект по
+    # указанному пути ... .tmp не существует» — движок умирал с fatal, установка
+    # отдавала код 10 при живом приложении.
+    common_engine = (ROOT / "infra" / "windows" / "engine" / "Common.psm1").read_text(encoding="utf-8")
+    if '$params["Body"] = ($Body | ConvertTo-Json' in common_engine:
+        fail("Common.psm1: тело HTTP отдаётся строкой в -Body; PowerShell 5.1 "
+             "кодирует её системной кодировкой, а сервер читает UTF-8 - "
+             "кириллица приезжает символом замены и validate_surname отвечает 422")
+    if '$tmp = "$target.tmp"' in common_engine:
+        fail("Common.psm1: Set-HrmJsonFile пишет через общее имя $target.tmp - "
+             "гонка трея и движка за файлом состояния (fatal, код 10)")
+
     # Inno: optional, external sidecar; no task/CLI install action; dynamic Finish + custom exit.
     iss = (ROOT / "installer" / "installer.iss").read_text(encoding="utf-8")
+
+    # Каждая строка Parameters в [Run]/[UninstallRun] - одна строка Inno.
+    # Внутри значения кавычки экранируются парой "", поэтому после закрывающей
+    # кавычки должен идти только ";" и перенос строки "\". Лишняя кавычка закрывает
+    # строку раньше времени, остаток параметров выпадает за строку, и ISCC падает
+    # на разборе секции - ошибка выглядит как проблема в [Setup], хотя дело в [Run].
+    for _line in iss.splitlines():
+        _st = _line.strip()
+        if not _st.startswith("Parameters:"):
+            continue
+        _body = _st[len("Parameters:"):].strip()
+        if not _body.startswith('"'):
+            fail(f"installer.iss: Parameters без открывающей кавычки: {_st[:70]}")
+            continue
+        _i = 1
+        while _i < len(_body):
+            if _body[_i] == '"':
+                if _i + 1 < len(_body) and _body[_i + 1] == '"':
+                    _i += 2
+                    continue
+                break
+            _i += 1
+        _rest = _body[_i + 1:].strip() if _i < len(_body) else ""
+        if not _rest.startswith(";") or _rest.lstrip(";").strip().rstrip("\\").strip():
+            fail(f"installer.iss: строка Parameters развалилась после закрывающей "
+                 f"кавычки (лишняя кавычка закрывает значение): {_st[:70]}")
     for required in ("hrm-tray.ps1", 'Source: "{src}\\DockerDesktopInstaller.exe"',
                      'DestDir: "{app}\\docker"', "external skipifsourcedoesntexist",
                      "GetCustomSetupExitCode", "GetHrmSetupEngineStatus", "FinishIncompleteTitle",
@@ -568,6 +609,54 @@ def main() -> int:
         fail("installer.iss: движковый отказ не меняет custom Setup exit code на 10")
     if 'hr-manager.ps1"" -Action start' in iss:
         fail("installer.iss: автозапуск всё ещё запускает консольный -Action start")
+    # Мастер и движок делят один каталог состояния (first-run-input.json,
+    # installed.json, setup-run.json). Мастер пишет туда жёстко через HrmStateDir(),
+    # а движок вычисляет путь сам и уважает HRM_STATE_DIR. Если запуск не передаёт
+    # -StateDir явно, при заданной переменной окружения движок читает другой каталог:
+    # фамилия не находится, Get-HrmFirstRunInput молча подставляет "Owner"
+    # (Bootstrap.psm1), установка «успешна» с кодом 0. Живой дефект приёмки CI625.
+    # -InstallDir тоже обязан передаваться: иначе движок ставит в свой путь по
+    # умолчанию и игнорирует выбор пользователя в /DIR.
+    for label, needle in (("движку", '-Action install'),
+                          ("трею", 'hrm-tray.ps1'),
+                          ("деинсталляции", '-Action uninstall')):
+        lines = [l for l in run_section.group(1).splitlines()
+                 if needle in l] if needle != '-Action uninstall' else \
+                [l for l in iss.splitlines() if '-Action uninstall' in l]
+        if not lines:
+            fail(f"installer.iss: не найдена запись запуска ({label})")
+            continue
+        entry = lines[0]
+        for flag in ("-StateDir", "-InstallDir"):
+            if flag not in entry:
+                fail(f"installer.iss: {label} не передают {flag}: мастер и движок "
+                     f"могут разойтись в путях каталога состояния/установки")
+
+    # Порядок внутри CurStepChanged. Секция [Run] выполняется ДО события
+    # CurStepChanged(ssPostInstall): в компиляторе Inno сначала ProcessRunEntries,
+    # и только потом SetStep(ssPostInstall, True). Поэтому файл ввода и отметку
+    # setup-run.json мастер обязан написать в ветке ssInstall. Пока они жили в
+    # ssPostInstall, порядок был обратным ожидаемому: движок из [Run] читал
+    # first-run-input.json ДО его записи, не находил фамилию и молча подставлял
+    # "Owner" (Get-HrmFirstRunInput, Bootstrap.psm1), а WriteSetupMarker затирал
+    # честный итог движка словом "running" - мастер отдавал код 10 при живом
+    # приложении. Живой дефект приёмки 21.10.2026.
+    csc = re.search(r"(?ms)^procedure CurStepChanged\(CurStep: TSetupStep\);(.*?)^end;", iss)
+    if not csc:
+        fail("installer.iss: не найдена процедура CurStepChanged")
+    else:
+        body = csc.group(1)
+        for proc in ("WriteFirstRunInput()", "WriteSetupMarker()"):
+            if proc not in body:
+                fail(f"installer.iss: CurStepChanged не вызывает {proc}")
+                continue
+            idx = body.index(proc)
+            before = body[:idx]
+            if before.rfind("if CurStep = ssPostInstall then") > before.rfind("if CurStep = ssInstall then"):
+                fail(f"installer.iss: {proc} вызывается в ветке ssPostInstall, а секция "
+                     f"[Run] выполняется раньше этого события - движок прочитает "
+                     f"first-run-input.json до записи и молча подставит фамилию "
+                     f"\"Owner\", а отметка затрёт честный итог движка словом \"running\"")
 
     # Build records the exact optional sidecar SHA/URL; the installed release.json
     # and external manifest must reuse the same object (no second hash calculation).

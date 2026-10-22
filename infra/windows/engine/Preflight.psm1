@@ -203,7 +203,7 @@ function Get-HrmComposeVersionVerdict {
         [string]$Stdout = "",
         [string]$Stderr = "",
         [bool]$TimedOut = $false,
-        [string]$MinimumVersion = "2.24"
+        [string]$MinimumVersion = "2.24.4"
     )
     if ($TimedOut) {
         return [pscustomobject]@{ verdict = "probe_failed"; version = ""; detail = "команда не завершилась за отведённое время (движок остановил её дерево процессов)" }
@@ -246,13 +246,13 @@ function Test-HrmComposeVersion {
 
     $override = Get-HrmPreflightOverrideResult "compose"
     if ($null -ne $override) { return $override }
-    # Требуется Compose v2 (плагин docker compose), минимум 2.24 (тег !reset).
+    # Требуется Compose v2 (плагин docker compose), минимум 2.24.4 (теги !reset и !override).
     #
     # Проверка НЕ ослабляется до предупреждения: без плагина compose стек не
     # поднимется вообще, а «предупреждение» оставило бы пользователя с вечным
     # «Запускается» и без причины (симптом пилотной машины 12.10.2026).
     # Отказ обязан называть ПРИЧИНУ и следующее действие.
-    $minimumVersion = "2.24"
+    $minimumVersion = "2.24.4"
     $out = Invoke-HrmDocker -Arguments @("compose", "version", "--short") -IgnoreExitCode
     $timedOut = $false
     if ($out.PSObject.Properties["TimedOut"]) { $timedOut = [bool]$out.TimedOut }
@@ -298,7 +298,7 @@ function Test-HrmComposeVersion {
             $message = ("Не удалось разобрать версию Docker Compose из ответа: {0}. Проверенные каталоги плагинов: {1}." -f $verdict.detail, $pluginDirsText)
         }
         "version_old" {
-            $message = ("Требуется Docker Compose {0} или новее (в файле пилота используется тег !reset); найдено: {1}. Обновите Docker Desktop — плагин compose обновляется вместе с ним." -f $minimumVersion, $verdict.version)
+            $message = ("Требуется Docker Compose {0} или новее (в файле пилота используются теги !reset и !override); найдено: {1}. Обновите Docker Desktop — плагин compose обновляется вместе с ним." -f $minimumVersion, $verdict.version)
         }
         "probe_failed" {
             $message = ("Проверка Docker Compose не прошла: {0} (код возврата {1}). Запустите Docker Desktop и повторите." -f $verdict.detail, $out.ExitCode)
@@ -346,6 +346,51 @@ function Test-HrmPortFree {
         return [pscustomobject]@{ Name = "port"; Passed = $false; Message = "Порт $port уже занят (127.0.0.1:$port). Укажите другой порт параметром -Port." }
     }
     return [pscustomobject]@{ Name = "port"; Passed = $true; Message = "Порт $port свободен." }
+}
+
+function Test-HrmClaimPortFree {
+    param([string]$InstallDir, [string]$StateDir, [int]$Port = 0, [switch]$TrustedBrowser)
+    # Reuse the test-only port override; real checks inspect actual listeners.
+    $override = Get-HrmPreflightOverrideResult "port"
+    if ($null -ne $override) { return $override }
+    $claimPort = Get-HrmClaimPort $StateDir
+    $service = "backend"
+    $containerPort = "8000/tcp"
+    $setting = "HRM_PILOT_CLAIM_PORT"
+    if ($TrustedBrowser) {
+        $claimPort = Get-HrmTrustPort $StateDir
+        $service = "frontend"
+        $containerPort = "8081/tcp"
+        $setting = "HRM_PILOT_TRUST_PORT"
+        if ($claimPort -eq (Get-HrmClaimPort $StateDir)) {
+            return [pscustomobject]@{ Name = "trust_port"; Passed = $false; Message = "Порты claim и браузерной настройки совпадают." }
+        }
+    }
+    if ($claimPort -eq (Get-HrmPort $Port)) {
+        return [pscustomobject]@{ Name = "claim_port"; Passed = $false; Message = "Порт первого запуска совпадает с портом приложения." }
+    }
+    $listeners = @(Get-NetTCPConnection -LocalPort $claimPort -State Listen -ErrorAction SilentlyContinue)
+    if ($listeners.Count -gt 0) {
+        # Accept an occupied port only if Docker proves it belongs to this
+        # project's backend and is bound exclusively to IPv4 loopback.
+        $result = Invoke-HrmCompose $InstallDir $StateDir @("ps", "-q", $service) -IgnoreExitCode
+        $owned = $false
+        if ($result.ExitCode -eq 0 -and $result.Stdout.Trim()) {
+            $id = ($result.Stdout.Trim() -split "`n")[0].Trim()
+            $format = '{{json (index .NetworkSettings.Ports "' + $containerPort + '")}}'
+            $binding = Invoke-HrmDocker -Arguments @("inspect", "--format", $format, $id) -IgnoreExitCode
+            if ($binding.ExitCode -eq 0) {
+                try {
+                    $entries = @($binding.Stdout | ConvertFrom-Json)
+                    $owned = $entries.Count -eq 1 -and $entries[0].HostIp -eq "127.0.0.1" -and [int]$entries[0].HostPort -eq $claimPort
+                } catch { }
+            }
+        }
+        if (-not $owned) {
+            return [pscustomobject]@{ Name = "claim_port"; Passed = $false; Message = "Порт первого запуска $claimPort занят другим приложением. Укажите свободный $setting до установки." }
+        }
+    }
+    return [pscustomobject]@{ Name = "claim_port"; Passed = $true; Message = "Loopback-порт первого запуска: $claimPort." }
 }
 
 function Test-HrmStateDirWritable {
@@ -417,6 +462,8 @@ function Invoke-HrmPreflight {
     $results += Test-HrmDockerDaemon
     $results += Test-HrmComposeVersion
     $results += Test-HrmPortFree -Port $Port
+    $results += Test-HrmClaimPortFree -InstallDir $InstallDir -StateDir $StateDir -Port $Port
+    $results += Test-HrmClaimPortFree -InstallDir $InstallDir -StateDir $StateDir -Port $Port -TrustedBrowser
     $results += Test-HrmStateDirWritable -StateDir $StateDir
     $results += Test-HrmFreeSpace -Path $StateDir
     if (-not $SkipCompose) {

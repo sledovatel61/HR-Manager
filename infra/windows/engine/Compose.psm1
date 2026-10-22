@@ -59,22 +59,41 @@ function Test-HrmComposeRunning {
 
 function Get-HrmComposeContainers {
     # Список контейнеров проекта (включая остановленные) в виде объектов.
+    # $null — ТОЛЬКО «список получить не удалось» (ненулевой код compose ps,
+    # нечитаемый вывод, JSON null вместо списка): Get-HrmStackState называет это
+    # unknown. Успешно полученный ПУСТОЙ список — пустая коллекция (absent).
+    # Одинаково на обоих хостах (PR #57, CI repro): Compose 2.21+ печатает для
+    # пустого проекта пустой вывод, старые версии — «[]». Windows PowerShell 5.1
+    # выдаёт JSON-массив одним объектом, pwsh 7 — поэлементно («[]» — ноль
+    # объектов, без исключения); -NoEnumerate (есть только в pwsh 7+) выравнивает
+    # разбор. Возврат через унарную запятую: иначе пустая коллекция развернулась
+    # бы у вызывающего в $null — тот же признак, что и ошибка.
     param([string]$InstallDir, [string]$StateDir)
     $ps = Invoke-HrmCompose $InstallDir $StateDir @("ps", "-a", "--format", "json") -IgnoreExitCode
     if ($ps.ExitCode -ne 0) { return $null }
+    if ([string]::IsNullOrWhiteSpace([string]$ps.Stdout)) { return , @() }
+    $parse = @{ ErrorAction = "Stop" }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey("NoEnumerate")) { $parse["NoEnumerate"] = $true }
     $items = @()
     try {
-        try { $items = @($ps.Stdout | ConvertFrom-Json -ErrorAction Stop) }
+        try { $items = @($ps.Stdout | ConvertFrom-Json @parse) }
         catch {
             foreach ($line in ($ps.Stdout -split "`r?`n")) {
                 if (-not [string]::IsNullOrWhiteSpace($line)) {
-                    $items += ($line | ConvertFrom-Json -ErrorAction Stop)
+                    $items += ($line | ConvertFrom-Json @parse)
                 }
             }
         }
     }
     catch { return $null }
-    return @($items | Where-Object { $null -ne $_ })
+    $containers = New-Object System.Collections.ArrayList
+    foreach ($entry in $items) {
+        if ($null -eq $entry) { return $null }
+        foreach ($container in @($entry)) {
+            if ($null -ne $container) { [void]$containers.Add($container) }
+        }
+    }
+    return , ($containers.ToArray())
 }
 
 function Test-HrmContainerRunning {
@@ -134,6 +153,33 @@ function Get-HrmStackState {
     return [pscustomobject]@{ state = "running"; total = $items.Count; running = $running.Count; unhealthy = 0; message = "Все сервисы запущены." }
 }
 
+function Get-HrmComposePortFailure {
+    # Не выводим сырой stderr. Из него берём только признак ошибки и числовой
+    # HOST-порт (не target 8080 контейнера). Без номера — порт этой установки.
+    # Ошибка networking без bind-признака сама по себе НЕ доказывает занятость.
+    param([string]$Stderr, [string]$StateDir)
+    $conflict = ($Stderr -match "(?i)port\s+is\s+already\s+allocated|address\s+already\s+in\s+use")
+    if (-not $conflict -and $Stderr -notmatch "(?i)failed to set up container networking") { return $null }
+    $port = 0
+    $pattern = '(?i)(?:Bind for |listen tcp[46]? |failed to bind host port for |exposing port (?:TCP|UDP) )(?:\[[^\]]+\]|[^\s:]*):(?<port>\d{1,5})'
+    if ($Stderr -match $pattern) { $port = [int]$Matches['port'] }
+    if ($port -lt 1 -or $port -gt 65535) {
+        $port = 0
+        [void][int]::TryParse((Get-HrmEnvFileValue $StateDir "HRM_PILOT_PORT"), [ref]$port)
+        if ($port -lt 1 -or $port -gt 65535) {
+            $record = Get-HrmInstallRecord $StateDir
+            $port = [int](Get-HrmInstallRecordField $record "port" 0)
+        }
+        if ($port -lt 1 -or $port -gt 65535) { $port = Get-HrmPort }
+    }
+    if ($conflict) {
+        $message = "Порт $port занят другой программой: Docker не смог опубликовать приложение. Освободите этот порт или задайте другой через -Port при установке. Чужие программы не останавливались, данные не удалялись."
+        return [pscustomobject]@{ ok = $false; state = "port_conflict"; port = $port; message = (Redact-HrmText $message) }
+    }
+    $message = "Docker не смог настроить сеть контейнера (порт публикации $port). Занятость порта не подтверждена. Проверьте сеть Docker Desktop и создайте отчёт для поддержки. Данные не удалялись."
+    return [pscustomobject]@{ ok = $false; state = "container_network_failed"; port = $port; message = (Redact-HrmText $message) }
+}
+
 function Repair-HrmStack {
     # Ремонт частично запущенного/нездорового стека БЕЗ удаления томов:
     # пересоздаём только то, что не работает. `down -v` и удаление volume здесь
@@ -150,11 +196,72 @@ function Repair-HrmStack {
     Write-HrmLog "info" ("Стек запущен не полностью ({0}) — перезапускаем только незапущенные сервисы…" -f $before.state)
     $recreate = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans", "--force-recreate") -IgnoreExitCode
     if ($recreate.ExitCode -ne 0) {
+        $portFailure = Get-HrmComposePortFailure -Stderr $recreate.Stderr -StateDir $StateDir
+        if ($null -ne $portFailure) {
+            Write-HrmLog "error" $portFailure.message
+            return $portFailure
+        }
         Write-HrmLog "warn" "Пересоздание не прошло — пробуем обычный запуск."
-        Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") | Out-Null
+        $retry = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") -IgnoreExitCode
+        if ($retry.ExitCode -ne 0) {
+            $portFailure = Get-HrmComposePortFailure -Stderr $retry.Stderr -StateDir $StateDir
+            if ($null -ne $portFailure) {
+                Write-HrmLog "error" $portFailure.message
+                return $portFailure
+            }
+            throw ("Команда '{0}' завершилась с кодом {1}: {2}" -f $retry.Name, $retry.ExitCode, (Redact-HrmText $retry.Stderr.Trim()))
+        }
     }
     $after = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
     return $after
+}
+
+function Sync-HrmPostgresRolePassword {
+    # Только существующий секрет: старые каталоги без файла секретов не меняем.
+    # local socket (trust у штатного postgres image), НЕ TCP. Пароль/SQL идут
+    # только в stdin; psqlrc, запрос пароля и echo SQL отключены. Ошибки psql
+    # не публикуем: они могут содержать SQL с экранированным паролем.
+    # database_auth_failed = согласовать роль не удалось, данные не удалялись.
+    param([string]$InstallDir, [string]$StateDir)
+    try {
+        $secrets = Get-HrmSecretsMap $StateDir
+        if (-not $secrets.ContainsKey("HRM_POSTGRES_PASSWORD")) {
+            return [pscustomobject]@{ ok = $true; state = "skipped"; message = "Секрет БД отсутствует; синхронизация пропущена."; synced = $false }
+        }
+        $password = Get-HrmSecret $StateDir "HRM_POSTGRES_PASSWORD"
+        $literal = $password.Replace("'", "''")
+        Register-HrmSecret $literal
+        # Не допускаем SQL с паролем в штатные журналы PostgreSQL даже при
+        # включённом логировании statement/duration. SET выполняются ДО ALTER.
+        $sql = "SET log_statement = 'none'; SET log_min_error_statement = 'panic'; SET log_min_duration_statement = -1; SET log_min_duration_sample = -1; SET standard_conforming_strings = on;`nALTER ROLE hr_manager PASSWORD '" + $literal + "';`n"
+        $res = Invoke-HrmCompose $InstallDir $StateDir @("exec", "-T", "db", "psql", "-X", "-w", "-U", "hr_manager", "-d", "hr_manager", "-v", "ON_ERROR_STOP=1") -Stdin $sql -IgnoreExitCode
+        if ($res.ExitCode -eq 0) {
+            $null = Write-HrmLog "info" "Пароль роли hr_manager согласован с каталогом состояния. Данные в pilot_pgdata сохранены."
+            return [pscustomobject]@{ ok = $true; state = "synced"; message = "Пароль роли БД согласован."; synced = $true }
+        }
+    }
+    catch {
+        # Не выводим исключение драйвера/psql: оно может включать stdin.
+    }
+    $message = "database_auth_failed: не удалось согласовать пароль роли hr_manager в томе pilot_pgdata с каталогом состояния (возможны несовпадение пароля или недоступность локального подключения к БД). Данные не удалялись. Создайте отчёт для поддержки; проверьте доступность db и локального сокета PostgreSQL. Не удаляйте том и каталог состояния."
+    $null = Write-HrmLog "error" (Redact-HrmText $message)
+    return [pscustomobject]@{ ok = $false; state = "database_auth_failed"; message = $message; synced = $false }
+}
+
+function Wait-HrmStackAfterPasswordSync {
+    # Ограниченное ожидание restart-policy/healthcheck, отдельно от HTTP readiness.
+    param([string]$InstallDir, [string]$StateDir, [int]$MaxAttempts = 30)
+    $interval = Get-HrmWaitIntervalSeconds
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $state = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+        if ($state.state -eq "running") {
+            return [pscustomobject]@{ ok = $true; state = "running"; message = "Стек восстановлен; данные сохранены." }
+        }
+        if ($attempt -lt $MaxAttempts) { Start-HrmWaitSleep -Seconds $interval }
+    }
+    $message = "Пароль БД согласован, но сервисы не стали healthy. Данные не удалялись. Создайте отчёт для поддержки."
+    $null = Write-HrmLog "error" $message
+    return [pscustomobject]@{ ok = $false; state = "stack_not_running"; message = $message }
 }
 
 function Start-HrmStack {
@@ -214,6 +321,17 @@ function Start-HrmStack {
         Invoke-HrmCompose $InstallDir $StateDir @("build", "--pull=false") | Out-Null
     }
 
+    $passwordSynced = $false
+    # partial/degraded не означает, что db запущен: после сбоя машины может
+    # работать только backend. В этом случае сначала обычный up/repair,
+    # а не exec на остановленном контейнере с ложным database_auth_failed.
+    if (($current.state -eq "partial" -or $current.state -eq "degraded") -and
+        (Test-HrmDbContainerRunning -InstallDir $InstallDir -StateDir $StateDir)) {
+        $sync = Sync-HrmPostgresRolePassword -InstallDir $InstallDir -StateDir $StateDir
+        if (-not $sync.ok) { return $sync }
+        $passwordSynced = $sync.synced
+    }
+
     # 3) Схема ↔ образ ДО запуска контейнеров приложения.
     if ($current.state -eq "stopped" -or $current.state -eq "partial" -or $current.state -eq "degraded") {
         if ($current.state -eq "stopped") { Start-HrmDbForSchemaCheck -InstallDir $InstallDir -StateDir $StateDir | Out-Null }
@@ -226,6 +344,7 @@ function Start-HrmStack {
 
     if ($current.state -eq "partial" -or $current.state -eq "degraded") {
         $repaired = Repair-HrmStack -InstallDir $InstallDir -StateDir $StateDir
+        if ($repaired.state -eq "port_conflict" -or $repaired.state -eq "container_network_failed") { return $repaired }
         if ($repaired.state -eq "running") {
             return [pscustomobject]@{ ok = $true; state = "running"; message = "Стек восстановлен без потери данных." }
         }
@@ -233,12 +352,42 @@ function Start-HrmStack {
     }
     $up = Invoke-HrmCompose $InstallDir $StateDir @("up", "-d", "--remove-orphans") -IgnoreExitCode
     if ($up.ExitCode -ne 0) {
+        # Сохраняем причину ДО любого возврата/repair, включая partial/degraded.
+        # Предпусковой sync мог быть пропущен: регистрируем существующие
+        # секреты (и SQL-escaped вид) без генерации и без зависимости от sync.
+        $upError = "Подробности stderr скрыты: не удалось загрузить секреты для редакции."
+        try {
+            foreach ($value in (Get-HrmSecretsMap $StateDir).Values) {
+                Register-HrmSecret $value
+                Register-HrmSecret ($value.Replace("'", "''"))
+            }
+            $upError = Redact-HrmText ([string]$up.Stderr).Trim()
+        } catch { }
+        Write-HrmLog "error" ("Запуск контейнеров не удался: " + $upError)
+        $portFailure = Get-HrmComposePortFailure -Stderr $up.Stderr -StateDir $StateDir
+        if ($null -ne $portFailure) {
+            Write-HrmLog "error" $portFailure.message
+            return $portFailure
+        }
+    }
+    # Даже неуспешный up мог поднять db и оставить backend unhealthy:
+    # dependency failed to start — именно этот путь был в отчёте владельца.
+    $after = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
+    if ($up.ExitCode -ne 0 -and $after.state -ne "partial" -and $after.state -ne "degraded") {
         $message = "Не удалось запустить контейнеры. Нажмите «Создать отчёт для поддержки»."
-        Write-HrmLog "error" (Redact-HrmText ("Запуск контейнеров не удался: " + $up.Stderr.Trim()))
         return [pscustomobject]@{ ok = $false; state = "failed"; message = $message }
     }
-    $after = Get-HrmStackState -InstallDir $InstallDir -StateDir $StateDir
     if ($after.state -eq "partial" -or $after.state -eq "degraded") {
+        # up тоже мог оставить db остановленным/несозданным. Это ошибка
+        # запуска контейнера, а не доказательство неверного пароля роли.
+        if (Test-HrmDbContainerRunning -InstallDir $InstallDir -StateDir $StateDir) {
+            $sync = Sync-HrmPostgresRolePassword -InstallDir $InstallDir -StateDir $StateDir
+            if (-not $sync.ok) { return $sync }
+            $passwordSynced = $passwordSynced -or $sync.synced
+        }
+        if ($up.ExitCode -ne 0 -and -not $passwordSynced) {
+            return [pscustomobject]@{ ok = $false; state = "failed"; message = "Не удалось запустить контейнеры. Создайте отчёт для поддержки." }
+        }
         # Контейнеры уже подняты: база запущена, и рассогласование «схема ↔
         # образ» можно установить точно. Это защита от crash-loop: backend
         # перезапускается бесконечно, а человек видит только «не запускается».
@@ -251,6 +400,10 @@ function Start-HrmStack {
             return [pscustomobject]@{ ok = $false; state = "schema_incompatible"; message = $compat.message }
         }
         $after = Repair-HrmStack -InstallDir $InstallDir -StateDir $StateDir
+        if ($after.state -eq "port_conflict" -or $after.state -eq "container_network_failed") { return $after }
+    }
+    if ($passwordSynced) {
+        return (Wait-HrmStackAfterPasswordSync -InstallDir $InstallDir -StateDir $StateDir)
     }
     Write-HrmLog "info" "Контейнеры пилота запущены (проект $script:ProjectName)."
     return [pscustomobject]@{ ok = $true; state = $after.state; message = "Контейнеры запущены." }

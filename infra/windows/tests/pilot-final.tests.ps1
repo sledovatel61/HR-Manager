@@ -344,8 +344,17 @@ Test-Case "compose.pilot.yml использует HRM_PILOT_BIND с default 127.
 
 Test-Case "nginx перезаписывает X-Real-IP на remote_addr (защита от подделки)" {
     $nginx = Get-Content -Path (Join-Path $script:RepoRoot "frontend\nginx.conf") -Raw -Encoding UTF8
-    Assert-HrmContains $nginx 'proxy_set_header X-Real-IP $remote_addr;' "nginx не перезаписывает X-Real-IP"
-    Assert-HrmNotContains $nginx 'proxy_set_header X-Real-IP 127.0.0.1;' "nginx всё ещё хардкодит 127.0.0.1"
+    $servers = @([regex]::Split($nginx, '(?m)^server\s*\{') | Select-Object -Skip 1)
+    Assert-HrmEqual 2 $servers.Count "expected exactly two server blocks"
+    $public = @($servers | Where-Object { $_ -match 'listen 8080;' })
+    $trusted = @($servers | Where-Object { $_ -match 'listen 8081;' })
+    Assert-HrmEqual 1 $public.Count "public listener missing"
+    Assert-HrmEqual 1 $trusted.Count "trusted listener missing"
+    Assert-HrmContains $public[0] 'proxy_set_header X-Real-IP $remote_addr;' "public listener trusts spoofed IP"
+    Assert-HrmNotContains $public[0] 'proxy_set_header X-Real-IP 127.0.0.1;' "public listener marks LAN clients local"
+    Assert-HrmContains $trusted[0] 'proxy_set_header X-Real-IP 127.0.0.1;' "trusted listener missing marker"
+    $overlay = Get-Content -Path (Join-Path $script:RepoRoot "infra\compose.pilot.yml") -Raw -Encoding UTF8
+    Assert-HrmContains $overlay '"127.0.0.1:${HRM_PILOT_TRUST_PORT:-18002}:8081"' "trusted listener exposed beyond loopback"
 }
 
 Test-Case "HRM_PILOT_BIND: отсутствие -> 127.0.0.1, LAN flow -> 0.0.0.0, произвольное -> fallback 127.0.0.1" {

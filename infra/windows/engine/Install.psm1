@@ -308,7 +308,20 @@ function Install-HrmApp {
             } finally {
                 if ($tempRelease -and (Test-Path $tempRelease)) { Remove-Item $tempRelease -Recurse -Force -ErrorAction SilentlyContinue }
             }
-            Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $port
+            # Порт после обновления берётся из записи установки, НЕ из $port.
+            # Update-HrmApp приводит порт к развёрнутому снимку и пишет его в
+            # запись (Sync-HrmPortAfterPrepare), а $port здесь — значение ДО
+            # обновления: Get-HrmPort без -Port даёт 8080 по умолчанию. Передав
+            # его дальше, получали Write-HrmPilotEnv с портом 8080: pilot.env
+            # указывал на порт, занятый production-стеком, compose пересоздавал
+            # frontend и падал на «Bind for 127.0.0.1:8080 failed: port is
+            # already allocated» — установка отдавала код 10 при живом
+            # приложении и целой базе. Живой дефект 22.10.2026 (обновление
+            # поверх, порт пилота 8081). Ветка повторной установки ниже всегда
+            # передаёт $effectivePort — здесь было расхождение.
+            $updatedPort = [int](Get-HrmInstallRecordField -Record (Get-HrmInstallRecord $StateDir) -Field "port" -Default 0)
+            if ($updatedPort -le 0) { $updatedPort = $port }
+            Start-HrmFirstRun -InstallDir $InstallDir -StateDir $StateDir -Port $updatedPort
             Start-HrmSupervisorIfUserSession -InstallDir $InstallDir -StateDir $StateDir | Out-Null
             Set-HrmSupervisorState -StateDir $StateDir -State "ready" -Message "Обновление завершено."
             return

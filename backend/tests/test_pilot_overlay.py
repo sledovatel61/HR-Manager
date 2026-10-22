@@ -29,6 +29,8 @@ def _construct_reset(loader: yaml.Loader, node: yaml.Node) -> Any:
 
 
 _ComposeLoader.add_constructor("!reset", _construct_reset)
+# !override keeps the supplied value; !reset resets the attribute during merge.
+_ComposeLoader.add_constructor("!override", _construct_reset)
 
 
 @pytest.fixture(scope="module")
@@ -65,15 +67,17 @@ def _env_map(service: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def test_pilot_overlay_publishes_only_loopback_frontend(pilot_overlay: dict[str, Any]) -> None:
+def test_pilot_overlay_publications_default_to_loopback(pilot_overlay: dict[str, Any]) -> None:
     services = pilot_overlay["services"]
     published: dict[str, list[str]] = {}
     for name, service in services.items():
         ports = service.get("ports") or []
         if ports:
             published[name] = [str(port) for port in ports]
-    assert set(published) == {"frontend"}, published
-    for port in published["frontend"]:
+    assert set(published) == {"backend", "frontend"}, published
+    assert published["backend"] == ["127.0.0.1:${HRM_PILOT_CLAIM_PORT:-18001}:8000"]
+    assert "127.0.0.1:${HRM_PILOT_TRUST_PORT:-18002}:8081" in published["frontend"]
+    for port in (port for ports in published.values() for port in ports):
         # LAN feature: frontend bind is variable HRM_PILOT_BIND with default
         # 127.0.0.1 (see infra/windows/engine/Secrets.psm1). Default must
         # remain loopback; explicit 0.0.0.0 is only via engine's lan.json.
@@ -81,6 +85,8 @@ def test_pilot_overlay_publishes_only_loopback_frontend(pilot_overlay: dict[str,
             port == "${HRM_PILOT_BIND:-127.0.0.1}:${HRM_PILOT_PORT:-8080}:8080"
             or port.startswith("127.0.0.1:")
         ), port
+        assert not port.startswith("0.0.0.0:"), port
+        assert "${HRM_PILOT_BIND:-0.0.0.0}" not in port, port
         if "HRM_PILOT_BIND" in port:
             assert port.startswith("${HRM_PILOT_BIND:-127.0.0.1}:"), port
 
@@ -210,7 +216,8 @@ def test_pilot_overlay_declares_explicit_cookie_trust_model(
 def test_pilot_overlay_needs_compose_v2_24_like_production() -> None:
     text = PILOT_OVERLAY.read_text()
     assert "!reset" in text
-    assert "2.24" in text
+    assert "2.24.4" in text
+    assert "ports: !override" in text
 
 
 def test_pilot_overlay_update_channel_surface(pilot_overlay: dict[str, Any]) -> None:
@@ -244,3 +251,68 @@ def test_dev_compose_unchanged_mailpit_defaults(dev_compose: dict[str, Any]) -> 
     # The development stack keeps its local SMTP sink: the pilot excludes it
     # only via the overlay profile, not by touching the dev file.
     assert "mailpit" in dev_compose["services"]
+
+
+def _merged_pilot_ports(
+    base: dict[str, Any], overlay: dict[str, Any], overlay_text: str
+) -> dict[str, list[str]]:
+    """Model ONLY port-sequence merge, preserving YAML tags via the node tree.
+
+    Untagged ports append unique entries; !override replaces; !reset ignores
+    its supplied value. Real interpolation/Compose merge is also tested in CI
+    by infra/scripts/check_pilot_ports.py, not inferred from this model.
+    """
+    document = yaml.compose(overlay_text)
+    assert isinstance(document, yaml.MappingNode)
+    services_node = next(value for key, value in document.value if key.value == "services")
+    tags = {}
+    for key, service_node in services_node.value:
+        for field, value in service_node.value:
+            if field.value == "ports":
+                tags[key.value] = value.tag
+    merged: dict[str, list[str]] = {}
+    for name in set(base["services"]) | set(overlay["services"]):
+        original = base["services"].get(name, {}).get("ports", [])
+        replacement = overlay["services"].get(name, {}).get("ports", [])
+        if tags.get(name) == "!reset":
+            merged[name] = []
+        elif tags.get(name) == "!override":
+            merged[name] = list(replacement)
+        else:
+            merged[name] = list(dict.fromkeys([*original, *replacement]))
+    return merged
+
+
+def test_merged_pilot_replaces_all_active_service_port_publications(
+    dev_compose: dict[str, Any], pilot_overlay: dict[str, Any]
+) -> None:
+    merged = _merged_pilot_ports(dev_compose, pilot_overlay, PILOT_OVERLAY.read_text())
+    for name in ("frontend", "backend"):
+        assert merged[name] == pilot_overlay["services"][name]["ports"]
+        for dev_port in dev_compose["services"][name].get("ports", []):
+            assert dev_port not in merged[name], (name, merged[name])
+    for name in ("db", "worker", "backup"):
+        assert merged[name] == [], (name, merged[name])
+    # mailpit is not an active pilot service; its dev ports are not started.
+    assert pilot_overlay["services"]["mailpit"]["profiles"] == ["pilot-disabled"]
+
+
+def test_plain_ports_counterexample_inherits_dev_publication(
+    dev_compose: dict[str, Any],
+) -> None:
+    before = PILOT_OVERLAY.read_text().replace("ports: !override", "ports:")
+    overlay = yaml.load(before, Loader=_ComposeLoader)
+    merged = _merged_pilot_ports(dev_compose, overlay, before)
+    for name in ("frontend", "backend"):
+        dev_ports = dev_compose["services"][name].get("ports", [])
+        pilot_ports = overlay["services"][name]["ports"]
+        assert merged[name] == list(dict.fromkeys([*dev_ports, *pilot_ports]))
+    assert "127.0.0.1:8080:8080" in merged["frontend"]
+    assert merged["frontend"] != overlay["services"]["frontend"]["ports"]
+
+
+def test_reset_is_not_a_substitute_for_override(dev_compose: dict[str, Any]) -> None:
+    reset = PILOT_OVERLAY.read_text().replace("ports: !override", "ports: !reset")
+    overlay = yaml.load(reset, Loader=_ComposeLoader)
+    merged = _merged_pilot_ports(dev_compose, overlay, reset)
+    assert merged["frontend"] == []  # supplied publication is discarded!

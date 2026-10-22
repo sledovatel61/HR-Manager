@@ -168,6 +168,8 @@ def engine_env_lines(values: dict[str, str]) -> list[str]:
         "HRM_BACKUP_KEY_ID=ci-chain-1",
         f"HRM_RELEASE_SHA={values['release_sha']}",
         "HRM_PILOT_PORT=8080",
+        "HRM_PILOT_CLAIM_PORT=18001",
+        "HRM_PILOT_TRUST_PORT=18002",
         "HRM_PILOT_BIND=127.0.0.1",
         f"HRM_UPDATE_ENGINE_TOKEN={values['engine_token']}",
         f"HRM_STAGING_DIR={values['staging_dir']}",

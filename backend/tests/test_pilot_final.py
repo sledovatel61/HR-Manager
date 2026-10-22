@@ -247,13 +247,33 @@ def test_license_limit_one_vs_two(db_engine):
 
 
 def test_x_real_ip_spoof_blocked(db_engine):
-    """B5: X-Real-IP spoof не обходит loopback — backend не публикуется, nginx перезаписывает."""
+    """B5: публичный nginx перезаписывает IP; доверенный слушатель изолирован."""
     import pathlib
+    import re
 
     nginx_path = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "nginx.conf"
     nginx_text = nginx_path.read_text(encoding="utf-8")
     assert "proxy_set_header X-Real-IP $remote_addr;" in nginx_text
-    assert "proxy_set_header X-Real-IP 127.0.0.1;" not in nginx_text
+    # Track nested braces: a location block must not truncate its server block.
+    config = re.sub(r"#.*", "", nginx_text)
+    servers = []
+    for start in re.finditer(r"\bserver\s*\{", config):
+        depth = 1
+        end = start.end()
+        while depth and end < len(config):
+            depth += (config[end] == "{") - (config[end] == "}")
+            end += 1
+        assert depth == 0, "Unbalanced nginx server block"
+        servers.append(config[start.end() : end - 1])
+    assert len(servers) == 2
+    public = [block for block in servers if re.search(r"\blisten\s+8080\s*;", block)]
+    trusted = [block for block in servers if re.search(r"\blisten\s+8081\s*;", block)]
+    assert len(public) == len(trusted) == 1
+    ip_header = r"proxy_set_header\s+X-Real-IP\s+([^;]+);"
+    assert re.findall(ip_header, public[0]) == ["$remote_addr"]
+    assert re.findall(ip_header, trusted[0]) == ["127.0.0.1"]
+    # No hardcoded loopback header outside the trusted server, even at global scope.
+    assert re.findall(ip_header, config) == ["$remote_addr", "127.0.0.1"]
 
     # Прямая проверка loopback через _is_loopback — без HTTP-костылей
     from app.setup_owner import _is_loopback

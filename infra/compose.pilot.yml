@@ -2,8 +2,8 @@
 #
 # ONE stable Compose project — `hr-manager-pilot` — runs PostgreSQL, backend,
 # frontend, worker and backup in Linux containers on Docker Desktop/WSL2.
-# ONLY the frontend is published, bound to 127.0.0.1; the database, backend
-# and worker are unreachable from the local network.
+# Frontend and the installer's direct backend port are published on loopback;
+# the backend publication NEVER follows the frontend's optional LAN binding.
 #
 # The pilot serves plain http on loopback, so the session/CSRF cookies are
 # explicitly non-Secure (SESSION_COOKIE_SECURE=false) and the backend runs
@@ -39,7 +39,7 @@
 # start without it (fail-closed): an unset or empty key makes Compose stop
 # with a clear message instead of a crash-looping stack.
 #
-# REQUIRES Docker Compose v2.24+ (the !reset YAML tag), like compose.prod.yml.
+# REQUIRES Docker Compose v2.24.4+ (!reset and !override YAML tags).
 
 name: hr-manager-pilot
 
@@ -114,7 +114,9 @@ services:
       SMTP_ENCRYPTION: "starttls"
       SMTP_USERNAME: ""
       SMTP_PASSWORD: ""
-    ports: !reset []
+    # Bypass nginx only for the local installer, never expose on the LAN.
+    ports: !override
+      - "127.0.0.1:${HRM_PILOT_CLAIM_PORT:-18001}:8000"
     volumes:
       - pilot_backups:/var/backups/hr-manager:ro
       # Verified update packages land here (server download -> host dir via
@@ -136,8 +138,13 @@ services:
     # HRM_PILOT_BIND accordingly (default 127.0.0.1, LAN 0.0.0.0). The setting
     # survives updates (StateDir/lan.json). HTTPS is not used in office LAN
     # (accepted pilot risk — see docs/runbook-pilot-release.md).
-    ports:
+    # Replace, do not append the dev base publication 127.0.0.1:8080:8080.
+    # Otherwise an occupied dev port prevents the pilot on 8081 from starting.
+    # !reset is NOT a substitute: it discards the supplied publication too.
+    ports: !override
       - "${HRM_PILOT_BIND:-127.0.0.1}:${HRM_PILOT_PORT:-8080}:8080"
+      # Trusted browser origin: never follow optional LAN access.
+      - "127.0.0.1:${HRM_PILOT_TRUST_PORT:-18002}:8081"
 
   # Local SMTP sink is development-only: excluded from the pilot by the
   # profile (a service with a profile is not started by a plain `up`).
