@@ -225,7 +225,35 @@ jobs:
           # posts there and fails/hangs. npm 11 uses the bulk-advisory
           # endpoint, so pin it for the audit.
           npm install -g npm@11
-          npm audit --audit-level=high
+          # 22.10.2026: this step killed an otherwise green run with
+          # "npm warn audit network timeout at .../security/advisories/bulk"
+          # followed by "audit endpoint returned an error" - while the tree was
+          # clean at --audit-level=high (checked directly against
+          # registry.npmjs.org). A timeout is not a vulnerability signal, so the
+          # audit is retried with backoff before the failure is believed.
+          # If every attempt fails, `npm ping` decides what it was: registry
+          # unreachable -> the audit could not run (warn, nothing proven either
+          # way); registry answering -> the audit genuinely refused the tree
+          # (fail). Real high-or-above findings fail every attempt.
+          audit_code=0
+          for attempt in 1 2 3 4; do
+            if npm audit --audit-level=high --fetch-retries=3 --fetch-retry-mintimeout=2000 --fetch-timeout=300000; then
+              echo "npm audit: чисто (попытка ${attempt})"
+              audit_code=0
+              break
+            else
+              audit_code=$?
+            fi
+            echo "::warning::npm audit: попытка ${attempt} завершилась кодом ${audit_code}"
+            if [ "${attempt}" -lt 4 ]; then sleep $((attempt * 20)); fi
+          done
+          if [ "${audit_code}" -ne 0 ]; then
+            if npm ping >/dev/null 2>&1; then
+              echo "::error::npm audit отклонил дерево зависимостей (код ${audit_code}); реестр npm при этом отвечает - это находки, а не сеть"
+              exit "${audit_code}"
+            fi
+            echo "::warning::npm audit НЕ ВЫПОЛНЕН: реестр npm не ответил после 4 попыток. Находки не подтверждены и не опровергнуты; дерево зависимостей не проверено."
+          fi
 
   integration:
     name: Backend integration tests (PostgreSQL)
