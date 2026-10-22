@@ -58,6 +58,35 @@ def test_master_never_writes_ansi_json_for_engine():
     assert not bad, f"WriteSetupMarker: русский текст записан сырыми байтами: {bad}"
 
 
+def test_update_branch_passes_record_port_to_first_run():
+    # Ветка обновления обязана передавать в Start-HrmFirstRun порт из записи
+    # установки, а не $port. Update-HrmApp приводит порт к развёрнутому снимку
+    # и пишет его в запись (Sync-HrmPortAfterPrepare), тогда как $port в
+    # Install-HrmApp - это Get-HrmPort без -Port, то есть 8080 по умолчанию.
+    # Прежнее значение уходило в Write-HrmPilotEnv: pilot.env указывал на порт,
+    # занятый production-стеком, compose пересоздавал frontend и падал на
+    # "Bind for 127.0.0.1:8080 failed: port is already allocated" - установка
+    # отдавала код 10 при живом приложении и целой базе. Живой дефект
+    # 22.10.2026: обновление поверх, порт пилота 8081. Ветка повторной
+    # установки ниже всегда передаёт $effectivePort - расхождение было только
+    # здесь.
+    install = (ROOT / "infra/windows/engine/Install.psm1").read_text(encoding="utf-8-sig")
+    _, sep, tail = install.partition("Update-HrmApp -ReleaseDir")
+    assert sep, "в Install.psm1 нет вызова Update-HrmApp"
+    between, sep2, rest = tail.partition("Start-HrmFirstRun")
+    assert sep2, "после Update-HrmApp нет вызова Start-HrmFirstRun"
+    assert "Get-HrmInstallRecordField" in between, (
+        "ветка обновления не перечитывает порт из записи установки перед "
+        "Start-HrmFirstRun: в pilot.env уйдёт прежний $port (8080 по умолчанию), "
+        "compose упадёт на Bind ... 8080"
+    )
+    call = rest.split("\n", 1)[0]
+    assert "$updatedPort" in call, (
+        f"ветка обновления передаёт в Start-HrmFirstRun не порт из записи "
+        f"установки: {call.strip()}"
+    )
+
+
 def test_first_run_input_and_marker_written_before_run_section():
     # Секция [Run] выполняется РАНЬШЕ события CurStepChanged(ssPostInstall): в
     # компиляторе Inno сначала ProcessRunEntries, и только потом
